@@ -1,0 +1,5 @@
+# Generated / staged artifacts — never committed.
+node_modules/
+dist/
+bin/
+*.vsix

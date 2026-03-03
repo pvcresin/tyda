@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "=== Formatting (Rust) ==="
+cargo fmt -- --check
+
+echo "=== Formatting (oxfmt: playground, auto-fix) ==="
+# Auto-format staged playground ts/js/json/css/html and re-stage them. Markdown
+# and generated files are excluded via .oxfmtrc.jsonc. CI verifies with `--check`.
+web=$(git diff --cached --name-only --diff-filter=ACMR -- playground/ \
+  | grep -E '\.(ts|tsx|mts|cts|js|mjs|cjs|json|jsonc|css|html)$' || true)
+if [ -n "$web" ]; then
+  if [ -x node_modules/.bin/oxfmt ]; then
+    echo "$web" | xargs node_modules/.bin/oxfmt --write
+    echo "$web" | xargs git add --
+  else
+    echo "warning: node_modules/.bin/oxfmt not found; run 'mise run setup'. Skipping." >&2
+  fi
+fi
+
+echo "=== Clippy ==="
+cargo clippy --all-targets -- -D warnings

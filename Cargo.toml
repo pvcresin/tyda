@@ -1,0 +1,65 @@
+[workspace]
+members = [".", "crates/rbs-sys"]
+
+[package]
+name = "tyda"
+# Dev placeholder. On release the CI stamps this (and the matching Cargo.lock
+# entry) with the git tag version before building (scripts/stamp-version.rb), so
+# the binary's `Tyda v…` matches the gem. Format: 0.0.YYYYMMDD[.N].
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+
+[features]
+# Default stays full CLI + LSP (keeps existing build/test unchanged).
+default = ["cli", "lsp"]
+# CLI binary (clap / mimalloc).
+cli = ["dep:clap", "dep:mimalloc"]
+# LSP server (tower-lsp / tokio / mimalloc).
+lsp = ["dep:tower-lsp", "dep:tokio", "dep:mimalloc"]
+# wasm32-wasip1 minimal core (no tokio/tower-lsp/clap/mimalloc).
+# `cargo build --target wasm32-wasip1 --no-default-features --features wasm`
+wasm = []
+
+[dependencies]
+ruby-prism = "1.9.0"
+rbs-sys = { path = "crates/rbs-sys" }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2.182"
+serde_yaml = "0.9.34"
+rustc-hash = "2"
+clap = { version = "4", features = ["derive"], optional = true }
+tower-lsp = { version = "0.20", optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+mimalloc = { version = "0.1", default-features = false, optional = true }
+
+[[bin]]
+name = "tyda"
+required-features = ["cli", "lsp"]
+
+# Browser-demo wasm entry (stdin Ruby -> stdout RBS). Built only under `wasm`.
+[[bin]]
+name = "tyda-wasm"
+path = "src/bin/wasm_entry.rs"
+required-features = ["wasm"]
+
+[dev-dependencies]
+futures = "0.3"
+tempfile = "3.26.0"
+tower = "0.4"
+walkdir = "2"
+
+[dev-dependencies.cargo-husky]
+version = "1.5.0"
+default-features = false
+features = ["user-hooks"]
+
+# Cross-crate inlining matters here: the hot inference loops call into
+# rbs-sys and rustc-hash constantly. `panic = "abort"` is intentionally NOT
+# set so `cargo test --release` (used by the LSP benches) keeps the unwinding
+# test harness working.
+[profile.release]
+lto = "thin"
+codegen-units = 1

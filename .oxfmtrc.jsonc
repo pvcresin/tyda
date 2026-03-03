@@ -1,0 +1,14 @@
+{
+  // oxfmt config. Format scope comes from CLI paths (`mise run fmt` → `oxfmt playground`);
+  // here we only declare what to skip inside that scope.
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "ignorePatterns": [
+    // Keep Markdown manual: table RBS unions (`A | B`), `||=`, and CJK column widths
+    // break under auto-format.
+    "**/*.md",
+    // Generated / build outputs (also gitignored; listed explicitly).
+    "playground/public/tyda.wasm",
+    "playground/public/rbs-bundle.json",
+    "playground/dist",
+  ],
+}

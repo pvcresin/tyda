@@ -1,0 +1,5 @@
+{
+  "typeprof.server.path": "${workspaceFolder}/../../target/release/tyda",
+  "typeprof.trace.server": "verbose",
+  "rubocop.mode": "disable"
+}

@@ -1,0 +1,7 @@
+# Keep in sync with mise.toml [tools] rust (version / components).
+# wasm32-wasip1 is playground-only (`mise run setup` / pages.yml / build-wasm.sh);
+# listing it here would make every cargo invocation in test CI download that target.
+[toolchain]
+channel = "1.93.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

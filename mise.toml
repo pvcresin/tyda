@@ -1,0 +1,145 @@
+# Tyda — tool versions + unified task runner (cargo + npm + scripts in one entry).
+#
+# Usage:
+#   mise trust && mise run setup-core  # rust + ruby + vendor/rbs (check.sh)
+#   mise trust && mise run setup       # + wasm target, npm, Playwright
+#   ./scripts/bootstrap.sh             # bare Linux / Codespaces / cloud agents
+#   mise run <task>                    # list with `mise tasks`
+#
+# mise is the only prerequisite. It installs rust (via rustup), node, ruby, and
+# wasi-sdk. Keep rust version/components aligned with rust-toolchain.toml
+# (rust-analyzer and CI read that file directly). wasm32-wasip1 is playground-only.
+# Bare Linux / Codespaces / cloud agents: ./scripts/bootstrap.sh (see setup-core).
+
+[tools]
+# Keep version/components in sync with rust-toolchain.toml. mise installs
+# rustup and this toolchain plus clippy/rustfmt. wasm32-wasip1 is added by
+# `mise run setup` / build-wasm.sh (not every cargo invocation).
+rust = { version = "1.93.1", components = "clippy,rustfmt" }
+node = "20"
+# Fetch the rbs gem and expand into vendor/rbs/ (vendor-rbs). Build-time only;
+# the shipped CLI/wasm have no Ruby runtime dependency.
+ruby = "3.4"
+# Toolchain to compile C deps (rbs / prism) to wasm. Playground only.
+# Use the asdf backend explicitly: mise dropped the short name `wasi-sdk`
+# (asdf plugins left the default registry), so the short name no longer resolves.
+"asdf:mise-plugins/mise-wasi-sdk" = "33"
+
+## ── RBS vendoring (rbs gem → vendor/rbs) ─────────────────────
+
+[tasks.vendor-rbs]
+description = "Expand rbs gem stdlib type defs (core/stdlib) into vendor/rbs/"
+run = "./scripts/vendor-rbs.sh"
+
+## ── Playground (wasm browser demo) ───────────────────────────
+
+[tasks.setup-core]
+description = "Core tools + vendor RBS (enough for check.sh / cargo and bundler dep PRs)"
+run = [
+  "mise install rust ruby",
+  "mise run vendor-rbs",
+]
+
+[tasks.setup]
+description = "First-time setup: core + wasm target + npm + Playwright"
+run = [
+  "mise install",
+  "rustup target add wasm32-wasip1",
+  "mise run vendor-rbs",
+  "npm install",
+  "npx playwright install chromium",
+]
+
+[tasks.build-wasm]
+description = "Build wasm and copy into playground/public/ (needs wasi-sdk)"
+depends = ["vendor-rbs"]
+run = [
+  "./scripts/build-wasm.sh --release",
+  "cp target/wasm32-wasip1/release/tyda-wasm.wasm playground/public/tyda.wasm",
+]
+
+[tasks.build-rbs]
+description = "Bundle stdlib RBS into playground/public/"
+depends = ["vendor-rbs"]
+run = "node scripts/bundle-rbs.mjs vendor/rbs playground/public/rbs-bundle.json"
+
+[tasks.build]
+description = "Production wasm + RBS + Vite build (playground/dist)"
+depends = ["build-wasm", "build-rbs"]
+run = "npm run build"
+
+[tasks.dev]
+description = "Build wasm+RBS and start Vite (http://localhost:8123)"
+depends = ["build-wasm", "build-rbs"]
+run = "npm run dev"
+
+[tasks.preview]
+description = "Serve built playground/dist (http://localhost:8123)"
+run = "npm run preview"
+
+[tasks.e2e]
+description = "Playwright E2E against the production build"
+depends = ["build"]
+run = "npm run test:e2e"
+
+[tasks.ci]
+description = "Reproduce CI (build + E2E) in Ubuntu via act (needs Docker)"
+run = "act -j e2e-test"
+
+## ── VS Code / Cursor extension (vscode/) ─────────────────────
+
+[tasks.vscode-deps]
+description = "Install extension npm deps (vscode/)"
+dir = "vscode"
+run = "npm install"
+
+[tasks.vscode-build]
+description = "Typecheck + esbuild bundle the extension (vscode/dist)"
+dir = "vscode"
+depends = ["vscode-deps"]
+run = ["npm run check", "npm run compile"]
+
+[tasks.vscode-package]
+description = "Build a .vsix for this platform (bundles tyda binary + stdlib RBS)"
+depends = ["vscode-deps", "vendor-rbs"]
+run = [
+  "cargo build --release --bin tyda",
+  "mkdir -p vscode/bin/vendor",
+  "cp target/release/tyda vscode/bin/tyda",
+  "rm -rf vscode/bin/vendor/rbs && cp -R vendor/rbs vscode/bin/vendor/rbs",
+  "npm --prefix vscode run package",
+]
+
+## ── Rust core ────────────────────────────────────────────────
+
+[tasks.test]
+description = "cargo test (Rust core)"
+depends = ["vendor-rbs"]
+run = "cargo test"
+
+[tasks.fmt]
+description = "cargo fmt + oxfmt (playground js/json/css/html)"
+run = [
+  "cargo fmt --all",
+  "npx oxfmt --write playground",
+]
+
+[tasks.clippy]
+description = "clippy (default + wasm feature; warnings as errors)"
+depends = ["vendor-rbs"]
+run = [
+  "cargo clippy --all-targets -- -D warnings",
+  "cargo clippy --no-default-features --features wasm -- -D warnings",
+]
+
+[tasks.check]
+description = "fmt + clippy + test + release build + oxfmt --check (pre-commit)"
+depends = ["vendor-rbs"]
+run = [
+  "./scripts/check.sh",
+  "npx oxfmt --check playground",
+]
+
+[tasks.clean]
+description = "Remove target/ to free disk"
+run = "cargo clean"

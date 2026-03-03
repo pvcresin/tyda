@@ -1,0 +1,9 @@
+---
+description: All agent rules live in AGENTS.md. Follow it; do not duplicate rules here.
+alwaysApply: true
+---
+
+# Working protocol
+
+**Follow [`AGENTS.md`](../../AGENTS.md)** — the single source for agent rules (language,
+commits, PRs, doc map). Read docs on demand only, per its map.

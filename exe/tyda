@@ -1,0 +1,7 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "tyda"
+
+# Hand off to the bundled native binary, preserving args and exit status.
+exec(Tyda.executable, *ARGV)

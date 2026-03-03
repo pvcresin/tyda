@@ -1,0 +1,17 @@
+{
+  "name": "tyda",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/mise:1": {}
+  },
+  "postCreateCommand": "./scripts/bootstrap.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "hverlin.mise-vscode"
+      ]
+    }
+  }
+}

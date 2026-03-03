@@ -1,0 +1,117 @@
+//! ! Hardcoded method return type tables.
+//! ! ! These tables capture knowledge about Ruby stdlib and Rails methods ! that cannot yet be resolved through RBS definitions alone (because ! the receiver type is `Untyped`, or the class is a Rails-specific ! virtual class like `ActionController::Parameters`).
+
+pub const UNIVERSAL_BOOL_METHODS: &[&str] = &[
+    "nil?",
+    "is_a?",
+    "kind_of?",
+    "instance_of?",
+    "respond_to?",
+    "equal?",
+    "eql?",
+    "frozen?",
+    "tainted?",
+    "untrusted?",
+    "==",
+    "!=",
+    "===",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "between?",
+    "match?",
+    "include?",
+    "empty?",
+    "any?",
+    "all?",
+    "none?",
+    "one?",
+    "key?",
+    "has_key?",
+    "value?",
+    "has_value?",
+    "member?",
+    "start_with?",
+    "end_with?",
+    "valid?",
+    "zero?",
+    "positive?",
+    "negative?",
+    "finite?",
+    "integer?",
+    "real?",
+    "even?",
+    "odd?",
+];
+
+pub const IDENTITY_METHODS: &[&str] = &["dup", "clone", "itself", "tap"];
+
+pub const RAILS_HASH_IDENTITY_METHODS: &[&str] = &[
+    "permit",
+    "require",
+    "expect",
+    "reverse_merge",
+    "symbolize_keys",
+    "stringify_keys",
+    "deep_symbolize_keys",
+    "deep_stringify_keys",
+    "with_indifferent_access",
+    "to_unsafe_h",
+    "to_unsafe_hash",
+];
+
+pub const RAILS_STRING_RETURNING_METHODS: &[&str] = &[
+    "squish",
+    "strip_heredoc",
+    "underscore",
+    "camelize",
+    "camelcase",
+    "titleize",
+    "titlecase",
+    "dasherize",
+    "demodulize",
+    "deconstantize",
+    "parameterize",
+    "tableize",
+    "classify",
+    "humanize",
+    "foreign_key",
+    "pluralize",
+    "singularize",
+    "html_safe",
+    "truncate",
+    "truncate_bytes",
+    "truncate_words",
+    "remove",
+    "indent",
+    "inquiry",
+];
+
+pub const DURATION_METHODS: &[&str] = &[
+    "second", "seconds", "minute", "minutes", "hour", "hours", "day", "days", "week", "weeks",
+    "month", "months", "year", "years",
+];
+
+pub const VOID_TERMINAL_METHODS: &[&str] = &[
+    "render",
+    "redirect_to",
+    "redirect_back",
+    "redirect_back_or_to",
+    "head",
+    "send_data",
+    "send_file",
+];
+
+pub const EXTENDED_VOID_TERMINAL_METHODS: &[&str] = &[
+    "render_empty",
+    "render_with_cache",
+    "respond_with",
+    "send_export_file",
+    "not_found",
+    "unprocessable_content",
+    "unprocessable_entity",
+    "gone",
+    "forbidden",
+    "unauthorized",
+];

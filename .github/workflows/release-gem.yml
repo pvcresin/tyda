@@ -1,0 +1,175 @@
+# Build, verify, and (on release) publish Tyda as a per-platform RubyGem.
+#
+# One pipeline: each platform leg builds the native binary, stages it plus the
+# stdlib RBS data into the gem (libexec/<bin> + libexec/vendor/rbs), packages a
+# platform-specific gem, and verifies the *installed* gem actually runs
+# inference standalone. The gem is not registered yet, so the build is gated to
+# release tags until the package is ready for publication.
+#
+# Release model: trunk-based — every merge to main cuts a release. The version
+# is MAJOR.MINOR (from tyda-version.txt, humans bump it) + the merge commit's UTC
+# timestamp as the patch, e.g. 0.0.20260628195820. No tag or version-bump commit;
+# raise MAJOR/MINOR by editing tyda-version.txt (0.0 → 0.1). The same value is
+# stamped into both the gem and the binary via TYDA_RELEASE_VERSION.
+#
+# TODO(release) before enabling publish:
+#   - confirm spec.name is free on rubygems.org
+#   - set spec.metadata["allowed_push_host"] = "https://rubygems.org" in tyda.gemspec
+#   - set up RubyGems Trusted Publishing (OIDC) or a RUBYGEMS_AUTH_TOKEN secret
+#   - delete the trailing ` && false` on the publish job's `if:` line
+name: release-gem
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build & verify (${{ matrix.platform }})
+    # Skip packaging until the gem is registered; keep release-tag verification.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: x86_64-linux
+            binary_name: tyda
+          - runner: macos-15-intel
+            platform: x86_64-darwin
+            binary_name: tyda
+          - runner: macos-15
+            platform: arm64-darwin
+            binary_name: tyda
+          - runner: windows-2025
+            platform: x64-mingw-ucrt
+            binary_name: tyda.exe
+          # aarch64-linux needs a GitHub-hosted arm64 runner (ubuntu-24.04-arm);
+          # add it once available on this repo's plan:
+          # - runner: ubuntu-24.04-arm
+          #   platform: aarch64-linux
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # clang/libclang are needed by bindgen (ruby-rbs-sys). Linux installs them
+      # via apt; macOS and Windows runners provide LLVM in the base image.
+      - name: Install clang/libclang (Linux)
+        if: runner.os == 'Linux'
+        uses: awalsh128/cache-apt-pkgs-action@2c09a5e66da6c8016428a2172bd76e5e4f14bb17 # v1.5.3
+        with:
+          packages: clang libclang-dev
+
+      - name: Configure libclang (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $clang = Get-Command clang.exe -ErrorAction Stop
+          $llvmBin = Split-Path $clang.Source
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Ruby is build-time only — used to expand the stdlib RBS data the binary
+      # bundles. bundler-cache installs the pinned rbs gem from Gemfile.lock.
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Vendor stdlib RBS (rbs gem → vendor/rbs)
+        run: ./scripts/vendor-rbs.sh
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          key: ${{ matrix.platform }}
+
+      # Cut the release version on main (and explicit tags): MAJOR.MINOR from
+      # tyda-version.txt + the merge commit's UTC timestamp as the patch. It is
+      # derived from the commit, so every platform leg computes the same value
+      # without a shared job. build.rs (binary) and lib/tyda/version.rb (gem)
+      # both read TYDA_RELEASE_VERSION, so the two report an identical version.
+      # PR builds skip this and fall back to a dev version (the smoke test below
+      # only checks that `--version` runs).
+      - name: Compute release version
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          PREFIX="$(cut -d. -f1,2 tyda-version.txt)"
+          TS="$(TZ=UTC git show -s --date=format-local:%Y%m%d%H%M%S --format=%cd HEAD)"
+          echo "TYDA_RELEASE_VERSION=${PREFIX}.${TS}" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build --release --locked --bin tyda
+
+      # Stage the binary + its stdlib RBS next to it, so the installed binary
+      # resolves vendor/rbs relative to itself (libexec/vendor/rbs).
+      - name: Stage binary + RBS into the gem (libexec/)
+        run: |
+          mkdir -p libexec/vendor
+          cp "target/release/${{ matrix.binary_name }}" "libexec/${{ matrix.binary_name }}"
+          cp -R vendor/rbs libexec/vendor/rbs
+
+      - name: Build platform gem
+        env:
+          TYDA_GEM_PLATFORM: ${{ matrix.platform }}
+        run: gem build tyda.gemspec
+
+      - name: Verify the installed gem runs inference standalone
+        run: |
+          gem install --local ./tyda-*.gem
+          bin="$(ruby -e 'print Gem.bindir')/tyda"
+          smoke_file="$RUNNER_TEMP/smoke.rb"
+          if command -v cygpath >/dev/null 2>&1; then
+            bin="$(cygpath -u "$bin")"
+            smoke_file="$(cygpath -u "$RUNNER_TEMP")/smoke.rb"
+          fi
+          # Drop the build-tree RBS so the binary can only use what the gem
+          # bundled — this proves the installed gem is self-contained.
+          rm -rf vendor/rbs libexec target
+          "$bin" --version
+          printf 'class A\n  def f(x) = x.to_s\nend\n' > "$smoke_file"
+          out="$("$bin" "$smoke_file")"
+          echo "$out"
+          echo "$out" | grep -q 'def f:' || { echo 'gem is not self-contained'; exit 1; }
+
+      - name: Upload gem
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tyda-${{ matrix.platform }}
+          path: "*.gem"
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    # Disabled until the gem is registered on rubygems.org (nothing is published
+    # yet). Re-enable by deleting the trailing ` && false` on the line below.
+    if: startsWith(github.ref, 'refs/tags/v') && false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # for RubyGems Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+      # TODO(release): prefer RubyGems Trusted Publishing (rubygems/release-gem).
+      # GEM_HOST_API_KEY references a placeholder secret that is intentionally
+      # not set, so even if this job ran it could not push.
+      - name: Publish every platform gem to RubyGems
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_AUTH_TOKEN }}
+        run: |
+          for gem in dist/*/*.gem; do
+            echo "pushing $gem"
+            gem push "$gem"
+          done

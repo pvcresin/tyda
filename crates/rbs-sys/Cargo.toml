@@ -1,0 +1,11 @@
+[package]
+name = "rbs-sys"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+# Official low-level FFI. Vendors the C parser and compiles it via its own build.rs.
+# FFI decls come from bindgen over C headers, so node enums and struct layouts
+# always match the C side.
+ruby-rbs-sys = "0.3"

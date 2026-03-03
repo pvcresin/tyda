@@ -1,0 +1,9 @@
+# Ship only the bundled output + the staged binary; exclude sources and config.
+.vscode/**
+src/**
+node_modules/**
+esbuild.js
+tsconfig.json
+.gitignore
+**/*.ts
+**/*.map

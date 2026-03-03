@@ -1,0 +1,78 @@
+{
+  "name": "tyda",
+  "displayName": "Tyda — Ruby type inference",
+  "description": "Fast Ruby type inference (RBS) for VS Code / Cursor, powered by the tyda engine.",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "//publisher": "TODO(release): register a Marketplace publisher and set it here before publishing.",
+  "publisher": "pvcresin",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pvcresin/tyda.git",
+    "directory": "vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:ruby"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tyda.toggleSignature",
+        "title": "Tyda: Toggle inline type signatures"
+      }
+    ],
+    "configuration": {
+      "title": "Tyda",
+      "properties": {
+        "tyda.server.path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "markdownDescription": "Path to the `tyda` binary. If unset, the extension uses the binary bundled in the extension (`bin/tyda`), then falls back to `tyda` on `PATH`. For local development point this at `target/release/tyda`."
+        },
+        "tyda.experimentalChecks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable experimental type checks (arity). Runs the server with TYDA_EXPERIMENTAL_CHECKS=1."
+        },
+        "tyda.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the communication between VS Code and the tyda language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "vscode:prepublish": "node esbuild.js --production",
+    "package": "vsce package --no-dependencies -o tyda.vsix"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}

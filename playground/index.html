@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tyda Playground — Ruby type inference in your browser (wasm)</title>
+    <style>
+      :root {
+        --bg: #1e1e1e;
+        --panel: #252526;
+        --border: #3c3c3c;
+        --text: #d4d4d4;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      header h1 {
+        font-size: 15px;
+        margin: 0;
+        font-weight: 600;
+        cursor: pointer;
+        user-select: none;
+      }
+      header h1:hover {
+        opacity: 0.75;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        height: calc(100% - 46px);
+      }
+      .pane {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .pane + .pane {
+        border-left: 1px solid var(--border);
+      }
+      .pane h2 {
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        color: #888;
+        margin: 0;
+        padding: 6px 12px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
+      }
+      .pane h2 .syntax-error {
+        margin-left: 8px;
+        color: #e06c75;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+      .editor {
+        flex: 1;
+        min-height: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1 id="reset" title="Reset to the initial example (clears the URL)">Tyda Playground</h1>
+    </header>
+    <main>
+      <section class="pane">
+        <h2 id="rbs-title">rbs</h2>
+        <div id="rbs" class="editor"></div>
+      </section>
+      <section class="pane">
+        <h2 id="rb-title">rb</h2>
+        <div id="ruby" class="editor"></div>
+      </section>
+    </main>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

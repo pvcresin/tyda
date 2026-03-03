@@ -1,0 +1,199 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Drop superseded runs on the same ref so a new push does not wait behind a
+# stale format+lint+test queue (pages.yml already does this).
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Formatting does not compile, so skip clang / rust-cache / vendor-rbs / ruby.
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+        with:
+          install_args: rust
+
+      # rustfmt lives in the rustup toolchain (~/.rustup), which the mise cache
+      # does not cover. On a mise cache hit, mise skips rust setup and the
+      # component can be missing, so ensure it explicitly (idempotent).
+      - name: Ensure rustfmt
+        run: rustup component add rustfmt
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # clang/libclang are needed by bindgen (ruby-rbs-sys / ruby-prism-sys).
+      - name: Install system dependencies
+        uses: awalsh128/cache-apt-pkgs-action@2c09a5e66da6c8016428a2172bd76e5e4f14bb17 # v1.5.3
+        with:
+          packages: clang libclang-dev
+
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+        with:
+          install_args: rust
+
+      - name: Ensure clippy
+        run: rustup component add clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # The playground (`mise run dev`) builds the core for wasm with a reduced
+      # feature set whose cfg differs from the default build. Check it here too
+      # so wasm-only warnings are caught on every PR. mimalloc is feature-gated
+      # off, so this runs on the host without a wasi-sdk / wasm target.
+      - name: Lint (wasm features)
+        run: cargo clippy --locked --no-default-features --features wasm -- -D warnings
+
+  # cargo test binaries run one after another. On a recent successful run the
+  # ~10 min test step was ~7 min mutation_robustness + ~1.5 min pathological +
+  # the rest. Shard so wall clock is the slowest shard, not the sum. opt-level=1
+  # / debug=0 is CI-only (keeps the local edit loop on a cheap debug build).
+  test:
+    name: test (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: unit
+            args: -p rbs-sys -p tyda --lib
+          - shard: integration
+            args: -p tyda --test cli --test declaration_order_matrix --test hover_probe --test pathological_inputs --test scenario_headings --test scenario_runner
+          - shard: robustness
+            args: -p tyda --test mutation_robustness mutated_inputs_without_panic
+          - shard: fuzz
+            args: -p tyda --test mutation_robustness mutated_scenario_corpus_without_panic
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install system dependencies
+        uses: awalsh128/cache-apt-pkgs-action@2c09a5e66da6c8016428a2172bd76e5e4f14bb17 # v1.5.3
+        with:
+          packages: clang libclang-dev
+
+      # mise.toml also lists node / ruby / wasi-sdk; this job only needs rust.
+      # ruby is installed below on a vendor/rbs cache miss.
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+        with:
+          install_args: rust
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          env-vars: CARGO_PROFILE_TEST_OPT_LEVEL CARGO_PROFILE_TEST_DEBUG
+
+      # vendor/rbs is generated from the rbs gem (Gemfile.lock). Cache the
+      # expanded tree so the usual path skips ruby + bundle + copy.
+      - name: Cache vendor/rbs
+        id: cache-rbs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/rbs
+          key: ${{ runner.os }}-vendor-rbs-${{ hashFiles('Gemfile.lock') }}
+
+      - name: Vendor RBS (rbs gem → vendor/rbs)
+        if: steps.cache-rbs.outputs.cache-hit != 'true'
+        run: |
+          mise install ruby
+          mise run vendor-rbs
+
+      - name: Run tests
+        run: cargo test --locked ${{ matrix.args }} -- --test-threads=1
+
+  windows:
+    name: windows
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Windows 2025 provides LLVM and libclang in the base image. bindgen
+      # needs the directory containing libclang.dll explicitly.
+      - name: Configure libclang
+        shell: pwsh
+        run: |
+          $clang = Get-Command clang.exe -ErrorAction Stop
+          $llvmBin = Split-Path $clang.Source
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Set up the pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal --component clippy,rustfmt
+
+      - name: Vendor RBS (rbs gem → vendor/rbs)
+        run: ./scripts/vendor-rbs.sh
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked
+
+  vscode:
+    name: vscode
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install extension dependencies
+        working-directory: vscode
+        run: npm ci --no-audit --no-fund
+
+      - name: Check extension types
+        working-directory: vscode
+        run: npm run check
+
+      - name: Bundle extension
+        working-directory: vscode
+        run: npm run compile

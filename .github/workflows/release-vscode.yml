@@ -1,0 +1,198 @@
+# Build, verify, and (on release) publish the Tyda VS Code / Cursor extension.
+#
+# Mirrors release-gem.yml: each platform leg builds the native binary, stages it
+# plus the stdlib RBS next to it inside the extension (bin/tyda + bin/vendor/rbs),
+# packages a platform-specific .vsix, and verifies the bundled binary runs
+# inference standalone (without VS Code). The same build runs on every PR / push
+# as a usability check; only a release adds the publish (upload) step.
+#
+# Release model: trunk-based — every merge to main cuts a release version
+# (MAJOR.MINOR from tyda-version.txt + the merge commit's UTC timestamp; see
+# release-gem.yml). The .vsix uses that version. No tag or version-bump commit.
+#
+# TODO(release) before enabling publish:
+#   - register a Marketplace publisher and set it in vscode/package.json
+#   - create a VSCE_PAT secret (and OVSX_PAT for Open VSX), then
+#   - delete the trailing ` && false` on the publish job's `if:` line
+name: release-vscode
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build & verify (${{ matrix.platform }})
+    # Verify every supported native platform on pull requests and releases.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: x86_64-linux
+            vsce_target: linux-x64
+            binary_name: tyda
+          - runner: macos-15-intel
+            platform: x86_64-darwin
+            vsce_target: darwin-x64
+            binary_name: tyda
+          - runner: macos-15
+            platform: arm64-darwin
+            vsce_target: darwin-arm64
+            binary_name: tyda
+          - runner: windows-2025
+            platform: x64-mingw-ucrt
+            vsce_target: win32-x64
+            binary_name: tyda.exe
+          # aarch64-linux needs a GitHub-hosted arm64 runner (ubuntu-24.04-arm);
+          # add it once available on this repo's plan.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # clang/libclang are needed by bindgen (ruby-rbs-sys). Linux installs them
+      # via apt; macOS and Windows runners provide LLVM in the base image.
+      - name: Install clang/libclang (Linux)
+        if: runner.os == 'Linux'
+        uses: awalsh128/cache-apt-pkgs-action@2c09a5e66da6c8016428a2172bd76e5e4f14bb17 # v1.5.3
+        with:
+          packages: clang libclang-dev
+
+      - name: Configure libclang (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $clang = Get-Command clang.exe -ErrorAction Stop
+          $llvmBin = Split-Path $clang.Source
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Ruby is build-time only — used to expand the stdlib RBS the binary
+      # bundles. bundler-cache installs the pinned rbs gem from Gemfile.lock.
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Vendor stdlib RBS (rbs gem → vendor/rbs)
+        run: ./scripts/vendor-rbs.sh
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          key: vscode-${{ matrix.platform }}
+
+      # Same version source as the gem: MAJOR.MINOR from tyda-version.txt + the
+      # merge commit's UTC timestamp. Used both for the binary's `Tyda v…` summary
+      # (TYDA_RELEASE_VERSION, read by build.rs) and the .vsix version
+      # (package.json). PR builds skip this and keep 0.0.0 / a dev binary.
+      - name: Compute release version
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          PREFIX="$(cut -d. -f1,2 tyda-version.txt)"
+          TS="$(TZ=UTC git show -s --date=format-local:%Y%m%d%H%M%S --format=%cd HEAD)"
+          echo "TYDA_RELEASE_VERSION=${PREFIX}.${TS}" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build --release --locked --bin tyda
+
+      # Stage the binary + its stdlib RBS into the extension so the bundled
+      # binary resolves vendor/rbs relative to itself (bin/vendor/rbs).
+      - name: Stage binary + RBS into the extension (vscode/bin/)
+        run: |
+          mkdir -p vscode/bin/vendor
+          cp "target/release/${{ matrix.binary_name }}" "vscode/bin/${{ matrix.binary_name }}"
+          cp -R vendor/rbs vscode/bin/vendor/rbs
+
+      - name: Install extension deps
+        working-directory: vscode
+        run: npm ci
+
+      - name: Set .vsix version (release only)
+        if: env.TYDA_RELEASE_VERSION != ''
+        working-directory: vscode
+        run: npm version "$TYDA_RELEASE_VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Package platform .vsix
+        working-directory: vscode
+        run: npx vsce package --no-dependencies --target "${{ matrix.vsce_target }}" -o "tyda-${{ matrix.vsce_target }}.vsix"
+
+      - name: Extract packaged VSIX (Unix)
+        if: runner.os != 'Windows'
+        run: unzip -q "vscode/tyda-${{ matrix.vsce_target }}.vsix" -d vsix-out
+
+      - name: Extract packaged VSIX (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "vscode/tyda-${{ matrix.vsce_target }}.vsix" "tyda-vsix.zip"
+          Expand-Archive -LiteralPath "tyda-vsix.zip" -DestinationPath vsix-out
+
+      - name: Verify the bundled binary runs inference standalone
+        run: |
+          bin="$PWD/vsix-out/extension/bin/${{ matrix.binary_name }}"
+          smoke_file="$RUNNER_TEMP/smoke.rb"
+          if command -v cygpath >/dev/null 2>&1; then
+            smoke_file="$(cygpath -u "$RUNNER_TEMP")/smoke.rb"
+          fi
+          # Drop the build-tree RBS so the binary can only use what the .vsix
+          # bundled — this proves the packaged extension is self-contained.
+          rm -rf vendor/rbs target
+          "$bin" --version
+          printf 'class A\n  def f(x) = x.to_s\nend\n' > "$smoke_file"
+          out="$("$bin" "$smoke_file")"
+          echo "$out"
+          echo "$out" | grep -q 'def f:' || { echo 'bundled extension is not self-contained'; exit 1; }
+
+      - name: Upload .vsix
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tyda-vsix-${{ matrix.vsce_target }}
+          path: vscode/*.vsix
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    # Disabled until a Marketplace publisher + VSCE_PAT (and OVSX_PAT) are set up
+    # (nothing is published yet). Re-enable by deleting the trailing ` && false`.
+    if: startsWith(github.ref, 'refs/tags/v') && false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+      # TODO(release): set VSCE_PAT / OVSX_PAT secrets. These reference
+      # placeholder secrets that are intentionally not set, so even if this job
+      # ran it could not push.
+      - name: Publish every platform .vsix to the VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          for vsix in dist/*/*.vsix; do
+            echo "publishing $vsix"
+            npx @vscode/vsce publish --packagePath "$vsix"
+          done
+      - name: Publish to Open VSX (Cursor / VSCodium)
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          for vsix in dist/*/*.vsix; do
+            echo "publishing $vsix to Open VSX"
+            npx ovsx publish "$vsix" -p "$OVSX_PAT"
+          done
