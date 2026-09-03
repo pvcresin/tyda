@@ -89,24 +89,22 @@ export CARGO_INCREMENTAL=0
 
 test_binary_for() {
   local json_path="$1"
-  python3 - "$json_path" <<'PY'
-import json
-import sys
+  ruby -rjson - "$json_path" <<'RUBY'
+path = ARGV.fetch(0)
+File.foreach(path) do |line|
+  begin
+    value = JSON.parse(line)
+  rescue JSON::ParserError
+    next
+  end
+  next unless value["reason"] == "compiler-artifact"
 
-for line in open(sys.argv[1], encoding="utf-8"):
-    try:
-        value = json.loads(line)
-    except json.JSONDecodeError:
-        continue
-    if value.get("reason") != "compiler-artifact":
-        continue
-    if (
-        value.get("executable")
-        and value.get("target", {}).get("name") == "tyda"
-        and "lib" in value.get("target", {}).get("kind", [])
-    ):
-        print(value["executable"])
-PY
+  target = value.fetch("target", {})
+  if value["executable"] && target["name"] == "tyda" && target.fetch("kind", []).include?("lib")
+    puts value["executable"]
+  end
+end
+RUBY
 }
 
 build_variant() {
@@ -147,7 +145,7 @@ measure_process() {
   local status
 
   set +e
-  python3 "$ROOT_DIR/scripts/measure_process.py" \
+  ruby "$ROOT_DIR/scripts/measure_process.rb" \
     --log "$log_path" \
     --output "$meta_path" \
     --timeout "$TIMEOUT_SECONDS" \
@@ -173,17 +171,15 @@ read_meta() {
 }
 
 scan_ms_from_log() {
-  python3 - "$1" <<'PY'
-import re
-import sys
-
-text = open(sys.argv[1], encoding="utf-8").read()
-match = re.search(r"\[bench\] workspace scan: ([0-9.]+)ms", text)
-if not match:
-    print(text, file=sys.stderr)
-    raise SystemExit("failed to parse LSP workspace scan time")
-print(round(float(match.group(1))))
-PY
+  ruby - "$1" <<'RUBY'
+text = File.read(ARGV.fetch(0))
+match = text.match(/\[bench\] workspace scan: ([0-9.]+)ms/)
+unless match
+  warn text
+  abort "failed to parse LSP workspace scan time"
+end
+puts match[1].to_f.round
+RUBY
 }
 
 measure_cli() {
@@ -263,7 +259,7 @@ for run in $(seq 1 "$RUNS"); do
 done
 
 echo ""
-python3 "$ROOT_DIR/scripts/compare_performance.py" \
+ruby "$ROOT_DIR/scripts/compare_performance.rb" \
   --base-sha "$BASE_SHA" \
   --head-sha "$HEAD_SHA" \
   --metrics "$METRICS_TSV" \

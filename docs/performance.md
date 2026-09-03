@@ -62,6 +62,9 @@ GitHub の branch protection では、この workflow の `large-app` check を 
 環境が変わった場合は、まず複数回の結果を確認してから閾値を見直す。性能計測の対象を追加するときも、
 同じ測定順序・worker 数・subject pin を維持する。
 
+計測のプロセス監視と結果比較は Ruby の `scripts/measure_process.rb` と
+`scripts/compare_performance.rb` で行い、リポジトリの開発用 Ruby 環境を共有する。
+
 ## 現在の基準値
 
 ### CLI
