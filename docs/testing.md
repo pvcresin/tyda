@@ -30,6 +30,11 @@ git diff --check
 入口ごとの実装で吸収しない。RBS / RBI / project fixture など、入力や解析 profile が異なる
 scenario はその条件を維持したうえで、同じ core の解析 backend を利用する。
 
+通常の Ruby の表示 parity は `analysis` の unit test で `tests/scenarios/ruby/` を in-process に走査し、
+Playground の RBS / CodeLens / hover を canonical snapshot の projection と比較する。Rails / Sorbet /
+RBS / RBI / project fixture / 構文エラーを含むケースはこの対象から除外し、ブラウザや WASM を起動せずに
+表示入口の差分を検出する。シナリオが増えたときも、テストはファイル単位で並列実行する。
+
 対象を絞るときは次を使う。
 
 ~~~bash

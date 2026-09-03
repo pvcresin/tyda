@@ -305,7 +305,21 @@ impl TypeRegistry {
             }
         }
         let mut deduped: Vec<(String, MethodSig)> = methods_by_key.into_values().collect();
-        deduped.sort_by_key(|(_, method)| method.loc.map(|loc| loc.line).unwrap_or(u32::MAX));
+        deduped.sort_by(|(class_a, method_a), (class_b, method_b)| {
+            let loc_a = method_a
+                .loc
+                .map(|loc| (loc.line, loc.column))
+                .unwrap_or((u32::MAX, u32::MAX));
+            let loc_b = method_b
+                .loc
+                .map(|loc| (loc.line, loc.column))
+                .unwrap_or((u32::MAX, u32::MAX));
+            loc_a
+                .cmp(&loc_b)
+                .then_with(|| class_a.cmp(class_b))
+                .then_with(|| method_a.name.cmp(&method_b.name))
+                .then_with(|| method_a.is_singleton.cmp(&method_b.is_singleton))
+        });
         deduped
     }
 }

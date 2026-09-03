@@ -605,27 +605,71 @@ pub fn playground_analyze(
         options,
     );
 
-    let rbs = crate::rbs::render::render_rbs_for_file(snapshot.registry(), file_path);
-
-    let methods = snapshot.methods_for_file(file_path);
-
-    let method_def_lines: Vec<u32> = methods
-        .iter()
-        .filter_map(|(_class, sig)| sig.loc.map(|loc| loc.line))
-        .collect();
-    let suppressor = SyntaxErrorSuppressor::new(source, &method_def_lines);
-
-    let mut diagnostics = crate::diagnostics::method_call_diagnostics(
+    playground_result_from_snapshot(
+        source,
+        user_rbs,
+        lazy_loader,
+        file_path,
         &snapshot,
+        ruby_syntax_error,
+        rbs_syntax_error,
+    )
+}
+
+fn playground_result_from_snapshot(
+    source: &str,
+    user_rbs: Option<&TypeRegistry>,
+    lazy_loader: &LazyRbsLoader,
+    file_path: &str,
+    snapshot: &FileAnalysisSnapshot,
+    ruby_syntax_error: bool,
+    rbs_syntax_error: bool,
+) -> PlaygroundResult {
+    let projection =
+        playground_display_projection(source, user_rbs, lazy_loader, file_path, snapshot);
+    let mut diagnostics = crate::diagnostics::method_call_diagnostics(
+        snapshot,
         source,
         file_path,
         lazy_loader,
         None,
         user_rbs,
     );
-    if suppressor.is_active() {
-        diagnostics.retain(|diag| !suppressor.suppresses_line(diag.line));
+    if projection.suppressor.is_active() {
+        diagnostics.retain(|diag| !projection.suppressor.suppresses_line(diag.line));
     }
+
+    PlaygroundResult {
+        rbs: projection.rbs,
+        diagnostics,
+        hovers: projection.hovers,
+        code_lens: projection.code_lens,
+        ruby_syntax_error,
+        rbs_syntax_error,
+    }
+}
+
+struct PlaygroundDisplayProjection {
+    rbs: String,
+    hovers: Vec<PlaygroundHover>,
+    code_lens: Vec<PlaygroundCodeLens>,
+    suppressor: SyntaxErrorSuppressor,
+}
+
+fn playground_display_projection(
+    source: &str,
+    user_rbs: Option<&TypeRegistry>,
+    lazy_loader: &LazyRbsLoader,
+    file_path: &str,
+    snapshot: &FileAnalysisSnapshot,
+) -> PlaygroundDisplayProjection {
+    let rbs = crate::rbs::render::render_rbs_for_file(snapshot.registry(), file_path);
+    let methods = snapshot.methods_for_file(file_path);
+    let method_def_lines: Vec<u32> = methods
+        .iter()
+        .filter_map(|(_class, sig)| sig.loc.map(|loc| loc.line))
+        .collect();
+    let suppressor = SyntaxErrorSuppressor::new(source, &method_def_lines);
 
     let code_lens = methods
         .iter()
@@ -678,13 +722,11 @@ pub fn playground_analyze(
         });
     }
 
-    PlaygroundResult {
+    PlaygroundDisplayProjection {
         rbs,
-        diagnostics,
         hovers,
         code_lens,
-        ruby_syntax_error,
-        rbs_syntax_error,
+        suppressor,
     }
 }
 
@@ -1489,7 +1531,13 @@ mod tests {
     use crate::dep_graph::FileDeps;
     use crate::rbs::stdlib_loader::LazyRbsLoader;
     use crate::registry::TypeRegistry;
-    use std::path::PathBuf;
+    use crate::scenario::{ScenarioConfig, parse_scenario_file};
+    use rayon::prelude::*;
+    use ruby_prism as prism;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use walkdir::WalkDir;
 
     fn analyze_with_dependency_collection(
         source: &str,
@@ -2220,5 +2268,280 @@ end
         );
         // The well-formed method `a` (line 2) still hovers normally.
         assert!(res.hovers.iter().any(|h| h.line == 2));
+    }
+
+    #[test]
+    fn playground_codelens_order_is_stable_for_same_line_methods() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class A\n",
+            "  def initialize(x, y)\n",
+            "    @x = x\n",
+            "    @y = y\n",
+            "  end\n",
+            "\n",
+            "  attr_reader :x, :y\n",
+            "end\n",
+            "\n",
+            "A.new(1, \"hello\")\n",
+        );
+        let res = playground_analyze(source, "", &loader, "probe.rb");
+        assert_eq!(
+            res.code_lens
+                .iter()
+                .map(|lens| (lens.line, lens.signature.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (2, "(Integer, String) -> void"),
+                (7, "-> 1"),
+                (7, "-> \"hello\""),
+            ]
+        );
+    }
+
+    #[test]
+    fn playground_matches_canonical_display_projection_for_ordinary_ruby() {
+        let scenario_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+        let ruby_root = scenario_root.join("ruby");
+        let loader = playground_loader();
+        let mut scenario_paths: Vec<PathBuf> = WalkDir::new(&ruby_root)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.file_type().is_file()
+                    && entry
+                        .path()
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        == Some("md")
+            })
+            .map(|entry| entry.into_path())
+            .collect();
+        scenario_paths.sort();
+
+        let file_path = "scenario.rb";
+        let loader = Arc::new(loader);
+        let results: Vec<(usize, usize, Vec<String>)> = scenario_paths
+            .par_iter()
+            .map(|path| {
+                let file_name = scenario_name(&scenario_root, path);
+                let content = fs::read_to_string(path)
+                    .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+                let scenario_file = parse_scenario_file(&file_name, &content);
+                let mut compared_steps = 0usize;
+                let mut mismatch_count = 0usize;
+                let mut mismatches = Vec::new();
+
+                for case in scenario_file.cases {
+                    if case.config != ScenarioConfig::default() {
+                        continue;
+                    }
+
+                    for (step_index, step) in case.steps.into_iter().enumerate() {
+                        if !is_ordinary_ruby_step(&file_name, &step) {
+                            continue;
+                        }
+                        compared_steps += 1;
+                        let label =
+                            format!("{file_name} / {} / step {}", case.name, step_index + 1);
+
+                        let (canonical_snapshot, _, _) = analyze_source_for_display(
+                            &step.ruby_code,
+                            None,
+                            Some(&loader),
+                            None,
+                            Some(file_path),
+                            AnalysisOptions::default(),
+                        );
+                        let playground = playground_display_projection(
+                            &step.ruby_code,
+                            None,
+                            &loader,
+                            file_path,
+                            &canonical_snapshot,
+                        );
+                        let expected_rbs = crate::rbs::render::render_rbs_for_file(
+                            canonical_snapshot.registry(),
+                            file_path,
+                        );
+                        let expected_code_lens =
+                            canonical_code_lens(&canonical_snapshot, file_path);
+                        let expected_hovers =
+                            canonical_hovers(&canonical_snapshot, &step.ruby_code, &loader);
+                        let actual_code_lens = playground
+                            .code_lens
+                            .iter()
+                            .map(|lens| (lens.line, lens.signature.clone()))
+                            .collect::<Vec<_>>();
+                        let actual_hovers = playground
+                            .hovers
+                            .iter()
+                            .map(|hover| {
+                                (
+                                    hover.line,
+                                    hover.column,
+                                    hover.end_line,
+                                    hover.end_column,
+                                    hover.name.clone(),
+                                    hover.display.clone(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+
+                        record_parity_mismatch(
+                            &mut mismatches,
+                            &mut mismatch_count,
+                            &label,
+                            "RBS",
+                            &expected_rbs,
+                            &playground.rbs,
+                        );
+                        record_parity_mismatch(
+                            &mut mismatches,
+                            &mut mismatch_count,
+                            &label,
+                            "CodeLens",
+                            &expected_code_lens,
+                            &actual_code_lens,
+                        );
+                        record_parity_mismatch(
+                            &mut mismatches,
+                            &mut mismatch_count,
+                            &label,
+                            "hover",
+                            &expected_hovers,
+                            &actual_hovers,
+                        );
+                    }
+                }
+
+                (compared_steps, mismatch_count, mismatches)
+            })
+            .collect();
+
+        let mut compared_steps = 0usize;
+        let mut mismatch_count = 0usize;
+        let mut mismatches = Vec::new();
+        for (file_compared_steps, file_mismatch_count, file_mismatches) in results {
+            compared_steps += file_compared_steps;
+            mismatch_count += file_mismatch_count;
+            mismatches.extend(file_mismatches);
+        }
+
+        assert!(
+            compared_steps > 1_000,
+            "ordinary Ruby parity corpus unexpectedly small: {compared_steps} steps"
+        );
+        assert!(
+            mismatches.is_empty(),
+            "Playground parity mismatch in {mismatch_count} fields across {compared_steps} steps:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    fn scenario_name(root: &Path, path: &Path) -> String {
+        path.strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
+    fn is_ordinary_ruby_step(file_name: &str, step: &crate::scenario::Step) -> bool {
+        let has_special_path = file_name.split('/').any(|component| {
+            let component = component.to_ascii_lowercase();
+            component.contains("rails")
+                || component.contains("sorbet")
+                || component.contains("rbs")
+                || component.contains("rbi")
+        });
+        !has_special_path
+            && step.rbs_input.is_none()
+            && step.rbi_input.is_none()
+            && step.project_files.is_empty()
+            && prism::parse(step.ruby_code.as_bytes())
+                .errors()
+                .next()
+                .is_none()
+    }
+
+    fn canonical_code_lens(snapshot: &FileAnalysisSnapshot, file_path: &str) -> Vec<(u32, String)> {
+        snapshot
+            .methods_for_file(file_path)
+            .iter()
+            .filter_map(|(_, sig)| {
+                if sig.rbs_inline_annotated || sig.sig_annotated {
+                    return None;
+                }
+                let loc = sig.loc?;
+                Some((
+                    loc.line,
+                    crate::rbs::display::format_method_sig_for_lens_with_names(sig, false),
+                ))
+            })
+            .collect()
+    }
+
+    fn canonical_hovers(
+        snapshot: &FileAnalysisSnapshot,
+        source: &str,
+        loader: &LazyRbsLoader,
+    ) -> Vec<(u32, u32, u32, u32, String, String)> {
+        snapshot
+            .hover_index
+            .snapshots
+            .iter()
+            .filter_map(|hover| {
+                if hover.start >= hover.end {
+                    return None;
+                }
+                let (line, column) = offset_to_line_col(source, hover.start);
+                let result = snapshot.hover_at(source, hover.start, loader, None)?;
+                let display = format_hover_body(&result);
+                if display.is_empty() {
+                    return None;
+                }
+                let (end_line, end_column) = offset_to_line_col(source, hover.end);
+                Some((
+                    line,
+                    column,
+                    end_line,
+                    end_column,
+                    hover.name.clone(),
+                    display,
+                ))
+            })
+            .collect()
+    }
+
+    fn record_parity_mismatch<T: std::fmt::Debug + PartialEq>(
+        mismatches: &mut Vec<String>,
+        mismatch_count: &mut usize,
+        label: &str,
+        field: &str,
+        expected: &T,
+        actual: &T,
+    ) {
+        if expected == actual {
+            return;
+        }
+        *mismatch_count += 1;
+        if mismatches.len() < 20 {
+            mismatches.push(format!(
+                "{label} {field} mismatch\n  expected: {}\n  actual: {}",
+                debug_summary(expected),
+                debug_summary(actual)
+            ));
+        }
+    }
+
+    fn debug_summary<T: std::fmt::Debug>(value: &T) -> String {
+        let summary = format!("{value:?}");
+        if summary.chars().count() <= 2_000 {
+            summary
+        } else {
+            let mut truncated = summary.chars().take(2_000).collect::<String>();
+            truncated.push_str("...");
+            truncated
+        }
     }
 }
