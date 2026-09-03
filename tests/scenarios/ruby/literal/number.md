@@ -35,7 +35,7 @@ def imaginary_literal = 1i
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rational_literal: -> Rational
   def imaginary_literal: -> Complex
 end

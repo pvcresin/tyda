@@ -30,7 +30,7 @@ def bar = foo
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1
   def bar: -> 1
 end
@@ -49,7 +49,7 @@ def third = second
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def first: -> "hello"
   def second: -> "hello"
   def third: -> "hello"

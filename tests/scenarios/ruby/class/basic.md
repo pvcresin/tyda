@@ -60,3 +60,37 @@ class Foo
   def a: -> "1.0"
 end
 ```
+
+## Preserve Object's implicit superclass
+
+### update
+
+```ruby
+def answer = 42
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def answer: -> 42
+end
+```
+
+## Preserve an explicit Object superclass
+
+### update
+
+```ruby
+class Object < CustomBase
+  def answer = 42
+end
+```
+
+### result
+
+```rbs
+class Object < CustomBase
+  def answer: -> 42
+end
+```

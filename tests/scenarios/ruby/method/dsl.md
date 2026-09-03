@@ -145,7 +145,7 @@ def create_store = Store.build
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def create_store: -> :created
 end
 

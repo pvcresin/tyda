@@ -11,7 +11,7 @@ def status = :ok
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def status: -> :ok
 end
 ```
@@ -27,7 +27,7 @@ def state(cond) = cond ? :ok : :error
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def state: (untyped cond) -> (:error | :ok)
 end
 ```
@@ -43,7 +43,7 @@ def enabled = true
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def enabled: -> true
 end
 ```
@@ -59,7 +59,7 @@ def flag(cond) = cond ? true : false
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def flag: (untyped cond) -> bool
 end
 ```
@@ -75,7 +75,7 @@ def answer = 42
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def answer: -> 42
 end
 ```
@@ -91,7 +91,7 @@ def greeting = "hello"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def greeting: -> "hello"
 end
 ```
@@ -107,7 +107,7 @@ def pi = 3.14
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pi: -> 3.14
 end
 ```
@@ -123,7 +123,7 @@ def mixed(cond) = cond ? :ok : 42
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def mixed: (untyped cond) -> (42 | :ok)
 end
 ```
@@ -147,7 +147,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def classify: (untyped x) -> (:negative | :positive | :zero)
 end
 ```
@@ -163,7 +163,7 @@ def literal_method = 42.to_s
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def literal_method: -> String
 end
 ```
@@ -182,7 +182,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def union_method: -> Array[String]
 end
 ```
@@ -198,7 +198,7 @@ def interpolated(name) = "Hello, #{name}"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interpolated: (untyped name) -> String
 end
 ```
@@ -214,7 +214,7 @@ def tuple_test = [1, "hello", :ok]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def tuple_test: -> [1, "hello", :ok]
 end
 ```
@@ -230,7 +230,7 @@ def record_symbol = { name: "Alice", age: 30 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def record_symbol: -> { name: "Alice", age: 30 }
 end
 ```
@@ -246,7 +246,7 @@ def record_string = { "name" => "Alice", "age" => 30 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def record_string: -> { "name" => "Alice", "age" => 30 }
 end
 ```
@@ -262,7 +262,7 @@ def record_mixed = { name: "Alice", "age" => 30 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def record_mixed: -> { name: "Alice", "age" => 30 }
 end
 ```
@@ -283,7 +283,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def push_test: -> [1, "hello"]
 end
 ```
@@ -299,7 +299,7 @@ def subsume_test(cond) = cond ? 1 : 1 + 2
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def subsume_test: (untyped cond) -> Integer
 end
 ```
@@ -316,7 +316,7 @@ param_widen(42)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def param_widen: (Integer x) -> String
 end
 ```

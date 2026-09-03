@@ -11,7 +11,7 @@ def test_nil_to_s = nil.to_s
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_nil_to_s: -> ""
 end
 ```
@@ -27,7 +27,7 @@ def test_nil_to_i = nil.to_i
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_nil_to_i: -> 0
 end
 ```
@@ -43,7 +43,7 @@ def test_nil_to_f = nil.to_f
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_nil_to_f: -> Float
 end
 ```

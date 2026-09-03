@@ -19,7 +19,7 @@ def f = fact(5)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def fact: (Integer n) -> (Float | 1)
   def f: -> Float | 1
 end
@@ -52,7 +52,7 @@ def f = odd?(3)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def odd?: (Integer n) -> bool
   def even?: (Integer n) -> bool
   def f: -> bool

@@ -81,7 +81,7 @@ class Bar::Baz
   def self.ok: -> 1
 end
 
-class Object
+class Object < BasicObject
   def f: -> 1
 end
 ```
@@ -113,7 +113,7 @@ module Foo
   CONST: 42
 end
 
-class Object
+class Object < BasicObject
   def f: -> 42
 end
 ```
@@ -143,7 +143,7 @@ module Foo
   CONST: 7
 end
 
-class Object
+class Object < BasicObject
   def f: -> 7
 end
 

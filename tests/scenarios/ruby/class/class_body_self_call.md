@@ -68,7 +68,7 @@ def read = Store.registry
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def read: -> untyped
 end
 

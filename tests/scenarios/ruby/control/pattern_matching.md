@@ -17,7 +17,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> String?
 end
 ```
@@ -37,7 +37,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> Integer?
 end
 ```
@@ -58,7 +58,7 @@ foo("x")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: ((Integer | String) x) -> bool
 end
 ```
@@ -79,7 +79,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> [1, 2]?
 end
 ```
@@ -102,7 +102,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (untyped x) -> :ok?
 end
 ```
@@ -125,7 +125,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (untyped x) -> (:ok1 | :ok2)?
 end
 ```
@@ -147,7 +147,7 @@ check("x")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: ((Integer | String) x) -> (Integer | String)
 end
 ```
@@ -183,7 +183,7 @@ check([1].to_a)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (Array[Integer] x) -> (:bar | :baz | :foo | :qux | :waldo | :zzz)
 end
 ```
@@ -217,7 +217,7 @@ check({ a: 42 })
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: ({ a: Integer } x) -> (:bar | :baz | :foo | :qux | :zzz)
 end
 ```
@@ -248,7 +248,7 @@ check_numeric(1)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check_numeric: (Integer x) -> (:complex | :float | :int | :rational | :zzz)
 end
 ```
@@ -282,7 +282,7 @@ check_text(:AAA)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check_interpolation: (untyped x) -> nil
   def check_text: (Symbol x) -> (:interpolated_string | :interpolated_symbol | :string | :symbol | :zzz)
 end
@@ -320,7 +320,7 @@ check_special(nil)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check_special: (nil x) -> (:encoding | :false | :file | :line | :nil | :w_lit | :zzz)
 end
 ```
@@ -346,7 +346,7 @@ check("x")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: ((Integer | String) x) -> (:int | :str)?
 end
 ```
@@ -373,7 +373,7 @@ check([1].to_a)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (Array[Integer] x) -> (:bar | :foo | :zzz)
 end
 ```
@@ -396,7 +396,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def cond?: (Symbol x) -> Symbol
   def check: (untyped x) -> :ok?
 end
@@ -421,7 +421,7 @@ check("x")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: ((Integer | String) x) -> (Integer | String)
 end
 ```
@@ -445,7 +445,7 @@ check("x")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: ((Integer | String) x) -> [untyped, untyped, untyped, Array[untyped]]?
 end
 ```
@@ -469,7 +469,7 @@ check("x")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: ((Integer | String) x) -> [untyped, untyped, untyped, Hash[untyped, untyped]]?
 end
 ```
@@ -492,7 +492,7 @@ check([1, 2, 3, 4])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (Array[Integer] x) -> [Integer, Integer, Integer, Array[Integer]]?
 end
 ```
@@ -515,7 +515,7 @@ check({ a: 1, b: 2, c: 3, d: 4 })
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: ({ a: Integer, b: Integer, c: Integer, d: Integer } x) -> [Integer, Integer, Integer, { d: Integer }]?
 end
 ```
@@ -538,7 +538,7 @@ check([1, 2, 3])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (Array[Integer] x) -> [Array[Integer], Array[Integer]]?
 end
 ```
@@ -564,7 +564,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def standalone_in_array: -> "x"
   def standalone_required_hash: -> "ruby"
 end
@@ -622,7 +622,7 @@ check("foo")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: ((Integer | String) a) -> (Integer | String)?
 end
 ```

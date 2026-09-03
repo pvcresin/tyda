@@ -42,7 +42,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> Integer
 end
 ```
@@ -65,7 +65,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def arith: -> [Integer, Integer, Integer, Integer, Numeric]
 end
 ```
@@ -82,7 +82,7 @@ compare(1, 2)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def compare: (Integer a, Integer b) -> bool
 end
 ```
@@ -105,7 +105,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def comparisons: -> bool
 end
 ```
@@ -121,7 +121,7 @@ def string_concat = "hello" + " world"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def string_concat: -> String
 end
 ```
@@ -137,7 +137,7 @@ def not_equal = 1 != 2
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def not_equal: -> bool
 end
 ```
@@ -153,7 +153,7 @@ def case_eq = /hello/ === "hello world"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def case_eq: -> bool
 end
 ```
@@ -174,7 +174,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def bitwise: -> [Integer, Integer, Integer]
 end
 ```
@@ -194,7 +194,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def shift_ops: -> [Integer, Integer]
 end
 ```
@@ -214,7 +214,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def unary_ops: -> false
 end
 ```
@@ -233,7 +233,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def negate: -> Integer
 end
 ```
@@ -249,7 +249,7 @@ def bit_not = ~0xFF
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def bit_not: -> Integer
 end
 ```
@@ -268,7 +268,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def index_test: -> 1
 end
 ```
@@ -287,7 +287,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def shift_test: -> [1, 2, 3, 4]
 end
 ```

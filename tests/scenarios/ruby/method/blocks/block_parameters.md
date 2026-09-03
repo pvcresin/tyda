@@ -11,7 +11,7 @@ def test_it_select = [1, 2, 3, 4, 5].select { it > 3 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_it_select: -> Array[1 | 2 | 3 | 4 | 5]
 end
 ```
@@ -27,7 +27,7 @@ def test_it_map = [1, 2, 3].map { it.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_it_map: -> Array[String]
 end
 ```
@@ -43,7 +43,7 @@ def test_numbered = [1, 2, 3].select { _1 > 2 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_numbered: -> Array[1 | 2 | 3]
 end
 ```
@@ -59,7 +59,7 @@ def test_numbered_hash = { a: 1, b: 2 }.each { puts "#{_1}: #{_2}" }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_numbered_hash: -> { a: 1, b: 2 }
 end
 ```
@@ -75,7 +75,7 @@ def test_numbered_reduce = [1, 2, 3].reduce(0) { _1 + _2 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_numbered_reduce: -> Integer
 end
 ```
@@ -91,7 +91,7 @@ def block_local_shadow = [1, 2].map { |x; memo| memo = x.to_s; memo }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def block_local_shadow: -> Array[String]
 end
 ```
@@ -107,7 +107,7 @@ def destructured_pairs = [[1, "a"], [2, "b"]].map { |(n, s)| "#{n}:#{s}" }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def destructured_pairs: -> Array["1:a" | "1:b" | "2:a" | "2:b"]
 end
 ```
@@ -333,7 +333,7 @@ def map_with_next = [1, 2, 3].map { |x| next x.to_s if x.even?; x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_with_next: -> Array[String | 1 | 3]
 end
 ```
@@ -349,7 +349,7 @@ def map_with_next_multiple = [1].map { next 1, "two" }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_with_next_multiple: -> Array[[1, "two"]]
 end
 ```
@@ -365,7 +365,7 @@ def each_with_break = [1, 2, 3].each { |x| break :done if x.even?; x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def each_with_break: -> :done | [1, 2, 3]
 end
 ```
@@ -381,7 +381,7 @@ def map_with_break = [1, 2, 3].map { |x| break :done if x.even?; x.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_with_break: -> :done | Array[String]
 end
 ```
@@ -401,7 +401,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def block_local_outer: -> :outer
 end
 ```
@@ -441,7 +441,7 @@ def each_with_next = [1, 2, 3].each { |x| next if x.even?; x.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def each_with_next: -> [1, 2, 3]
 end
 ```
@@ -461,7 +461,7 @@ def test_it_then = 42.then { it.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_it_then: -> String
 end
 ```
@@ -491,7 +491,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_pairs: -> Array[["a" | "b", Integer]]
   def map_hash: -> Hash["a" | "b", Integer]
   def filter_map_pairs: -> Array[[1 | 2, Integer]]
@@ -518,7 +518,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def each_pairs: -> Hash["a" | "b", Integer]
   def indexed_record_names: -> Hash["one" | "two", Integer]
 end
@@ -553,7 +553,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def select_with_index: -> Array[1 | 2 | 3]
   def reject_with_index: -> Array[1 | 2 | 3]
   def filter_with_index: -> Array[1 | 2 | 3]
@@ -575,7 +575,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def sort_by_with_index: -> Array["a" | "bb"]
 end
 ```
@@ -601,7 +601,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_in_place_with_index: -> [Array[Integer], Array[Integer]]
   def collect_in_place_with_index: -> [Array[String], Array[String]]
 end
@@ -622,7 +622,7 @@ def stringify = [1].map { it.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def stringify: -> Array[String]
 end
 ```
@@ -642,7 +642,7 @@ def stringify = [1].map { it.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def stringify: -> Array[String]
 end
 ```

@@ -100,7 +100,7 @@ class Article
   include Searchable
 end
 
-class Object
+class Object < BasicObject
   def result: -> "found"
 end
 
@@ -142,7 +142,7 @@ class Article
   include Searchable
 end
 
-class Object
+class Object < BasicObject
   def result: -> "found"
 end
 ```
@@ -178,7 +178,7 @@ class Article
   include Trackable
 end
 
-class Object
+class Object < BasicObject
   def result: -> :tracked
 end
 ```
@@ -213,7 +213,7 @@ class Item < ApplicationRecord
   include Searchable
 end
 
-class Object
+class Object < BasicObject
   def result: -> ActiveRecord::Relation[Item]
 end
 
@@ -259,7 +259,7 @@ class Item < ApplicationRecord
   include Searchable
 end
 
-class Object
+class Object < BasicObject
   def item_result: -> ActiveRecord::Relation[Item]
   def user_result: -> ActiveRecord::Relation[User]
 end
@@ -309,7 +309,7 @@ class Item < ApplicationRecord
   include Countable
 end
 
-class Object
+class Object < BasicObject
   def result: -> Integer?
 end
 ```
@@ -348,7 +348,7 @@ module Notable
   extend ActiveSupport::Concern
 end
 
-class Object
+class Object < BasicObject
   def result: -> untyped
 end
 ```
@@ -397,7 +397,7 @@ module Notable
   extend ActiveSupport::Concern
 end
 
-class Object
+class Object < BasicObject
   def result: -> String?
 end
 ```
@@ -512,7 +512,7 @@ class Item < ApplicationRecord
   include Taggable
 end
 
-class Object
+class Object < BasicObject
   def result: -> ActiveRecord::Associations::CollectionProxy[Tagging]
 end
 
@@ -561,7 +561,7 @@ class Item < ApplicationRecord
   include Statused
 end
 
-class Object
+class Object < BasicObject
   def item_result: -> ActiveRecord::Relation[Item]
   def user_result: -> ActiveRecord::Relation[User]
 end
@@ -612,7 +612,7 @@ class Item < ApplicationRecord
   include Themeable
 end
 
-class Object
+class Object < BasicObject
   def result: -> untyped
 end
 
@@ -655,7 +655,7 @@ class Item < ApplicationRecord
   include Searchable
 end
 
-class Object
+class Object < BasicObject
   def result: -> ActiveRecord::Relation[Item]
 end
 ```

@@ -51,7 +51,7 @@ def bar = CONST
 ```rbs
 CONST: 42
 
-class Object
+class Object < BasicObject
   def bar: -> 42
 end
 ```
@@ -97,7 +97,7 @@ class A
   CONST: 3
 end
 
-class Object
+class Object < BasicObject
   def foo: -> 3
 end
 ```
@@ -121,7 +121,7 @@ CONST1: "x"
 CONST2: "y"
 CONST3: false
 
-class Object
+class Object < BasicObject
   def info: -> "x"
 end
 ```
@@ -265,7 +265,7 @@ def table = TABLE
 ```rbs
 TABLE: Hash["alpha" | "beta", 4 | 5]
 
-class Object
+class Object < BasicObject
   def table: -> Hash["alpha" | "beta", 4 | 5]
 end
 ```

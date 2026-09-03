@@ -14,7 +14,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_proc_new_call: -> 42
 end
 ```
@@ -33,7 +33,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_lambda_call: -> "hello"
 end
 ```
@@ -52,7 +52,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_lambda_dot_call: -> 1
 end
 ```
@@ -78,7 +78,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: { (Integer) -> 42 } -> 42
   def proxy: { (Integer) -> 42 } -> 42
   def bar: -> 42?
@@ -106,7 +106,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Integer x) { (Integer) -> 42 } -> 42
   def proxy: { (Integer) -> 42 } -> 42
   def bar: -> 42?

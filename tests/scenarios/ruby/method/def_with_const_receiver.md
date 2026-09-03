@@ -20,7 +20,7 @@ class A
   def self.hello: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hi
 end
 ```
@@ -49,7 +49,7 @@ class A
   def self.hello: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hi
 end
 ```

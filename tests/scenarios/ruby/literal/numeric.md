@@ -18,7 +18,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def numeric_literals: -> 1
 end
 ```
@@ -38,7 +38,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def float_literals: -> 1.0
 end
 ```
@@ -57,7 +57,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rational_test: -> Rational
 end
 ```
@@ -76,7 +76,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def complex_test: -> Complex
 end
 ```
@@ -95,7 +95,7 @@ def between = 5.between?(0, 10)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def low: -> -5 | 0 | 10
   def mid: -> 0 | 5 | 10
   def high: -> 0 | 10 | 100
@@ -114,7 +114,7 @@ def parts = 10.divmod(3)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def parts: -> [Integer, Integer]
 end
 ```

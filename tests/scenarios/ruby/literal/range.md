@@ -16,7 +16,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def range_test: -> Range[Integer]
 end
 ```
@@ -46,7 +46,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> Range[Integer]
   def bar: -> Range[Integer]
   def baz: -> Range[Integer]

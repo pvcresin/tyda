@@ -11,7 +11,7 @@ def foo(x) = x ? "yes" : 42
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> (42 | "yes")
 end
 ```
@@ -27,7 +27,7 @@ def foo(x) = x ? "yes" : "no"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> ("no" | "yes")
 end
 ```
@@ -53,7 +53,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x, untyped y) -> (1 | 2 | 3)
 end
 ```
@@ -76,7 +76,7 @@ def a = store(:required, :name, "n")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def store: (Symbol kind, Symbol key, String info) -> ([Hash[Symbol, String], Hash[untyped, untyped]] | [Hash[untyped, untyped], Hash[Symbol, String]])
   def a: -> [Hash[Symbol, String], Hash[untyped, untyped]] | [Hash[untyped, untyped], Hash[Symbol, String]]
 end

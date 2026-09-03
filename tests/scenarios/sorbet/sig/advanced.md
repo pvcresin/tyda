@@ -437,7 +437,7 @@ def add(x, y) = x + y
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def add: (Integer x, Integer y) -> Integer
 end
 ```

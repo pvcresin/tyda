@@ -14,7 +14,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1
 end
 ```
@@ -34,7 +34,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> "hello"
 end
 ```
@@ -54,7 +54,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> "hello"
 end
 ```
@@ -74,7 +74,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def source: -> 42
   def consumer: -> 42
 end

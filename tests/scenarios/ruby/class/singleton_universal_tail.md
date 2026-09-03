@@ -14,7 +14,7 @@ def make = Foo.allocate
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def make: -> untyped
 end
 ```
@@ -37,7 +37,7 @@ def call = Profile.new.name
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def call: -> "Alice"
 end
 
@@ -61,7 +61,7 @@ def probe = Foo.define_method(:bar) { 1 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def probe: -> Symbol
 end
 ```

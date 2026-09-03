@@ -14,7 +14,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def multi_assign: -> 1
 end
 ```
@@ -33,7 +33,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def multi_mixed: -> 42
 end
 ```
@@ -52,7 +52,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def multi_three: -> "a"
 end
 ```
@@ -71,7 +71,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def splat_left: -> [2, 3]
 end
 ```
@@ -90,7 +90,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def splat_right: -> 3
 end
 ```
@@ -109,7 +109,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def splat_right_rest: -> [1, 2]
 end
 ```
@@ -128,7 +128,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def from_array: -> 1
 end
 ```
@@ -147,7 +147,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def first_var: -> "hello"
 end
 ```
@@ -279,7 +279,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> [1, 2, [3, 4], 5]
 end
 ```

@@ -39,7 +39,7 @@ def sorbet_plain_value = 1
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def sorbet_plain_value: -> 1
 end
 ```

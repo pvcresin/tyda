@@ -31,7 +31,7 @@ module M
   def hello: -> :module
 end
 
-class Object
+class Object < BasicObject
   def f: -> :module
 end
 ```
@@ -73,7 +73,7 @@ module Inc
   def hello: -> :inc
 end
 
-class Object
+class Object < BasicObject
   def f: -> :pre
 end
 
@@ -109,7 +109,7 @@ module M
   def hello: -> :module
 end
 
-class Object
+class Object < BasicObject
   def f: -> :module
 end
 ```

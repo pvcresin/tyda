@@ -538,7 +538,7 @@ module M
   def m_method: -> :MMM
 end
 
-class Object
+class Object < BasicObject
   def foo: ((C | D) x) -> (:DDD | [:MMM, :CCC])
 end
 ```
@@ -583,7 +583,7 @@ module Named
   def name: -> "name"
 end
 
-class Object
+class Object < BasicObject
   def read_with_method_guard: ((Entry | Total) x) -> (1 | "name")
 end
 
@@ -625,7 +625,7 @@ class Label
   def text: -> "text"
 end
 
-class Object
+class Object < BasicObject
   def read_with_return_guard: ((Label | Price) x) -> (1 | "text")
 end
 
@@ -1094,7 +1094,7 @@ foo(nil)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (String? z) -> Symbol?
 end
 ```
@@ -1289,7 +1289,7 @@ foo("")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def accept_str: (String x) -> nil
   def accept_any: ((Integer | String) x) -> nil
   def foo: ((Integer | String) x) -> false | nil
@@ -1316,7 +1316,7 @@ foo("", "")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (String x, Integer y) -> nil
   def foo: ((Integer | String) x, (Integer | String) y) -> false | nil
 end
@@ -1340,7 +1340,7 @@ foo("")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def accept_str: (String x) -> nil
   def foo: (String? x) -> nil
 end
@@ -1364,7 +1364,7 @@ foo("")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (Integer x) -> nil
   def foo: ((Integer | String) x) -> false | nil
 end
@@ -1390,7 +1390,7 @@ foo("", "")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (Integer x, String y) -> nil
   def foo: ((Integer | String) x, (Integer | String) y) -> false | nil
 end
@@ -1422,7 +1422,7 @@ foo("")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def accept_int_or_str: ((Integer | String) x) -> nil
   def accept_float_or_str: ((Float | String) x) -> nil
   def accept_str: (String x) -> nil

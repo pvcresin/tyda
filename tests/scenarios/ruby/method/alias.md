@@ -225,7 +225,7 @@ class Group::Item
   alias self.create self.build
 end
 
-class Object
+class Object < BasicObject
   def read_title: -> "name"
   def read_create: -> :item
 end
@@ -360,7 +360,7 @@ class Bar
   alias new_to_s to_s
 end
 
-class Object
+class Object < BasicObject
   def f: -> "b"
 end
 ```

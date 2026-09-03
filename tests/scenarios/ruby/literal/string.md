@@ -11,7 +11,7 @@ def single_quoted = 'hello'
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def single_quoted: -> "hello"
 end
 ```
@@ -27,7 +27,7 @@ def double_quoted = "hello"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def double_quoted: -> "hello"
 end
 ```
@@ -43,7 +43,7 @@ def percent_q = %Q(he said "hi")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def percent_q: -> "he said \"hi\""
 end
 ```
@@ -59,7 +59,7 @@ def percent_lower_q = %q[hello world]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def percent_lower_q: -> "hello world"
 end
 ```
@@ -75,7 +75,7 @@ def percent_string = %(hello "world")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def percent_string: -> "hello \"world\""
 end
 ```
@@ -96,7 +96,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def strings: -> "hello world"
 end
 ```
@@ -112,7 +112,7 @@ def adjacent_strings = "foo" "bar"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def adjacent_strings: -> "foobar"
 end
 ```
@@ -131,7 +131,7 @@ def character_multibyte = ?😀
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def character_comma: -> ","
   def character_space: -> " "
   def character_newline: -> "\n"
@@ -151,7 +151,7 @@ def mutable_prefix = +"name"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def frozen_prefix: -> "name"
   def mutable_prefix: -> "name"
 end
@@ -168,7 +168,7 @@ def repeated = -"x" * +2.9
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def repeated: -> "xx"
 end
 ```
@@ -187,7 +187,7 @@ def format_inspect = "_=%p;puts _%%_" % "_=%p;puts _%%_"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def format_char: -> ","
   def format_string: -> "ok"
   def format_percent: -> "%"
@@ -208,7 +208,7 @@ def hex_number = "616263".hex
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def inspected_source: -> "\"_=%p;puts _%%_\""
   def dumped_line: -> "\"a\\nb\""
   def hex_number: -> 6382179
@@ -229,7 +229,7 @@ def float_getbyte = "abcd".getbyte(1.9)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def float_index: -> "b"
   def float_range: -> "bc"
   def float_byteslice: -> "bc"
@@ -251,7 +251,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interpolated_integer_union: (untyped cond) -> ("v1" | "v2")
 end
 ```
@@ -270,7 +270,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interpolated_integer_from_comparison: -> "1" | "2"
 end
 ```
@@ -288,7 +288,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interpolated_direct_integer_comparison: -> "1" | "2"
 end
 ```
@@ -308,7 +308,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interpolated_mixed_literal: (untyped cond) -> (":false" | ":true" | "ok:false" | "ok:true")
 end
 ```
@@ -327,7 +327,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interpolated_symbol_union: (untyped cond) -> (:key_1 | :key_ok)
 end
 ```
@@ -346,7 +346,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interpolated_symbol_non_bare: (untyped cond) -> Symbol
 end
 ```
@@ -365,7 +365,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interp_complex: -> String
 end
 ```
@@ -392,7 +392,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interpolation_product_cap: (untyped a, untyped b) -> String
 end
 ```
@@ -414,7 +414,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def heredoc_test: -> String
 end
 ```
@@ -433,7 +433,7 @@ TEXT
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> "hello\nworld\n"
 end
 ```
@@ -455,7 +455,7 @@ value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def heredoc_repeat: -> "a\na\n"
   def heredoc_numeric_label: -> String
 end
@@ -472,7 +472,7 @@ def command_output = `echo hi`
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def command_output: -> String
 end
 ```
@@ -495,7 +495,7 @@ def split_chars = "ab".split("")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def delete_prefix_value: -> "name"
   def delete_suffix_value: -> "name"
   def starts_with_value: -> true
@@ -519,7 +519,7 @@ def byte_length = "\u{3042}".bytesize
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def character_length: -> 1
   def byte_length: -> 3
 end
@@ -539,7 +539,7 @@ def dynamic_symbol = "not ready".to_sym
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def string_to_symbol: -> :name
   def intern_symbol: -> :ready!
   def ivar_symbol: -> :@value
@@ -561,7 +561,7 @@ def rpartition_missing = "key".rpartition("=")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def partition_value: -> ["key", "=", "value"]
   def partition_missing: -> ["key", "", ""]
   def rpartition_value: -> ["key=value", "=", "tail"]
@@ -633,7 +633,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def line_values: -> ["name"]
   def char_values: -> ["a", "b"]
   def byte_values: -> [65, 90]
@@ -684,7 +684,7 @@ def first_character = "name".chr
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def first_char: -> "n"
   def last_char: -> "e"
   def middle_chars: -> "am"
@@ -720,7 +720,7 @@ def percent_x_output = %x[echo hi]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def percent_x_output: -> String
 end
 ```
@@ -739,7 +739,7 @@ def dashed_join = %w[a b] * "-"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def word_array: -> ["foo", "bar", "baz"]
   def escaped_word_join: -> "onetwo three"
   def star_join: -> "ab"
@@ -758,7 +758,7 @@ def frozen_word_array = %w[foo bar baz].freeze
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def frozen_word_array: -> ["foo", "bar", "baz"]
 end
 ```
@@ -774,7 +774,7 @@ def interpolated_word_array(host) = %W[https #{host}].freeze
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interpolated_word_array: (untyped host) -> ["https", String]
 end
 ```
@@ -812,7 +812,7 @@ def symbol_array = %i[foo bar baz]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def symbol_array: -> [:foo, :bar, :baz]
 end
 ```
@@ -828,7 +828,7 @@ def percent_s = %s[hello_world]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def percent_s: -> :hello_world
 end
 ```
@@ -844,7 +844,7 @@ def interpolated_symbol_array(host) = %I[foo #{host}]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interpolated_symbol_array: (untyped host) -> [:foo, Symbol]
 end
 ```
@@ -870,7 +870,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def hex_payload: -> String
   def byte_code: -> Integer?
   def network_size: -> Integer?
@@ -904,7 +904,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def byte_values: -> Array[Integer]
   def fixed_header: -> [Integer?, Integer?, Integer?]
   def text_payload: -> String
@@ -930,7 +930,7 @@ def hex_template_value = "abc".unpack1("H*").hex
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def encoded_integer: -> Integer
   def decoded_string: -> String
   def hex_template_value: -> Integer
@@ -953,7 +953,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def frozen_test: -> "hello"
 end
 ```
@@ -1023,7 +1023,7 @@ def parts = "a-b-c".partition("-")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def parts: -> ["a", "-", "b-c"]
 end
 ```

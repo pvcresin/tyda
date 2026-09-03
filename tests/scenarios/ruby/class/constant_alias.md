@@ -23,7 +23,7 @@ module B
   CONST: 7
 end
 
-class Object
+class Object < BasicObject
   def f: -> 7
 end
 ```
@@ -51,7 +51,7 @@ class B
   def hello: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> B
 end
 ```
@@ -77,7 +77,7 @@ def f = C::V
 A: singleton(Target)
 C: singleton(Target)
 
-class Object
+class Object < BasicObject
   def f: -> "t"
 end
 
@@ -107,7 +107,7 @@ def f = A::V
 ```rbs
 A: singleton(Outer::Inner)
 
-class Object
+class Object < BasicObject
   def f: -> 1
 end
 
@@ -131,7 +131,7 @@ def f = A
 ```rbs
 A: untyped
 
-class Object
+class Object < BasicObject
   def f: -> untyped
 end
 ```
@@ -160,7 +160,7 @@ def g = ALIAS::NewClass.v
 ```rbs
 ALIAS: singleton(Outer)
 
-class Object
+class Object < BasicObject
   def f: -> 2
   def g: -> 2
 end
@@ -200,7 +200,7 @@ class Base
   def hello: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hi
 end
 ```
@@ -236,7 +236,7 @@ module M
   def hello: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hi
 end
 ```
@@ -264,7 +264,7 @@ module Foo
   CONST: 1
 end
 
-class Object
+class Object < BasicObject
   def f: -> 1
 end
 ```
@@ -296,7 +296,7 @@ class M::Thing
   CONST: 1
 end
 
-class Object
+class Object < BasicObject
   def f: -> 1
 end
 ```
@@ -336,7 +336,7 @@ module Left::Deep
   VALUE: "left"
 end
 
-class Object
+class Object < BasicObject
   def f: -> "right"
   def g: -> "left"
 end
@@ -376,7 +376,7 @@ class Foo
   CONST: 123
 end
 
-class Object
+class Object < BasicObject
   def f: -> 123
 end
 ```
@@ -406,7 +406,7 @@ class Foo
   def self.bar: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hi
   def g: -> :hi
 end
@@ -435,7 +435,7 @@ class Foo
   def self.bar: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hi
 end
 ```
@@ -458,7 +458,7 @@ def g = ALIAS::NOPE
 VALUE: 1
 ALIAS: 1
 
-class Object
+class Object < BasicObject
   def f: -> 1
   def g: -> untyped
 end

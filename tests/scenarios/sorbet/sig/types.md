@@ -367,7 +367,7 @@ class Module
   include T::Sig
 end
 
-class Object
+class Object < BasicObject
   def foo: -> Child
 end
 

@@ -11,7 +11,7 @@ def pair = [1, 2]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pair: -> [1, 2]
 end
 ```
@@ -32,7 +32,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def push_alias: -> [1, 2, 3]
 end
 ```
@@ -54,7 +54,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def maybe_push: (untyped flag) -> Array[1 | 2 | 3]
 end
 ```
@@ -74,7 +74,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def replace_key: -> { a: 3, b: 2 }
 end
 ```
@@ -96,7 +96,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def maybe_insert: (untyped flag) -> { a: 1, b: 2, ?c: 3 }
 end
 ```
@@ -144,7 +144,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def write_dynamic_key: -> Hash["name", 1]
 end
 ```
@@ -165,7 +165,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def replace_by_index: -> ["c", "b"]
 end
 ```
@@ -187,7 +187,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def normalize_values: -> Array[String]
 end
 ```
@@ -208,7 +208,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def concat_alias: -> [1, 2, 3]
 end
 ```
@@ -229,7 +229,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def merge_alias: -> Hash[:count | :name, 1 | "a"]
 end
 ```
@@ -245,7 +245,7 @@ def identity_map = [1, 2].map { |n| n }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def identity_map: -> Array[1 | 2]
 end
 ```

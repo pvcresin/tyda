@@ -12,7 +12,7 @@ foo(x: "hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (x: String) -> String
 end
 ```
@@ -28,7 +28,7 @@ def foo(x: 1) = x
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (?x: Integer) -> Integer
 end
 ```
@@ -45,7 +45,7 @@ foo(x: "hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (x: String, ?y: Integer) -> String
 end
 ```
@@ -62,7 +62,7 @@ foo(x: "str")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (?x: (Integer | String)) -> (String | 1)
 end
 ```
@@ -78,7 +78,7 @@ def foo(x:, y: "default") = x
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (x: untyped, ?y: String) -> untyped
 end
 ```
@@ -94,7 +94,7 @@ def foo(**opts) = 42
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (**untyped opts) -> 42
 end
 ```
@@ -110,7 +110,7 @@ def no_keywords(**nil) = 1
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def no_keywords: -> 1
 end
 ```
@@ -127,7 +127,7 @@ foo(name: "Alice", age: 30)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (name: String, ?age: Integer) -> String
 end
 ```
@@ -182,7 +182,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def build: (name: String, count: Integer) -> [String, Integer]
   def build_from_literal: -> [String, Integer]
   def build_from_local: -> [String, Integer]
@@ -225,7 +225,7 @@ class Child < Parent
   def initialize: (name: String, count: Integer) -> void
 end
 
-class Object
+class Object < BasicObject
   def child_values: -> ["entry", 1]
 end
 
@@ -250,7 +250,7 @@ foo(**opt)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (?check: bool) -> nil
 end
 ```

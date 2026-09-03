@@ -12,7 +12,7 @@ foo("hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (String x, ?Integer y) -> String
 end
 ```
@@ -28,7 +28,7 @@ def foo(x, y = "default") = y
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x, ?String y) -> String
 end
 ```
@@ -45,7 +45,7 @@ foo(1, 2, 3)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (*Integer args) -> Array[Integer]
 end
 ```
@@ -62,7 +62,7 @@ foo(1, "hello", :a, :b)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Integer x, ?String y, *Symbol rest) -> Array[Symbol]
 end
 ```
@@ -78,7 +78,7 @@ def foo(x = 42) = x
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (?Integer x) -> Integer
 end
 ```
@@ -94,7 +94,7 @@ def foo(&block) = 42
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (?untyped &block) -> 42
 end
 ```
@@ -122,7 +122,7 @@ module Foo
   def self.f: (?Integer x) -> Integer
 end
 
-class Object
+class Object < BasicObject
   def g: -> Integer
 end
 ```

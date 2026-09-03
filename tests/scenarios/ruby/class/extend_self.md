@@ -27,7 +27,7 @@ module M
   def greet: -> :hello
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hello
 end
 ```
@@ -55,7 +55,7 @@ module M
   def greet: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hi
 end
 ```
@@ -80,7 +80,7 @@ module Helper
   def self.label: -> "label"
 end
 
-class Object
+class Object < BasicObject
   def f: -> "label"
 end
 ```
@@ -105,7 +105,7 @@ module Helper
   def self.wrap: (String value) -> [String]
 end
 
-class Object
+class Object < BasicObject
   def f: -> [String]
 end
 ```
@@ -132,7 +132,7 @@ module M
   def self.greet: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hi
 end
 ```
@@ -157,7 +157,7 @@ module Helper
   def self.status: -> :ok
 end
 
-class Object
+class Object < BasicObject
   def f: -> :ok
 end
 ```
@@ -185,7 +185,7 @@ module Helper
   alias target source
 end
 
-class Object
+class Object < BasicObject
   def f: -> "source"
 end
 ```

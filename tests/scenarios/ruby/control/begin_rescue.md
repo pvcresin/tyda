@@ -17,7 +17,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> "ok" | :error
 end
 ```
@@ -39,7 +39,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1 | 2
 end
 ```
@@ -63,7 +63,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 42 | "ok" | :arg_error
 end
 ```
@@ -83,7 +83,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 42
 end
 ```
@@ -107,7 +107,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> "ok" | :error
 end
 ```
@@ -135,7 +135,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> :else | :rescue
 end
 ```
@@ -163,7 +163,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> :ensure
 end
 ```
@@ -191,7 +191,7 @@ test(false, "hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: (bool cond, String val) -> (Integer | String)
 end
 ```

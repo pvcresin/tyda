@@ -23,7 +23,7 @@ measure("hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def measure: (String s) -> Integer
 end
 ```
@@ -45,7 +45,7 @@ def greet = "hello"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def greet: -> "hello"
 end
 ```

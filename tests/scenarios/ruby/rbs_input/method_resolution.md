@@ -27,7 +27,7 @@ class A
   def foo: (Integer x, Integer y) -> Integer
 end
 
-class Object
+class Object < BasicObject
   def foo: -> Integer
 end
 ```
@@ -52,7 +52,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def generic_value: -> "test"
 end
 ```
@@ -77,7 +77,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def generic_keyword_value: -> "test"
 end
 ```
@@ -102,7 +102,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def generic_trailing_value: -> "test"
 end
 ```
@@ -126,7 +126,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_class_type_value: -> User
 end
 ```
@@ -158,7 +158,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_use_single_value: -> String
 end
 ```
@@ -190,7 +190,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_use_aliased_value: -> String
 end
 ```
@@ -222,7 +222,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_use_wildcard_value: -> String
 end
 ```
@@ -246,7 +246,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_untyped_proc_value: -> String
 end
 ```
@@ -280,7 +280,7 @@ end
 ```rbs
 Entry: singleton(Types::Item)
 
-class Object
+class Object < BasicObject
   def rbs_class_alias_value: -> String
 end
 ```
@@ -314,7 +314,7 @@ end
 ```rbs
 Alias: singleton(Types::Named)
 
-class Object
+class Object < BasicObject
   def rbs_module_alias_value: -> String
 end
 ```
@@ -342,7 +342,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_block_self_value: -> String
 end
 ```
@@ -369,7 +369,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_proc_self_return: -> Context
 end
 ```
@@ -398,7 +398,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_proc_self_parameter: -> String
 end
 ```
@@ -422,7 +422,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_block_optional_value: -> Integer
 end
 ```
@@ -446,7 +446,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_block_trailing_value: -> String
 end
 ```
@@ -470,7 +470,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_block_keyword_value: -> String
 end
 ```
@@ -503,7 +503,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_block_presence_values: -> [untyped, Symbol, Integer, String]
 end
 ```
@@ -533,7 +533,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_required_block_arg_values: -> [untyped, Integer, String]
 end
 ```
@@ -562,7 +562,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_symbol_block_overload_values: -> [Integer, String]
 end
 ```
@@ -590,7 +590,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_optional_block_generic_values: -> [Array["x"], Array[1]]
 end
 ```
@@ -615,7 +615,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def generic_record_value: -> "test"
 end
 ```
@@ -645,7 +645,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_untyped_function_values: -> [String, String, String, String]
 end
 ```
@@ -670,7 +670,7 @@ rbs_pick_count(RbsChooser.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_pick_count: (RbsChooser x) -> Integer
 end
 ```
@@ -705,7 +705,7 @@ class A
   def bar: (String y) -> Integer
 end
 
-class Object
+class Object < BasicObject
   def foo: -> Integer
 end
 ```
@@ -737,7 +737,7 @@ class A
   def foo: (Integer x) -> String
 end
 
-class Object
+class Object < BasicObject
   def foo: -> String
 end
 ```
@@ -763,7 +763,7 @@ class A
   def foo: (String x) -> "x"
 end
 
-class Object
+class Object < BasicObject
   def foo: -> "x"
 end
 ```
@@ -789,7 +789,7 @@ class A
   def foo: -> 42
 end
 
-class Object
+class Object < BasicObject
   def foo: -> 42
 end
 ```
@@ -815,7 +815,7 @@ class Greeter
   def greet: (String name) -> "Hello"
 end
 
-class Object
+class Object < BasicObject
   def test: -> 5
 end
 ```
@@ -854,7 +854,7 @@ class Converter
   def to_int: (String s) -> Integer
 end
 
-class Object
+class Object < BasicObject
   def test_string: -> String
   def test_int: -> Integer
 end
@@ -887,7 +887,7 @@ class Converter
   def to_int: (String s) -> Integer
 end
 
-class Object
+class Object < BasicObject
   def test: -> Float
 end
 ```
@@ -913,7 +913,7 @@ def foo = B.new.foo
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> Integer
 end
 ```
@@ -939,7 +939,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_singleton_alias_value: -> Integer
 end
 ```
@@ -965,7 +965,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_instance_alias_value: -> String
 end
 ```
@@ -993,7 +993,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_super_alias_value: -> String
 end
 ```
@@ -1022,7 +1022,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_mixin_alias_value: -> Symbol
 end
 ```

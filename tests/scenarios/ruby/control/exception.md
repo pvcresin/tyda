@@ -13,7 +13,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def raise_test: -> bot
 end
 ```
@@ -37,7 +37,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def multi_rescue: -> 1 | "arg_error" | "type_error"
 end
 ```
@@ -88,7 +88,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rescue_var: -> Integer | StandardError
 end
 ```
@@ -110,7 +110,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rescue_specific: -> Integer | ArgumentError
 end
 ```
@@ -132,7 +132,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rescue_multiple_specific: -> Integer | ArgumentError | TypeError
 end
 ```
@@ -158,7 +158,7 @@ end
 ```rbs
 ERROR_CLASSES: [singleton(ArgumentError), singleton(TypeError)]
 
-class Object
+class Object < BasicObject
   def rescue_splat_specific: -> Integer | ArgumentError | TypeError
 end
 ```
@@ -182,7 +182,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rescue_var_after: -> StandardError?
 end
 ```
@@ -208,7 +208,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rescue_var_after_existing: -> :before | ArgumentError
 end
 ```
@@ -235,7 +235,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def explicit_return_with_ensure: -> 1
   def conditional_return_with_ensure: (untyped flag) -> (42 | "early")
 end
@@ -262,7 +262,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def ensure_return_wins: -> 2
   def ensure_return_over_value: -> :overridden
 end
@@ -285,7 +285,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def with_ensure: -> 42
 end
 ```
@@ -309,7 +309,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def ensure_return_overrides: -> 3
 end
 ```
@@ -333,7 +333,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def ensure_raise_overrides: -> bot
 end
 ```
@@ -351,7 +351,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rescue_modifier: -> :fallback
 end
 ```
@@ -369,7 +369,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rescue_modifier_union: -> 1 | :fallback
 end
 ```
@@ -395,7 +395,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def with_retry: -> "failed" | "success"
 end
 ```
@@ -423,7 +423,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1?
   def bar: -> 1
 end
@@ -447,7 +447,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def retry_without_value: -> :handled
 end
 ```
@@ -469,7 +469,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> :a | :b
 end
 ```
@@ -492,7 +492,7 @@ foo(1)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Integer n) -> String
 end
 ```
@@ -546,7 +546,7 @@ after_path(false)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rescue_path: -> :b
   def else_path: -> :c | :d
   def after_path: (bool flag) -> (:d | :e)
@@ -573,7 +573,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1 | "str"
 end
 ```

@@ -11,7 +11,7 @@ def use_globals = $stdout
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def use_globals: -> IO
 end
 ```
@@ -29,7 +29,7 @@ def stat_ino = $stderr.stat.ino
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def stat_dev: -> Integer
   def stat_ino: -> Integer
 end
@@ -49,7 +49,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def custom_global: -> "value"
 end
 ```
@@ -67,7 +67,7 @@ def compact_global_source = $s
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def compact_global_source: -> "\"ok\""
 end
 ```
@@ -87,7 +87,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def read_config: -> 1
 end
 ```
@@ -107,7 +107,7 @@ $late = "ready"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def read_late: -> "ready"
 end
 ```
@@ -127,7 +127,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def toggle: -> "yes"
 end
 ```
@@ -146,7 +146,7 @@ def f = $bar
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def f: -> 123
 end
 ```
@@ -168,7 +168,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1 | "str"
 end
 ```

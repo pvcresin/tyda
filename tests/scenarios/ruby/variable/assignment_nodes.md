@@ -31,7 +31,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def global_assign: -> "value"
   def global_or_write: -> 1
   def global_and_write: -> "yes"
@@ -64,7 +64,7 @@ def output_separator = $\
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def input: -> IO
   def output: -> IO
   def error: -> IO
@@ -116,7 +116,7 @@ module AssignNodes
   COUNT: Integer
 end
 
-class Object
+class Object < BasicObject
   def const_path_value: -> 1
   def const_path_or: -> "x"
   def const_path_operator: -> Integer
@@ -151,7 +151,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def hash_or_write: -> "ruby"?
   def hash_and_write: -> "yes"
   def hash_operator_write: -> Integer

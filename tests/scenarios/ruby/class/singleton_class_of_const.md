@@ -22,7 +22,7 @@ class A
   def self.hello: -> :singleton
 end
 
-class Object
+class Object < BasicObject
   def f: -> :singleton
 end
 ```
@@ -47,7 +47,7 @@ def f = A.deep
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def f: -> untyped
 end
 ```
@@ -70,7 +70,7 @@ def f = A::CONST
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def f: -> untyped
 end
 ```
@@ -96,7 +96,7 @@ class Builder
   def self.build: (Integer value) -> String
 end
 
-class Object
+class Object < BasicObject
   def build_value: -> String
 end
 ```
@@ -117,7 +117,7 @@ def run_value = Runner.run
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def run_value: -> :done
 end
 
@@ -143,7 +143,7 @@ def store_name = Store.name
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def store_name: -> "store"
 end
 
@@ -174,7 +174,7 @@ class Label
   alias self.title self.name
 end
 
-class Object
+class Object < BasicObject
   def label_title: -> "label"
 end
 ```
@@ -200,7 +200,7 @@ class Factory
   def self.make: -> :item
 end
 
-class Object
+class Object < BasicObject
   def make_item: -> :item
 end
 ```
@@ -231,7 +231,7 @@ class Foo
   def self.on_foo: -> 1
 end
 
-class Object
+class Object < BasicObject
   def f: -> 1
   def g: -> untyped
 end

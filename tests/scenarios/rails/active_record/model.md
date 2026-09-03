@@ -200,7 +200,7 @@ def result = Profile.new.title
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def result: -> String?
 end
 ```
@@ -406,7 +406,7 @@ def persist(user) = user.update_attributes(name: "x")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def persist: (User user) -> bool
 end
 ```
@@ -431,7 +431,7 @@ def persist(user) = user.update_attributes(name: "x")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def persist: (User user) -> bool
 end
 ```

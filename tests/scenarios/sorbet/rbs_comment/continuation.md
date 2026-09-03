@@ -21,7 +21,7 @@ def calc(x, y) = x.to_f
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def calc: (Integer x, String y) -> Float
 end
 ```
@@ -45,7 +45,7 @@ def parse_ids(input) = []
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def parse_ids: (String input) -> Array[Integer]
 end
 ```

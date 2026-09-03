@@ -71,6 +71,9 @@ Ruby source、RBS、RBI、schema、plugin の知識は同じ registry に合成�
 「実体のある source / 宣言を保ち、未解決の空 stub で権威ある定義を隠さない」ことを基本とする。
 合成規則を変更したときは、該当する registry unit test と scenario を同じ変更で更新する。
 
+ユーザー定義クラスでも superclass が未設定なら、外部宣言の superclass を暗黙の継承として補完する。
+Ruby source に明示された `class X < Y` は外部宣言で上書きしない。
+
 framework DSL は library-scoped に有効化し、plugin のフックは `PluginCx` を通す。個別 repository の
 runtime DSL 登録を解析コアへ持ち込まず、動的な API は外部 RBS / RBI を入力する。
 

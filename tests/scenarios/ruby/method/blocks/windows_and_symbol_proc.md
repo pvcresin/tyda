@@ -41,7 +41,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def slice_rows_to_hash: -> Array[Hash["a" | "b", 1 | 2]]
   def slice_positions_hash: -> Hash[:a | :b, 1 | 2]
   def slice_missing_values: -> Array[[:a | :b, 1?]]
@@ -63,7 +63,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_chain_select_map_reduce: -> String
 end
 ```
@@ -79,7 +79,7 @@ def test_symbol_map = [1, 2, 3].map(&:to_s)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_symbol_map: -> Array["1" | "2" | "3"]
 end
 ```
@@ -95,7 +95,7 @@ def test_symbol_select = ["a", "", "b"].select(&:empty?)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_symbol_select: -> Array["" | "a" | "b"]
 end
 ```
@@ -111,7 +111,7 @@ def test_symbol_reject = ["hello", "", "world"].reject(&:empty?)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_symbol_reject: -> Array["" | "hello" | "world"]
 end
 ```
@@ -156,7 +156,7 @@ class Item
   def initialize: (String name, Integer? payload) -> void
 end
 
-class Object
+class Object < BasicObject
   def compact_values: -> Array[1 | 2]
   def collect_payloads: -> Array[1]
   def total_bytes: -> Integer
@@ -207,7 +207,7 @@ class Entry
   def initialize: (Integer id) -> void
 end
 
-class Object
+class Object < BasicObject
   def pair_keys: -> Array["a" | "b"]
   def pair_values: -> Array[1 | 2]
   def slice_heads: -> Array[1 | 3]

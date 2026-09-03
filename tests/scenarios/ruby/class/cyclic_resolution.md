@@ -20,7 +20,7 @@ def f = A.new
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def f: -> A
 end
 ```
@@ -70,7 +70,7 @@ module M
   prepend M
 end
 
-class Object
+class Object < BasicObject
   def f: -> C
 end
 ```

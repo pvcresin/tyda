@@ -14,7 +14,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def build_hash: -> { x: 1 }
 end
 ```
@@ -37,7 +37,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def build_hash: -> { x: untyped }
 end
 ```
@@ -53,7 +53,7 @@ def foo = [1, 2, 3]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> [1, 2, 3]
 end
 ```
@@ -69,7 +69,7 @@ def empty_list = []
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def empty_list: -> [ ]
 end
 ```
@@ -85,7 +85,7 @@ def foo = { name: "Alice", age: 30 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> { name: "Alice", age: 30 }
 end
 ```
@@ -101,7 +101,7 @@ def empty_map = {}
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def empty_map: -> Hash[untyped, untyped]
 end
 ```
@@ -117,7 +117,7 @@ def count_map = Hash.new(0)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def count_map: -> Hash[untyped, 0]
 end
 ```
@@ -145,7 +145,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def empty_array_new: -> Array
   def nil_array_new: -> Array[nil]
   def filled_array_new: -> Array["x"]
@@ -167,7 +167,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def list_map: -> Hash[untyped, [ ]]
 end
 ```
@@ -185,7 +185,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def grouped_map: -> Hash[untyped, [ ]]
 end
 ```
@@ -212,7 +212,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def grouped_values: -> Hash[:group, Array["one" | "two"]]
   def nested_values: -> Hash[:group, Hash[untyped, untyped] | Hash[:count, 1]]
 end
@@ -231,7 +231,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def id_set: -> Set[1 | 2 | 3]
 end
 ```
@@ -249,7 +249,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def name_set: -> Set[String]
 end
 ```
@@ -275,7 +275,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def id_set_from_array: -> Set[1 | 2 | 3]
   def name_set_from_block: -> Set["one" | "two"]
   def name_set_from_symbol_proc: -> Set["1" | "2"]
@@ -303,7 +303,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def key_set_from_hash: -> Set[:count | :name]
   def value_set_from_hash: -> Set["one" | "two"]
   def entry_set_from_hash: -> Set[[:count | :name, "one" | "two"]]
@@ -327,7 +327,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def remapped_entry_set: -> Set[[String, 1 | 2]]
   def flattened_value_set: -> Set[1 | 2 | 3]
 end
@@ -351,7 +351,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def literal_set: -> Set[1 | "two" | :three]
   def splat_set: -> Set[1 | 2]
 end
@@ -394,7 +394,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def union_set: -> Set[:read | :write]
   def pipe_set: -> Set[1 | "two"]
   def intersection_set: -> Set[2]
@@ -432,7 +432,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def merge_set: -> [Set[:read | :write], Set[:read | :write]]
   def subtract_set: -> [Set[:read], Set[:read]]
   def delete_set: -> [Set[:read], Set[:read]]
@@ -453,7 +453,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> [1, 2]
 end
 ```
@@ -469,7 +469,7 @@ def foo = [1, "hello"]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> [1, "hello"]
 end
 ```
@@ -491,7 +491,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def first_item: -> "one"
   def last_item: -> "three"
 end
@@ -514,7 +514,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def first_items: -> ["one", "two"]
   def last_items: -> ["two", "three"]
 end
@@ -537,7 +537,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def take_items: -> [1, 2]
   def drop_items: -> [2, 3]
 end
@@ -576,7 +576,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def sampled_state: -> "closed" | "opened"
   def sampled_roles: -> Array[:owner | :reader | :writer]
   def sampled_random_count: -> Array[:owner | :reader | :writer]
@@ -635,7 +635,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def negative_index_item: -> :large
   def selected_items: -> ["one", "three", nil]
   def range_slice_items: -> ["two", "three"]
@@ -674,7 +674,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def float_index_item: -> "one"
   def float_negative_index_item: -> "two"
   def float_slice_items: -> ["one", "two"]
@@ -706,7 +706,7 @@ def empty_fetch_values = [1, 2].fetch_values
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def fetched_items: -> ["two", "zero", "two"]
   def fetched_items_with_block: -> ["one", String]
   def fetched_items_with_splat: -> ["zero", "one"]
@@ -754,7 +754,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def shift_pop_flow: -> ["a", false, [1, :b]]
   def shift_count_flow: -> [[:a, :b], [:c]]
   def pop_count_flow: -> [[2, 3], [1]]
@@ -784,7 +784,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def push_many_flow: -> [[:a, :b, "c"], [:a, :b, "c"]]
   def concat_many_flow: -> [[:a, :b, "c"], [:a, :b, "c"]]
 end
@@ -810,7 +810,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def unshift_flow: -> [[1, 2, 3], [1, 2, 3]]
   def prepend_flow: -> ["head", :marker, "tail"]
 end
@@ -855,7 +855,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def insert_flow: -> [[:a, :b, :c, :d], [:a, :b, :c, :d]]
   def replace_flow: -> [[:a, "new"], [:a, "new"]]
   def fill_all_flow: -> [["x", "x"], ["x", "x"]]
@@ -881,7 +881,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def zip_str_int: -> Array[["a" | "b", (1 | 2)?]]
   def zip_int_sym: -> Array[[1 | 2 | 3, (:x | :y | :z)?]]
 end
@@ -904,7 +904,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def zip_with_repeated_label: -> Array[[1 | 2, :source?]]
   def zip_cycle_to_hash: -> Hash[:a | :b, true | nil]
 end
@@ -932,7 +932,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def transpose_pairs: -> [Array[:package | :project], Array[1 | 2]]
   def split_columns: -> [Array["one" | "two"], Array[1 | 2]]
   def transpose_rows: -> [Array[1 | 2], Array["a" | "b"], Array[:x | :y]]
@@ -968,7 +968,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pairs_to_hash: -> Hash[:count | :name, 1 | "a"]
   def mapped_pairs_to_hash: -> Hash["a" | "bb", 1 | 2]
   def rest_pair_block_to_hash: -> Hash["a" | "b", [1, 2] | [3, 4]]
@@ -1002,7 +1002,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pair_array_hash: -> Hash[:count | :name, 1 | "a"]
   def pair_args_hash: -> Hash[:count | :name, 1 | "a"]
   def product_hash: -> Hash[:ok | :skip, true]
@@ -1049,7 +1049,7 @@ def flat_pairs = [:enabled, true, :archived, false]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def flat_args_hash: -> Hash[:count | :name, 1 | "a"]
   def local_flat_args_hash: -> Hash[:count | :name, 1 | "a"]
   def flattened_pairs_hash: -> Hash[:count | :name, 1 | "a"]
@@ -1081,7 +1081,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pair_combinations: -> Array[[:first | :second | :third, :first | :second | :third]]
   def pair_permutations: -> Array[[:first | :second | :third, :first | :second | :third]]
   def all_permutations: -> Array[[:first | :second, :first | :second]]
@@ -1107,7 +1107,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def combination_names: -> Array[String]
   def permutation_keys: -> Array[:first | :second]
 end
@@ -1150,7 +1150,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def join_path_parts: -> "root/child/leaf"
   def join_compact_parts: -> "root/leaf"
   def join_symbol_parts: -> "read,write"
@@ -1185,7 +1185,7 @@ class Entry
   def name: -> "entry"
 end
 
-class Object
+class Object < BasicObject
   def tuple_size: -> 2
   def tuple_length: -> 3
   def tuple_count: -> 2
@@ -1228,7 +1228,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def union_keys: -> Array[:env | :global | :local | :temporary]
   def pipe_keys: -> Array[:env | :global | :local]
   def intersection_keys: -> Array[:env]
@@ -1285,7 +1285,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def unique_keys: -> Array[:global | :local]
   def unique_names: -> Array["name" | "path"]
 end
@@ -1318,7 +1318,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def unique_bang_keys: -> [Array[:global | :local]?, Array[:global | :local]]
   def sort_by_bang_names: -> [["long", "id"], Array["id" | "long"]]
   def reverse_bang_counts: -> [Array[1 | 2 | 3], Array[1 | 2 | 3]]
@@ -1354,7 +1354,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def flatten_once: -> Array[1 | 3 | [2] | [4]]
   def flatten_twice: -> Array[1 | 2 | 3 | 4]
   def flatten_negative: -> Array[1 | 2 | 3]
@@ -1399,7 +1399,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def flatten_record: -> Array[1 | "a" | :count | :name]
   def flatten_record_pairs: -> Array[[:count, 1] | [:name, "a"]]
   def flatten_nested_values: -> Array[1 | "a" | :count | :name | [2]]
@@ -1440,7 +1440,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def compact_record: -> { name: "a", active: false }
   def compact_record_with_nilable_value: (untyped flag) -> { ?value: 1, count: 2 }
   def compact_hash_value_type: -> Hash[:count | :note, 1]
@@ -1469,7 +1469,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_bang_values: -> [Array[Integer], Array[Integer]]
   def collect_bang_values: -> [Array[:a | :b], Array[:a | :b]]
 end
@@ -1500,7 +1500,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_bang_pair_rows: -> [Array[[:left | :right, String]], Array[[:left | :right, String]]]
   def collect_bang_missing_rows: -> [Array[[String, "two"?]], Array[[String, "two"?]]]
 end
@@ -1531,7 +1531,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def delete_if_pair_rows: -> [Array[["one", 1]], Array[["one", 1]]]
   def keep_if_pair_rows: -> [Array[[1, "one"]], Array[[1, "one"]]]
 end
@@ -1582,7 +1582,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def flatten_bang_values: -> [Array[1 | 3 | [2]]?, Array[1 | 3 | [2]]]
   def flatten_bang_all: -> [Array[1 | 2 | 3]?, Array[1 | 2 | 3]]
   def slice_bang_index: -> [1, ["a", :b]]
@@ -1631,7 +1631,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def delete_nil_values: -> [Array[1 | 2], Array[1 | 2]]
   def keep_truthy_values: -> [Array[1 | 2], Array[1 | 2]]
   def select_entry_values: -> [Array[Entry]?, Array[Entry]]
@@ -1728,7 +1728,7 @@ def dig_array = { flags: [:a, :b] }.dig(:flags, 0)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def fetch_existing: -> "Ada"
   def fetch_default: -> "fallback"
   def fetch_block: -> String
@@ -1752,7 +1752,7 @@ def values_at_record = { name: "Ada", count: 3 }.values_at(:name, :missing)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def slice_record: -> { name: "Ada", count: 3 }
   def except_record: -> { name: "Ada", enabled: true }
   def values_at_record: -> ["Ada", nil]
@@ -1786,7 +1786,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def delete_record_key: -> ["Ada", { count: 3, enabled: true }]
   def delete_missing_key: -> [String, { name: "Ada" }]
   def delete_dynamic_key: (untyped key) -> [(3 | "Ada")?, { name: "Ada", count: 3 }]
@@ -1808,7 +1808,7 @@ def merge_conflict_block = { count: 1 }.merge(count: 2) { |key, old, new| old.to
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def merge_record: -> { name: "Grace", count: 3, enabled: true }
   def merge_many: -> { name: "Ada", count: 3, enabled: true }
   def merge_conflict_block: -> { count: String }
@@ -1934,7 +1934,7 @@ end
 SYMBOL_KEYS: [:name, :enabled]
 STRING_KEYS: ["name", "count"]
 
-class Object
+class Object < BasicObject
   def slice_with_symbol_key_splat: -> { name: "Ada", enabled: true }
   def values_at_with_local_key_splat: -> [true, nil]
   def fetch_values_with_key_splat: -> [3, "Ada"]
@@ -1978,7 +1978,7 @@ def choice_name = CHOICES.rassoc(1)[0]
 PAIRS: [["first", 1], ["second", 2]]
 CHOICES: [["monday", 1], ["tuesday", 2]]
 
-class Object
+class Object < BasicObject
   def assoc_pair: -> ["first", 1]
   def rassoc_pair: -> ["second", 2]
   def missing_pair: -> nil
@@ -2027,7 +2027,7 @@ class Lookup
   def self.state_for: (String value) -> (:done | :ready)?
 end
 
-class Object
+class Object < BasicObject
   def record_key_lookup: -> :count
   def record_index_lookup: -> :done
   def missing_key_lookup: -> nil
@@ -2074,7 +2074,7 @@ KEYS: [:name, :count]
 TABLE: { name: "Ada", count: 3 }
 WORDS: Array["ONE" | "TWO"]
 
-class Object
+class Object < BasicObject
   def tuple_includes_key: -> true
   def tuple_missing_key: -> false
   def array_disjoint_member: -> false
@@ -2192,7 +2192,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def build: -> Hash[:f, Array[:status]]
 end
 ```
@@ -2208,7 +2208,7 @@ def has_a = { a: 1 }.deconstruct_keys(nil).key?(:a)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def has_a: -> true
 end
 ```
@@ -2224,7 +2224,7 @@ def foo = [1, nil, true].compact
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> [1, true]
 end
 ```
@@ -2240,7 +2240,7 @@ def flipped = { a: 1, b: 2 }.invert
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def flipped: -> Hash[1 | 2, :a | :b]
 end
 ```
@@ -2283,7 +2283,7 @@ def bar = { a: 1 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> { a: 1, b: 1 }
   def bar: -> { a: 1 }
 end

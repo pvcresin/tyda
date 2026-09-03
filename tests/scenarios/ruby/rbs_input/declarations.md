@@ -25,7 +25,7 @@ rbs_profile_age(RbsProfile.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_profile_name: (RbsProfile profile) -> String
   def rbs_profile_age: (RbsProfile profile) -> Integer
 end
@@ -54,7 +54,7 @@ rbs_render(RbsWidget.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_render: (RbsWidget widget) -> String
 end
 ```
@@ -89,7 +89,7 @@ rbs_take(RbsSource.new, RbsPayload.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_take: (RbsSource source, RbsPayload payload) -> String
 end
 
@@ -128,7 +128,7 @@ rbs_collect(RbsBatch.new, [RbsItem.new])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_collect: (RbsBatch batch, Array[RbsItem] items) -> Array[String]
 end
 
@@ -167,7 +167,7 @@ rbs_print(RbsPrinter.new, RbsFormatter.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_print: (RbsPrinter printer, RbsFormatter formatter) -> Integer
 end
 
@@ -206,7 +206,7 @@ rbs_keyword_print(RbsKeywordPrinter.new, RbsKeywordFormatter.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_keyword_print: (RbsKeywordPrinter printer, RbsKeywordFormatter formatter) -> String
 end
 
@@ -245,7 +245,7 @@ rbs_required_keyword_print(RbsRequiredKeywordPrinter.new, RbsRequiredKeywordForm
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_required_keyword_print: (RbsRequiredKeywordPrinter printer, RbsRequiredKeywordFormatter formatter) -> Integer
 end
 
@@ -284,7 +284,7 @@ rbs_string_take(RbsStringConsumer.new, RbsNumberSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_string_take: (RbsStringConsumer consumer, RbsNumberSource source) -> Integer
 end
 
@@ -321,7 +321,7 @@ rbs_wider_print(RbsWiderPrinter.new, RbsWiderFormatter.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_wider_print: (RbsWiderPrinter printer, RbsWiderFormatter formatter) -> String
 end
 ```
@@ -354,7 +354,7 @@ rbs_param_print(RbsParamPrinter.new, RbsIntegerFormatterParam.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_param_print: (RbsParamPrinter printer, RbsIntegerFormatterParam formatter) -> Integer
 end
 ```
@@ -387,7 +387,7 @@ rbs_keyword_param_print(RbsKeywordParamPrinter.new, RbsKeywordIntegerFormatter.n
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_keyword_param_print: (RbsKeywordParamPrinter printer, RbsKeywordIntegerFormatter formatter) -> Integer
 end
 ```
@@ -420,7 +420,7 @@ rbs_block_iterable_take(RbsBlockConsumer.new, RbsNoBlockIterable.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_block_iterable_take: (RbsBlockConsumer consumer, RbsNoBlockIterable iterable) -> Integer
 end
 ```
@@ -453,7 +453,7 @@ rbs_string_iterable_take(RbsStringIterableConsumer.new, RbsIntegerIterable.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_string_iterable_take: (RbsStringIterableConsumer consumer, RbsIntegerIterable iterable) -> Integer
 end
 ```
@@ -490,7 +490,7 @@ rbs_interface_include_take(RbsNamedChildConsumer.new, RbsNamedOnly.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_interface_include_take: (RbsNamedChildConsumer consumer, RbsNamedOnly value) -> String
 end
 ```
@@ -526,7 +526,7 @@ rbs_generic_interface_include_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_interface_include_value: -> Array[String]
 end
 ```
@@ -551,7 +551,7 @@ rbs_each_string_take(RbsEachStringConsumer.new, [1])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_each_string_take: (RbsEachStringConsumer consumer, Array[Integer] values) -> Integer
 end
 ```
@@ -575,7 +575,7 @@ rbs_each_return_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_each_return_value: -> [1, [1]]
 end
 ```
@@ -600,7 +600,7 @@ rbs_to_array_string_take(RbsToArrayStringConsumer.new, [1])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_to_array_string_take: (RbsToArrayStringConsumer consumer, Array[Integer] values) -> Integer
 end
 ```
@@ -625,7 +625,7 @@ rbs_to_hash_string_take(RbsToHashStringConsumer.new, { count: 1 })
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_to_hash_string_take: (RbsToHashStringConsumer consumer, { count: Integer } values) -> Integer
 end
 ```
@@ -649,7 +649,7 @@ rbs_to_hash_generic_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_to_hash_generic_value: -> Hash[Symbol, "x"]
 end
 ```
@@ -674,7 +674,7 @@ rbs_range_string_take(RbsRangeStringConsumer.new, 1..3)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_range_string_take: (RbsRangeStringConsumer consumer, Range[Integer] range) -> Integer
 end
 ```
@@ -698,7 +698,7 @@ rbs_range_generic_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_range_generic_value: -> Integer
 end
 ```
@@ -728,7 +728,7 @@ rbs_bounded_generic_take_ok(RbsBoundedGenericConsumer.new, { name: "x" })
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_bounded_generic_take: (RbsBoundedGenericConsumer consumer, { name: Integer } values) -> Integer
   def rbs_bounded_generic_take_ok: (RbsBoundedGenericConsumer consumer, { name: String } values) -> String
 end
@@ -753,7 +753,7 @@ rbs_bounded_generic_label
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_bounded_generic_label: -> String
 end
 ```
@@ -783,7 +783,7 @@ rbs_lower_bounded_generic_take_ok(RbsLowerBoundedGenericConsumer.new, "x")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_lower_bounded_generic_take: (RbsLowerBoundedGenericConsumer consumer, Symbol value) -> Integer
   def rbs_lower_bounded_generic_take_ok: (RbsLowerBoundedGenericConsumer consumer, String value) -> String
 end
@@ -808,7 +808,7 @@ rbs_lower_bounded_generic_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_lower_bounded_generic_value: -> String
 end
 ```
@@ -837,7 +837,7 @@ rbs_bounded_block_generic_invalid_label
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_bounded_block_generic_label: -> "x"
   def rbs_bounded_block_generic_invalid_label: -> untyped
 end
@@ -872,7 +872,7 @@ rbs_bounded_value_results(RbsBoundedValueSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_bounded_value_results: (RbsBoundedValueSource source) -> [String, String]
 end
 ```
@@ -905,7 +905,7 @@ rbs_bounded_named_take(RbsBoundedNamedConsumer.new, RbsBoundedNamedValue.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_bounded_named_take: (RbsBoundedNamedConsumer consumer, RbsBoundedNamedValue value) -> String
 end
 ```
@@ -933,7 +933,7 @@ rbs_default_pair_second
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_default_pair_second: -> String
 end
 ```
@@ -961,7 +961,7 @@ rbs_default_readable_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_default_readable_value: -> String
 end
 ```
@@ -989,7 +989,7 @@ rbs_bounded_readable_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_bounded_readable_value: -> String
 end
 ```
@@ -1036,7 +1036,7 @@ rbs_core_class_values(RbsCoreClassConsumer.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_core_class_values: (RbsCoreClassConsumer consumer) -> [String, String, String, String, String, String]
 end
 ```
@@ -1060,7 +1060,7 @@ rbs_primitive_class_return(RbsPrimitiveClassReturnSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_primitive_class_return: (RbsPrimitiveClassReturnSource source) -> bool?
 end
 ```
@@ -1104,7 +1104,7 @@ rbs_nominal_registry_values(RbsNominalConsumer.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_nominal_registry_values: (RbsNominalConsumer consumer) -> [String, String]
 end
 ```
@@ -1141,7 +1141,7 @@ rbs_generic_nominal_values(RbsNominalBoxConsumer.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_nominal_values: (RbsNominalBoxConsumer consumer) -> [String, Integer]
 end
 ```
@@ -1171,7 +1171,7 @@ rbs_generic_nominal_value(RbsNominalValueConsumer.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_nominal_value: (RbsNominalValueConsumer consumer) -> String
 end
 ```
@@ -1202,7 +1202,7 @@ rbs_singleton_subclass_value(RbsSingletonConsumer.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_singleton_subclass_value: (RbsSingletonConsumer consumer) -> String
 end
 ```
@@ -1239,7 +1239,7 @@ rbs_generic_superclass_values(RbsGenericChildSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_superclass_values: (RbsGenericChildSource source) -> [String, Integer]
 end
 ```
@@ -1279,7 +1279,7 @@ rbs_generic_ancestor_overload_values(RbsGenericOverloadChildSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_ancestor_overload_values: (RbsGenericOverloadChildSource source) -> [String, Symbol, Integer, Symbol]
 end
 ```
@@ -1310,7 +1310,7 @@ rbs_generic_ancestor_symbol_reduce_value(RbsGenericAdderSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_ancestor_symbol_reduce_value: (RbsGenericAdderSource source) -> Integer
 end
 ```
@@ -1369,7 +1369,7 @@ rbs_generic_ancestor_method_object_values(
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_ancestor_method_object_values: (RbsGenericMethodChildSource child_source, RbsGenericMethodReaderSource reader_source) -> [String, Integer, String, String, Integer]
 end
 ```
@@ -1427,7 +1427,7 @@ rbs_generic_ancestor_symbol_proc_values(
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_ancestor_symbol_proc_values: (RbsGenericSymbolChildSource child_source, RbsGenericSymbolReaderSource reader_source) -> [Array[String], Array[Integer], Array[String], Array[Integer]]
 end
 ```
@@ -1461,7 +1461,7 @@ rbs_symbol_proc_generic_receiver_values(RbsSymbolItemSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_symbol_proc_generic_receiver_values: (RbsSymbolItemSource source) -> [Array[String], Array[Integer], String]
 end
 ```
@@ -1500,7 +1500,7 @@ rbs_generic_mixin_values(RbsGenericReaderSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_mixin_values: (RbsGenericReaderSource source) -> [String, Integer]
 end
 ```
@@ -1528,7 +1528,7 @@ rbs_generic_extend_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_extend_value: -> String
 end
 ```
@@ -1567,7 +1567,7 @@ rbs_generic_prepend_values(RbsGenericPrependedReaderSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_prepend_values: (RbsGenericPrependedReaderSource source) -> [String, Integer]
 end
 ```
@@ -1612,7 +1612,7 @@ rbs_generic_mixin_block_integer(RbsGenericIterableSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_mixin_block_string: -> Array[String]
   def rbs_generic_mixin_block_integer: (RbsGenericIterableSource source) -> Array[Integer]
 end
@@ -1683,7 +1683,7 @@ rbs_generic_superclass_block_integer(RbsGenericIterableChildSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_generic_superclass_block_string: -> Array[String]
   def rbs_generic_superclass_block_integer: (RbsGenericIterableChildSource source) -> Array[Integer]
 end
@@ -1716,7 +1716,7 @@ rbs_hash_pair_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_hash_pair_value: -> Hash[Symbol, String]
 end
 ```
@@ -1748,7 +1748,7 @@ rbs_each_value_result
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_each_value_result: -> Array[String]
 end
 ```
@@ -1780,7 +1780,7 @@ rbs_each_named_value_result
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_each_named_value_result: -> Array[String]
 end
 ```
@@ -1820,7 +1820,7 @@ rbs_lexical_nested_values(RbsLexicalOuter::Source.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_lexical_nested_values: (RbsLexicalOuter::Source source) -> [RbsLexicalOuter::Item, RbsLexicalOuter::Inner::Item, RbsLexicalOuter::Item]
 end
 ```
@@ -1848,7 +1848,7 @@ rbs_user_name(RbsUser.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_user_name: (RbsUser user) -> String
 end
 ```
@@ -1892,7 +1892,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_global_config: -> String
 end
 ```
@@ -1918,7 +1918,7 @@ rbs_alias_names(RbsAliasSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_alias_names: (RbsAliasSource source) -> Array[String]
 end
 ```
@@ -1947,7 +1947,7 @@ rbs_custom_alias(RbsCustomAliasSource.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_custom_alias: (RbsCustomAliasSource source) -> RbsAliasWrapper[String]
 end
 ```

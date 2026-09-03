@@ -7787,11 +7787,23 @@ impl<'a> InferenceEngine<'a> {
         self.registry.finalize_pending_scoped_type_refs();
     }
 
-    pub fn into_registry(self) -> TypeRegistry {
+    fn ensure_implicit_object_superclass(&mut self) {
+        let needs_superclass = self
+            .registry
+            .class_data_for("Object")
+            .is_some_and(|data| data.user_defined && !data.is_module && data.superclass.is_none());
+        if needs_superclass {
+            self.ensure_class_available("Object");
+        }
+    }
+
+    pub fn into_registry(mut self) -> TypeRegistry {
+        self.ensure_implicit_object_superclass();
         self.registry
     }
 
-    pub fn into_registry_and_deps(self) -> (TypeRegistry, crate::dep_graph::FileDeps) {
+    pub fn into_registry_and_deps(mut self) -> (TypeRegistry, crate::dep_graph::FileDeps) {
+        self.ensure_implicit_object_superclass();
         (self.registry, self.file_deps)
     }
 
@@ -7824,6 +7836,7 @@ impl<'a> InferenceEngine<'a> {
     }
 
     pub fn into_file_analysis_snapshot(mut self) -> FileAnalysisSnapshot {
+        self.ensure_implicit_object_superclass();
         self.resolve_pending_constant_definition_snapshots();
         FileAnalysisSnapshot {
             facts: FileFacts {
@@ -7897,6 +7910,7 @@ impl<'a> InferenceEngine<'a> {
     pub fn into_file_analysis_snapshot_and_deps(
         mut self,
     ) -> (FileAnalysisSnapshot, crate::dep_graph::FileDeps) {
+        self.ensure_implicit_object_superclass();
         self.resolve_pending_constant_definition_snapshots();
         let analysis = FileAnalysisSnapshot {
             facts: FileFacts {

@@ -11,7 +11,7 @@ def test_first_n = [1, 2, 3].first(2)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_first_n: -> [1, 2]
 end
 ```
@@ -27,7 +27,7 @@ def test_last_n = [1, 2, 3].last(2)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_last_n: -> [2, 3]
 end
 ```
@@ -43,7 +43,7 @@ def test_first = [1, 2, 3].first
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_first: -> 1
 end
 ```
@@ -59,7 +59,7 @@ def test_last = ["a", "b"].last
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_last: -> "b"
 end
 ```
@@ -77,7 +77,7 @@ def test_drop = [1, 2, 3, 4].drop(2)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_take: -> [1, 2]
   def test_drop: -> [3, 4]
 end

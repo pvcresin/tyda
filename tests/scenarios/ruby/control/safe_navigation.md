@@ -16,7 +16,7 @@ foo("hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (String s) -> "HELLO"
 end
 
@@ -43,7 +43,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def bar: (Integer x) -> String
 end
 ```
@@ -65,7 +65,7 @@ foo(Widget.new)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Widget? w) -> "w"?
 end
 
@@ -92,7 +92,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def baz: (Integer x) -> String
 end
 ```
@@ -112,7 +112,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def bare: (untyped flag) -> String
 end
 ```
@@ -132,7 +132,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def in_and: (untyped flag) -> (0 | 3)
 end
 ```

@@ -13,7 +13,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_then_chain: -> Integer
 end
 ```
@@ -32,7 +32,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_lambda_param_call: -> Integer
 end
 ```
@@ -51,7 +51,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_proc_new_param_call: -> String
 end
 ```
@@ -71,7 +71,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_stored_lambda_call: -> Integer
 end
 ```
@@ -87,7 +87,7 @@ def test_yield_returns_untyped = yield 1
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_yield_returns_untyped: { (Integer) -> untyped } -> untyped
 end
 ```
@@ -106,7 +106,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_yield_then_value: { (Integer) -> untyped } -> 42
 end
 ```
@@ -122,7 +122,7 @@ def test_block_param_call(&block) = block.call(42)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_block_param_call: { (Integer) -> untyped } -> untyped
 end
 ```
@@ -140,7 +140,7 @@ def use_apply_value = apply_value { |value| value.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def apply_value: { (Integer) -> String } -> String
   def use_apply_value: -> String
 end
@@ -159,7 +159,7 @@ def use_build_pair = build_pair { |name, count| [name, count] }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def build_pair: { (String, Integer) -> ["a", 1] } -> ["a", 1]
   def use_build_pair: -> ["a", 1]
 end
@@ -182,7 +182,7 @@ def use_apply_yield = apply_yield { |value| value.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def apply_index: { (Integer) -> String } -> String
   def use_apply_index: -> String
   def apply_yield: { (Symbol) -> String } -> String
@@ -209,7 +209,7 @@ def use_choose_value = choose_value(true) { |value| value.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def choose_value: (bool flag) { (Symbol) -> String } -> String
   def use_choose_value: -> String
 end
@@ -229,7 +229,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_proc_variable_pass: -> Array[String]
 end
 ```
@@ -245,7 +245,7 @@ def test_reduce_no_init = [1, 2, 3].reduce { |sum, x| sum + x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_reduce_no_init: -> Integer
 end
 ```
@@ -261,7 +261,7 @@ def test_method_ref = [1, 2, 3].map(&method(:to_s))
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_method_ref: -> Array[String]
 end
 ```

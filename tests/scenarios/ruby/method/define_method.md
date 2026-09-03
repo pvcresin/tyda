@@ -467,7 +467,7 @@ class Factory
   def self.reset: -> :reset
 end
 
-class Object
+class Object < BasicObject
   def call_factory: -> :build
 end
 ```
@@ -546,7 +546,7 @@ class Builder
   def self.build: -> :ok
 end
 
-class Object
+class Object < BasicObject
   def call_build: -> :ok
 end
 ```
@@ -572,7 +572,7 @@ class Factory
   def self.create: (String name) -> String
 end
 
-class Object
+class Object < BasicObject
   def create_item: -> String
 end
 ```
@@ -593,7 +593,7 @@ def fetch_target = Target.fetch
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def fetch_target: -> 1
 end
 
@@ -656,7 +656,7 @@ class Copy < Source
   def title: -> "title"
 end
 
-class Object
+class Object < BasicObject
   def read_copy_label: -> String
   def read_copy_title: -> "title"
 end
@@ -697,7 +697,7 @@ class Group::Member
   def self.build: -> :member
 end
 
-class Object
+class Object < BasicObject
   def build_member: -> :member
   def create_group: -> :group
 end

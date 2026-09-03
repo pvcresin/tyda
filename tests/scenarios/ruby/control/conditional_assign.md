@@ -15,7 +15,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> "hello"
 end
 ```
@@ -35,7 +35,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def bar: -> 42
 end
 ```
@@ -54,7 +54,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def from_false: -> "hello"
 end
 ```
@@ -113,7 +113,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def keep_false: -> false
 end
 ```
@@ -134,7 +134,7 @@ compute("hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def compute: (String x) -> String
 end
 ```

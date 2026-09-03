@@ -30,7 +30,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def minitest: (untyped value) -> String
   def rspec: (untyped value) -> String
   def rspec_not_nil: (String? value) -> String

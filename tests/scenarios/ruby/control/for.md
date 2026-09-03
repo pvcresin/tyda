@@ -15,7 +15,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def for_test: -> [1, 2, 3]
 end
 ```
@@ -35,7 +35,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def for_hash: -> { a: 1, b: 2 }
 end
 ```
@@ -55,7 +55,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def for_destructuring: -> [[:a, 1], [:b, 2]]
 end
 ```
@@ -75,7 +75,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def for_index_after_nonempty: -> 1 | 2 | 3
 end
 ```
@@ -95,7 +95,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def for_index_after_empty: -> nil
 end
 ```

@@ -11,7 +11,7 @@ def with_block = [1, 2, 3].each { |x| x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def with_block: -> [1, 2, 3]
 end
 ```
@@ -27,7 +27,7 @@ def with_map = [1, 2, 3].map { |x| x.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def with_map: -> Array[String]
 end
 ```
@@ -43,7 +43,7 @@ def with_select = [1, 2, 3].select { |x| x > 1 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def with_select: -> Array[1 | 2 | 3]
 end
 ```
@@ -59,7 +59,7 @@ def with_block_param(&block) = 42
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def with_block_param: (?untyped &block) -> 42
 end
 ```
@@ -79,7 +79,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def block_rest_post: -> Array[[1, ["x"], :y]]
 end
 ```
@@ -99,7 +99,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def block_optional_post: -> Array[[:fallback, 1, 2]]
 end
 ```
@@ -115,7 +115,7 @@ def with_yield = yield 1
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def with_yield: { (Integer) -> untyped } -> untyped
 end
 ```
@@ -192,7 +192,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def make_proc: -> 42
 end
 ```
@@ -211,7 +211,7 @@ def times_block = 3.times { |i| i }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def times_chain: -> Array[Integer]
   def upto_chain: -> Array[Integer]
   def downto_chain: -> Array[Integer]
@@ -274,7 +274,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def integer_step_values: -> Array[Integer]
   def integer_step_pairs: -> Array[[Integer, Integer]]
   def integer_step_detect: -> [Integer, Integer]?
@@ -302,7 +302,7 @@ def make_lambda = -> () { 1 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def make_lambda: -> Proc
 end
 ```
