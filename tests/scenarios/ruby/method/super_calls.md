@@ -60,7 +60,7 @@ class Object
 end
 
 class Parent
-  def value: (untyped x) -> String
+  def value: (Integer x) -> String
 end
 ```
 

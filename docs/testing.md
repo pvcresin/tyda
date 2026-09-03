@@ -25,6 +25,11 @@ git diff --check
 途中で失敗してもすべてのターゲットを走らせたうえで失敗一覧を末尾にまとめて表示する
 （fail-fast で後続ターゲットの失敗が隠れないようにするため）。
 
+通常の Ruby scenario は `analysis::analyze_source_for_display` を入口とする完全解決の snapshot
+経路を使う。この経路は LSP、playground、詳細 CLI の表示結果と共通であり、推論結果の差分を
+入口ごとの実装で吸収しない。RBS / RBI / project fixture など、入力や解析 profile が異なる
+scenario はその条件を維持したうえで、同じ core の解析 backend を利用する。
+
 対象を絞るときは次を使う。
 
 ~~~bash

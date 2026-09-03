@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use tyda::analysis::{
     AnalysisOptions, AnalysisTimings, analyze_cli_diagnostic_target_snapshot_timed,
     analyze_compact_file_snapshot_timed, analyze_definitions_only_snapshot_timed,
-    analyze_file_registry_timed,
+    analyze_source_for_display,
 };
 use tyda::diagnostics::{
     TypeDiagnostic, TypeHoleSummary, build_scenario_seed, summarize_type_holes,
@@ -1467,20 +1467,20 @@ fn analyze_file(path: &Path, analysis: &CliAnalysisContext<'_>) -> Option<(Strin
         Ok(source) => {
             let file_path_str = path.to_string_lossy();
             let started_at = Instant::now();
-            let (registry, analysis_timings) = analyze_file_registry_timed(
+            let (snapshot, _, analysis_timings) = analyze_source_for_display(
                 &source,
                 Some(analysis.user_rbs),
-                analysis.stdlib_loader,
+                Some(analysis.stdlib_loader),
                 analysis.lazy_rbi_loader,
-                &file_path_str,
+                Some(&file_path_str),
                 AnalysisOptions {
                     rails_mode: analysis.rails_mode,
                     dsl_activation: analysis.dsl_activation.clone(),
                     project_versions: analysis.project_versions,
                     project_root: Some(analysis.workspace_root.clone()),
                 },
-                true,
             );
+            let registry = snapshot.materialized_registry();
             let render_started = Instant::now();
             let rbs = render_rbs_with_options(
                 &registry,

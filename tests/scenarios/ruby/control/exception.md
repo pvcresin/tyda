@@ -158,7 +158,7 @@ end
 ```rbs
 ERROR_CLASSES: [singleton(ArgumentError), singleton(TypeError)]
 
-class Object < BasicObject
+class Object
   def rescue_splat_specific: -> Integer | ArgumentError | TypeError
 end
 ```

@@ -7,7 +7,7 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 use tyda::analysis::{
-    AnalysisOptions, analyze_file_facts_with_deps, analyze_file_registry_with_options,
+    AnalysisOptions, analyze_file_facts_with_deps, analyze_source_cached_with_deps_lazy,
 };
 use tyda::project::{DslActivation, DslLibrary, ProjectVersions};
 use tyda::rails::load_project_types_with_activation;
@@ -201,19 +201,21 @@ fn prepare_standalone_step_context(
     let analysis_options = scenario_analysis_options(config, rails_mode, dsl_mode, None);
     // Empty workspace: the projection is the external RBS/RBI base resolved
     // through the shared backend, then used as the current-file context.
+    let lazy_rbs_merge = external_rbs.is_none();
     let base = external_rbs.unwrap_or_default();
     let mut workspace_state = WorkspaceState::new();
     let projection = workspace_state.workspace_registry(&base);
-    let registry = analyze_file_registry_with_options(
+    let (analysis, _, _) = analyze_source_cached_with_deps_lazy(
         &step.ruby_code,
         Some(&projection),
-        stdlib_loader,
+        Some(stdlib_loader),
         None,
-        &source_path,
+        Some(&source_path),
         analysis_options,
+        lazy_rbs_merge,
     );
     PreparedStepContext {
-        registry,
+        registry: analysis.registry().clone(),
         _tempdir: None,
     }
 }
@@ -291,16 +293,17 @@ fn prepare_project_backed_step_context(
     }
     let projection = workspace_state.workspace_registry(&user_rbs);
 
-    let registry = analyze_file_registry_with_options(
+    let (analysis, _, _) = analyze_source_cached_with_deps_lazy(
         &step.ruby_code,
         Some(&projection),
-        stdlib_loader,
+        Some(stdlib_loader),
         None,
-        source_path.to_str().expect("scenario path"),
+        Some(source_path.to_str().expect("scenario path")),
         opts,
+        false,
     );
     PreparedStepContext {
-        registry,
+        registry: analysis.registry().clone(),
         _tempdir: Some(dir),
     }
 }

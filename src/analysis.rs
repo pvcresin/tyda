@@ -232,6 +232,7 @@ pub fn hover_at_with_analysis_options(
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: false,
     });
+    engine.resolve_pending_constant_definition_snapshots();
     engine.find_hover_at(source, offset)
 }
 
@@ -362,14 +363,16 @@ pub fn analyze_source_with_file_path_rails_with_options(
     file_path: &str,
     options: AnalysisOptions,
 ) -> TypeRegistry {
-    analyze_file_registry_with_options(
+    let (analysis, _, _) = analyze_source_cached_with_deps_lazy(
         source,
         rbs_registry,
-        lazy_loader,
+        Some(lazy_loader),
         lazy_rbi_loader,
-        file_path,
+        Some(file_path),
         options,
-    )
+        false,
+    );
+    analysis.materialized_registry()
 }
 
 pub fn analyze_file_registry_with_options(
@@ -401,15 +404,16 @@ pub fn analyze_source_with_file_path_rails_timed_lazy(
     options: AnalysisOptions,
     lazy_rbs_merge: bool,
 ) -> (TypeRegistry, AnalysisTimings) {
-    analyze_file_registry_timed(
+    let (analysis, _, timings) = analyze_source_cached_with_deps_lazy(
         source,
         rbs_registry,
-        lazy_loader,
+        Some(lazy_loader),
         lazy_rbi_loader,
-        file_path,
+        Some(file_path),
         options,
         lazy_rbs_merge,
-    )
+    );
+    (analysis.materialized_registry(), timings)
 }
 
 pub fn analyze_file_registry_timed(
@@ -421,25 +425,16 @@ pub fn analyze_file_registry_timed(
     options: AnalysisOptions,
     lazy_external_rbs: bool,
 ) -> (TypeRegistry, AnalysisTimings) {
-    let (engine, timings) = build_engine_with_timings(AnalysisRequest {
+    let (analysis, _, timings) = analyze_source_cached_with_deps_lazy(
         source,
         rbs_registry,
-        lazy_loader: Some(lazy_loader),
+        Some(lazy_loader),
         lazy_rbi_loader,
-        file_path: Some(file_path),
-        options: &options,
-        dependency_collection: DependencyCollection::Disabled,
-        hover_snapshot_mode: HoverSnapshotMode::Skip,
-        annotated_body_hover_mode: AnnotatedBodyHoverMode::Disabled,
-        external_rbs_loading: if lazy_external_rbs {
-            ExternalRbsLoading::OnDemand
-        } else {
-            ExternalRbsLoading::Preload
-        },
-        resolution_depth: ResolutionDepth::Full,
-        rbi_declaration_source: false,
-    });
-    (engine.into_registry(), timings)
+        Some(file_path),
+        options,
+        lazy_external_rbs,
+    );
+    (analysis.materialized_registry(), timings)
 }
 
 pub fn analyze_compact_file_snapshot_timed(
@@ -601,21 +596,14 @@ pub fn playground_analyze(
     };
 
     let options = AnalysisOptions::default();
-    let (engine, _timings) = build_engine_with_timings(AnalysisRequest {
+    let (snapshot, _, _timings) = analyze_source_for_display(
         source,
-        rbs_registry: user_rbs,
-        lazy_loader: Some(lazy_loader),
-        lazy_rbi_loader: None,
-        file_path: Some(file_path),
-        options: &options,
-        dependency_collection: DependencyCollection::Disabled,
-        hover_snapshot_mode: HoverSnapshotMode::Record,
-        annotated_body_hover_mode: AnnotatedBodyHoverMode::Enabled,
-        external_rbs_loading: ExternalRbsLoading::Preload,
-        resolution_depth: ResolutionDepth::Full,
-        rbi_declaration_source: false,
-    });
-    let snapshot = engine.into_file_analysis_snapshot();
+        user_rbs,
+        Some(lazy_loader),
+        None,
+        Some(file_path),
+        options,
+    );
 
     let rbs = crate::rbs::render::render_rbs_for_file(snapshot.registry(), file_path);
 
@@ -1148,6 +1136,30 @@ pub fn analyze_source_cached_with_deps_lazy(
     (analysis, deps, timings)
 }
 
+/// Full-resolution analysis shared by interactive displays and scenario tests.
+pub fn analyze_source_for_display(
+    source: &str,
+    rbs_registry: Option<&TypeRegistry>,
+    lazy_loader: Option<&LazyRbsLoader>,
+    lazy_rbi_loader: Option<&LazyRbiLoader>,
+    file_path: Option<&str>,
+    options: AnalysisOptions,
+) -> (
+    FileAnalysisSnapshot,
+    crate::dep_graph::FileDeps,
+    AnalysisTimings,
+) {
+    analyze_source_cached_with_deps_lazy(
+        source,
+        rbs_registry,
+        lazy_loader,
+        lazy_rbi_loader,
+        file_path,
+        options,
+        true,
+    )
+}
+
 pub fn analyze_cached_file_with_deps(
     source: &str,
     rbs_registry: Option<&TypeRegistry>,
@@ -1439,10 +1451,7 @@ fn build_engine_with_timings<'a>(
 
         if hover_snapshot_mode.should_record() {
             let hover_snapshots_started = Instant::now();
-            let mut top_scope = crate::inference::Scope::default();
-            for node in statements.body().iter() {
-                engine.collect_top_level_hover(&node, &parse_result, &mut top_scope);
-            }
+            engine.collect_top_level_hovers_isolated(&program, &parse_result);
             timings.hover_snapshots = hover_snapshots_started.elapsed();
         }
     }
@@ -1496,6 +1505,54 @@ mod tests {
             dependency_collection,
         );
         deps
+    }
+
+    #[test]
+    fn hover_definition_lookup_does_not_change_semantic_facts() {
+        let source = r#"
+module Outer
+  module Inner
+    VALUE = 1
+  end
+end
+
+ALIAS = Outer::Inner
+
+def read = ALIAS::VALUE
+"#;
+        let loader =
+            LazyRbsLoader::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs/core"));
+        let analyze = |hover_snapshot_mode| {
+            let options = AnalysisOptions::default();
+            let (engine, _) = build_engine_with_timings(AnalysisRequest {
+                source,
+                rbs_registry: None,
+                lazy_loader: Some(&loader),
+                lazy_rbi_loader: None,
+                file_path: Some("scenario.rb"),
+                options: &options,
+                dependency_collection: DependencyCollection::Disabled,
+                hover_snapshot_mode,
+                annotated_body_hover_mode: if hover_snapshot_mode.should_record() {
+                    AnnotatedBodyHoverMode::Enabled
+                } else {
+                    AnnotatedBodyHoverMode::Disabled
+                },
+                external_rbs_loading: ExternalRbsLoading::OnDemand,
+                resolution_depth: ResolutionDepth::Full,
+                rbi_declaration_source: false,
+            });
+            engine.into_file_analysis_snapshot().materialized_registry()
+        };
+        let skip = analyze(HoverSnapshotMode::Skip);
+        let record = analyze(HoverSnapshotMode::Record);
+        assert_eq!(
+            skip.class_data_for("Object")
+                .and_then(|data| data.superclass.clone()),
+            record
+                .class_data_for("Object")
+                .and_then(|data| data.superclass.clone())
+        );
     }
 
     #[test]

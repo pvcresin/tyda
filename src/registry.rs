@@ -3594,10 +3594,12 @@ impl TypeRegistry {
         data.call_sites_revision = data.call_sites_revision.wrapping_add(1);
     }
     pub fn finalize_pending_call_site_summaries(&mut self) {
+        let mut had_pending_call_site_summaries = false;
         for data in self.class_data.values_mut() {
             if !data.has_pending_call_site_summary {
                 continue;
             }
+            had_pending_call_site_summaries = true;
             if data.call_sites.len() <= 1 {
                 data.has_pending_call_site_summary = false;
                 continue;
@@ -3615,6 +3617,14 @@ impl TypeRegistry {
             data.call_sites_revision = data.call_sites_revision.wrapping_add(1);
             data.has_pending_call_site_summary = false;
         }
+        if had_pending_call_site_summaries {
+            self.invalidate_resolve_cache();
+        }
+    }
+
+    /// Drop parameter signatures cached before the registry's call sites settled.
+    pub(crate) fn invalidate_resolve_cache(&mut self) {
+        self.resolve_params_cache.clear();
     }
 
     pub fn set_constant(

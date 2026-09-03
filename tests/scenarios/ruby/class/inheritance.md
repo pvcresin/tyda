@@ -319,7 +319,7 @@ B.new.foo(1)
 
 ```rbs
 class A
-  def foo: (untyped x) -> Integer
+  def foo: (Integer x) -> Integer
 end
 
 class B < A

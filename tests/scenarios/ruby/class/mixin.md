@@ -431,7 +431,7 @@ module M
   def hello: -> :m
 end
 
-class Object < BasicObject
+class Object
   def f: -> :m
 end
 ```
@@ -467,7 +467,7 @@ module M
   def hello: -> :m
 end
 
-class Object < BasicObject
+class Object
   def f: -> :m
 end
 ```
