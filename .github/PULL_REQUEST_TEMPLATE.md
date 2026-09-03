@@ -1,10 +1,10 @@
-<!-- Title: English, imperative, like a commit subject. Body: Japanese. -->
+<!-- Title and body: English. Use an imperative title, like a commit subject. -->
 
-## 概要
+## Summary
 
-<!-- 何を・なぜ。箇条書きで簡潔に。大きな PR は領域ごとに小見出しを切る。 -->
+<!-- Briefly explain what changed and why in bullet points. Use subheadings by area for large PRs. -->
 
-## 検証
+## Verification
 
-- [ ] `./scripts/check.sh`（fmt / clippy / test / release build）
-<!-- 必要に応じて: render byte 比較・benchmark 非回帰・testbed 実測など -->
+- [ ] `./scripts/check.sh` (fmt / clippy / test / release build)
+<!-- Add other relevant gates as needed: render byte comparison, benchmark non-regression, testbed counts, etc. -->

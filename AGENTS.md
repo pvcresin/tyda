@@ -10,8 +10,9 @@ parser FFI), `vscode/` (editor extension), `playground/` (wasm demo), `docs/` (l
   Japanese; root entry files, code, comments, and commit messages are English.
 - Code comments: English, minimal, why-not only — prefer no comment.
 - Commits: English, ≤50 chars, start with an imperative verb.
-- PRs: title in English (imperative, like commits); body in Japanese following
-  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md).
+- PRs: title and body in English. Use an imperative title like commits and follow
+  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md), keeping
+  its `## Summary` and `## Verification` sections.
 - When finishing: update the matching living doc (map below) and run `./scripts/check.sh`.
 
 ## Skills — task recipes

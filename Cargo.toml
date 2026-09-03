@@ -3,9 +3,9 @@ members = [".", "crates/rbs-sys"]
 
 [package]
 name = "tyda"
-# Dev placeholder. On release the CI stamps this (and the matching Cargo.lock
-# entry) with the git tag version before building (scripts/stamp-version.rb), so
-# the binary's `Tyda v…` matches the gem. Format: 0.0.YYYYMMDD[.N].
+# Dev placeholder. build.rs sets the binary version from tyda-version.txt and
+# TYDA_RELEASE_VERSION, so the binary's `Tyda v…` matches the gem on release.
+# Format: 0.0.YYYYMMDDHHMMSS.
 version = "0.0.0"
 edition = "2024"
 license = "MIT"

@@ -1,36 +1,29 @@
-# Build, verify, and (on release) publish Tyda as a per-platform RubyGem.
+# Build, verify, and publish Tyda as a per-platform RubyGem.
 #
 # One pipeline: each platform leg builds the native binary, stages it plus the
 # stdlib RBS data into the gem (libexec/<bin> + libexec/vendor/rbs), packages a
 # platform-specific gem, and verifies the *installed* gem actually runs
-# inference standalone. The gem is not registered yet, so the build is gated to
-# release tags until the package is ready for publication.
+# inference standalone. The publish job releases every successful main push.
 #
-# Release model: trunk-based — every merge to main cuts a release. The version
-# is MAJOR.MINOR (from tyda-version.txt, humans bump it) + the merge commit's UTC
+# Release model: trunk-based — every merge to main cuts a release. The version is
+# MAJOR.MINOR (from tyda-version.txt, humans bump it) + the merge commit's UTC
 # timestamp as the patch, e.g. 0.0.20260628195820. No tag or version-bump commit;
 # raise MAJOR/MINOR by editing tyda-version.txt (0.0 → 0.1). The same value is
 # stamped into both the gem and the binary via TYDA_RELEASE_VERSION.
 #
-# TODO(release) before enabling publish:
+# One-time setup outside the repository before the first main merge:
+#   - create a pending RubyGems Trusted Publisher for pvcresin/tyda and this
+#     workflow (release-gem.yml), without an environment restriction
 #   - confirm spec.name is free on rubygems.org
-#   - set spec.metadata["allowed_push_host"] = "https://rubygems.org" in tyda.gemspec
-#   - set up RubyGems Trusted Publishing (OIDC) or a RUBYGEMS_AUTH_TOKEN secret
-#   - delete the trailing ` && false` on the publish job's `if:` line
 name: release-gem
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
-  pull_request:
-  workflow_dispatch:
 
 jobs:
   build:
     name: build & verify (${{ matrix.platform }})
-    # Skip packaging until the gem is registered; keep release-tag verification.
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -91,15 +84,12 @@ jobs:
         with:
           key: ${{ matrix.platform }}
 
-      # Cut the release version on main (and explicit tags): MAJOR.MINOR from
-      # tyda-version.txt + the merge commit's UTC timestamp as the patch. It is
-      # derived from the commit, so every platform leg computes the same value
-      # without a shared job. build.rs (binary) and lib/tyda/version.rb (gem)
-      # both read TYDA_RELEASE_VERSION, so the two report an identical version.
-      # PR builds skip this and fall back to a dev version (the smoke test below
-      # only checks that `--version` runs).
+      # Cut the release version: MAJOR.MINOR from tyda-version.txt + the merge
+      # commit's UTC timestamp as the patch. It is derived from the commit, so
+      # every platform leg computes the same value without a shared job.
+      # build.rs (binary) and lib/tyda/version.rb (gem) both read
+      # TYDA_RELEASE_VERSION, so the two report an identical version.
       - name: Compute release version
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         run: |
           PREFIX="$(cut -d. -f1,2 tyda-version.txt)"
           TS="$(TZ=UTC git show -s --date=format-local:%Y%m%d%H%M%S --format=%cd HEAD)"
@@ -148,13 +138,10 @@ jobs:
 
   publish:
     needs: build
-    # Disabled until the gem is registered on rubygems.org (nothing is published
-    # yet). Re-enable by deleting the trailing ` && false` on the line below.
-    if: startsWith(github.ref, 'refs/tags/v') && false
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # for RubyGems Trusted Publishing (OIDC)
+      id-token: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -162,14 +149,23 @@ jobs:
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
         with:
           ruby-version: "3.4"
-      # TODO(release): prefer RubyGems Trusted Publishing (rubygems/release-gem).
-      # GEM_HOST_API_KEY references a placeholder secret that is intentionally
-      # not set, so even if this job ran it could not push.
+
+      # Exchange the GitHub Actions OIDC identity for a short-lived, gem-scoped
+      # RubyGems credential. No RubyGems API token is stored in GitHub secrets.
+      - name: Configure RubyGems Trusted Publishing credentials
+        uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
+
       - name: Publish every platform gem to RubyGems
+        shell: bash
         env:
-          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_AUTH_TOKEN }}
+          RUBYGEMS_HOST: https://rubygems.org
         run: |
-          for gem in dist/*/*.gem; do
-            echo "pushing $gem"
-            gem push "$gem"
+          gem_files=(dist/*/*.gem)
+          if (( ${#gem_files[@]} == 0 )); then
+            echo "No gem artifacts found"
+            exit 1
+          fi
+          for gem_file in "${gem_files[@]}"; do
+            echo "pushing $gem_file"
+            gem push "$gem_file"
           done

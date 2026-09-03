@@ -19,9 +19,10 @@ change per commit.
 ## PR
 
 - Title: English, imperative, like a commit subject.
-- Body: Japanese, following `.github/PULL_REQUEST_TEMPLATE.md` — `## 概要` (what/why,
-  bullet points; subheadings per area for large PRs) and `## 検証` (check.sh checkbox
-  plus any extra gates: render byte comparison, benchmark non-regression, testbed counts).
+- Body: English, following `.github/PULL_REQUEST_TEMPLATE.md` — keep the `## Summary`
+  section (what/why, bullet points; subheadings per area for large PRs) and the
+  `## Verification` section (check.sh checkbox plus any extra gates: render byte
+  comparison, benchmark non-regression, testbed counts).
 - Base branch: `main`.
 
 ```bash

@@ -20,10 +20,7 @@ Gem::Specification.new do |spec|
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = spec.homepage
   spec.metadata["changelog_uri"] = "#{spec.homepage}/releases"
-  # SAFETY guard against an accidental publish while the gem is not ready:
-  # rubygems.org refuses a push whose allowed_push_host does not match it. Flip
-  # this to "https://rubygems.org" (one line) when ready to release.
-  spec.metadata["allowed_push_host"] = "https://rubygems.example.invalid"
+  spec.metadata["allowed_push_host"] = "https://rubygems.org"
 
   # Ship the Ruby wrapper plus the precompiled binary and its stdlib RBS data,
   # staged into libexec/ by the release pipeline (libexec/<bin> +
