@@ -3,12 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# vendor/rbs comes from the rbs gem (scripts/vendor-rbs.sh). Expand it first so
-# direct runs / fresh checkouts can still build rbs-sys via cargo.
-if [ ! -d "vendor/rbs/core" ]; then
-  echo "=== Vendoring RBS (vendor/rbs missing) ==="
-  ./scripts/vendor-rbs.sh
-fi
+# vendor/rbs comes from the rbs gem (scripts/vendor-rbs.sh). The script is a
+# no-op when the ignored tree already matches Gemfile.lock, and refreshes it
+# when a dependency bump leaves an older generated tree in place.
+./scripts/vendor-rbs.sh
 
 echo "=== Formatting ==="
 cargo fmt -- --check

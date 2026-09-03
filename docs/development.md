@@ -28,7 +28,7 @@ mise run dev
 mise run e2e
 ~~~
 
-`./scripts/check.sh` は Rust の format、clippy、test、release build をまとめて実行する。
+`./scripts/check.sh` は lockfile に合わせた stdlib RBS の生成確認と、Rust の format、clippy、test、release build をまとめて実行する。
 wasm feature の clippy と playground の整形確認も含め、変更の完了条件はこの check とする。
 
 実験的な arity diagnostics は次で確認できる。
@@ -40,6 +40,7 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
 ## RBS と parser
 
 - stdlib の RBS は Gemfile / Gemfile.lock の rbs gem から `mise run vendor-rbs` で生成する。
+  `./scripts/check.sh` も生成 version marker を確認し、古い `vendor/rbs/` を自動更新する。
 - `crates/rbs-sys` は公式 RBS C parser への薄い FFI。型定義の変換後に parser の構造体を保持しない。
 - Ruby runtime は build-time のみで、生成済み CLI / wasm の実行には不要。
 - RBS / RBI の import を変更したら、対応する scenario と外部型の unit test を更新する。
