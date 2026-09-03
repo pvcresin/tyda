@@ -3,7 +3,8 @@
 # One pipeline: each platform leg builds the native binary, stages it plus the
 # stdlib RBS data into the gem (libexec/<bin> + libexec/vendor/rbs), packages a
 # platform-specific gem, and verifies the *installed* gem actually runs
-# inference standalone. The publish job releases every successful main push.
+# inference standalone. The publish job releases every successful main push, and
+# the final release job records the same version as a GitHub Release.
 #
 # Release model: trunk-based — every merge to main cuts a release. The version is
 # MAJOR.MINOR (from tyda-version.txt, humans bump it) + the merge commit's UTC
@@ -169,3 +170,32 @@ jobs:
             echo "pushing $gem_file"
             gem push "$gem_file"
           done
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Keep the GitHub Release tag identical to the version published to RubyGems.
+      - name: Compute release version
+        run: |
+          PREFIX="$(cut -d. -f1,2 tyda-version.txt)"
+          TS="$(TZ=UTC git show -s --date=format-local:%Y%m%d%H%M%S --format=%cd HEAD)"
+          echo "TYDA_RELEASE_VERSION=${PREFIX}.${TS}" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${TYDA_RELEASE_VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "GitHub Release $tag already exists"
+            exit 0
+          fi
+          gh release create "$tag" \
+            --target "$GITHUB_SHA" \
+            --title "$tag" \
+            --generate-notes

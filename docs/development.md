@@ -59,7 +59,7 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
 
 - PR の基本ゲートは `Test`、`Performance`、`pages`、`Workflow lint`。`Test` は Ubuntu の format / lint / test shards、Windows の Rust build / clippy / test、VS Code 拡張の型検査・bundleを確認し、`Performance` は pinned な大規模 GitLab workspace の速度・max RSSを base/head で比較し、`pages` は wasm build と E2E を確認する。
 - `Test` は Linux と Windows の Rust build / clippy / test を確認する。
-- release workflow は VSIX packaging と smoke test、main マージごとの platform gem packaging / smoke test / RubyGems Trusted Publishing を確認する。RubyGems 側の pending trusted publisher を事前に設定する。Linux ARM64 はGitHub-hosted runnerの利用条件が整い次第追加する。
+- release workflow は VSIX packaging と smoke test、main マージごとの platform gem packaging / smoke test / RubyGems Trusted Publishing を確認する。gem 公開後は同じバージョンの `v...` tag と GitHub Release を作成し、前回 Release 以降のマージPRを自動生成ノートに記録する。RubyGems 側の pending trusted publisher を事前に設定する。Linux ARM64 はGitHub-hosted runnerの利用条件が整い次第追加する。
 - Actions は commit SHA で固定し、`Workflow lint` の `actionlint` で workflow の構文・context を検査する。
 
 Windows のローカル開発は、現行の `scripts/*.sh` と `mise` task が Bash 前提のため Git Bash または WSL を使う。配布物はWindows x64をrelease workflowで検証する。
