@@ -1,0 +1,71 @@
+name: Performance
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  large-app:
+    name: large-app
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+        with:
+          install_args: rust
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Cache vendor/rbs
+        id: cache-rbs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/rbs
+          key: ${{ runner.os }}-vendor-rbs-${{ hashFiles('Gemfile.lock') }}
+
+      - name: Vendor RBS (rbs gem → vendor/rbs)
+        if: steps.cache-rbs.outputs.cache-hit != 'true'
+        run: |
+          mise install ruby
+          mise run vendor-rbs
+
+      - name: Cache GitLab subject
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: subject/gitlab
+          key: ${{ runner.os }}-subject-gitlab-${{ hashFiles('scripts/setup_subjects.sh') }}
+
+      - name: Prepare pinned GitLab subject
+        run: ./scripts/setup_subjects.sh gitlab
+
+      - name: Compare base and head performance
+        env:
+          TYDA_PERF_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          TYDA_PERF_RUNS: "5"
+          TYDA_PERF_THREADS: "2"
+        run: ./scripts/benchmark_ci.sh
+
+      - name: Upload performance result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: performance-result
+          path: target/performance/result.json
+          if-no-files-found: ignore

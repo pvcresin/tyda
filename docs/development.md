@@ -57,7 +57,7 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
 
 ## CI
 
-- PR の基本ゲートは `Test`、`pages`、`Workflow lint`。`Test` は Ubuntu の format / lint / test shards、Windows の Rust build / clippy / test、VS Code 拡張の型検査・bundleを確認し、`pages` は wasm build と E2E を確認する。
+- PR の基本ゲートは `Test`、`Performance`、`pages`、`Workflow lint`。`Test` は Ubuntu の format / lint / test shards、Windows の Rust build / clippy / test、VS Code 拡張の型検査・bundleを確認し、`Performance` は pinned な大規模 GitLab workspace の速度・max RSSを base/head で比較し、`pages` は wasm build と E2E を確認する。
 - `Test` は Linux と Windows の Rust build / clippy / test を確認する。
 - release workflow は VSIX packaging と smoke testを確認する。gem packaging はRubyGems登録前のためrelease tag以外ではskipし、登録後に有効化する。Linux ARM64 はGitHub-hosted runnerの利用条件が整い次第追加する。
 - Actions は commit SHA で固定し、`Workflow lint` の `actionlint` で workflow の構文・context を検査する。
