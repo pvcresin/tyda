@@ -108,11 +108,9 @@ jobs:
 
   deploy:
     needs: e2e-test
-    # Disabled while the repo is private (GitHub Pages needs a public repo).
-    # Re-enable by deleting the trailing ` && false` on the `if:` line below.
     # main pushes only, and only on GitHub (deploy-pages needs Pages OIDC,
     # which act cannot provide — so this is skipped locally).
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && false
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       pages: write
