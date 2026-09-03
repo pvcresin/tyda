@@ -22,7 +22,7 @@ def id(x) = x
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def id: ((Integer | String) x) -> (Integer | String)
 end
 ```

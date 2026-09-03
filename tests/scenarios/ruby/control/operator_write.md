@@ -39,7 +39,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def minus_eq: -> Integer
   def mul_eq: -> Float
   def mod_eq: -> Float
@@ -67,7 +67,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def bit_ops: -> Integer
 end
 ```
@@ -87,7 +87,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def append_text: -> String
 end
 ```
@@ -134,7 +134,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def folded: -> Integer
 end
 ```

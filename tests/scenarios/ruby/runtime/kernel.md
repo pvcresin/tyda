@@ -157,7 +157,7 @@ def ids = Array([1, 2, 3])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def ids: -> Array[1 | 2 | 3]
 end
 ```

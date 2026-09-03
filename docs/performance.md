@@ -39,6 +39,32 @@ cargo test --release bench_workspace_rescan_mastodon_scale -- --nocapture
 正式値は release build、原則 3 runs。workspace scan、first / cached / dirty display、max RSS を
 分けて見る。initialize の cold path と通常 display は別の基準にする。
 
+## CI の性能ゲート
+
+`.github/workflows/performance.yml` は pinned commit の `subject/gitlab/app` を使い、同じ runner 上で
+base と head を交互に 5 回計測する。CLI の全体解析と LSP の workspace scan を対象にし、各 run の
+最大 RSS も同時に取る。解析 worker 数は 2 に固定し、大きな subject は並列化せず `nice -n 19` で実行する。
+
+手元で同じ比較を行う場合は、subject と vendor/RBS を用意したうえで次を実行する。
+
+~~~bash
+TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
+~~~
+
+単一 run の揺れで失敗しないよう中央値で比較し、時間は 15% 超、メモリは 10% 超で warning を出す。
+時間が 30% 超かつ 100ms 以上、または max RSS が 20% 超かつ 16MiB 以上増えた場合だけ CI を失敗させる。
+小さな劣化を許容しつつ、実質的な回帰は PR の段階で止めるための初期値である。基準を別 runner の
+過去値と比較せず、base/head を同じ job で測ることで CPU や runner の世代差を打ち消す。
+
+GitHub の branch protection では、この workflow の `large-app` check を required に設定する。
+
+結果は `target/performance/result.json` として artifact に保存する。warning が継続する場合や runner
+環境が変わった場合は、まず複数回の結果を確認してから閾値を見直す。性能計測の対象を追加するときも、
+同じ測定順序・worker 数・subject pin を維持する。
+
+計測のプロセス監視と結果比較は Ruby の `scripts/measure_process.rb` と
+`scripts/compare_performance.rb` で行い、リポジトリの開発用 Ruby 環境を共有する。
+
 ## 現在の基準値
 
 ### CLI

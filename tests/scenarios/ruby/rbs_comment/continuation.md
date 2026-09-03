@@ -53,7 +53,7 @@ def greet(name:, age:) = "#{name}: #{age}"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def greet: (name: String, age: Integer) -> String
 end
 ```
@@ -71,7 +71,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def connect: (?timeout: Integer) -> void
 end
 ```
@@ -88,7 +88,7 @@ def sum(*nums) = 0
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def sum: (*Integer nums) -> Integer
 end
 ```
@@ -106,7 +106,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def log: (**String opts) -> void
 end
 ```
@@ -123,7 +123,7 @@ def map_items(&blk) = []
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_items: { (Integer) -> String } -> Array[String]
 end
 ```
@@ -141,7 +141,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def mixed: (String a, ?Integer b, name: String) -> void
 end
 ```

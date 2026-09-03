@@ -300,6 +300,15 @@ pub(crate) struct DefinitionSnapshot {
     pub(crate) target: DefinitionLookupTarget,
 }
 
+#[derive(Clone, Debug)]
+struct PendingConstantDefinitionSnapshot {
+    start: usize,
+    end: usize,
+    path: String,
+    class_context: String,
+    ty: Type,
+}
+
 pub(crate) use rbs::convert_rbs_type;
 
 /// Fast-path filter for the bare Kernel method dispatch.
@@ -524,6 +533,7 @@ pub struct InferenceEngine<'a> {
     analyzing_rbi_declaration: bool,
     var_snapshots: Vec<HoverSnapshot>,
     definition_snapshots: Vec<DefinitionSnapshot>,
+    pending_constant_definition_snapshots: Vec<PendingConstantDefinitionSnapshot>,
     arg_check_sites: Vec<ArgCheckSite>,
     unresolved_constant_sites: Vec<UnresolvedConstantSite>,
     file_deps: crate::dep_graph::FileDeps,
@@ -737,6 +747,10 @@ impl FileAnalysisSnapshot {
             registry.apply_method_body_summary(&self.method_body_summary);
         }
         registry
+    }
+
+    pub fn materialized_registry(&self) -> TypeRegistry {
+        self.materialize_registry()
     }
 
     fn into_materialized_registry(self) -> (TypeRegistry, HoverIndex, DiagnosticReplayMeta) {
@@ -1540,6 +1554,7 @@ impl<'a> InferenceEngine<'a> {
             analyzing_rbi_declaration: false,
             var_snapshots: hover_index.snapshots,
             definition_snapshots: hover_index.definition_snapshots,
+            pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: hover_index.arg_check_sites,
             unresolved_constant_sites: hover_index.unresolved_constant_sites,
             file_deps: crate::dep_graph::FileDeps::default(),
@@ -1596,6 +1611,7 @@ impl<'a> InferenceEngine<'a> {
             analyzing_rbi_declaration: false,
             var_snapshots: Vec::new(),
             definition_snapshots: Vec::new(),
+            pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: Vec::new(),
             unresolved_constant_sites: Vec::new(),
             file_deps: crate::dep_graph::FileDeps::default(),
@@ -2721,9 +2737,46 @@ impl<'a> InferenceEngine<'a> {
         class_context: &str,
         ty: &Type,
     ) {
-        if let Some(target) = self.constant_definition_target_for_path(path, class_context, ty) {
-            self.push_definition_snapshot(DefinitionSnapshot { start, end, target });
+        if !self.record_hover_snapshots {
+            return;
         }
+        self.pending_constant_definition_snapshots
+            .push(PendingConstantDefinitionSnapshot {
+                start,
+                end,
+                path: path.to_string(),
+                class_context: class_context.to_string(),
+                ty: ty.clone(),
+            });
+    }
+
+    pub(crate) fn resolve_pending_constant_definition_snapshots(&mut self) {
+        if self.pending_constant_definition_snapshots.is_empty() {
+            return;
+        }
+
+        // Definition lookup may load lazy RBS classes. Keep that enrichment out of semantic facts.
+        let lookup_registry = self.registry.clone();
+        let semantic_registry = std::mem::replace(&mut self.registry, lookup_registry);
+        let merged_stdlib_classes = self.merged_stdlib_classes.clone();
+        let merged_external_classes = self.merged_external_classes.clone();
+        let pending = std::mem::take(&mut self.pending_constant_definition_snapshots);
+        for request in pending {
+            if let Some(target) = self.constant_definition_target_for_path(
+                &request.path,
+                &request.class_context,
+                &request.ty,
+            ) {
+                self.push_definition_snapshot(DefinitionSnapshot {
+                    start: request.start,
+                    end: request.end,
+                    target,
+                });
+            }
+        }
+        self.registry = semantic_registry;
+        self.merged_stdlib_classes = merged_stdlib_classes;
+        self.merged_external_classes = merged_external_classes;
     }
 
     fn push_constant_path_definition_snapshots(
@@ -6904,6 +6957,27 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         arg_types: &[Type],
     ) -> Option<Type> {
+        if let Type::Union(parts) = receiver_type {
+            let mut results = Vec::with_capacity(parts.len());
+            let mut result_variant_count = 0;
+            for part in parts {
+                let result = Self::resolve_literal_call(part, method_name, arg_types)?;
+                result_variant_count += match &result {
+                    Type::Union(inner) => inner.len(),
+                    _ => 1,
+                };
+                if result_variant_count > Self::MAX_INTERPOLATED_LITERAL_VARIANTS {
+                    return None;
+                }
+                results.push(result);
+            }
+            return Some(Type::from_type_vec(
+                results
+                    .into_iter()
+                    .map(Self::widen_literal_call_result)
+                    .collect(),
+            ));
+        }
         if arg_types.is_empty() {
             return Self::resolve_literal_no_arg_method(receiver_type, method_name);
         }
@@ -6913,6 +6987,40 @@ impl<'a> InferenceEngine<'a> {
         Self::resolve_literal_string_binary_call(receiver_type, method_name, &arg_types[0]).or_else(
             || Self::resolve_literal_integer_binary_call(receiver_type, method_name, &arg_types[0]),
         )
+    }
+
+    fn widen_literal_call_result(ty: Type) -> Type {
+        match ty {
+            Type::LiteralInteger(_) => Type::Integer,
+            Type::LiteralString(_) => Type::String,
+            Type::Union(parts) => Type::from_type_vec(
+                parts
+                    .into_iter()
+                    .map(Self::widen_literal_call_result)
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
+    fn literal_call_receiver_is_supported(receiver_type: &Type) -> bool {
+        match receiver_type {
+            Type::Union(parts) => {
+                let has_integer = parts
+                    .iter()
+                    .any(|part| Self::literal_integer_variants(part).is_some());
+                let has_string = parts
+                    .iter()
+                    .any(|part| Self::literal_string_variants(part).is_some());
+                has_integer
+                    && has_string
+                    && parts.iter().all(|part| {
+                        Self::literal_string_variants(part).is_some()
+                            || Self::literal_integer_variants(part).is_some()
+                    })
+            }
+            _ => Self::literal_string_variants(receiver_type).is_some(),
+        }
     }
 
     fn resolve_literal_string_slice_call(
@@ -7679,34 +7787,64 @@ impl<'a> InferenceEngine<'a> {
         self.registry.finalize_pending_scoped_type_refs();
     }
 
-    pub fn into_registry(self) -> TypeRegistry {
+    fn ensure_implicit_object_superclass(&mut self) {
+        let needs_superclass = self
+            .registry
+            .class_data_for("Object")
+            .is_some_and(|data| data.user_defined && !data.is_module && data.superclass.is_none());
+        if needs_superclass {
+            self.ensure_class_available("Object");
+        }
+    }
+
+    pub fn into_registry(mut self) -> TypeRegistry {
+        self.ensure_implicit_object_superclass();
         self.registry
     }
 
-    pub fn into_registry_and_deps(self) -> (TypeRegistry, crate::dep_graph::FileDeps) {
+    pub fn into_registry_and_deps(mut self) -> (TypeRegistry, crate::dep_graph::FileDeps) {
+        self.ensure_implicit_object_superclass();
         (self.registry, self.file_deps)
     }
 
-    fn dedup_hover_snapshots_keep_first(snapshots: Vec<HoverSnapshot>) -> Vec<HoverSnapshot> {
-        let mut seen: rustc_hash::FxHashSet<(usize, usize)> =
-            rustc_hash::FxHashSet::with_capacity_and_hasher(snapshots.len(), Default::default());
+    fn dedup_hover_snapshots(snapshots: Vec<HoverSnapshot>) -> Vec<HoverSnapshot> {
+        let mut seen: rustc_hash::FxHashMap<(usize, usize), usize> =
+            rustc_hash::FxHashMap::with_capacity_and_hasher(snapshots.len(), Default::default());
         let mut out = Vec::with_capacity(snapshots.len());
         for snap in snapshots {
-            if seen.insert((snap.start, snap.end)) {
+            let key = (snap.start, snap.end);
+            if let Some(index) = seen.get(&key).copied() {
+                if Self::value_hover_snapshot_is_untyped(&out[index])
+                    && Self::value_hover_snapshot_is_typed(&snap)
+                {
+                    out[index] = snap;
+                }
+            } else {
+                seen.insert(key, out.len());
                 out.push(snap);
             }
         }
         out
     }
 
-    pub fn into_file_analysis_snapshot(self) -> FileAnalysisSnapshot {
+    fn value_hover_snapshot_is_untyped(snapshot: &HoverSnapshot) -> bool {
+        matches!(&snapshot.target, HoverTarget::Value(ty) if *ty == Type::Untyped)
+    }
+
+    fn value_hover_snapshot_is_typed(snapshot: &HoverSnapshot) -> bool {
+        matches!(&snapshot.target, HoverTarget::Value(ty) if *ty != Type::Untyped)
+    }
+
+    pub fn into_file_analysis_snapshot(mut self) -> FileAnalysisSnapshot {
+        self.ensure_implicit_object_superclass();
+        self.resolve_pending_constant_definition_snapshots();
         FileAnalysisSnapshot {
             facts: FileFacts {
                 registry: self.registry,
             },
             method_body_summary: MethodBodySummary::default(),
             hover_index: HoverIndex {
-                snapshots: Self::dedup_hover_snapshots_keep_first(self.var_snapshots),
+                snapshots: Self::dedup_hover_snapshots(self.var_snapshots),
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
@@ -7720,16 +7858,67 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    pub(crate) fn collect_top_level_hovers_isolated(
+        &mut self,
+        program: &ruby_prism::ProgramNode<'_>,
+        parse_result: &ParseResult<'_>,
+    ) {
+        let facts_registry = self.registry.clone();
+        let constants = self.constants.clone();
+        let constant_name_sequences = self.constant_name_sequences.clone();
+        let merged_stdlib_classes = self.merged_stdlib_classes.clone();
+        let merged_external_classes = self.merged_external_classes.clone();
+        let file_deps = self.file_deps.clone();
+        let mut top_scope = Scope::default();
+        for node in program.statements().body().iter() {
+            self.collect_top_level_hover(&node, parse_result, &mut top_scope);
+        }
+        self.registry = facts_registry;
+        self.constants = constants;
+        self.constant_name_sequences = constant_name_sequences;
+        self.merged_stdlib_classes = merged_stdlib_classes;
+        self.merged_external_classes = merged_external_classes;
+        self.file_deps = file_deps;
+    }
+
+    pub(crate) fn infer_node_for_hover_isolated(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) {
+        let facts_registry = self.registry.clone();
+        let constants = self.constants.clone();
+        let constant_name_sequences = self.constant_name_sequences.clone();
+        let merged_stdlib_classes = self.merged_stdlib_classes.clone();
+        let merged_external_classes = self.merged_external_classes.clone();
+        let file_deps = self.file_deps.clone();
+        let deferred_method_bodies = self.deferred_method_bodies.clone();
+        let with_options_stack = self.with_options_stack.clone();
+        let _ = self.infer_node_type(class_name, node, parse_result, scope);
+        self.registry = facts_registry;
+        self.constants = constants;
+        self.constant_name_sequences = constant_name_sequences;
+        self.merged_stdlib_classes = merged_stdlib_classes;
+        self.merged_external_classes = merged_external_classes;
+        self.file_deps = file_deps;
+        self.deferred_method_bodies = deferred_method_bodies;
+        self.with_options_stack = with_options_stack;
+    }
+
     pub fn into_file_analysis_snapshot_and_deps(
-        self,
+        mut self,
     ) -> (FileAnalysisSnapshot, crate::dep_graph::FileDeps) {
+        self.ensure_implicit_object_superclass();
+        self.resolve_pending_constant_definition_snapshots();
         let analysis = FileAnalysisSnapshot {
             facts: FileFacts {
                 registry: self.registry,
             },
             method_body_summary: MethodBodySummary::default(),
             hover_index: HoverIndex {
-                snapshots: Self::dedup_hover_snapshots_keep_first(self.var_snapshots),
+                snapshots: Self::dedup_hover_snapshots(self.var_snapshots),
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
@@ -10045,12 +10234,10 @@ impl<'a> InferenceEngine<'a> {
                                         );
                                     }
                                 }
-                                // For CallNodes with an explicit receiver at class body — e.g.
-                                // `self.default_query_parser = 42` or `Rack.verbose = true` — also run full `infer_node_type` so the hover path gets method-call snapshots for that position.
                                 if self.record_hover_snapshots && call_node.receiver().is_some() {
                                     let mut scope = class_body_scope.clone();
                                     scope.singleton_dispatch = true;
-                                    let _ = self.infer_node_type(
+                                    self.infer_node_for_hover_isolated(
                                         class_name,
                                         &node,
                                         parse_result,
@@ -12963,6 +13150,9 @@ impl<'a> InferenceEngine<'a> {
 
         let registry_backup = self.registry.clone();
         let constants_backup = self.constants.clone();
+        let constant_name_sequences_backup = self.constant_name_sequences.clone();
+        let merged_stdlib_classes_backup = self.merged_stdlib_classes.clone();
+        let merged_external_classes_backup = self.merged_external_classes.clone();
         let file_deps_backup = self.file_deps.clone();
         let deferred_method_bodies_backup = self.deferred_method_bodies.clone();
         let with_options_stack_backup = self.with_options_stack.clone();
@@ -12971,6 +13161,9 @@ impl<'a> InferenceEngine<'a> {
 
         self.registry = registry_backup;
         self.constants = constants_backup;
+        self.constant_name_sequences = constant_name_sequences_backup;
+        self.merged_stdlib_classes = merged_stdlib_classes_backup;
+        self.merged_external_classes = merged_external_classes_backup;
         self.file_deps = file_deps_backup;
         self.deferred_method_bodies = deferred_method_bodies_backup;
         self.with_options_stack = with_options_stack_backup;
@@ -19928,7 +20121,20 @@ impl<'a> InferenceEngine<'a> {
                 let write_node = node
                     .as_local_variable_write_node()
                     .expect("must be LocalVariableWriteNode");
-                self.infer_node_type(class_name, &write_node.value(), parse_result, scope)
+                let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+                let value_type =
+                    self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
+                let start = node.location().start_offset();
+                let end = start.saturating_add(var_name.len());
+                self.push_hover_snapshot(HoverSnapshot {
+                    start,
+                    end,
+                    name: var_name,
+                    target: HoverTarget::Value(value_type.clone()),
+                    class_context: class_name.to_string(),
+                    method_context: scope.method_name.clone(),
+                });
+                value_type
             }
 
             Node::InstanceVariableReadNode { .. } => {
@@ -19965,7 +20171,20 @@ impl<'a> InferenceEngine<'a> {
                 let write_node = node
                     .as_instance_variable_write_node()
                     .expect("must be InstanceVariableWriteNode");
-                self.infer_node_type(class_name, &write_node.value(), parse_result, scope)
+                let ivar_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+                let value_type =
+                    self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
+                let start = node.location().start_offset();
+                let end = start.saturating_add(ivar_name.len());
+                self.push_hover_snapshot(HoverSnapshot {
+                    start,
+                    end,
+                    name: ivar_name,
+                    target: HoverTarget::Value(value_type.clone()),
+                    class_context: class_name.to_string(),
+                    method_context: scope.method_name.clone(),
+                });
+                value_type
             }
 
             Node::LocalVariableOrWriteNode { .. } => {
@@ -20314,7 +20533,7 @@ impl<'a> InferenceEngine<'a> {
                                 .and_then(|bp| bp.parameters())
                                 .map(|inner| inner.requireds().iter().count())
                                 .unwrap_or(0);
-                            let call_site_param_types =
+                            let hover_param_types =
                                 if self.record_hover_snapshots && required_count > 0 {
                                     let mut inference_scope = scope.clone();
                                     self.infer_lambda_block_param_types_from_call_sites_at(
@@ -20334,16 +20553,11 @@ impl<'a> InferenceEngine<'a> {
                             {
                                 for (i, req) in inner.requireds().iter().enumerate() {
                                     if let Some(name) = Self::extract_param_name(&req) {
-                                        let inferred = call_site_param_types
+                                        let inferred = hover_param_types
                                             .get(i)
                                             .cloned()
                                             .unwrap_or(Type::Untyped);
-                                        let scope_ty = if matches!(inferred, Type::Untyped) {
-                                            Type::ParamRef(i)
-                                        } else {
-                                            inferred.clone()
-                                        };
-                                        block_scope.set(&name, scope_ty);
+                                        block_scope.set(&name, Type::ParamRef(i));
                                         if self.record_hover_snapshots {
                                             let loc = req.location();
                                             self.push_hover_snapshot(HoverSnapshot {
@@ -22761,7 +22975,7 @@ impl<'a> InferenceEngine<'a> {
                                 }
                             }
                             if method_name == "*"
-                                && Self::literal_string_variants(&safe_nav_receiver_type).is_some()
+                                && Self::literal_call_receiver_is_supported(&safe_nav_receiver_type)
                             {
                                 let literal_arg_types;
                                 let literal_call_arg_types = if call_arg_types_for_generic

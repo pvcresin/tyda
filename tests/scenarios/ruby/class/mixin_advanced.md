@@ -233,7 +233,7 @@ class Item
   extend Attachable::ClassMethods
 end
 
-class Object
+class Object < BasicObject
   def result: -> String
 end
 ```
@@ -278,7 +278,7 @@ class Entry
   extend Configurable::BuilderMethods
 end
 
-class Object
+class Object < BasicObject
   def check: -> true
 end
 ```
@@ -308,7 +308,7 @@ class Job
   include Worker
 end
 
-class Object
+class Object < BasicObject
   def result: -> :queued
 end
 
@@ -346,7 +346,7 @@ class Job
   include Worker
 end
 
-class Object
+class Object < BasicObject
   def result: -> Integer
 end
 ```
@@ -385,7 +385,7 @@ class Item
   extend Feature::ClassMethods
 end
 
-class Object
+class Object < BasicObject
   def label: -> "label"
 end
 ```
@@ -414,7 +414,7 @@ class Item
   include Shared
 end
 
-class Object
+class Object < BasicObject
   def label: -> "label"
 end
 
@@ -461,7 +461,7 @@ class Entry
   def name: -> "entry"
 end
 
-class Object
+class Object < BasicObject
   def built: -> :built
   def name: -> "wrapped"
 end
@@ -496,7 +496,7 @@ def tag = Record.new.tag
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def tag: -> :tag
 end
 
@@ -551,7 +551,7 @@ class Entry
   def name: -> "entry"
 end
 
-class Object
+class Object < BasicObject
   def built: -> :built
   def name: -> "wrapped"
 end

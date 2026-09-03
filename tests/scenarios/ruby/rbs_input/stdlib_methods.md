@@ -11,7 +11,7 @@ def test = "42".to_i
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Integer
 end
 ```
@@ -27,7 +27,7 @@ def test = "3.14".to_f
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Float
 end
 ```
@@ -43,7 +43,7 @@ def test = "hello".length
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> 5
 end
 ```
@@ -59,7 +59,7 @@ def test = "hello".upcase
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -75,7 +75,7 @@ def test = "HELLO".downcase
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -91,7 +91,7 @@ def test = "  hello  ".strip
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -107,7 +107,7 @@ def test = "hello".reverse
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -123,7 +123,7 @@ def test = "hello\n".chomp
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -139,7 +139,7 @@ def test = "hello".chop
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -155,7 +155,7 @@ def test = "a,b,c".split
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Array[String]
 end
 ```
@@ -171,7 +171,7 @@ def test = "hello".chars
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> ["h", "e", "l", "l", "o"]
 end
 ```
@@ -187,7 +187,7 @@ def test = 42.to_s
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -203,7 +203,7 @@ def test = 42.to_f
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Float
 end
 ```
@@ -222,7 +222,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Integer
 end
 ```
@@ -238,7 +238,7 @@ def test = 0.zero?
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> bool
 end
 ```
@@ -254,7 +254,7 @@ def test = 3.14.to_i
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Integer
 end
 ```
@@ -270,7 +270,7 @@ def test = 3.14.to_s
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -286,7 +286,7 @@ def test = 3.14.round
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Integer
 end
 ```
@@ -302,7 +302,7 @@ def test = 3.14.ceil
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Integer
 end
 ```
@@ -318,7 +318,7 @@ def test = 3.14.floor
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Integer
 end
 ```
@@ -337,7 +337,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Float
 end
 ```
@@ -353,7 +353,7 @@ def test = [1, 2, 3].length
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> 3
 end
 ```
@@ -369,7 +369,7 @@ def test = [].empty?
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> true
 end
 ```
@@ -385,7 +385,7 @@ def test = [1, 2, 3].reverse
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Array[1 | 2 | 3]
 end
 ```
@@ -401,7 +401,7 @@ def test = [1, 2, 3].count
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> 3
 end
 ```
@@ -417,7 +417,7 @@ def test = [1, nil, 3].compact
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> [1, 3]
 end
 ```
@@ -433,7 +433,7 @@ def test = [[1, 2], [3]].flatten
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Array[1 | 2 | 3]
 end
 ```
@@ -449,7 +449,7 @@ def test = { a: 1, b: 2 }.keys
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Array[:a | :b]
 end
 ```
@@ -465,7 +465,7 @@ def test = { a: 1, b: 2 }.values
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Array[1 | 2]
 end
 ```
@@ -481,7 +481,7 @@ def test = {}.empty?
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> bool
 end
 ```
@@ -497,7 +497,7 @@ def test = { a: 1 }.length
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> 1
 end
 ```
@@ -513,7 +513,7 @@ def test = "42".to_i.to_s
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -529,7 +529,7 @@ def test = "hello".upcase.length
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Integer
 end
 ```
@@ -545,7 +545,7 @@ def test = 42.to_f.to_i
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Integer
 end
 ```
@@ -561,7 +561,7 @@ def test = "hello".reverse.upcase
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -580,7 +580,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -600,7 +600,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Float
 end
 ```
@@ -616,7 +616,7 @@ def test = { "a" => 1, "b" => 2 }.keys
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Array["a" | "b"]
 end
 ```
@@ -632,7 +632,7 @@ def test = { foo: "x", bar: "y" }.values
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> Array["x" | "y"]
 end
 ```
@@ -648,7 +648,7 @@ def test = File.open("a", "r", &@blk)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> File
 end
 ```
@@ -690,7 +690,7 @@ def stepped_block_value = 1.step(3) { |value| value }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def joined_value: -> Integer
   def unpacked_values: -> Symbol
   def unpacked_value: -> Symbol
@@ -744,7 +744,7 @@ def flattened_values = [[1], [2]].flatten
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def first_value: -> Symbol
   def taken_values: -> Symbol
   def pair_hash: -> Symbol
@@ -777,7 +777,7 @@ def indexed_value = "abc"[0]
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def indexed_value: -> Symbol
 end
 ```
@@ -821,7 +821,7 @@ def hash_key = { a: 1 }.key?(:a)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def array_item: -> Symbol
   def sampled_item: -> Symbol
   def included_item: -> Symbol
@@ -870,7 +870,7 @@ def indexed_capture = /(?<name>a)/.match("a")&.[](:name)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def last_match_value: -> Symbol
   def capture_values: -> Symbol?
   def named_capture_values: -> Symbol?
@@ -929,7 +929,7 @@ def hash_minmax = { a: 1 }.minmax
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def fetched_value: -> Symbol
   def fetched_values: -> Symbol
   def dug_value: -> Symbol
@@ -994,7 +994,7 @@ def zlib_data = Zlib::Deflate.deflate("a")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def cgi_html: -> String
   def time_header: -> String
   def tmpdir_path: -> String

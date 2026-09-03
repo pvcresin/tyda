@@ -11,8 +11,24 @@ def int_to_string = [1, 2, 3].map { |x| x.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def int_to_string: -> Array[String]
+end
+```
+
+## Map distributes literal operations across mixed tuple elements
+
+### update
+
+```ruby
+def mixed_literal_map = [1, 2, "3"].map { |n| n * 2 }
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def mixed_literal_map: -> Array[Integer | String]
 end
 ```
 
@@ -27,7 +43,7 @@ def filter_ints = [1, 2, 3].select { |x| x > 1 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def filter_ints: -> Array[1 | 2 | 3]
 end
 ```
@@ -59,7 +75,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_side_effect_values: -> Array[1 | 2]
   def numbered_map_side_effect_values: -> Array[1 | 2]
   def select_side_effect_values: -> Array[1 | 2]
@@ -103,7 +119,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def range_each_values: -> Array[Integer]
   def range_reverse_values: -> Array[Integer]
   def string_range_values: -> Array[String]
@@ -158,7 +174,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def hash_key_side_effect_values: -> Array[:count | :name]
   def hash_value_side_effect_values: -> Array[2 | "one"]
   def fetch_key_side_effect_values: -> Array[:count]
@@ -179,7 +195,7 @@ def each_returns_self = [1, 2, 3].each { |x| puts x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def each_returns_self: -> [1, 2, 3]
 end
 ```
@@ -195,7 +211,7 @@ def find_int = [1, 2, 3].find { |x| x > 1 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def find_int: -> (1 | 2 | 3)?
 end
 ```
@@ -253,7 +269,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def find_entry: -> (Flag | Note)?
   def detect_non_entry: -> Other?
   def find_entry_or_default: -> :none | Note
@@ -295,7 +311,7 @@ class Event
   include Taggable
 end
 
-class Object
+class Object < BasicObject
   def find_taggable_value: -> (Article | Event)?
 end
 ```
@@ -327,7 +343,7 @@ module Group
   ItemAlias: singleton(Group::Item)
 end
 
-class Object
+class Object < BasicObject
   def detect_project_item: -> Group::Item?
 end
 ```
@@ -353,7 +369,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def find_non_nil_value: -> ("a" | :b)?
   def detect_nil_value: -> nil
   def find_truthy_value: -> "x"?
@@ -389,7 +405,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def range_bsearch: -> Integer?
   def array_bsearch: -> (1 | 2 | 3)?
   def array_bsearch_index: -> Integer?
@@ -424,7 +440,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def slice_before_groups: -> Array[Array["a" | "bb" | "ccc"]]
   def slice_after_heads: -> Array[("a" | "bb" | "ccc")?]
   def slice_when_groups: -> Array[Array[1 | 2 | 4 | 5]]
@@ -443,7 +459,7 @@ def sum_reduce = [1, 2, 3].reduce(0) { |sum, x| sum + x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def sum_reduce: -> Integer
 end
 ```
@@ -464,7 +480,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def collect_values: -> Array[String]
 end
 ```
@@ -485,7 +501,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def collect_nested_values: -> Array[1 | 2 | 3]
 end
 ```
@@ -506,7 +522,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def build_table: -> Hash["a" | "bb", 1 | 2]
 end
 ```
@@ -529,7 +545,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def collect_into_result: -> Array[String]
 end
 ```
@@ -549,7 +565,7 @@ def check_none = [1, 2, 3].none? { |x| x > 5 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check_any: -> bool
   def check_all: -> bool
   def check_none: -> bool
@@ -567,7 +583,7 @@ def chain_select_map = [1, 2, 3].select { |x| x > 1 }.map { |x| x.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def chain_select_map: -> Array[String]
 end
 ```
@@ -583,7 +599,7 @@ def use_tap = "hello".tap { |s| puts s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def use_tap: -> "hello"
 end
 ```
@@ -623,7 +639,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def build_hash_with_tap: -> Hash[:count | :name, 1 | "item"]
   def extend_record_with_tap: -> { name: "item", count: 1 }
   def build_array_with_tap: -> Array[1 | "item"]
@@ -642,7 +658,7 @@ def use_then = "hello".then { |s| s.length }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def use_then: -> 5
 end
 ```
@@ -658,7 +674,7 @@ def count_positives = [1, -2, 3].count { |x| x > 0 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def count_positives: -> Integer
 end
 ```
@@ -674,7 +690,7 @@ def group_by_parity = [1, 2, 3, 4].group_by { |x| x > 2 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def group_by_parity: -> Hash[bool, Array[1 | 2 | 3 | 4]]
 end
 ```
@@ -690,7 +706,7 @@ def sort_desc = [3, 1, 2].sort_by { |x| x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def sort_desc: -> Array[1 | 2 | 3]
 end
 ```
@@ -706,7 +722,7 @@ def sum_ints = [1, 2, 3].sum
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def sum_ints: -> Integer
 end
 ```
@@ -724,7 +740,7 @@ def empty_sum = [].sum
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def float_sum: -> Float
   def mixed_sum: -> Float
   def empty_sum: -> Integer
@@ -742,7 +758,7 @@ def flat_map_example = [[1, 2], [3, 4]].flat_map { |a| a }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def flat_map_example: -> Array[1 | 2 | 3 | 4]
 end
 ```
@@ -768,7 +784,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_entry_pairs: -> Array[["a" | "b", 1 | 2]]
   def flat_map_entry_pairs: -> Array[1 | 2 | "a" | "b"]
   def missing_entry_tail: -> Array[[1 | 2, 3?]]
@@ -786,7 +802,7 @@ def find_min_by = [3, 1, 2].min_by { |x| x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def find_min_by: -> (1 | 2 | 3)?
 end
 ```
@@ -802,7 +818,7 @@ def reject_small = [1, 2, 3].reject { |x| x < 2 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def reject_small: -> [1, 2, 3]
 end
 ```
@@ -830,7 +846,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def each_entry_rows: -> Array[[:count | :name, 2 | "one"]]
   def each_entry_pairs: -> Array[[:count | :name, 2 | "one"]]
   def array_each_entry: -> Array[1 | 2]
@@ -848,7 +864,7 @@ def stringified = [1, 2, 3].map { |n| n.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def stringified: -> Array[String]
 end
 ```
@@ -864,7 +880,7 @@ def shifted = [1, 2, 3].map { _1 + 1 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def shifted: -> Array[Integer]
 end
 ```
@@ -880,7 +896,7 @@ def evens = [1, 2, 3].filter_map { |n| n.even? ? n.to_s : nil }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def evens: -> Array[String]
 end
 ```
@@ -896,7 +912,7 @@ def flat_varied = [1, 2].flat_map { |n| n.even? ? [n, n] : [n] }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def flat_varied: -> Array[1 | 2]
 end
 ```
@@ -912,7 +928,7 @@ def flat_strings = [1, 2, 3].flat_map { |n| n.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def flat_strings: -> Array[String]
 end
 ```
@@ -934,7 +950,7 @@ foo([1, 2, 3])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Array[Integer] arr) -> Array[Integer]
 end
 ```
@@ -950,7 +966,7 @@ def first_even = [1, 2, 3, 4].find { |n| n.even? }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def first_even: -> (1 | 2 | 3 | 4)?
 end
 ```
@@ -966,7 +982,7 @@ def idx_first_even = [1, 2, 3, 4].find_index { |n| n.even? }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def idx_first_even: -> Integer?
 end
 ```
@@ -988,7 +1004,7 @@ foo { |x| x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (?untyped &blk) -> [1]
 end
 ```
@@ -1017,7 +1033,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def bar: -> nil
   def foo: -> nil
 end

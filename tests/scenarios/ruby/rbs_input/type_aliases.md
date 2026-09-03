@@ -166,7 +166,7 @@ rbs_default_alias_overload_ok
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_default_alias_overload_bad: -> Integer
   def rbs_default_alias_overload_ok: -> String
 end
@@ -201,7 +201,7 @@ rbs_bounded_alias_overload_ok
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_bounded_alias_overload_bad: -> Integer
   def rbs_bounded_alias_overload_ok: -> String
 end
@@ -240,7 +240,7 @@ rbs_builtin_alias_range_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_builtin_alias_array_value: -> 1
   def rbs_builtin_alias_hash_value: -> "x"
   def rbs_builtin_alias_range_value: -> Integer
@@ -273,7 +273,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_alias_overload_string: -> String
   def rbs_alias_overload_integer: -> Integer
 end
@@ -317,7 +317,7 @@ rbs_builtin_alias_range_overload
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def rbs_builtin_alias_array_overload: -> Integer
   def rbs_builtin_alias_hash_overload: -> Integer
   def rbs_builtin_alias_range_overload: -> Integer

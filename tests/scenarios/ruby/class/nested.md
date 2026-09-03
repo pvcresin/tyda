@@ -173,7 +173,7 @@ class Foo::Bar::Baz::Qux
   def self.v: -> 1
 end
 
-class Object
+class Object < BasicObject
   def f: -> 1
 end
 ```

@@ -20,7 +20,7 @@ class A
   def hello: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> A
   def g: -> :hi
 end
@@ -50,7 +50,7 @@ class A < P
   def world: -> :child
 end
 
-class Object
+class Object < BasicObject
   def f: -> :parent
   def g: -> :child
 end
@@ -87,7 +87,7 @@ module M
   def hello: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hi
 end
 ```
@@ -122,7 +122,7 @@ class Box::Parent
   def parent: -> :parent
 end
 
-class Object
+class Object < BasicObject
   def f: -> :parent
   def g: -> :child
 end
@@ -190,7 +190,7 @@ class Container::Item < Base
   def label: -> "item"
 end
 
-class Object
+class Object < BasicObject
   def read_base: -> :base
   def read_label: -> "item"
 end
@@ -254,7 +254,7 @@ class Box::Entry
   def initialize: (String name) -> void
 end
 
-class Object
+class Object < BasicObject
   def read_name: -> "entry"
 end
 ```
@@ -277,7 +277,7 @@ def g = Foo::CONST
 ```rbs
 CONST: 2
 
-class Object
+class Object < BasicObject
   def f: -> 2
   def g: -> untyped
 end
@@ -306,7 +306,7 @@ class Foo::Baz
   def self.v: -> 1
 end
 
-class Object
+class Object < BasicObject
   def f: -> 1
 end
 ```
@@ -330,7 +330,7 @@ class Foo
   CONST: 2
 end
 
-class Object
+class Object < BasicObject
   def f: -> 2
 end
 ```
@@ -358,7 +358,7 @@ class Foo::Bar::Baz
   def self.v: -> 1
 end
 
-class Object
+class Object < BasicObject
   def f: -> 1
 end
 ```
@@ -383,7 +383,7 @@ def g = Foo::CONST
 ```rbs
 CONST: 1
 
-class Object
+class Object < BasicObject
   def f: -> 1
   def g: -> untyped
 end
@@ -413,7 +413,7 @@ class Foo
   def self.bar: -> 1
 end
 
-class Object
+class Object < BasicObject
   def f: -> 1
   def g: -> untyped
 end
@@ -430,7 +430,7 @@ def parented = Class.new(StandardError) { |c| c }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def parented: -> singleton(StandardError)
 end
 ```

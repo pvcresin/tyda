@@ -11,7 +11,7 @@ def regex_test = /pattern/
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def regex_test: -> Regexp
 end
 ```
@@ -27,7 +27,7 @@ def regex_new = Regexp.new("pattern")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def regex_new: -> Regexp
 end
 ```
@@ -43,7 +43,7 @@ def match_test = "hello" =~ /ell/
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def match_test: -> Integer?
 end
 ```
@@ -62,7 +62,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def interp_regex: -> Regexp
 end
 ```
@@ -78,7 +78,7 @@ def percent_r_regex = %r{a+b}
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def percent_r_regex: -> Regexp
 end
 ```
@@ -94,7 +94,7 @@ def regex_union = Regexp.union(["0"] + ["1"])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def regex_union: -> Regexp
 end
 ```
@@ -132,7 +132,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def scan_words: -> Array[String]
   def scan_pair_captures: -> Array[[String?, String?]]
   def scan_one_capture: -> Array[[String?]]
@@ -169,7 +169,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def scan_block_words: -> Array[String]
   def scan_block_captures: -> Array[[String?, String?]]
   def scan_block_capture_tuple: -> Array[[String?, String?]]
@@ -208,7 +208,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def match_capture_list: -> [String?, String?]?
   def match_block_capture: -> String?
   def match_capture_slice: -> [String?, String?]?
@@ -255,7 +255,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def match_named_symbol: (untyped text) -> String?
   def match_named_string: (untyped text) -> String?
   def match_named_values: (untyped text) -> [String?, String?]?
@@ -290,7 +290,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check1: -> :else | :then
   def check2: -> :else | :then
 end

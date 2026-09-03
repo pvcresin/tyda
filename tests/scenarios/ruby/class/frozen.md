@@ -14,7 +14,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def frozen_str: -> "hello"
 end
 ```
@@ -34,7 +34,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def freeze_test: -> 42
 end
 ```

@@ -14,7 +14,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x, untyped y) -> untyped
 end
 ```
@@ -32,7 +32,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> untyped
 end
 ```
@@ -52,7 +52,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> untyped
 end
 ```
@@ -73,7 +73,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x, untyped flag) -> untyped
 end
 ```
@@ -96,7 +96,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x, untyped flag) -> untyped
 end
 ```

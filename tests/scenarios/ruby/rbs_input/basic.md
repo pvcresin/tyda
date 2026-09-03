@@ -18,7 +18,7 @@ parse("42")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def parse: (String s) -> Integer
 end
 ```
@@ -41,7 +41,7 @@ count([1, 2, 3])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def count: (Array[Integer] arr) -> Integer
 end
 ```
@@ -64,7 +64,7 @@ process("hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def process: (String s) -> String
 end
 ```
@@ -87,7 +87,7 @@ stringify(42)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def stringify: (Integer n) -> String
 end
 ```

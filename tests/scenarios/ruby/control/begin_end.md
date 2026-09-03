@@ -39,7 +39,7 @@ def use_boot_value = boot_value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def boot_value: -> "boot"
   def use_boot_value: -> "boot"
 end

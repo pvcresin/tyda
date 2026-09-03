@@ -80,7 +80,7 @@ def option_value = Option.new(name: "level", value: 1).value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def option_name: -> "level"
   def option_value: -> 1
 end
@@ -122,7 +122,7 @@ class Entry
   def self.members: -> Array[:count | :name]
 end
 
-class Object
+class Object < BasicObject
   def entry_name: -> "a"
   def entry_count: -> 1
 end
@@ -203,7 +203,7 @@ def pair_value = Store::Pair.new(key: :name, value: 1).value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pair_key: -> :name
   def pair_value: -> 1
 end
@@ -232,7 +232,7 @@ def foo = Point.new(1, "hello").x
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1
 end
 

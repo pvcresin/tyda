@@ -18,7 +18,7 @@ mod source_support;
 use crate::analysis::{
     AnalysisOptions, QueryAnalysisMode, SyntaxErrorSuppressor,
     analyze_file_facts_with_deps_and_rbi, analyze_file_facts_with_deps_and_rbi_with_options_ref,
-    analyze_file_for_query, analyze_source_cached_with_deps_lazy, format_hover_body,
+    analyze_file_for_query, analyze_source_for_display, format_hover_body,
 };
 #[cfg(test)]
 use crate::diagnostics::has_type_hole;
@@ -849,14 +849,13 @@ impl TydaLsp {
         let t_registry = t0.elapsed();
 
         let t1 = std::time::Instant::now();
-        let (mut analysis, _deps, analysis_timings) = analyze_source_cached_with_deps_lazy(
+        let (mut analysis, _deps, analysis_timings) = analyze_source_for_display(
             source,
             (!skip_workspace_context).then_some(&*workspace_registry),
             Some(&state.stdlib_loader),
             state.lazy_rbi_loader.as_deref(),
             Some(file_path),
             Self::build_analysis_options(state),
-            true,
         );
         let finalize_call_site_summaries_started = std::time::Instant::now();
         analysis

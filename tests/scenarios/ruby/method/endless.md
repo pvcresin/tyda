@@ -11,7 +11,7 @@ def answer = 42
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def answer: -> 42
 end
 ```
@@ -29,7 +29,7 @@ greet("World")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def greet: (String name) -> String
 end
 ```

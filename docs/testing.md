@@ -25,6 +25,16 @@ git diff --check
 途中で失敗してもすべてのターゲットを走らせたうえで失敗一覧を末尾にまとめて表示する
 （fail-fast で後続ターゲットの失敗が隠れないようにするため）。
 
+通常の Ruby scenario は `analysis::analyze_source_for_display` を入口とする完全解決の snapshot
+経路を使う。この経路は LSP、playground、詳細 CLI の表示結果と共通であり、推論結果の差分を
+入口ごとの実装で吸収しない。RBS / RBI / project fixture など、入力や解析 profile が異なる
+scenario はその条件を維持したうえで、同じ core の解析 backend を利用する。
+
+通常の Ruby の表示 parity は `analysis` の unit test で `tests/scenarios/ruby/` を in-process に走査し、
+Playground の RBS / CodeLens / hover を canonical snapshot の projection と比較する。Rails / Sorbet /
+RBS / RBI / project fixture / 構文エラーを含むケースはこの対象から除外し、ブラウザや WASM を起動せずに
+表示入口の差分を検出する。シナリオが増えたときも、テストはファイル単位で並列実行する。
+
 対象を絞るときは次を使う。
 
 ~~~bash
@@ -33,8 +43,8 @@ cargo test --test <name>
 cargo test <module>::<test>
 ~~~
 
-GitHub Actions では `Test`、`pages`、`Workflow lint` をPRゲートとする。`Test` はLinuxとWindowsの
-Rust build / clippy / test、release workflowはgem / VSIXのLinux x86_64・Windows x64・Intel macOS・
+GitHub Actions では `Test`、`Performance`、`pages`、`Workflow lint` をPRゲートとする。`Test` はLinuxとWindowsの
+Rust build / clippy / test、`Performance` は pinned な GitLab workspace の base/head 比較、release workflowはgem / VSIXのLinux x86_64・Windows x64・Intel macOS・
 ARM macOS package smoke testも確認する。Linux ARM64はrunnerの利用条件が整い次第追加する。
 
 scenario の期待 RBS は whitespace を正規化して比較するが、意味のない出力変更を許容する

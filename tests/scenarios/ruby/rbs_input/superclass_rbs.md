@@ -45,7 +45,7 @@ class Child < Base
   def label: -> "child"
 end
 
-class Object
+class Object < BasicObject
   def test_inherited_id: -> Integer
   def test_inherited_name: -> String
   def test_own: -> "child"
@@ -86,7 +86,7 @@ class Child < Base
   def label: -> "child"
 end
 
-class Object
+class Object < BasicObject
   def test_chain: -> Integer
 end
 ```
@@ -125,7 +125,7 @@ class Base
   def value: -> Integer
 end
 
-class Object
+class Object < BasicObject
   def test_base: -> Integer
   def test_override: -> "hello"
 end
@@ -180,7 +180,7 @@ class Dog < Animal
   def bark: -> "woof"
 end
 
-class Object
+class Object < BasicObject
   def test_grandchild: -> String
   def test_child: -> "woof"
   def test_own: -> "yay"
@@ -219,7 +219,7 @@ class Car < Vehicle
   def brand: -> "Toyota"
 end
 
-class Object
+class Object < BasicObject
   def test_inherited: -> 4
   def test_own: -> "Toyota"
 end
@@ -259,7 +259,7 @@ class NumberProvider
   def value: -> Integer
 end
 
-class Object
+class Object < BasicObject
   def test: -> Float
 end
 

@@ -11,7 +11,7 @@ def foo = 1
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1
 end
 ```
@@ -27,7 +27,7 @@ def greet = "hello"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def greet: -> "hello"
 end
 ```
@@ -43,7 +43,7 @@ def status = :ok
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def status: -> :ok
 end
 ```
@@ -59,7 +59,7 @@ def nothing = nil
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def nothing: -> nil
 end
 ```
@@ -75,7 +75,7 @@ def enabled = true
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def enabled: -> true
 end
 ```
@@ -91,7 +91,7 @@ def pi = 3.14
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pi: -> 3.14
 end
 ```
@@ -108,7 +108,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def noop: -> nil
 end
 ```

@@ -76,7 +76,14 @@ fn assert_hover_display(
 #[test]
 fn local_variable_literal() {
     let source = "class A\n  def foo\n    x = 42\n    x\n  end\nend\n";
+    assert_hover(source, 3, 4, "x", "42");
     assert_hover(source, 4, 4, "x", "42");
+}
+
+#[test]
+fn local_variable_write_without_read_has_hover() {
+    let source = "class A\n  def foo\n    x = 42\n  end\nend\n";
+    assert_hover(source, 3, 4, "x", "42");
 }
 
 #[test]
@@ -89,6 +96,24 @@ fn local_variable_from_method_return() {
 fn ivar_read_returns_initialized_type() {
     let source = "class Foo\n  def initialize\n    @x = 42\n  end\n  def get\n    @x\n  end\nend\n";
     assert_hover(source, 6, 4, "@x", "42");
+}
+
+#[test]
+fn ivar_write_and_initialize_param_have_hover() {
+    let source = concat!(
+        "class User\n",
+        "  #: (String) -> void\n",
+        "  def initialize(name)\n",
+        "    @name = name\n",
+        "  end\n",
+        "\n",
+        "  def name = @name\n",
+        "end\n",
+    );
+    assert_hover(source, 3, 17, "name", "String");
+    assert_hover(source, 4, 4, "@name", "String");
+    assert_hover(source, 7, 13, "@name", "String");
+    assert_hover_display(source, 7, 6, "name", "String", "-> String");
 }
 
 #[test]

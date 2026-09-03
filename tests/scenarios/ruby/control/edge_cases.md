@@ -11,7 +11,7 @@ def greet(name) = "hello #{name}"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def greet: (untyped name) -> String
 end
 ```
@@ -31,7 +31,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> 1?
 end
 ```
@@ -53,7 +53,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> ("no" | "yes")
 end
 ```
@@ -108,7 +108,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1
 end
 ```
@@ -128,7 +128,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 42
 end
 ```
@@ -144,7 +144,7 @@ def foo = :"hello_#{42}"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> :hello_42
 end
 ```
@@ -166,7 +166,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1 | "x"
 end
 ```
@@ -197,7 +197,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def defined_literal: -> String?
   def defined_local: -> String?
   def defined_constant_path: -> String?

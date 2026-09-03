@@ -14,7 +14,7 @@ process(["hello", "world"])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def process: (Array[String] arr) -> Array[String]
 end
 ```
@@ -33,7 +33,7 @@ upcased_lengths(["hi", "bye"])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def upcased_lengths: (Array[String] arr) -> Array[Integer]
 end
 ```
@@ -52,7 +52,7 @@ first_long(["hi", "hello", "world"])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def first_long: (Array[String] arr) -> String?
 end
 ```
@@ -71,7 +71,7 @@ double_values({ a: 1, b: 2 })
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def double_values: ({ a: Integer, b: Integer } h) -> Array[Integer]
 end
 ```
@@ -90,7 +90,7 @@ nested([["a", "b"], ["c", "d"]])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def nested: (Array[Array[String]] arr) -> Array[Array[String]]
 end
 ```
@@ -109,7 +109,7 @@ collect_lengths(["hi", "hello"])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def collect_lengths: (Array[String] arr) -> Array[Integer]
 end
 ```
@@ -129,7 +129,7 @@ shout([:sym])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def shout: (Array[String | Symbol] arr) -> Array[String | Symbol]
 end
 ```

@@ -39,7 +39,7 @@ pub enum MergeRule {
 
 /// (knowledge source, declaration kind, whether the merge target is user-defined) -> merge rule.
 pub fn merge_rule(source: SourceKind, decl: DeclKind, target_is_user_defined: bool) -> MergeRule {
-    // external sources can't override a user-defined `superclass` / `is_module`.
+    // External sources can't override user-defined `is_module` or an existing superclass.
     let external_overrides_blocked = target_is_user_defined && !source.is_user_source();
     match decl {
         DeclKind::Method => MergeRule::AddIfAbsent,
@@ -48,13 +48,9 @@ pub fn merge_rule(source: SourceKind, decl: DeclKind, target_is_user_defined: bo
         DeclKind::DirtyPattern => MergeRule::AddIfAbsent,
         DeclKind::Mixin => MergeRule::AppendDedup,
         DeclKind::Ivar => MergeRule::AppendDedup,
-        DeclKind::Superclass => {
-            if external_overrides_blocked {
-                MergeRule::KeepExisting
-            } else {
-                MergeRule::AddIfAbsent
-            }
-        }
+        // `merge_external_type_class` only applies this rule when the superclass is absent, so
+        // an external declaration fills Ruby's implicit superclass without overriding `class X < Y`.
+        DeclKind::Superclass => MergeRule::AddIfAbsent,
         DeclKind::IsModule => {
             if external_overrides_blocked {
                 MergeRule::KeepExisting
@@ -176,11 +172,11 @@ mod tests {
     }
 
     #[test]
-    fn superclass_external_keeps_existing_only_on_user_defined_target() {
+    fn superclass_is_add_if_absent_regardless_of_source_or_target() {
         for &s in EXTERNAL_SOURCES {
             assert_eq!(
                 merge_rule(s, DeclKind::Superclass, true),
-                MergeRule::KeepExisting
+                MergeRule::AddIfAbsent
             );
             assert_eq!(
                 merge_rule(s, DeclKind::Superclass, false),

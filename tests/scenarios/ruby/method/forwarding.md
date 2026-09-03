@@ -11,7 +11,7 @@ def forward_all(...) = target(...)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def forward_all: (*untyped, **untyped, ?untyped &block) -> untyped
 end
 ```
@@ -27,7 +27,7 @@ def splat_forward(*args) = other(*args)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def splat_forward: (*untyped args) -> untyped
 end
 ```
@@ -43,7 +43,7 @@ def double_splat_forward(**opts) = other(**opts)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def double_splat_forward: (**untyped opts) -> untyped
 end
 ```
@@ -59,7 +59,7 @@ def combined_forward(*args, **opts, &block) = other(*args, **opts, &block)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def combined_forward: (*untyped args, **untyped opts, ?untyped &block) -> untyped
 end
 ```
@@ -79,7 +79,7 @@ def anon_rest(*) = other(*)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def anon_rest: (*untyped) -> untyped
 end
 ```
@@ -99,7 +99,7 @@ def anon_kwargs(**) = other(**)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def anon_kwargs: (**untyped) -> untyped
 end
 ```
@@ -119,7 +119,7 @@ def anon_block(&) = other(&)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def anon_block: (?untyped &block) -> untyped
 end
 ```
@@ -139,7 +139,7 @@ def anon_rest(*) = 42
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def anon_rest: -> 42
 end
 ```
@@ -159,7 +159,7 @@ def anon_block(&) = 42
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def anon_block: -> 42
 end
 ```
@@ -177,7 +177,7 @@ typed_splat(1, 2, 3)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def typed_splat: (*Integer args) -> Array[Integer]
 end
 ```
@@ -195,7 +195,7 @@ head_forward(1, "a")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def head_forward: (Integer x, *String, **untyped, ?untyped &block) -> untyped
 end
 ```
@@ -215,7 +215,7 @@ foo("a", k: 2) { 3 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (*String, **Integer, ?untyped &block) -> untyped
 end
 ```
@@ -239,7 +239,7 @@ foo(42)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def bar: (Integer x) -> Integer
   def foo: (*Integer, **untyped, ?untyped &block) -> Integer
 end
@@ -264,7 +264,7 @@ foo(1, "s")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def bar: ((Integer | String) a, untyped b) -> [Integer | String, untyped]
   def foo: (*(Integer | String), **untyped, ?untyped &block) -> [Integer | String, untyped]
 end
@@ -290,7 +290,7 @@ foo(2, x: 4, y: 5)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (*Integer, **Integer, ?untyped &block) -> [String, Array[Integer], { x: 4, y: 5 }]
   def bar: (String a, *Integer b, **Integer c) -> [String, Array[Integer], { x: 4, y: 5 }]
 end

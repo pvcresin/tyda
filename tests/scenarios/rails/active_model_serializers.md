@@ -291,7 +291,7 @@ module ItemAssociations
   def items=: (Array[Item] items) -> ActiveRecord::Associations::CollectionProxy[Item]
 end
 
-class Object
+class Object < BasicObject
   def item_name: -> "x"
   def first_item_name: -> "x"
 end
@@ -322,7 +322,7 @@ def result = Row.new.label
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def result: -> untyped
 end
 

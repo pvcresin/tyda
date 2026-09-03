@@ -13,7 +13,7 @@ def bar = "hello"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1
   def bar: -> "hello"
 end

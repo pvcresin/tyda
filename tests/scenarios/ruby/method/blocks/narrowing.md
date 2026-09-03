@@ -17,7 +17,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_filter_map: -> Array[1 | 2]
   def test_filter_map_false: -> Array[1 | 2]
 end
@@ -36,7 +36,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_to_h_block: -> Hash[String, 1 | 2]
 end
 ```
@@ -93,7 +93,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def zipped_pairs: -> Array[[1 | 2, ("a" | "b")?]]
   def zipped_pairs_to_hash: -> Hash["a" | "b", (1 | 2)?]
   def zipped_splat_rows: -> Array[["a" | "b", (1 | 2)?, (:x | :y)?]]
@@ -117,7 +117,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def split_values: -> [Array[1 | 2 | 3], Array[1 | 2 | 3]]
 end
 ```
@@ -139,7 +139,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def grep_values: -> Array["a" | "bb" | "ccc"]
   def grep_lengths: -> Array[1 | 2 | 3]
 end
@@ -174,7 +174,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def grep_non_nil_values: -> Array[1 | 2]
   def grep_non_nil_values_by_class: -> Array[1 | 2]
   def grep_nil_values_by_class: -> Array[nil]
@@ -238,7 +238,7 @@ end
 ```rbs
 TEXT_PATTERN: Regexp
 
-class Object
+class Object < BasicObject
   def grep_text_values: -> Array["name" | :token]
   def grep_text_lengths: -> Array[Integer]
   def grep_text_values_with_local: -> Array["name" | :token]
@@ -289,7 +289,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def select_text_values: -> Array["name" | :token]
   def find_text_value: -> ("name" | :token)?
   def detect_text_value_with_match: -> ("name" | :token)?
@@ -324,7 +324,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def reject_nil_values: -> Array[1 | 2]
   def reject_nil_values_with_symbol_proc: -> Array[1 | 2]
   def select_nil_values_with_symbol_proc: -> Array[nil]
@@ -361,7 +361,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def filter_non_nil_values: -> Array[1 | 2]
   def partition_non_nil_values: -> [Array[1 | 2], Array[nil]]
   def filter_truthy_values: -> Array[1 | 2]
@@ -399,7 +399,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def grep_entries: -> Array[Flag | Note]
   def grep_non_entries: -> Array[Other]
 end
@@ -445,7 +445,7 @@ class Note < Entry
   def label: -> "note"
 end
 
-class Object
+class Object < BasicObject
   def grep_entry_labels: -> Array["flag" | "note"]
 end
 ```
@@ -483,7 +483,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def select_notes: -> Array[Note]
   def find_entry_values_with_numbered_param: -> Array[Flag | Note]
   def select_non_entries: -> Array[Other]
@@ -519,7 +519,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def reject_entries: -> Array[Other]
   def reject_non_entries_with_numbered_param: -> Array[Flag | Note]
 end
@@ -554,7 +554,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def partition_entries: -> [Array[Flag | Note], Array[Other]]
   def partition_non_entries_with_numbered_param: -> [Array[Other], Array[Flag | Note]]
 end
@@ -599,7 +599,7 @@ class Event
   include Taggable
 end
 
-class Object
+class Object < BasicObject
   def grep_taggable_values: -> Array[Article | Event]
   def filter_taggable_values: -> Array[Article | Event]
 end
@@ -644,7 +644,7 @@ class Event
   include Taggable
 end
 
-class Object
+class Object < BasicObject
   def reject_taggable_values: -> Array[Plain]
   def partition_taggable_values: -> [Array[Article | Event], Array[Plain]]
 end
@@ -688,7 +688,7 @@ class NamedItem
   def name: -> "name"
 end
 
-class Object
+class Object < BasicObject
   def select_named_items: -> Array["name"]
   def reject_named_items: -> Array[1]
   def select_named_items_with_local: -> Array["name"]
@@ -740,7 +740,7 @@ module NamedValue
   def name: -> "name"
 end
 
-class Object
+class Object < BasicObject
   def find_named_entry: -> "name"?
   def partition_named_entries: -> [Array[NamedEntry], Array[CountEntry]]
   def partition_count_entries: -> [Array[NamedEntry], Array[CountEntry]]
@@ -782,7 +782,7 @@ module Group
   ItemAlias: singleton(Group::Item)
 end
 
-class Object
+class Object < BasicObject
   def select_project_items: -> Array[Group::Item]
   def grep_project_items: -> Array[Group::Item]
   def partition_project_items: -> [Array[Group::Item], Array[Object]]

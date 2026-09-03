@@ -14,7 +14,7 @@ def f = A.new
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def f: -> A
 end
 ```
@@ -46,7 +46,7 @@ module M
   include M
 end
 
-class Object
+class Object < BasicObject
   def f: -> C
 end
 ```
@@ -86,7 +86,7 @@ class C
   include A
 end
 
-class Object
+class Object < BasicObject
   def f: -> C
 end
 ```

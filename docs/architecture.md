@@ -1,6 +1,6 @@
 # Architecture
 
-この文書はコードベースの責務分離と、解析結果が CLI / LSP / test を通る経路を示す。
+この文書はコードベースの責務分離と、解析結果が CLI / LSP / playground / test を通る経路を示す。
 個別の最適化履歴や一時的な調査結果は記録しない。
 
 ## 解析の流れ
@@ -19,14 +19,16 @@ registry / inference / query
 RBS render / diagnostics / LSP display
 ~~~
 
-CLI、LSP、scenario test は入力の与え方が違うだけで、意味論の中心は
-`WorkspaceState` と query backend を共有する。
+CLI、LSP、playground、scenario test は入力の与え方と解決 profile が違うだけで、意味論の中心は
+`WorkspaceState` と query backend を共有する。単一ファイルを完全解決して表示する入口は
+`analysis::analyze_source_for_display` に集約し、LSP、playground、詳細 CLI、通常の Ruby scenario
+は同じ snapshot / registry / query 経路を使う。
 
 ## 主要コンポーネント
 
 | 層・ファイル | 責務 |
 | --- | --- |
-| `analysis.rs` / `parser.rs` | Prism 解析、annotation 抽出、snapshot 作成、共通表示整形 |
+| `analysis.rs` / `parser.rs` | Prism 解析、annotation 抽出、共通 snapshot 作成、表示整形 |
 | `inference/` | Ruby の式・method・receiver・block・flow・DSL の推論 |
 | `inference/plugins/` | gem / framework ごとの DSL 展開。`Plugin` / `PluginManifest` を 1 plugin 1 file で登録 |
 | `registry.rs` / `registry/` | class、method、constant、ivar、mixin、call site と型宣言の索引 |
@@ -60,13 +62,17 @@ reverse edge へ dirty を伝播する。
   query だけを再評価する。
 
 scenario test は小さな workspace を case ごとに作り、同じ backend の projection を検証する。
-入口ごとに別の型解決を追加しない。
+表示用の hover / definition 索引は意味解析後の一時 registry で収集し、遅延ロードした外部型や
+探索用の事実が意味解析結果へ混ざらないようにする。入口ごとに別の型解決を追加しない。
 
 ### 知識源の合成
 
 Ruby source、RBS、RBI、schema、plugin の知識は同じ registry に合成する。優先順位は
 「実体のある source / 宣言を保ち、未解決の空 stub で権威ある定義を隠さない」ことを基本とする。
 合成規則を変更したときは、該当する registry unit test と scenario を同じ変更で更新する。
+
+ユーザー定義クラスでも superclass が未設定なら、外部宣言の superclass を暗黙の継承として補完する。
+Ruby source に明示された `class X < Y` は外部宣言で上書きしない。
 
 framework DSL は library-scoped に有効化し、plugin のフックは `PluginCx` を通す。個別 repository の
 runtime DSL 登録を解析コアへ持ち込まず、動的な API は外部 RBS / RBI を入力する。

@@ -21,7 +21,7 @@ class A
   def self.count: -> 0
 end
 
-class Object
+class Object < BasicObject
   def f: -> 0
 end
 ```
@@ -47,7 +47,7 @@ class A
   def self.name: -> "name"
 end
 
-class Object
+class Object < BasicObject
   def f: -> "name"
 end
 ```
@@ -73,7 +73,7 @@ module M
   def self.config: -> { enabled: true }
 end
 
-class Object
+class Object < BasicObject
   def f: -> true
 end
 ```
@@ -101,7 +101,7 @@ class A
   def self.label: -> "label"
 end
 
-class Object
+class Object < BasicObject
   def f: -> "label"
 end
 ```
@@ -127,7 +127,7 @@ def stream = Setting.stream
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def enabled: -> false
   def stream: -> IO
 end
@@ -161,7 +161,7 @@ def f = Store.config.name
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def f: -> "config"
 end
 
@@ -197,7 +197,7 @@ class A
   def self.get: -> untyped
 end
 
-class Object
+class Object < BasicObject
   def f: -> untyped
 end
 ```

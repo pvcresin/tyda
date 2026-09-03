@@ -12,7 +12,7 @@ def thread_join_value = Thread.new { :ready }.join.value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def thread_value: -> Integer
   def thread_join_value: -> Symbol
 end
@@ -35,7 +35,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def fiber_value: -> :ready
 end
 ```
@@ -62,7 +62,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def queue_value: -> Symbol?
   def queue_aliases: -> (Integer | String)?
 end

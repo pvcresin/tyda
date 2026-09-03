@@ -107,7 +107,7 @@ def f = A::V
 ```rbs
 A: singleton(Outer::Inner)
 
-class Object
+class Object < BasicObject
   def f: -> 1
 end
 
@@ -296,7 +296,7 @@ class M::Thing
   CONST: 1
 end
 
-class Object
+class Object < BasicObject
   def f: -> 1
 end
 ```
@@ -458,7 +458,7 @@ def g = ALIAS::NOPE
 VALUE: 1
 ALIAS: 1
 
-class Object
+class Object < BasicObject
   def f: -> 1
   def g: -> untyped
 end

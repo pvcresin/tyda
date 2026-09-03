@@ -51,7 +51,7 @@ class Dispatcher
   def call: ({ method: String, id: Integer } message) -> Integer?
 end
 
-class Object
+class Object < BasicObject
   def read: -> Integer?
 end
 ```
@@ -76,7 +76,7 @@ def build_result = Result.new(id: 1, response: "ok").body
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def build_result: -> { id: 1, response: "ok" }
 end
 

@@ -15,7 +15,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> nil
 end
 ```
@@ -35,7 +35,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> nil
 end
 ```
@@ -57,7 +57,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> Integer
 end
 ```
@@ -77,7 +77,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def while_break: -> :done
 end
 ```
@@ -97,7 +97,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def until_break: -> :done
 end
 ```
@@ -117,7 +117,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def while_bare_break: -> nil
 end
 ```
@@ -137,7 +137,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def while_break_multiple: -> [1, "two"]
 end
 ```
@@ -157,7 +157,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def for_break_value: -> :done
 end
 ```
@@ -177,7 +177,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def kernel_loop_break: -> :done
 end
 ```
@@ -197,7 +197,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def kernel_loop_bare_break: -> nil
 end
 ```
@@ -218,7 +218,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def loop_with_redo: -> :done
 end
 ```
@@ -238,7 +238,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def while_modifier: -> Integer
 end
 ```
@@ -258,7 +258,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def until_modifier: -> 3
 end
 ```
@@ -280,7 +280,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def begin_while: -> 1
 end
 ```
@@ -304,7 +304,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def double_three_times: -> Float | 1
 end
 ```
@@ -327,7 +327,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def maybe_fresh: -> Integer?
 end
 ```
@@ -347,7 +347,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> :a
 end
 ```
@@ -371,7 +371,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def collect_indices: -> Array[Integer]
 end
 ```
@@ -393,7 +393,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: -> nil
 end
 ```
@@ -413,7 +413,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: -> 1 | [:a, :b, :c]
 end
 ```

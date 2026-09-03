@@ -14,7 +14,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_transform_values: -> { a: String, b: String }
 end
 ```
@@ -34,7 +34,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def transform_value_entries: -> [{ a: Integer, b: Integer }, { a: Integer, b: Integer }]
 end
 ```
@@ -68,7 +68,7 @@ class Entry
   def label: -> "label"
 end
 
-class Object
+class Object < BasicObject
   def value_labels: -> { first: "label", second: "label" }
   def value_strings: -> { name: String, count: String }
   def stringify: (untyped value) -> String
@@ -89,7 +89,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_transform_keys: -> Hash[String, 1 | 2]
 end
 ```
@@ -119,7 +119,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def remap_symbol_keys: -> { month: 1, day: 2, year: 2026 }
   def remap_string_keys: -> { label: "a", "count" => 1 }
   def remap_keys_in_place: -> { label: "a", count: 1 }
@@ -156,7 +156,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def transform_key_strings: -> Hash[:count | :name, 1 | "a"]
   def transform_key_strings_in_place: -> [Hash[:count | :name, 1 | "a"], Hash[:count | :name, 1 | "a"]]
   def transform_key_symbols_in_place: -> [{ "name" => "a", "count" => 1 }, { "name" => "a", "count" => 1 }]
@@ -178,7 +178,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_hash_map_block: -> Array[1 | 2]
 end
 ```
@@ -197,7 +197,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_hash_select_block: -> Hash[:a | :b, 1 | 2]
 end
 ```
@@ -229,7 +229,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def delete_entry_pairs: -> [Hash[:a | :b | :c, (1 | 2)?], Hash[:a | :b | :c, (1 | 2)?]]
   def keep_entry_pairs: -> [Hash[:a | :b, 1 | 2], Hash[:a | :b, 1 | 2]]
   def select_entry_pairs: -> [Hash[:a | :b, 1 | 2]?, Hash[:a | :b, 1 | 2]]
@@ -247,7 +247,7 @@ def test_tally = ["a", "b", "a"].tally
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_tally: -> Hash["a" | "b", Integer]
 end
 ```
@@ -271,7 +271,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_entry_keys: -> Array[String]
   def invert_then_transform_values: -> Hash[1 | 2, String]
 end
@@ -305,7 +305,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def map_entry_keys_exact: -> Array[:a | :b]
   def sort_entries: -> Array[[:a | :b, 1 | 2]]
   def sort_entries_with_symbol_proc: -> Array[[:a | :b, 1 | 2]]
@@ -334,7 +334,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def group_entry_pairs: -> Hash[bool, Array[[:a | :b, 1 | 2]]]
   def partition_entry_pairs: -> [Array[[:a | :b, 1 | 2]], Array[[:a | :b, 1 | 2]]]
   def find_entry_pair: -> [:a | :b, 1 | 2]?
@@ -370,7 +370,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def min_entry_pair: -> [:a | :b, 1 | 2]?
   def max_entry_pair: -> [:a | :b, 1 | 2]?
   def min_entry_pair_by_symbol: -> [:a | :b, 1 | 2]?
@@ -400,7 +400,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def minmax_entry_pairs: -> [[:a | :b, 1 | 2]?, [:a | :b, 1 | 2]?]
   def minmax_entry_pairs_by_block: -> [[:a | :b, 1 | 2]?, [:a | :b, 1 | 2]?]
   def minmax_entry_pairs_by_symbol: -> [[:a | :b, 1 | 2]?, [:a | :b, 1 | 2]?]
@@ -436,7 +436,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def min_entry_without_block: -> [:a | :b, 1 | 2]?
   def max_entry_count: -> Array[[:a | :b, 1 | 2]]
   def tally_entry_pairs: -> Hash[[:a | :b, 1], Integer]
@@ -456,7 +456,7 @@ def sym_keyed = { "name" => "Alice", "age" => 30 }.transform_keys(&:to_sym)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def sym_keyed: -> { name: "Alice", age: 30 }
 end
 ```
@@ -472,7 +472,7 @@ def up = { x: 1, y: "hello" }.transform_values { |v| v.to_s }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def up: -> { x: String, y: String }
 end
 ```

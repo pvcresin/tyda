@@ -15,7 +15,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_merge_diff: -> { a: 1, b: "hello" }
 end
 ```
@@ -35,7 +35,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_merge_same: -> { a: 1, b: 2 }
 end
 ```
@@ -51,7 +51,7 @@ def test_values = { a: 1, b: 2 }.values
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_values: -> Array[1 | 2]
 end
 ```
@@ -67,7 +67,7 @@ def test_keys = { a: 1, b: 2 }.keys
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_keys: -> Array[:a | :b]
 end
 ```

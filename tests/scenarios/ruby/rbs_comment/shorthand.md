@@ -12,7 +12,7 @@ def foo(x) = x.to_i
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (String x) -> Integer
 end
 ```
@@ -29,7 +29,7 @@ def parse_count(value) = value.to_i
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def parse_count: (String value) -> Integer
 end
 ```
@@ -46,7 +46,7 @@ def flip(value) = value.is_a?(Integer) ? value.to_s : value.to_i
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def flip: (Integer value) -> String
           | (String value) -> Integer
 end
@@ -65,7 +65,7 @@ def pick_value(value) = value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pick_value: (String value) -> String
                 | (Integer value) -> Integer
                 | (Symbol value) -> Symbol
@@ -132,7 +132,7 @@ class InlineAliasOverload
           | (String value) -> Symbol
 end
 
-class Object
+class Object < BasicObject
   def inline_alias_overload_string: -> Symbol
   def inline_alias_overload_integer: -> Integer
 end
@@ -152,7 +152,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def annotated_return: (untyped value) -> String
 end
 ```
@@ -171,7 +171,7 @@ def inline_param_label(name, count:) = "#{name}: #{count}"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def inline_param_label: (String name, count: Integer) -> String
 end
 ```
@@ -209,7 +209,7 @@ def bar(name, age) = true
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def bar: (String name, Integer age) -> bool
 end
 ```
@@ -226,7 +226,7 @@ def greeting = "hello"
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def greeting: -> String
 end
 ```
@@ -243,7 +243,7 @@ def puts_name(name) = puts(name)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def puts_name: (String name) -> void
 end
 ```
@@ -279,7 +279,7 @@ def convert(list) = {}
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def convert: (Array list) -> Hash
 end
 ```
@@ -296,7 +296,7 @@ def check(name, age) = true
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (String name, Integer age) -> bool
 end
 ```
@@ -313,7 +313,7 @@ def accept_either(x) = true
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def accept_either: ((Integer | String) x) -> bool
 end
 ```
@@ -330,7 +330,7 @@ def sum(nums) = 0
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def sum: (Array[Integer] nums) -> Integer
 end
 ```
@@ -348,7 +348,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def maybe_print: (String? s) -> void
 end
 ```
@@ -365,7 +365,7 @@ def names = []
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def names: -> Array[String]
 end
 ```
@@ -383,7 +383,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def process_options: (Hash[Symbol, String] opts) -> void
 end
 ```
@@ -400,7 +400,7 @@ def person_record = { name: "Alice", age: 30 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def person_record: -> { name: String, age: Integer }
 end
 ```
@@ -418,7 +418,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def return_nil: -> nil
 end
 ```
@@ -435,7 +435,7 @@ def pass_through(x) = x
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pass_through: (untyped x) -> untyped
 end
 ```
@@ -452,7 +452,7 @@ def accept_many(x) = true
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def accept_many: ((Integer | String | Symbol) x) -> bool
 end
 ```
@@ -469,7 +469,7 @@ def deep_sum(matrix) = 0
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def deep_sum: (Array[Array[Integer]] matrix) -> Integer
 end
 ```
@@ -487,7 +487,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def process_grouped: (Hash[String, Array[Integer]] data) -> void
 end
 ```

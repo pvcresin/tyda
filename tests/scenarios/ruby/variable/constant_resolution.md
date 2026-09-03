@@ -229,7 +229,7 @@ class Inner::Foo
   def kind: -> :inner
 end
 
-class Object
+class Object < BasicObject
   def make_top: -> Foo
 end
 ```
@@ -260,7 +260,7 @@ def h = NAME
 ```rbs
 NAME: "top"
 
-class Object
+class Object < BasicObject
   def h: -> "top"
 end
 

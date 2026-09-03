@@ -137,7 +137,7 @@ def convert(x) = x.to_s
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def convert: (Integer x) -> String
 end
 ```

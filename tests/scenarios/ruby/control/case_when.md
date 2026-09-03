@@ -21,7 +21,7 @@ check(1)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (Integer x) -> ("one" | "other" | "two")
 end
 ```
@@ -45,7 +45,7 @@ range_case(3)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def range_case: (Integer x) -> ("high" | "low")?
 end
 ```
@@ -73,7 +73,7 @@ class_case(42)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def class_case: (Integer x) -> ("integer" | "other" | "string" | "symbol")
 end
 ```
@@ -99,7 +99,7 @@ no_expr_case(1)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def no_expr_case: (Integer x) -> ("negative" | "positive" | "zero")
 end
 ```
@@ -153,7 +153,7 @@ describe(42)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def describe: (Integer val) -> Integer?
 end
 ```
@@ -177,7 +177,7 @@ numeric_check(42)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def numeric_check: (Integer x) -> Float?
 end
 ```
@@ -199,7 +199,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def case_then: (untyped x) -> (:one | :other | :two)
 end
 ```
@@ -262,7 +262,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def convert: (untyped obj) -> (Integer | String)?
 end
 ```
@@ -286,7 +286,7 @@ pattern_match(42)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pattern_match: (Integer x) -> ("integer" | "string")?
 end
 ```
@@ -308,7 +308,7 @@ capture_match(1)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def capture_match: (Integer x) -> Integer?
 end
 ```
@@ -337,7 +337,7 @@ test(:sym, "hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test: (Symbol type, String val) -> (Integer | String | Symbol)
 end
 ```
@@ -364,7 +364,7 @@ foo(:a)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: ((Integer | String | Symbol) x) -> (Integer | String | :other)
 end
 ```

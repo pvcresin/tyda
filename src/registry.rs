@@ -3594,10 +3594,12 @@ impl TypeRegistry {
         data.call_sites_revision = data.call_sites_revision.wrapping_add(1);
     }
     pub fn finalize_pending_call_site_summaries(&mut self) {
+        let mut had_pending_call_site_summaries = false;
         for data in self.class_data.values_mut() {
             if !data.has_pending_call_site_summary {
                 continue;
             }
+            had_pending_call_site_summaries = true;
             if data.call_sites.len() <= 1 {
                 data.has_pending_call_site_summary = false;
                 continue;
@@ -3615,6 +3617,14 @@ impl TypeRegistry {
             data.call_sites_revision = data.call_sites_revision.wrapping_add(1);
             data.has_pending_call_site_summary = false;
         }
+        if had_pending_call_site_summaries {
+            self.invalidate_resolve_cache();
+        }
+    }
+
+    /// Drop parameter signatures cached before the registry's call sites settled.
+    pub(crate) fn invalidate_resolve_cache(&mut self) {
+        self.resolve_params_cache.clear();
     }
 
     pub fn set_constant(
@@ -5982,6 +5992,15 @@ impl TypeRegistry {
             let positional_count = Self::positional_param_count(&init_method.param_infos);
 
             if let Some(param_index) = param_index {
+                if let Some(annotated_type) =
+                    self.get_annotated_param_type(class_name, "initialize", false, param_index)
+                {
+                    let resolved = self.resolve_deferred_refs(class_name, &annotated_type);
+                    if Self::is_concrete_for_global_resolve(&resolved) {
+                        return Some(resolved);
+                    }
+                }
+
                 let mut types: Vec<Type> = Vec::new();
                 for call_site in &data.call_sites {
                     if call_site.method_name.as_ref() == "initialize"

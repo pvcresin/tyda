@@ -46,7 +46,7 @@ class Entry
   def with: (?name: String, ?count: Integer) -> Entry
 end
 
-class Object
+class Object < BasicObject
   def entry_name: -> "a"
   def entry_count: -> 1
 end
@@ -194,7 +194,7 @@ def foo = Point.new(x: 1, y: 2).with(x: 3)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> Point
 end
 

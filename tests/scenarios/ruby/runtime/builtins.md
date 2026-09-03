@@ -13,7 +13,7 @@ foo(ARGV[0].to_i)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Integer n) -> String
 end
 ```
@@ -31,7 +31,7 @@ def line_no = __LINE__
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def file_name: -> String
   def line_no: -> Integer
 end
@@ -48,7 +48,7 @@ def enc = __ENCODING__
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def enc: -> Encoding
 end
 ```
@@ -68,7 +68,7 @@ def current_dir = __dir__
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def current_method_name: -> :current_method_name
   def current_callee_name: -> :current_callee_name
   def current_dir: -> String
@@ -96,7 +96,7 @@ def unknown_class(x) = x.class
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def self_class: -> singleton(Object)
   def int_class: -> singleton(Integer)
   def array_class: -> singleton(Array)
@@ -124,7 +124,7 @@ payload
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def stdout_const: -> IO
   def argf_const: -> RBS::Unnamed::ARGFClass
   def env_const: -> RBS::Unnamed::ENVClass
@@ -148,7 +148,7 @@ def make_sq = SizedQueue.new(2)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def make_mutex: -> Thread::Mutex
   def make_queue: -> Thread::Queue
   def make_cv: -> Thread::ConditionVariable
@@ -169,7 +169,7 @@ def dir = File.dirname("/x/y.rb")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def base: -> String
   def ext: -> String
   def dir: -> String

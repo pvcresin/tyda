@@ -14,7 +14,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> (42 | "early")
 end
 ```
@@ -33,7 +33,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> "hello"?
 end
 ```
@@ -51,7 +51,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def maybe_true: (untyped x) -> true | nil
 end
 ```
@@ -70,7 +70,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> 42?
 end
 ```
@@ -89,7 +89,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def always_true: -> true
 end
 ```
@@ -109,7 +109,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def classify: (untyped x) -> (:negative | :positive | :zero)
 end
 ```
@@ -130,7 +130,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def extract: (untyped x) -> (nil | untyped)
 end
 ```
@@ -154,7 +154,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def count: (untyped items) -> Integer
 end
 ```
@@ -176,7 +176,7 @@ def b = scan(false)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def scan: (bool item) -> (0 | :found)
   def a: -> 0 | :found
   def b: -> 0 | :found
@@ -200,7 +200,7 @@ def b = pair(false)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pair: (bool flag) -> ([1, "x"] | [2, "y"])
   def a: -> [1, "x"] | [2, "y"]
   def b: -> [1, "x"] | [2, "y"]

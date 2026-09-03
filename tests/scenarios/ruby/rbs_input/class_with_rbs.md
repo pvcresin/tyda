@@ -28,7 +28,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_rbs: -> String
   def test_inferred: -> 30
 end
@@ -76,7 +76,7 @@ class Config
   def host: -> "localhost"
 end
 
-class Object
+class Object < BasicObject
   def test_port: -> Integer
   def test_host: -> "localhost"
   def test_port_str: -> String
@@ -117,7 +117,7 @@ class Formatter
   def format_number: (Integer n) -> String
 end
 
-class Object
+class Object < BasicObject
   def test_name: -> String
   def test_number: -> String
 end
@@ -157,7 +157,7 @@ class DataSource
   def fetch_name: -> String
 end
 
-class Object
+class Object < BasicObject
   def test_count_float: -> Float
   def test_name_length: -> Integer
 end
@@ -190,7 +190,7 @@ class Calculator
   def name: -> "calc"
 end
 
-class Object
+class Object < BasicObject
   def test_add: -> 42
   def test_name: -> "calc"
 end
@@ -227,7 +227,7 @@ class Converter
   def to_int: (String s) -> Integer
 end
 
-class Object
+class Object < BasicObject
   def test: -> Integer
 end
 ```

@@ -26,7 +26,7 @@ module App::Helpers
   def shout: (String s) -> String
 end
 
-class Object
+class Object < BasicObject
   def test: -> String
 end
 ```
@@ -49,7 +49,7 @@ def probe = Rake.verbose(true)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def probe: -> bool?
 end
 
@@ -85,7 +85,7 @@ module Foo
   def self.greet: -> "hi"
 end
 
-class Object
+class Object < BasicObject
   def test: -> "hi"
 end
 ```
@@ -113,7 +113,7 @@ class Bar
   def greet: -> 42
 end
 
-class Object
+class Object < BasicObject
   def test: -> 42
 end
 ```
@@ -141,7 +141,7 @@ class Baz
   def shout: -> "hi"
 end
 
-class Object
+class Object < BasicObject
   def test: -> "hi"
 end
 ```
@@ -169,7 +169,7 @@ def elapsed = Utils.clock_time
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def elapsed: -> 2.0
 end
 

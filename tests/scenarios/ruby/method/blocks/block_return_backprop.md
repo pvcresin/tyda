@@ -103,7 +103,7 @@ run(12) { |x| "ok" }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def run: (Integer n) { (Float) -> "ok" } -> "ok"
 end
 ```

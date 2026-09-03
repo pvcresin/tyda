@@ -29,7 +29,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_chunk_map: -> Array[Integer]
   def chunk_pairs: -> Array[[1 | 2, Array["a" | "bb"]]]
   def chunk_table: -> Hash[1 | 2, Array["a" | "bb"]]
@@ -79,7 +79,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def default_enum_values: -> Array["A" | "B"]
   def enum_value_lengths: -> Array[1 | 2]
   def enum_key_names: -> Array["code" | "name"]
@@ -120,7 +120,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def scan_enum_rows: -> Array[[String?, String?]]
   def scan_enum_texts: -> Array[String]
   def line_enum_values: -> Array[String]
@@ -209,7 +209,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def chain_values: -> Array[1 | 2 | "a"]
   def chain_multiple_sources: -> Array[1 | 2 | 3]
   def enumerator_plus_values: -> Array[1 | 2 | "a"]
@@ -241,7 +241,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def chain_entry_table: -> Hash[:a | :b, 1 | 2]
   def chain_map_values: -> Array[String]
   def chain_with_index_table: -> Hash["a" | "b", Integer]
@@ -272,7 +272,7 @@ class Holder
   def chain: (Array[String] values) -> Array[String]
 end
 
-class Object
+class Object < BasicObject
   def project_chain_method: -> Array[String]
 end
 ```
@@ -310,7 +310,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def lazy_force_lengths: -> Array[1 | 2]
   def lazy_selected_symbols: -> Array[Symbol]
   def lazy_flattened_values: -> Array[1 | 2 | 3]
@@ -333,7 +333,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_each_slice_map: -> Array[Integer]
 end
 ```
@@ -351,7 +351,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_triple_map: -> Array[bool]
 end
 ```
@@ -367,7 +367,7 @@ def test_select_first = [1, 2, 3, 4].select { |x| x > 2 }.first
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_select_first: -> (1 | 2 | 3 | 4)?
 end
 ```
@@ -383,7 +383,7 @@ def test_sort_block = [3, 1, 2].sort { |a, b| a <=> b }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_sort_block: -> Array[1 | 2 | 3]
 end
 ```
@@ -401,7 +401,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_flat_map_nested: -> Array[String]
 end
 ```
@@ -417,7 +417,7 @@ def test_each_slice_to_a = [1, 2, 3, 4, 5, 6].each_slice(3).to_a
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_each_slice_to_a: -> Array[[1 | 4, 2 | 5, 3 | 6]]
 end
 ```
@@ -442,7 +442,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_lambda_branch: -> String
 end
 ```
@@ -464,7 +464,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_tap_multi_chain: -> Array[String]
 end
 ```
@@ -480,7 +480,7 @@ def test_uniq_block = [1, -1, 2, -2, 3].uniq { |x| x.abs }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_uniq_block: -> Array[-2 | -1 | 1 | 2 | 3]
 end
 ```
@@ -498,7 +498,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_each_cons_map: -> Array[Integer]
 end
 ```
@@ -514,7 +514,7 @@ def test_filter_map = [1, 2, nil, 3].filter_map { |x| x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_filter_map: -> Array[1 | 2 | 3]
 end
 ```
@@ -530,7 +530,7 @@ def test_filter_map_transform = ["1", "2", "abc"].filter_map { |s| s.to_i }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_filter_map_transform: -> Array[Integer]
 end
 ```
@@ -556,7 +556,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def reverse_filter_map: -> Array[1 | 2]
   def take_prefix: -> Array["a" | "bb" | "ccc"]
   def drop_prefix: -> Array["a" | "bb" | "ccc"]
@@ -574,7 +574,7 @@ def test_sum_with_block = ["hello", "world"].sum { |s| s.length }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_sum_with_block: -> Integer
 end
 ```
@@ -592,7 +592,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_map_select_chain: -> Array[String]
 end
 ```
@@ -610,7 +610,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_reject_map_chain: -> Array[String]
 end
 ```
@@ -628,7 +628,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_flat_map_select: -> Array[1 | 2 | 3 | 4]
 end
 ```
@@ -648,7 +648,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_each_with_index: -> Array[Integer]
 end
 ```
@@ -664,7 +664,7 @@ def test_map_integer_to_bool = [1, 2, 3].map { |x| x > 1 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_map_integer_to_bool: -> Array[bool]
 end
 ```
@@ -680,7 +680,7 @@ def test_sort_by_strings = ["banana", "apple", "cherry"].sort_by { |s| s.length 
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_sort_by_strings: -> Array["apple" | "banana" | "cherry"]
 end
 ```
@@ -696,7 +696,7 @@ def test_max_by = [3, 1, 2].max_by { |x| x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_max_by: -> (1 | 2 | 3)?
 end
 ```
@@ -712,7 +712,7 @@ def test_select_count = [1, 2, 3, 4, 5].select { |x| x > 2 }.count
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_select_count: -> Integer
 end
 ```
@@ -730,7 +730,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_map_flat_map: -> Array[String]
 end
 ```
@@ -748,7 +748,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_reduce_string: -> String
 end
 ```
@@ -766,7 +766,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_inject_no_init: -> Integer
 end
 ```
@@ -784,7 +784,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_map_compact: -> Array[1 | 2 | 3]
 end
 ```
@@ -802,7 +802,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_select_map_reduce: -> String
 end
 ```
@@ -820,7 +820,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_flat_map_select_map: -> Array[String]
 end
 ```
@@ -838,7 +838,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_sort_by_first: -> ("apple" | "banana" | "cherry")?
 end
 ```
@@ -857,7 +857,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_hash_each_value: -> { a: 1, b: 2 }
 end
 ```
@@ -873,7 +873,7 @@ def test_map_to_float = [1, 2, 3].map { |x| x.to_f }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_map_to_float: -> Array[Float]
 end
 ```
@@ -889,7 +889,7 @@ def test_any_string = ["hello", "world"].any? { |s| s.length > 3 }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_any_string: -> bool
 end
 ```
@@ -908,7 +908,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def test_hash_each_pair: -> { a: 1, b: 2 }
 end
 ```
@@ -988,7 +988,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def produce_values: -> Array[1 | 2]
   def produce_first: -> String?
   def product_rows: -> Array[[1 | 2, "a" | "b"]]
@@ -1034,7 +1034,7 @@ class Item
   def title: -> "item"
 end
 
-class Object
+class Object < BasicObject
   def object_space_item_titles: -> Array["item"]
   def object_space_class_names: -> Array[String]
   def object_space_module_names: -> Array[String]

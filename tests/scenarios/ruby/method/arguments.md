@@ -11,7 +11,7 @@ def capture(*) = 1
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def capture: (*untyped) -> 1
 end
 ```
@@ -27,7 +27,7 @@ def wrap(*, **, &) = nil
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def wrap: (*untyped, **untyped, ?untyped &block) -> nil
 end
 ```
@@ -48,7 +48,7 @@ def underscore_nested = ___ _(__)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def _: (Symbol x) -> Symbol
   def __: -> :arg
   def ___: (untyped x) -> Symbol
@@ -69,7 +69,7 @@ foo(1)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Integer x) -> Integer
 end
 ```
@@ -87,7 +87,7 @@ foo("hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: ((Integer | String) x) -> (Integer | String)
 end
 ```
@@ -104,7 +104,7 @@ add(1, "hello")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def add: (Integer a, String b) -> Integer
 end
 ```
@@ -120,7 +120,7 @@ def foo(x) = x
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> untyped
 end
 ```
@@ -146,7 +146,7 @@ class Foo
   def bar: -> Integer
 end
 
-class Object
+class Object < BasicObject
   def foo: (Integer n) -> Integer
 end
 ```
@@ -165,7 +165,7 @@ foo(1)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Integer x) -> nil
 end
 ```
@@ -186,7 +186,7 @@ sub("x", "y")
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def add: (Integer a, Integer b) -> Integer
   def sub: (String a, String b) -> String
 end
@@ -205,7 +205,7 @@ foo(a: 1)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: ({ a: Integer } x) -> { a: Integer }
 end
 ```
@@ -224,7 +224,7 @@ foo(:a, :b, :x)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Symbol a, Symbol b, ?(Integer | Symbol) x, ?(Integer | Symbol) y) -> nil
 end
 ```
@@ -243,7 +243,7 @@ foo(:a, :b, :y, :z)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Symbol a, Symbol b, *Symbol rest) -> Array[Symbol]
 end
 ```
@@ -262,7 +262,7 @@ foo(:a, :b, :r1, :r2, :r3, :x, :y)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Symbol a, Symbol b, *Symbol rest, Symbol x, Symbol y) -> nil
 end
 ```
@@ -282,7 +282,7 @@ check(1, [1, "str"])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def check: (Integer z, [Integer, String]) -> [Integer, "str", 1]
 end
 ```
@@ -302,7 +302,7 @@ two(1, [1, 2.0])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def two: (Integer z, [Integer, Float]) -> [1, 2.0]
 end
 ```
@@ -322,7 +322,7 @@ take(*[1, "s"], :x)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def take: (Integer a, String b, Symbol c) -> [Integer, String, Symbol]
 end
 ```
@@ -340,7 +340,7 @@ pair([1, "str"])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pair: ([Integer, String] a) -> [Integer, String]
 end
 ```
@@ -359,7 +359,7 @@ pick([2, :y])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def pick: ([Integer, String | Symbol] a) -> [Integer, String | Symbol]
 end
 ```
@@ -377,7 +377,7 @@ nums([1, 2, 3])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def nums: (Array[Integer] a) -> Array[Integer]
 end
 ```
@@ -396,7 +396,7 @@ vals([1, 2, 3])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def vals: (Array[Integer | String] a) -> Array[Integer | String]
 end
 ```
@@ -413,7 +413,7 @@ combine(:p, [1, [2, 3]], [4, 5, 6])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def combine: (Symbol _prefix, [Integer, Array[Integer]], Array[Integer]) -> 6
 end
 ```

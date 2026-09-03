@@ -23,7 +23,7 @@ class Child < Parent
   def value: (Integer x) -> String
 end
 
-class Object
+class Object < BasicObject
   def read: -> String
 end
 
@@ -55,12 +55,12 @@ class Child < Parent
   def value: (Integer x) -> String
 end
 
-class Object
+class Object < BasicObject
   def read: -> String
 end
 
 class Parent
-  def value: (untyped x) -> String
+  def value: (Integer x) -> String
 end
 ```
 
@@ -87,7 +87,7 @@ class Child < Parent
   def value: (Integer x) -> String
 end
 
-class Object
+class Object < BasicObject
   def read: -> String
 end
 

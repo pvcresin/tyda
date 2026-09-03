@@ -49,7 +49,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def numbered_ref: (untyped value) -> String?
   def whole_match_ref: (untyped value) -> String?
   def last_parenthesized_ref: (untyped value) -> String?
@@ -105,7 +105,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def last_match_index: (untyped value) -> String?
   def last_match_zero: (untyped value) -> String?
   def last_match_symbol: (untyped value) -> String?
@@ -141,7 +141,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def match_last_line_branch: -> 1 | "no"
   def flip_flop_branch: (untyped x) -> ("inside" | "outside")
 end
@@ -163,7 +163,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def case_capture: (untyped s) -> String?
 end
 ```
@@ -182,7 +182,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def probe: (untyped s) -> untyped
 end
 ```

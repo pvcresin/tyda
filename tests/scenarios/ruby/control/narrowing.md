@@ -411,7 +411,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def src: -> "x"?
   def fail_now: -> bot
   def go: -> "x"
@@ -499,7 +499,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def boom: -> bot
   def go: -> "hello"
 end
@@ -520,7 +520,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> 1
 end
 ```
@@ -543,7 +543,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: -> nil
 end
 ```
@@ -568,7 +568,7 @@ foo(:b)
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (Symbol x) -> Symbol
 end
 ```

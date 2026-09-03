@@ -163,7 +163,7 @@ module Countable
   def count: -> 1
 end
 
-class Object
+class Object < BasicObject
   def read_build: -> :build
   def read_count: -> 1
 end
@@ -243,7 +243,7 @@ class Base
   def call: -> :base
 end
 
-class Object
+class Object < BasicObject
   def read_call: -> :wrapped
 end
 
@@ -503,7 +503,7 @@ module Foo::Bar
   def hello: -> :hi
 end
 
-class Object
+class Object < BasicObject
   def f: -> :hi
 end
 ```
@@ -549,7 +549,7 @@ module MyConstants
   CONST: "mine"
 end
 
-class Object
+class Object < BasicObject
   include Kernel
 end
 ```
@@ -585,7 +585,7 @@ module Kernel
   FOUND_ME: true
 end
 
-class Object
+class Object < BasicObject
   include Kernel
 
   def outside: -> untyped

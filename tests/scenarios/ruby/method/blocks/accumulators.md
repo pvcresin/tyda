@@ -11,7 +11,7 @@ def use_each_with_object = [1, 2, 3].each_with_object([]) { |x, acc| acc << x }
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def use_each_with_object: -> Array[1 | 2 | 3]
 end
 ```
@@ -31,7 +31,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def collect_strings: -> Array[String]
 end
 ```
@@ -51,7 +51,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def build_table: -> Hash["a" | "b", true]
 end
 ```
@@ -73,7 +73,7 @@ group_values(["a", "bb"])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def group_values: (Array[String] values) -> Hash[Integer, Array[String]]
 end
 ```
@@ -95,7 +95,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def collect_into_result: -> Array[String]
 end
 ```
@@ -117,7 +117,7 @@ index_lengths(["hi", "tool"])
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def index_lengths: (Array[String] items) -> Hash[String, Integer]
 end
 ```
@@ -137,7 +137,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def collect_nested_values: -> Array[1 | 2 | 3]
 end
 ```
@@ -169,7 +169,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def each_with_object_chain: -> Hash["a" | "bb", 1 | 2]
   def reverse_with_object_chain: -> Array[String]
   def map_with_object_chain: -> Hash[1 | 2, bool]
@@ -211,7 +211,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def index_table: -> Hash["a" | "bb", Integer]
   def index_rows: -> Array[[:a | :b, Integer]]
   def nested_index_table: -> Hash["a" | "b", [1 | 2, Integer]]
@@ -248,7 +248,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def collect_set_values: -> Set[1 | 2 | 3]
   def merge_set_values: -> Set[1 | 2 | 3]
   def collect_into_set: -> Set[1 | 2]

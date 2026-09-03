@@ -15,7 +15,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def build: -> :ready
 end
 ```

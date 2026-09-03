@@ -17,7 +17,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> (1 | "hello")
 end
 ```
@@ -39,7 +39,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> (1 | 2)
 end
 ```
@@ -59,7 +59,7 @@ end
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def foo: (untyped x) -> 1?
 end
 ```

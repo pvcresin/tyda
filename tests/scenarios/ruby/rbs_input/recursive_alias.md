@@ -16,7 +16,7 @@ def identity(value) = value
 ### result
 
 ```rbs
-class Object
+class Object < BasicObject
   def identity: ((Integer | Array[Integer | Array[node]]) value) -> (Integer | Array[Integer | Array[node]])
 end
 ```
