@@ -19,7 +19,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 - class / module / method / mixin / constant / local / instance variable
 - method dispatch、visibility、`super`、singleton method、refinement
-- block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy
+- block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（tuple の要素 union とリテラル演算を block 内へ伝播）
 - Array / Hash / Set / Tuple / Record の要素型と shape
 - if / case / rescue / safe navigation / pattern matching の flow narrowing
 - 多重代入、operator-write、文字列・シンボル補間

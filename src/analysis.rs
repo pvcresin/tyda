@@ -2072,6 +2072,32 @@ end
     }
 
     #[test]
+    fn playground_mixed_map_inference_preserves_union_types() {
+        let loader = playground_loader();
+        let source = "class User\n  def ids = [1, 2, \"3\"].map { |n| n * 2 }\nend\n";
+        let res = playground_analyze(source, "", &loader, "probe.rb");
+        assert_eq!(
+            res.rbs,
+            "class User\n  def ids: -> Array[Integer | String]\nend\n"
+        );
+        assert_eq!(
+            res.code_lens
+                .iter()
+                .map(|lens| (lens.line, lens.signature.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2, "-> Array[Integer | String]")]
+        );
+        assert_eq!(
+            res.hovers
+                .iter()
+                .filter(|h| h.name == "n")
+                .map(|h| h.display.as_str())
+                .collect::<Vec<_>>(),
+            vec!["[Tyda] 1 | 2 | \"3\"", "[Tyda] 1 | 2 | \"3\""]
+        );
+    }
+
+    #[test]
     fn playground_suppresses_codelens_for_broken_method_only() {
         let loader = playground_loader();
         let source = "class A\n  def a = rand(1) < 0.5 ? :a : \"2\"\n\n  def b = \"#{a}\nend\n";

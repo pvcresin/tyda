@@ -16,6 +16,22 @@ class Object
 end
 ```
 
+## Map distributes literal operations across mixed tuple elements
+
+### update
+
+```ruby
+def mixed_literal_map = [1, 2, "3"].map { |n| n * 2 }
+```
+
+### result
+
+```rbs
+class Object
+  def mixed_literal_map: -> Array[Integer | String]
+end
+```
+
 ## select preserving element type
 
 ### update

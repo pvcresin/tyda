@@ -6904,6 +6904,27 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         arg_types: &[Type],
     ) -> Option<Type> {
+        if let Type::Union(parts) = receiver_type {
+            let mut results = Vec::with_capacity(parts.len());
+            let mut result_variant_count = 0;
+            for part in parts {
+                let result = Self::resolve_literal_call(part, method_name, arg_types)?;
+                result_variant_count += match &result {
+                    Type::Union(inner) => inner.len(),
+                    _ => 1,
+                };
+                if result_variant_count > Self::MAX_INTERPOLATED_LITERAL_VARIANTS {
+                    return None;
+                }
+                results.push(result);
+            }
+            return Some(Type::from_type_vec(
+                results
+                    .into_iter()
+                    .map(Self::widen_literal_call_result)
+                    .collect(),
+            ));
+        }
         if arg_types.is_empty() {
             return Self::resolve_literal_no_arg_method(receiver_type, method_name);
         }
@@ -6913,6 +6934,40 @@ impl<'a> InferenceEngine<'a> {
         Self::resolve_literal_string_binary_call(receiver_type, method_name, &arg_types[0]).or_else(
             || Self::resolve_literal_integer_binary_call(receiver_type, method_name, &arg_types[0]),
         )
+    }
+
+    fn widen_literal_call_result(ty: Type) -> Type {
+        match ty {
+            Type::LiteralInteger(_) => Type::Integer,
+            Type::LiteralString(_) => Type::String,
+            Type::Union(parts) => Type::from_type_vec(
+                parts
+                    .into_iter()
+                    .map(Self::widen_literal_call_result)
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
+    fn literal_call_receiver_is_supported(receiver_type: &Type) -> bool {
+        match receiver_type {
+            Type::Union(parts) => {
+                let has_integer = parts
+                    .iter()
+                    .any(|part| Self::literal_integer_variants(part).is_some());
+                let has_string = parts
+                    .iter()
+                    .any(|part| Self::literal_string_variants(part).is_some());
+                has_integer
+                    && has_string
+                    && parts.iter().all(|part| {
+                        Self::literal_string_variants(part).is_some()
+                            || Self::literal_integer_variants(part).is_some()
+                    })
+            }
+            _ => Self::literal_string_variants(receiver_type).is_some(),
+        }
     }
 
     fn resolve_literal_string_slice_call(
@@ -7687,16 +7742,32 @@ impl<'a> InferenceEngine<'a> {
         (self.registry, self.file_deps)
     }
 
-    fn dedup_hover_snapshots_keep_first(snapshots: Vec<HoverSnapshot>) -> Vec<HoverSnapshot> {
-        let mut seen: rustc_hash::FxHashSet<(usize, usize)> =
-            rustc_hash::FxHashSet::with_capacity_and_hasher(snapshots.len(), Default::default());
+    fn dedup_hover_snapshots(snapshots: Vec<HoverSnapshot>) -> Vec<HoverSnapshot> {
+        let mut seen: rustc_hash::FxHashMap<(usize, usize), usize> =
+            rustc_hash::FxHashMap::with_capacity_and_hasher(snapshots.len(), Default::default());
         let mut out = Vec::with_capacity(snapshots.len());
         for snap in snapshots {
-            if seen.insert((snap.start, snap.end)) {
+            let key = (snap.start, snap.end);
+            if let Some(index) = seen.get(&key).copied() {
+                if Self::value_hover_snapshot_is_untyped(&out[index])
+                    && Self::value_hover_snapshot_is_typed(&snap)
+                {
+                    out[index] = snap;
+                }
+            } else {
+                seen.insert(key, out.len());
                 out.push(snap);
             }
         }
         out
+    }
+
+    fn value_hover_snapshot_is_untyped(snapshot: &HoverSnapshot) -> bool {
+        matches!(&snapshot.target, HoverTarget::Value(ty) if *ty == Type::Untyped)
+    }
+
+    fn value_hover_snapshot_is_typed(snapshot: &HoverSnapshot) -> bool {
+        matches!(&snapshot.target, HoverTarget::Value(ty) if *ty != Type::Untyped)
     }
 
     pub fn into_file_analysis_snapshot(self) -> FileAnalysisSnapshot {
@@ -7706,7 +7777,7 @@ impl<'a> InferenceEngine<'a> {
             },
             method_body_summary: MethodBodySummary::default(),
             hover_index: HoverIndex {
-                snapshots: Self::dedup_hover_snapshots_keep_first(self.var_snapshots),
+                snapshots: Self::dedup_hover_snapshots(self.var_snapshots),
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
@@ -7729,7 +7800,7 @@ impl<'a> InferenceEngine<'a> {
             },
             method_body_summary: MethodBodySummary::default(),
             hover_index: HoverIndex {
-                snapshots: Self::dedup_hover_snapshots_keep_first(self.var_snapshots),
+                snapshots: Self::dedup_hover_snapshots(self.var_snapshots),
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
@@ -22761,7 +22832,7 @@ impl<'a> InferenceEngine<'a> {
                                 }
                             }
                             if method_name == "*"
-                                && Self::literal_string_variants(&safe_nav_receiver_type).is_some()
+                                && Self::literal_call_receiver_is_supported(&safe_nav_receiver_type)
                             {
                                 let literal_arg_types;
                                 let literal_call_arg_types = if call_arg_types_for_generic
