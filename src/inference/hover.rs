@@ -2118,10 +2118,11 @@ impl<'a> InferenceEngine<'a> {
             Type::KeywordParamRef(name) => {
                 self.resolve_keyword_param_ref_for_hover(class_context, method_context, name)
             }
-            Type::IvarRef(ivar_name) => self
-                .registry
-                .lookup_ivar_type(class_context, ivar_name)
-                .unwrap_or(Type::Todo),
+            Type::IvarRef(ivar_name) => self.registry.resolve_deferred_refs_for_context(
+                class_context,
+                false,
+                &Type::IvarRef(*ivar_name),
+            ),
             Type::MethodReturnRef(ref_class, method_name) => {
                 self.resolve_hover_method_return(ref_class, method_name, false)
             }

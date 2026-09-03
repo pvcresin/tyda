@@ -139,6 +139,30 @@ class A
 end
 ```
 
+## Annotated initialize parameter types its ivar
+
+### update
+
+```ruby
+class User
+  #: (String) -> void
+  def initialize(name)
+    @name = name
+  end
+
+  def name = @name
+end
+```
+
+### result
+
+```rbs
+class User
+  def initialize: (String name) -> void
+  def name: -> String
+end
+```
+
 ## Assign literal in initialize and return in method
 
 ### update

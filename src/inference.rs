@@ -19999,7 +19999,20 @@ impl<'a> InferenceEngine<'a> {
                 let write_node = node
                     .as_local_variable_write_node()
                     .expect("must be LocalVariableWriteNode");
-                self.infer_node_type(class_name, &write_node.value(), parse_result, scope)
+                let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+                let value_type =
+                    self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
+                let start = node.location().start_offset();
+                let end = start.saturating_add(var_name.len());
+                self.push_hover_snapshot(HoverSnapshot {
+                    start,
+                    end,
+                    name: var_name,
+                    target: HoverTarget::Value(value_type.clone()),
+                    class_context: class_name.to_string(),
+                    method_context: scope.method_name.clone(),
+                });
+                value_type
             }
 
             Node::InstanceVariableReadNode { .. } => {
@@ -20036,7 +20049,20 @@ impl<'a> InferenceEngine<'a> {
                 let write_node = node
                     .as_instance_variable_write_node()
                     .expect("must be InstanceVariableWriteNode");
-                self.infer_node_type(class_name, &write_node.value(), parse_result, scope)
+                let ivar_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+                let value_type =
+                    self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
+                let start = node.location().start_offset();
+                let end = start.saturating_add(ivar_name.len());
+                self.push_hover_snapshot(HoverSnapshot {
+                    start,
+                    end,
+                    name: ivar_name,
+                    target: HoverTarget::Value(value_type.clone()),
+                    class_context: class_name.to_string(),
+                    method_context: scope.method_name.clone(),
+                });
+                value_type
             }
 
             Node::LocalVariableOrWriteNode { .. } => {

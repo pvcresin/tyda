@@ -2098,6 +2098,42 @@ end
     }
 
     #[test]
+    fn playground_ivar_write_and_read_have_hovers() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class User\n",
+            "  #: (String) -> void\n",
+            "  def initialize(name)\n",
+            "    @name = name\n",
+            "  end\n",
+            "\n",
+            "  def name = @name\n",
+            "end\n",
+        );
+        let res = playground_analyze(source, "", &loader, "probe.rb");
+        assert_eq!(
+            res.rbs,
+            "class User\n  def initialize: (String name) -> void\n  def name: -> String\nend\n"
+        );
+        for (line, column) in [(4, 4), (7, 13)] {
+            let hover = res
+                .hovers
+                .iter()
+                .find(|h| h.line == line && h.column == column)
+                .unwrap_or_else(|| panic!("expected hover at ({line}:{column})"));
+            assert_eq!(hover.name, "@name");
+            assert_eq!(hover.display, "[Tyda] String");
+        }
+        let method_hover = res
+            .hovers
+            .iter()
+            .find(|h| h.line == 7 && h.column == 6)
+            .expect("expected hover on the name method");
+        assert_eq!(method_hover.name, "name");
+        assert_eq!(method_hover.display, "[Tyda] -> String");
+    }
+
+    #[test]
     fn playground_suppresses_codelens_for_broken_method_only() {
         let loader = playground_loader();
         let source = "class A\n  def a = rand(1) < 0.5 ? :a : \"2\"\n\n  def b = \"#{a}\nend\n";

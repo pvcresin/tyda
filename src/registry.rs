@@ -5982,6 +5982,15 @@ impl TypeRegistry {
             let positional_count = Self::positional_param_count(&init_method.param_infos);
 
             if let Some(param_index) = param_index {
+                if let Some(annotated_type) =
+                    self.get_annotated_param_type(class_name, "initialize", false, param_index)
+                {
+                    let resolved = self.resolve_deferred_refs(class_name, &annotated_type);
+                    if Self::is_concrete_for_global_resolve(&resolved) {
+                        return Some(resolved);
+                    }
+                }
+
                 let mut types: Vec<Type> = Vec::new();
                 for call_site in &data.call_sites {
                     if call_site.method_name.as_ref() == "initialize"
