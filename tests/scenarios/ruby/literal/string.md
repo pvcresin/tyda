@@ -120,7 +120,7 @@ end
 
 ```rbs
 class User
-  def initialize: (String name) -> void
+  def initialize: ("test" name) -> void
   def greeting: -> "hello, test"
 end
 ```
@@ -144,7 +144,7 @@ end
 
 ```rbs
 class User
-  def initialize: (String name) -> void
+  def initialize: (("a" | "b") name) -> void
   def greeting: -> "hello, a" | "hello, b"
 end
 ```

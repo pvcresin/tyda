@@ -295,6 +295,7 @@ fn write_method_sig<W: Write>(writer: &mut W, method: &MethodSig) -> io::Result<
         &method.params,
         method.block.as_ref(),
         &method.return_type,
+        !method.has_explicit_signature(),
     )?;
     writeln!(writer)?;
     if method.overloads.is_empty() {
@@ -310,6 +311,7 @@ fn write_method_sig<W: Write>(writer: &mut W, method: &MethodSig) -> io::Result<
             &overload.params,
             overload.block.as_ref(),
             &overload.return_type,
+            false,
         )?;
         writeln!(writer)?;
     }
@@ -321,6 +323,7 @@ fn write_signature<W: Write>(
     params: &[Param],
     block: Option<&crate::types::HoverBlockSig>,
     return_type: &Type,
+    widen_params: bool,
 ) -> io::Result<()> {
     let mut has_params = false;
     let mut first = true;
@@ -336,12 +339,12 @@ fn write_signature<W: Write>(
             writer.write_all(b", ")?;
         }
         first = false;
-        write_param(writer, param)?;
+        write_param(writer, param, widen_params)?;
     }
     if has_params {
         writer.write_all(b")")?;
     } else if let Some(block) = block {
-        write_block_signature_trimmed(writer, block)?;
+        write_block_signature_trimmed(writer, block, widen_params)?;
         writer.write_all(b" -> ")?;
         return write_return_type(writer, return_type, false);
     } else {
@@ -349,42 +352,46 @@ fn write_signature<W: Write>(
         return write_return_type(writer, return_type, false);
     }
     if let Some(block) = block {
-        write_block_signature(writer, block)?;
+        write_block_signature(writer, block, widen_params)?;
     }
     writer.write_all(b" -> ")?;
     write_return_type(writer, return_type, true)
 }
 
-fn write_param<W: Write>(writer: &mut W, param: &Param) -> io::Result<()> {
-    let widened = param.param_type.widen();
+fn write_param<W: Write>(writer: &mut W, param: &Param, widen_param: bool) -> io::Result<()> {
+    let param_type = if widen_param {
+        param.param_type.widen()
+    } else {
+        param.param_type.clone()
+    };
     match param.kind {
         ParamKind::Required => {
-            write!(writer, "{widened:#}")?;
+            write!(writer, "{param_type:#}")?;
             if !param.name.is_empty() {
                 write!(writer, " {}", param.name)?;
             }
         }
         ParamKind::Optional => {
-            write!(writer, "?{widened:#}")?;
+            write!(writer, "?{param_type:#}")?;
             if !param.name.is_empty() {
                 write!(writer, " {}", param.name)?;
             }
         }
         ParamKind::Rest => {
-            write!(writer, "*{widened:#}")?;
+            write!(writer, "*{param_type:#}")?;
             if !param.name.is_empty() {
                 write!(writer, " {}", param.name)?;
             }
         }
-        ParamKind::KeywordRequired => write!(writer, "{}: {widened:#}", param.name)?,
-        ParamKind::KeywordOptional => write!(writer, "?{}: {widened:#}", param.name)?,
+        ParamKind::KeywordRequired => write!(writer, "{}: {param_type:#}", param.name)?,
+        ParamKind::KeywordOptional => write!(writer, "?{}: {param_type:#}", param.name)?,
         ParamKind::DoubleRest => {
-            write!(writer, "**{widened:#}")?;
+            write!(writer, "**{param_type:#}")?;
             if !param.name.is_empty() {
                 write!(writer, " {}", param.name)?;
             }
         }
-        ParamKind::Block => write!(writer, "?{widened:#} &{}", param.name)?,
+        ParamKind::Block => write!(writer, "?{param_type:#} &{}", param.name)?,
     }
     Ok(())
 }
@@ -392,31 +399,38 @@ fn write_param<W: Write>(writer: &mut W, param: &Param) -> io::Result<()> {
 fn write_block_signature<W: Write>(
     writer: &mut W,
     block: &crate::types::HoverBlockSig,
+    widen_params: bool,
 ) -> io::Result<()> {
     writer.write_all(if block.required { b" " } else { b" ?" })?;
-    write_block_signature_body(writer, block)
+    write_block_signature_body(writer, block, widen_params)
 }
 
 fn write_block_signature_trimmed<W: Write>(
     writer: &mut W,
     block: &crate::types::HoverBlockSig,
+    widen_params: bool,
 ) -> io::Result<()> {
     if !block.required {
         writer.write_all(b"?")?;
     }
-    write_block_signature_body(writer, block)
+    write_block_signature_body(writer, block, widen_params)
 }
 
 fn write_block_signature_body<W: Write>(
     writer: &mut W,
     block: &crate::types::HoverBlockSig,
+    widen_params: bool,
 ) -> io::Result<()> {
     writer.write_all(b"{ (")?;
     for (i, param) in block.params.iter().enumerate() {
         if i > 0 {
             writer.write_all(b", ")?;
         }
-        write!(writer, "{:#}", param.param_type.widen())?;
+        if widen_params {
+            write!(writer, "{:#}", param.param_type.widen())?;
+        } else {
+            write!(writer, "{:#}", param.param_type)?;
+        }
     }
     writer.write_all(b") -> ")?;
     write_return_type(writer, &block.return_type, !block.params.is_empty())?;
@@ -438,7 +452,7 @@ mod tests {
     #[test]
     fn signature_formats_empty_tuple_as_rbs_empty_tuple() {
         let mut buf = Vec::new();
-        write_signature(&mut buf, &[], None, &Type::Tuple(Vec::new())).unwrap();
+        write_signature(&mut buf, &[], None, &Type::Tuple(Vec::new()), false).unwrap();
         let rendered = String::from_utf8(buf).unwrap();
 
         assert_eq!(rendered, "-> [ ]");

@@ -3699,7 +3699,7 @@ fn enrich_hover_from_definition_context(
         && !matches!(param.param_type, Type::Untyped | Type::Todo)
     {
         return crate::analysis::HoverResult {
-            ty: param.param_type.widen(),
+            ty: param.param_type.clone(),
             display_rbs: None,
             ..hover
         };
@@ -9919,8 +9919,7 @@ end
                 source.find("class User").unwrap() + "class User".len(),
                 "[Tyda] singleton(User)",
             ),
-            // LSP widens callable parameter types for definition hovers.
-            (param_offset, assignment_end, "[Tyda] String"),
+            (param_offset, assignment_end, "[Tyda] \"test\""),
             (ivar_offset, assignment_end, "[Tyda] \"test\""),
             (method_offset, method_end, "[Tyda] -> \"test\""),
             (greeting_offset, greeting_end, "[Tyda] -> \"hello, test\""),

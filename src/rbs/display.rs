@@ -56,6 +56,7 @@ pub fn format_method_sig_for_lens_with_names(
         method.block.as_ref(),
         &method.return_type,
         output_parameter_names,
+        !method.has_explicit_signature(),
     )
 }
 
@@ -82,7 +83,8 @@ pub fn format_hover_inferred_method_sig(name: &str, method: &MethodSig) -> Strin
             &method.params,
             method.block.as_ref(),
             &method.return_type,
-            true
+            true,
+            !method.has_explicit_signature(),
         )
     )
 }
@@ -93,6 +95,7 @@ pub fn format_hover_callable_type(method: &MethodSig) -> String {
         method.block.as_ref(),
         &method.return_type,
         true,
+        !method.has_explicit_signature(),
     )
 }
 
@@ -101,6 +104,7 @@ fn format_signature_with_names(
     block: Option<&HoverBlockSig>,
     return_type: &Type,
     output_parameter_names: bool,
+    widen_params: bool,
 ) -> String {
     let filtered_params: Vec<&Param> = params
         .iter()
@@ -112,7 +116,7 @@ fn format_signature_with_names(
     {
         return format!(
             "{} -> {return_str}",
-            format_block_signature(block).trim_start()
+            format_block_signature(block, widen_params).trim_start()
         );
     }
     let rendered = if filtered_params.is_empty() {
@@ -120,13 +124,16 @@ fn format_signature_with_names(
     } else {
         let param_strs: Vec<String> = filtered_params
             .into_iter()
-            .map(|param| format_param(param, output_parameter_names))
+            .map(|param| format_param(param, output_parameter_names, widen_params))
             .collect();
         format!("({}) -> {return_str}", param_strs.join(", "))
     };
     if let Some(block) = block {
         if let Some((params, ret)) = rendered.split_once(" -> ") {
-            format!("{params}{} -> {ret}", format_block_signature(block))
+            format!(
+                "{params}{} -> {ret}",
+                format_block_signature(block, widen_params)
+            )
         } else {
             rendered
         }
@@ -136,9 +143,10 @@ fn format_signature_with_names(
 }
 
 fn format_hover_overload(overload: &HoverOverloadSig) -> String {
-    let mut rendered = format_callable_signature(&overload.params, &overload.return_type, true);
+    let mut rendered =
+        format_callable_signature(&overload.params, &overload.return_type, true, false);
     if let Some(block) = &overload.block {
-        let block_rendered = format_block_signature(block);
+        let block_rendered = format_block_signature(block, false);
         if let Some((params, ret)) = rendered.split_once(" -> ") {
             rendered = format!("{params}{block_rendered} -> {ret}");
         }
@@ -150,13 +158,14 @@ fn format_callable_signature(
     params: &[Param],
     return_type: &Type,
     output_parameter_names: bool,
+    widen_params: bool,
 ) -> String {
     let params_str = if params.is_empty() {
         "()".to_string()
     } else {
         let param_strs: Vec<String> = params
             .iter()
-            .map(|param| format_param(param, output_parameter_names))
+            .map(|param| format_param(param, output_parameter_names, widen_params))
             .collect();
         format!("({})", param_strs.join(", "))
     };
@@ -164,14 +173,14 @@ fn format_callable_signature(
     format!("{params_str} -> {return_str}")
 }
 
-fn format_block_signature(block: &HoverBlockSig) -> String {
+fn format_block_signature(block: &HoverBlockSig, widen_params: bool) -> String {
     let params_str = if block.params.is_empty() {
         "()".to_string()
     } else {
         let param_strs: Vec<String> = block
             .params
             .iter()
-            .map(|param| format_param(param, true))
+            .map(|param| format_param(param, true, widen_params))
             .collect();
         format!("({})", param_strs.join(", "))
     };
@@ -187,11 +196,17 @@ fn format_overload_signature(overload: &OverloadSig) -> String {
         overload.block.as_ref(),
         &overload.return_type,
         true,
+        false,
     )
 }
 
-fn format_param(param: &Param, output_parameter_names: bool) -> String {
-    let ty_str = format_param_type(&param.param_type.widen());
+fn format_param(param: &Param, output_parameter_names: bool, widen_param: bool) -> String {
+    let param_type = if widen_param {
+        param.param_type.widen()
+    } else {
+        param.param_type.clone()
+    };
+    let ty_str = format_param_type(&param_type);
     match param.kind {
         ParamKind::Required => {
             if output_parameter_names {
@@ -250,6 +265,68 @@ fn format_return_type(ty: &Type, has_params: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signature_preserves_explicit_literal_param_types() {
+        let method = MethodSig {
+            name: "initialize".to_string(),
+            params: vec![Param {
+                name: "name".to_string(),
+                param_type: Type::LiteralString("test".to_string()),
+                kind: ParamKind::Required,
+            }],
+            return_type: Type::Nil,
+            block: None,
+            sorbet_modifier_comments: Vec::new(),
+            is_singleton: false,
+            rbs_annotated: true,
+            rbs_inline_annotated: true,
+            sig_annotated: false,
+            rbs_file_source: false,
+            synthetic_dsl_source: false,
+            overloads: Vec::new(),
+            loc: None,
+            is_private: false,
+        };
+
+        assert_eq!(
+            format_method_sig_for_lens_with_names(&method, true),
+            "(\"test\" name) -> nil"
+        );
+        assert_eq!(
+            format_hover_callable_type(&method),
+            "(\"test\" name) -> nil"
+        );
+    }
+
+    #[test]
+    fn signature_widens_inferred_literal_param_types() {
+        let method = MethodSig {
+            name: "initialize".to_string(),
+            params: vec![Param {
+                name: "name".to_string(),
+                param_type: Type::LiteralString("test".to_string()),
+                kind: ParamKind::Required,
+            }],
+            return_type: Type::Nil,
+            block: None,
+            sorbet_modifier_comments: Vec::new(),
+            is_singleton: false,
+            rbs_annotated: false,
+            rbs_inline_annotated: false,
+            sig_annotated: false,
+            rbs_file_source: false,
+            synthetic_dsl_source: false,
+            overloads: Vec::new(),
+            loc: None,
+            is_private: false,
+        };
+
+        assert_eq!(
+            format_method_sig_for_lens_with_names(&method, true),
+            "(String name) -> nil"
+        );
+    }
 
     #[test]
     fn lens_signature_renders_nested_todo_as_untyped() {

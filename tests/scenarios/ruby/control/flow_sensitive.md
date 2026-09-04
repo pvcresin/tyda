@@ -860,7 +860,7 @@ end
 
 ```rbs
 class NotEqualTrueChecker
-  def plus_one: ((Integer | bool) x) -> Integer
+  def plus_one: ((Integer | true) x) -> Integer
 end
 ```
 
@@ -885,7 +885,7 @@ end
 
 ```rbs
 class NegatedEqualFalseChecker
-  def plus_one: ((Integer | bool) x) -> Integer
+  def plus_one: ((Integer | false) x) -> Integer
 end
 ```
 
@@ -1073,7 +1073,7 @@ end
 
 ```rbs
 class RecordDiscriminantNarrowing
-  def value: (({ kind: Symbol, value: Integer } | { kind: Symbol, value: String }) x) -> (Integer | Symbol)
+  def value: (({ kind: :count, value: Integer } | { kind: :text, value: String }) x) -> (Integer | Symbol)
 end
 ```
 
