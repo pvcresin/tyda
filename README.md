@@ -1,10 +1,12 @@
 # Tyda
 
-> Type inference for lazy Rubyists.
+Tyda is a type-inference tool for lazy Rubyists.
 
-Tyda is a fast static type inference engine for Ruby. It aims to infer useful types
-without requiring type annotations, with a TypeProf-compatible language server as its
-main interface. It also provides a CLI for RBS output and supplementary type checking.
+It aims to infer useful types from Ruby without requiring type annotations, with a
+TypeProf-compatible language server as its main interface. It also provides a CLI for
+RBS output and supplementary type checking.
+
+Tyda is pronounced /ˈtaɪdə/—a nod to 怠惰 ("laziness" in Japanese).
 
 ## Overview
 
