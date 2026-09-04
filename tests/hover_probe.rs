@@ -117,6 +117,24 @@ fn ivar_write_and_initialize_param_have_hover() {
 }
 
 #[test]
+fn literal_annotated_initialize_param_has_hover() {
+    let source = concat!(
+        "class User\n",
+        "  #: (\"test\") -> void\n",
+        "  def initialize(name)\n",
+        "    @name = name\n",
+        "  end\n",
+        "\n",
+        "  def name = @name\n",
+        "\n",
+        "  def greeting = \"hello, #{@name}\"\n",
+        "end\n",
+    );
+    assert_hover(source, 3, 17, "name", "\"test\"");
+    assert_hover(source, 4, 13, "name", "\"test\"");
+}
+
+#[test]
 fn method_param_hover_from_caller() {
     let source = "class Foo\n  def greet(name)\n    name\n  end\nend\n\nFoo.new.greet(\"hi\")\n";
     // hover over `name` reference inside method body

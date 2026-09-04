@@ -2239,6 +2239,41 @@ end
     }
 
     #[test]
+    fn playground_literal_annotation_has_param_hover_and_literal_interpolation() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class User\n",
+            "  #: (\"test\") -> void\n",
+            "  def initialize(name)\n",
+            "    @name = name\n",
+            "  end\n",
+            "\n",
+            "  def name = @name\n",
+            "\n",
+            "  def greeting = \"hello, #{@name}\"\n",
+            "end\n",
+        );
+        let res = playground_analyze(source, "", &loader, "probe.rb");
+        assert_eq!(
+            res.rbs,
+            "class User\n  def initialize: (String name) -> void\n  def name: -> \"test\"\n  def greeting: -> \"hello, test\"\nend\n"
+        );
+        let param_hover = res
+            .hovers
+            .iter()
+            .find(|h| h.line == 3 && h.column == 17)
+            .expect("expected hover on the annotated initialize parameter");
+        assert_eq!(param_hover.name, "name");
+        assert_eq!(param_hover.display, "[Tyda] \"test\"");
+        let greeting_hover = res
+            .hovers
+            .iter()
+            .find(|h| h.line == 9 && h.column == 6)
+            .expect("expected hover on greeting");
+        assert_eq!(greeting_hover.display, "[Tyda] -> \"hello, test\"");
+    }
+
+    #[test]
     fn playground_suppresses_codelens_for_broken_method_only() {
         let loader = playground_loader();
         let source = "class A\n  def a = rand(1) < 0.5 ? :a : \"2\"\n\n  def b = \"#{a}\nend\n";
