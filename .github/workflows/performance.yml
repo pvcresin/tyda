@@ -35,8 +35,7 @@ jobs:
         with:
           cache-targets: true
           cache-workspace-crates: true
-          shared-key: performance
-          key: workspace-v2
+          shared-key: performance-v2
 
       - name: Cache vendor/rbs
         id: cache-rbs
