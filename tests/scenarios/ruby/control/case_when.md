@@ -228,7 +228,7 @@ end
 
 ```rbs
 class RecordDiscriminantCase
-  def value: (({ kind: Symbol, value: Integer } | { kind: Symbol, value: String }) x) -> (Integer | Symbol)?
+  def value: (({ kind: :count, value: Integer } | { kind: :text, value: String }) x) -> (Integer | Symbol)?
 end
 ```
 

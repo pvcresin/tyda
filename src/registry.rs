@@ -9180,10 +9180,11 @@ impl TypeRegistry {
                             ty = passthrough_ty.clone();
                         }
                         if let Some(ref default_ty) = resolved_default_type {
+                            let default_ty = default_ty.clone().widen_arg_for_param();
                             if ty == Type::Untyped {
-                                ty = default_ty.clone();
+                                ty = default_ty;
                             } else {
-                                ty = ty.union_with(default_ty.clone());
+                                ty = ty.union_with(default_ty);
                             }
                         }
                         (ty, ParamKind::Optional)

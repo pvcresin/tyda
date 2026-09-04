@@ -11944,6 +11944,13 @@ impl<'a> InferenceEngine<'a> {
                     &method_def.param_infos,
                 );
                 self.registry.add_method_def(class_name, method_def);
+                self.record_annotated_method_param_hover_snapshots(
+                    class_name,
+                    &method_name,
+                    &def_node,
+                    parse_result,
+                    is_singleton,
+                );
                 self.record_method_definition_hover_snapshot(
                     class_name,
                     &method_name,
@@ -12015,6 +12022,13 @@ impl<'a> InferenceEngine<'a> {
                     &method_def.param_infos,
                 );
                 self.registry.add_method_def(class_name, method_def);
+                self.record_annotated_method_param_hover_snapshots(
+                    class_name,
+                    &method_name,
+                    &def_node,
+                    parse_result,
+                    is_singleton,
+                );
                 self.record_method_definition_hover_snapshot(
                     class_name,
                     &method_name,
@@ -12130,13 +12144,7 @@ impl<'a> InferenceEngine<'a> {
                 scope.set_definition(&name, loc);
             }
         }
-        self.record_method_param_hover_snapshots(
-            class_name,
-            &method_name,
-            &def_node,
-            parse_result,
-            method_loc,
-        );
+        self.record_method_param_hover_snapshots(class_name, &method_name, &def_node, parse_result);
         self.record_method_default_value_hover_snapshots(
             class_name,
             &method_name,
@@ -13191,7 +13199,46 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         def_node: &ruby_prism::DefNode<'_>,
         parse_result: &ParseResult<'_>,
-        method_loc: SourceLocation,
+    ) {
+        self.record_method_param_hover_snapshots_with_signature(
+            class_name,
+            method_name,
+            def_node,
+            parse_result,
+            None,
+        );
+    }
+
+    fn record_annotated_method_param_hover_snapshots(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        def_node: &ruby_prism::DefNode<'_>,
+        parse_result: &ParseResult<'_>,
+        is_singleton: bool,
+    ) {
+        if !self.record_hover_snapshots {
+            return;
+        }
+        let signature =
+            self.registry
+                .lookup_method_sig_exact(class_name, method_name, is_singleton);
+        self.record_method_param_hover_snapshots_with_signature(
+            class_name,
+            method_name,
+            def_node,
+            parse_result,
+            signature.as_ref(),
+        );
+    }
+
+    fn record_method_param_hover_snapshots_with_signature(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        def_node: &ruby_prism::DefNode<'_>,
+        parse_result: &ParseResult<'_>,
+        signature: Option<&MethodSig>,
     ) {
         if !self.record_hover_snapshots {
             return;
@@ -13202,12 +13249,14 @@ impl<'a> InferenceEngine<'a> {
 
         let source = parse_result.source();
         let def_start = def_node.location().start_offset();
+        let method_loc = offset_to_location(source, def_start);
         let mut positional_index = 0usize;
 
         for param in params.requireds().iter() {
             if let Some((name, ty, start, end)) =
                 Self::extract_method_param_hover_target(&param, positional_index)
             {
+                let ty = self.method_param_hover_type(class_name, signature, &name, false, ty);
                 self.push_method_param_hover_snapshot(
                     class_name,
                     method_name,
@@ -13223,6 +13272,7 @@ impl<'a> InferenceEngine<'a> {
             if let Some((name, ty, start, end)) =
                 Self::extract_method_param_hover_target(&param, positional_index)
             {
+                let ty = self.method_param_hover_type(class_name, signature, &name, false, ty);
                 self.push_method_param_hover_snapshot(
                     class_name,
                     method_name,
@@ -13238,6 +13288,7 @@ impl<'a> InferenceEngine<'a> {
             && let Some((name, ty, start, end)) =
                 Self::extract_method_param_hover_target(&rest, positional_index)
         {
+            let ty = self.method_param_hover_type(class_name, signature, &name, true, ty);
             self.push_method_param_hover_snapshot(
                 class_name,
                 method_name,
@@ -13250,6 +13301,7 @@ impl<'a> InferenceEngine<'a> {
         for param in params.keywords().iter() {
             if let Some((name, ty, start, end)) = Self::extract_method_keyword_hover_target(&param)
             {
+                let ty = self.method_param_hover_type(class_name, signature, &name, false, ty);
                 self.push_method_param_hover_snapshot(
                     class_name,
                     method_name,
@@ -13264,6 +13316,7 @@ impl<'a> InferenceEngine<'a> {
             && let Some((name, ty, start, end)) =
                 Self::extract_method_keyword_rest_hover_target(&kw_rest)
         {
+            let ty = self.method_param_hover_type(class_name, signature, &name, false, ty);
             self.push_method_param_hover_snapshot(
                 class_name,
                 method_name,
@@ -13278,14 +13331,50 @@ impl<'a> InferenceEngine<'a> {
         {
             let name = String::from_utf8_lossy(name_raw.as_slice()).to_string();
             let start = block.location().start_offset() + 1;
+            let ty =
+                self.method_param_hover_type(class_name, signature, &name, false, Type::Untyped);
             self.push_method_param_hover_snapshot(
                 class_name,
                 method_name,
                 start..(start + name.len()),
                 &name,
-                Type::Untyped,
+                ty,
                 offset_to_location_from(source, def_start, method_loc, start),
             );
+        }
+    }
+
+    fn method_param_hover_type(
+        &self,
+        class_name: &str,
+        signature: Option<&MethodSig>,
+        name: &str,
+        is_rest: bool,
+        fallback: Type,
+    ) -> Type {
+        let Some(signature) = signature else {
+            return fallback;
+        };
+        let Some((param_index, _)) = signature
+            .params
+            .iter()
+            .enumerate()
+            .find(|(_, param)| param.name == name)
+        else {
+            return fallback;
+        };
+        let Some(ty) = self.registry.get_annotated_param_type(
+            class_name,
+            &signature.name,
+            signature.is_singleton,
+            param_index,
+        ) else {
+            return fallback;
+        };
+        if is_rest {
+            Type::Array(Some(Box::new(ty)))
+        } else {
+            ty
         }
     }
 
@@ -24548,6 +24637,11 @@ impl<'a> InferenceEngine<'a> {
         for part in parts.iter() {
             let part_type =
                 self.infer_interpolated_part_value_type(class_name, &part, parse_result, scope);
+            let part_type = self.registry.resolve_deferred_refs_for_context_owned(
+                class_name,
+                scope.singleton_dispatch,
+                part_type,
+            );
             let Some(current) = variants.take() else {
                 continue;
             };

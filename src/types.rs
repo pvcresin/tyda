@@ -1159,6 +1159,12 @@ pub struct MethodSig {
 }
 
 impl MethodSig {
+    pub fn has_explicit_signature(&self) -> bool {
+        self.rbs_inline_annotated
+            || self.sig_annotated
+            || self.rbs_file_source && !self.synthetic_dsl_source
+    }
+
     pub fn is_external_rbs_source(&self) -> bool {
         self.rbs_file_source && !self.synthetic_dsl_source
     }

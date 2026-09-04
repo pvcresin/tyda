@@ -61,6 +61,64 @@ test("infers RBS, emits CodeLens + diagnostics + hover", async ({ page }) => {
   expect(pageErrors, "no uncaught page errors").toEqual([]);
 });
 
+test("prevents browser save shortcuts", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => window.__tyda !== undefined, null, {
+    timeout: 45_000,
+  });
+
+  const shortcuts = await page.evaluate(() =>
+    [
+      { key: "s", ctrlKey: true },
+      { key: "s", metaKey: true },
+    ].map((modifiers) => {
+      const event = new KeyboardEvent("keydown", {
+        ...modifiers,
+        bubbles: true,
+        cancelable: true,
+      });
+      const target = document.querySelector("#ruby textarea") || document.body;
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    }),
+  );
+  expect(shortcuts).toEqual([true, true]);
+});
+
+test("shows annotated parameter hovers and literal interpolation", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => window.__tyda !== undefined, null, {
+    timeout: 45_000,
+  });
+
+  const source = `class User
+  #: ("test") -> void
+  def initialize(name)
+    @name = name
+  end
+
+  def greeting = "hello, #{@name}"
+end
+`;
+  await page.evaluate((value) => window.__editors.ruby.setValue(value), source);
+  await page.waitForFunction(
+    () => window.__tyda?.rbs?.includes('def greeting: -> "hello, test"'),
+    null,
+    { timeout: 15_000 },
+  );
+
+  const result = await page.evaluate(() => window.__tyda);
+  expect(result.rbs).toContain('def greeting: -> "hello, test"');
+  expect(result.hovers).toContainEqual(
+    expect.objectContaining({
+      line: 3,
+      column: 17,
+      name: "name",
+      display: '[Tyda] "test"',
+    }),
+  );
+});
+
 test("clicking a CodeLens inserts a #: comment and removes that lens", async ({ page }) => {
   await page.goto("/");
   await page.waitForFunction(() => window.__tyda !== undefined, null, {

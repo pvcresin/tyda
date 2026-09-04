@@ -35,6 +35,22 @@ Playground の RBS / CodeLens / hover を canonical snapshot の projection と�
 RBS / RBI / project fixture / 構文エラーを含むケースはこの対象から除外し、ブラウザや WASM を起動せずに
 表示入口の差分を検出する。シナリオが増えたときも、テストはファイル単位で並列実行する。
 
+## 入力途中の表示契約
+
+`tests/incremental_hover.rs` は代表的な class / module / constant / method / parameter / local /
+ivar / literal の入力について、完成形へ向かうすべての UTF-8 prefix を解析する。型がその時点で
+確定する位置以降は期待する hover を厳密に比較し、入力中の未完成 token や value-corrupting syntax
+error は `untyped` または抑制を許容する。後続の壊れた method が、先に確定した領域の hover を壊さ
+ないことも固定する。
+
+LSP の `lsp_hover_tracks_incremental_content_updates` は同じ入力列を `didChange` で差し替え、
+各状態の hover が古いキャッシュを返さないことを確認する。Playground と LSP の token hover は
+同じ精密な snapshot 型を表示する。未注釈 method の public callable signature は call-site 引数を
+基底型へ widen する一方、`#:` / `sig` / 外部 RBS・RBI で明示された parameter 型は保持する。
+長い型の省略は hover 本文の表示だけに適用し、推論結果と RBS 出力は変更しない。
+全シナリオの mutation test は引き続き panic / hang のないことを確認する層であり、意味的な期待値は
+このような明示的な incremental contract で追加する。
+
 対象を絞るときは次を使う。
 
 ~~~bash

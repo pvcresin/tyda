@@ -91,6 +91,16 @@ declare global {
 window.monaco = monaco;
 window.LZString = LZString;
 
+window.addEventListener(
+  "keydown",
+  (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+    }
+  },
+  { capture: true },
+);
+
 const SAMPLE_RUBY = `class User
   def initialize(name)
     @name = name

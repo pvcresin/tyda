@@ -101,6 +101,54 @@ class Object < BasicObject
 end
 ```
 
+## String interpolation resolves an annotated instance variable
+
+### update
+
+```ruby
+class User
+  #: ("test") -> void
+  def initialize(name)
+    @name = name
+  end
+
+  def greeting = "hello, #{@name}"
+end
+```
+
+### result
+
+```rbs
+class User
+  def initialize: ("test" name) -> void
+  def greeting: -> "hello, test"
+end
+```
+
+## String interpolation expands an annotated instance variable union
+
+### update
+
+```ruby
+class User
+  #: ("a" | "b") -> void
+  def initialize(name)
+    @name = name
+  end
+
+  def greeting = "hello, #{@name}"
+end
+```
+
+### result
+
+```rbs
+class User
+  def initialize: (("a" | "b") name) -> void
+  def greeting: -> "hello, a" | "hello, b"
+end
+```
+
 ## Adjacent string literals
 
 ### update

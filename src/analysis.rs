@@ -743,7 +743,7 @@ pub fn format_hover_body(hover_result: &HoverResult) -> String {
                 .to_string()
         })
         .unwrap_or(ty_str);
-    let mut lines = vec![format!("[Tyda] {body}")];
+    let mut lines = vec![format!("[Tyda] {}", truncate_hover_body(&body))];
     if let Some(type_params) = format_hover_type_params(&hover_result.type_params) {
         lines.push(format!("# type params: {type_params}"));
     }
@@ -753,6 +753,26 @@ pub fn format_hover_body(hover_result: &HoverResult) -> String {
         lines.push(format!("# unresolved: {method}"));
     }
     lines.join("\n")
+}
+
+const HOVER_BODY_MAX_CHARS: usize = 512;
+
+fn truncate_hover_body(body: &str) -> String {
+    if body.chars().count() <= HOVER_BODY_MAX_CHARS {
+        return body.to_string();
+    }
+
+    let truncated: String = body
+        .chars()
+        .take(HOVER_BODY_MAX_CHARS.saturating_sub(1))
+        .collect();
+    let end = truncated
+        .rfind("\n    | ")
+        .or_else(|| truncated.rfind(" | "))
+        .or_else(|| truncated.rfind(", "))
+        .unwrap_or(truncated.len());
+    let prefix = truncated[..end].trim_end();
+    format!("{prefix}…")
 }
 
 fn format_hover_type_params(type_params: &[(String, Type)]) -> Option<String> {
@@ -1539,6 +1559,29 @@ mod tests {
     use std::sync::Arc;
     use walkdir::WalkDir;
 
+    #[test]
+    fn hover_body_truncates_only_the_display_text() {
+        let body = (0..160)
+            .map(|i| format!("Type{i}"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let hover = HoverResult {
+            name: "value".to_string(),
+            ty: Type::LiteralString("kept".to_string()),
+            display_rbs: Some(format!("value: {body}")),
+            type_params: Vec::new(),
+            can_enrich_from_workspace: false,
+            unresolved_method: None,
+        };
+
+        let rendered = format_hover_body(&hover);
+        let displayed_body = rendered.strip_prefix("[Tyda] ").unwrap();
+
+        assert!(displayed_body.ends_with('…'));
+        assert!(displayed_body.chars().count() <= HOVER_BODY_MAX_CHARS);
+        assert_eq!(hover.ty, Type::LiteralString("kept".to_string()));
+    }
+
     fn analyze_with_dependency_collection(
         source: &str,
         dependency_collection: DependencyCollection,
@@ -2236,6 +2279,41 @@ end
             .expect("expected hover on the name method");
         assert_eq!(method_hover.name, "name");
         assert_eq!(method_hover.display, "[Tyda] -> String");
+    }
+
+    #[test]
+    fn playground_literal_annotation_has_param_hover_and_literal_interpolation() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class User\n",
+            "  #: (\"test\") -> void\n",
+            "  def initialize(name)\n",
+            "    @name = name\n",
+            "  end\n",
+            "\n",
+            "  def name = @name\n",
+            "\n",
+            "  def greeting = \"hello, #{@name}\"\n",
+            "end\n",
+        );
+        let res = playground_analyze(source, "", &loader, "probe.rb");
+        assert_eq!(
+            res.rbs,
+            "class User\n  def initialize: (\"test\" name) -> void\n  def name: -> \"test\"\n  def greeting: -> \"hello, test\"\nend\n"
+        );
+        let param_hover = res
+            .hovers
+            .iter()
+            .find(|h| h.line == 3 && h.column == 17)
+            .expect("expected hover on the annotated initialize parameter");
+        assert_eq!(param_hover.name, "name");
+        assert_eq!(param_hover.display, "[Tyda] \"test\"");
+        let greeting_hover = res
+            .hovers
+            .iter()
+            .find(|h| h.line == 9 && h.column == 6)
+            .expect("expected hover on greeting");
+        assert_eq!(greeting_hover.display, "[Tyda] -> \"hello, test\"");
     }
 
     #[test]
