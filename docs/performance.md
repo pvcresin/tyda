@@ -42,8 +42,13 @@ cargo test --release bench_workspace_rescan_mastodon_scale -- --nocapture
 ## CI の性能ゲート
 
 `.github/workflows/performance.yml` は pinned commit の `subject/gitlab/app` を使い、同じ runner 上で
-base と head を交互に 5 回計測する。CLI の全体解析と LSP の workspace scan を対象にし、各 run の
-最大 RSS も同時に取る。解析 worker 数は 2 に固定し、大きな subject は並列化せず `nice -n 19` で実行する。
+base と head を交互に計測する。pull request は 3 回、main push と手動実行は 5 回とし、CLI の全体解析と
+LSP の workspace scan を対象にする。各 run の最大 RSS も同時に取る。解析 worker 数は 2 に固定し、
+大きな subject は並列化せず `nice -n 19` で実行する。
+
+両variantのrelease binaryは1つのCargo target directoryで順にビルドしてから退避する。LSPはテスト
+harnessを再ビルドせず、同じrelease binaryを軽量なLSP clientから駆動するため、base/head間で依存crateの
+コンパイル成果物を共有できる。Perf job専用のRust cacheにはworkspace crateを含むこのtarget directoryも保存する。
 
 手元で同じ比較を行う場合は、subject と vendor/RBS を用意したうえで次を実行する。
 

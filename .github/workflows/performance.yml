@@ -32,6 +32,10 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          cache-targets: true
+          cache-workspace-crates: true
+          shared-key: performance-v2
 
       - name: Cache vendor/rbs
         id: cache-rbs
@@ -58,7 +62,7 @@ jobs:
       - name: Compare base and head performance
         env:
           TYDA_PERF_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          TYDA_PERF_RUNS: "5"
+          TYDA_PERF_RUNS: ${{ github.event_name == 'pull_request' && '3' || '5' }}
           TYDA_PERF_THREADS: "2"
         run: ./scripts/benchmark_ci.sh
 
