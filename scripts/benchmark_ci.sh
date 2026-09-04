@@ -10,6 +10,7 @@ THREADS="${TYDA_PERF_THREADS:-2}"
 TIMEOUT_SECONDS="${TYDA_PERF_TIMEOUT_SECONDS:-180}"
 BASE_REF="${TYDA_PERF_BASE_REF:-}"
 OUTPUT_DIR="${TYDA_PERF_OUTPUT_DIR:-$ROOT_DIR/target/performance}"
+TARGET_ROOT="${TYDA_PERF_TARGET_DIR:-$ROOT_DIR/target}"
 
 # A warning is useful for trend monitoring; only the larger limit fails PR CI.
 TIME_WARN_PERCENT="15"
@@ -37,11 +38,8 @@ mkdir -p "$OUTPUT_DIR"
 RUN_DIR="$(mktemp -d "$OUTPUT_DIR/run.XXXXXX")"
 METRICS_TSV="$RUN_DIR/metrics.tsv"
 RESULT_JSON="$OUTPUT_DIR/result.json"
-TARGET_ROOT="$OUTPUT_DIR/targets"
 BASE_DIR="$RUN_DIR/base"
 HEAD_DIR="$ROOT_DIR"
-BASE_TARGET="$TARGET_ROOT/base"
-HEAD_TARGET="$TARGET_ROOT/head"
 mkdir -p "$TARGET_ROOT"
 touch "$METRICS_TSV"
 
@@ -87,56 +85,29 @@ ln -s "$ROOT_DIR/vendor/rbs" "$BASE_DIR/vendor/rbs"
 
 export CARGO_INCREMENTAL=0
 
-test_binary_for() {
-  local json_path="$1"
-  ruby -rjson - "$json_path" <<'RUBY'
-path = ARGV.fetch(0)
-File.foreach(path) do |line|
-  begin
-    value = JSON.parse(line)
-  rescue JSON::ParserError
-    next
-  end
-  next unless value["reason"] == "compiler-artifact"
-
-  target = value.fetch("target", {})
-  if value["executable"] && target["name"] == "tyda" && target.fetch("kind", []).include?("lib")
-    puts value["executable"]
-  end
-end
-RUBY
-}
-
 build_variant() {
   local variant="$1"
   local repo="$2"
   local target="$3"
   local build_log="$RUN_DIR/$variant-build.log"
-  local test_json="$RUN_DIR/$variant-test.json"
-  local test_log="$RUN_DIR/$variant-test.log"
+  local binary_dir="$RUN_DIR/bin/$variant"
 
-  echo "Building $variant release binary and LSP test harness..."
+  echo "Building $variant release binary..."
   if ! (cd "$repo" && CARGO_TARGET_DIR="$target" cargo build --locked --release --bin tyda >"$build_log" 2>&1); then
     cat "$build_log" >&2
     exit 1
   fi
-  if ! (cd "$repo" && CARGO_TARGET_DIR="$target" cargo test --locked --release --lib --no-run --message-format=json >"$test_json" 2>"$test_log"); then
-    cat "$test_log" >&2
+  if [[ ! -x "$target/release/tyda" ]]; then
+    echo "failed to find the $variant performance binary" >&2
+    cat "$build_log" >&2
     exit 1
   fi
-
-  local test_binary
-  test_binary="$(test_binary_for "$test_json")"
-  if [[ -z "$test_binary" || ! -x "$test_binary" ]]; then
-    echo "failed to find the $variant LSP test binary" >&2
-    cat "$test_log" >&2
-    exit 1
-  fi
-  printf '%s\n' "$test_binary" >"$RUN_DIR/$variant-test-binary"
+  mkdir -p "$binary_dir"
+  cp "$target/release/tyda" "$binary_dir/tyda"
 }
 
-build_variant base "$BASE_DIR" "$BASE_TARGET"
-build_variant head "$HEAD_DIR" "$HEAD_TARGET"
+build_variant base "$BASE_DIR" "$TARGET_ROOT"
+build_variant head "$HEAD_DIR" "$TARGET_ROOT"
 
 measure_process() {
   local meta_path="$1"
@@ -185,7 +156,7 @@ RUBY
 measure_cli() {
   local run="$1"
   local variant="$2"
-  local binary="$OUTPUT_DIR/targets/$variant/release/tyda"
+  local binary="$RUN_DIR/bin/$variant/tyda"
   local meta="$RUN_DIR/cli-$variant-$run.meta"
   local log="$RUN_DIR/cli-$variant-$run.log"
 
@@ -203,17 +174,14 @@ measure_cli() {
 measure_lsp() {
   local run="$1"
   local variant="$2"
-  local test_binary
-  test_binary="$(<"$RUN_DIR/$variant-test-binary")"
+  local binary="$RUN_DIR/bin/$variant/tyda"
   local meta="$RUN_DIR/lsp-$variant-$run.meta"
   local log="$RUN_DIR/lsp-$variant-$run.log"
 
   measure_process "$meta" "$log" \
     env TYDA_LSP_BENCH_ROOT="$SUBJECT_PATH" \
     TYDA_LSP_ANALYSIS_THREADS="$THREADS" \
-    nice -n 19 "$test_binary" \
-    lsp::tests::bench_display_analysis_mastodon_scale \
-    --nocapture --test-threads=1
+    nice -n 19 ruby "$ROOT_DIR/scripts/benchmark_lsp_client.rb" "$binary" "$SUBJECT_PATH"
   local scan_ms rss_bytes
   scan_ms="$(scan_ms_from_log "$log")"
   IFS=$'\t' read -r _ rss_bytes < <(read_meta "$meta")
