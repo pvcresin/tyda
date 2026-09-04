@@ -191,13 +191,8 @@ measure_lsp() {
   fi
 }
 
-echo ""
-echo "=== Warmup ==="
-measure_cli warmup base
-measure_cli warmup head
-measure_lsp warmup base
-measure_lsp warmup head
-
+# The first paired sample warms the shared filesystem cache; the three-sample
+# median excludes that cold-side sample without four extra full analyses.
 echo ""
 echo "=== Paired CLI runs ==="
 for run in $(seq 1 "$RUNS"); do
