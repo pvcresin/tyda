@@ -48,7 +48,7 @@ LSP の workspace scan を対象にする。各 run の最大 RSS も同時に�
 
 両variantのrelease binaryは1つのCargo target directoryで順にビルドしてから退避する。LSPはテスト
 harnessを再ビルドせず、同じrelease binaryを軽量なLSP clientから駆動するため、base/head間で依存crateの
-コンパイル成果物を共有できる。Perf job専用のRust cacheにはこのtarget directoryも保存する。
+コンパイル成果物を共有できる。Perf job専用のRust cacheにはworkspace crateを含むこのtarget directoryも保存する。
 
 手元で同じ比較を行う場合は、subject と vendor/RBS を用意したうえで次を実行する。
 
