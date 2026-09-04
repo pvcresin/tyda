@@ -69,7 +69,10 @@ scenario test は小さな workspace を case ごとに作り、同じ backend �
 
 Ruby source、RBS、RBI、schema、plugin の知識は同じ registry に合成する。優先順位は
 「実体のある source / 宣言を保ち、未解決の空 stub で権威ある定義を隠さない」ことを基本とする。
-合成規則を変更したときは、該当する registry unit test と scenario を同じ変更で更新する。
+メソッドの型情報を選択するときは、inline RBS comment（`#:`）、Sorbet `sig`、`.rbs`、`.rbi`、
+Ruby code inference の順に優先する。これは query / projection の型情報選択であり、Ruby の定義・参照から
+作る依存 graph の優先順ではない。合成規則を変更したときは、該当する registry unit test と scenario を
+同じ変更で更新する。
 
 ユーザー定義クラスでも superclass が未設定なら、外部宣言の superclass を暗黙の継承として補完する。
 Ruby source に明示された `class X < Y` は外部宣言で上書きしない。

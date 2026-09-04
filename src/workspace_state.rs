@@ -724,6 +724,94 @@ mod tests {
     }
 
     #[test]
+    fn updating_removed_method_annotations_re_resolves_dependents() {
+        use crate::analysis::{AnalysisOptions, analyze_file_facts_with_deps};
+        use crate::types::Type;
+
+        fn analyze(source: &str, path: &str) -> (FileAnalysisSnapshot, FileDeps) {
+            analyze_file_facts_with_deps(source, None, None, Some(path), AnalysisOptions::default())
+        }
+
+        fn return_type(registry: &TypeRegistry, class_name: &str, method_name: &str) -> Type {
+            registry
+                .lookup_method_sig_exact(class_name, method_name, false)
+                .expect("method should exist")
+                .return_type
+        }
+
+        let inline_source = concat!(
+            "class Value\n",
+            "  sig { returns(Symbol) }\n",
+            "  #: () -> bool\n",
+            "  def fetch = :inferred\n",
+            "end\n",
+        );
+        let sig_source = concat!(
+            "class Value\n",
+            "  sig { returns(Symbol) }\n",
+            "  def fetch = :inferred\n",
+            "end\n",
+        );
+        let inferred_source = "class Value\n  def fetch = :inferred\nend\n";
+        let consumer_source = concat!(
+            "class Consumer\n",
+            "  def read = Value.new.fetch\n",
+            "end\n",
+        );
+
+        let mut db = WorkspaceState::new();
+        let (inline_analysis, inline_deps) = analyze(inline_source, "value.rb");
+        db.upsert_file(
+            "value.rb".into(),
+            hash_content(inline_source),
+            inline_analysis,
+            inline_deps,
+        );
+        let (consumer_analysis, consumer_deps) = analyze(consumer_source, "consumer.rb");
+        db.upsert_file(
+            "consumer.rb".into(),
+            hash_content(consumer_source),
+            consumer_analysis,
+            consumer_deps,
+        );
+        let empty_base = TypeRegistry::new();
+
+        let registry = db.workspace_registry(&empty_base);
+        assert_eq!(return_type(&registry, "Value", "fetch"), Type::Bool);
+        assert_eq!(return_type(&registry, "Consumer", "read"), Type::Bool);
+
+        let (sig_analysis, sig_deps) = analyze(sig_source, "value.rb");
+        let invalidated = db.upsert_file(
+            "value.rb".into(),
+            hash_content(sig_source),
+            sig_analysis,
+            sig_deps,
+        );
+        assert!(invalidated.contains("consumer.rb"));
+        let registry = db.workspace_registry(&empty_base);
+        assert_eq!(return_type(&registry, "Value", "fetch"), Type::Symbol);
+        assert_eq!(return_type(&registry, "Consumer", "read"), Type::Symbol);
+
+        let (inferred_analysis, inferred_deps) = analyze(inferred_source, "value.rb");
+        let invalidated = db.upsert_file(
+            "value.rb".into(),
+            hash_content(inferred_source),
+            inferred_analysis,
+            inferred_deps,
+        );
+        assert!(invalidated.contains("consumer.rb"));
+        let registry = db.workspace_registry(&empty_base);
+        assert_eq!(
+            return_type(&registry, "Value", "fetch"),
+            Type::LiteralSymbol("inferred".into())
+        );
+        assert_eq!(
+            return_type(&registry, "Consumer", "read"),
+            Type::LiteralSymbol("inferred".into())
+        );
+    }
+
+    #[test]
     fn batch_projection_resolves_cross_file_and_is_deterministic() {
         use crate::analysis::{AnalysisOptions, analyze_file_facts_with_deps};
         use crate::types::Type;

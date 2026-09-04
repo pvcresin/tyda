@@ -11,7 +11,7 @@ main interface. It also provides a CLI for RBS output and supplementary type che
 - Infer useful types from Ruby / Rails code without writing type annotations
 - Explore inferred types in the editor through TypeProf-compatible CodeLens, Hover, definition, and typeDefinition support
 - Use the CLI to emit RBS and run supplementary type checks and diagnostics
-- Type-info priority: Ruby code / `.rbs` inference (highest) → inline RBS comments `#:` (next) → type checking (assistive). Sorbet (`sig` / `.rbi`) syntax-based inference is experimental
+- Type-info priority for displayed method types: inline RBS comments (`#:` / `# @rbs`) → Sorbet `sig` → `.rbs` → `.rbi` → Ruby code inference. Type checking is assistive, and unsupported Sorbet syntax remains experimental
 
 ## Quick start
 
