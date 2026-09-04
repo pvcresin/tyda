@@ -9890,6 +9890,74 @@ end
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn lsp_hover_tracks_incremental_content_updates() {
+        let dir = tempdir().expect("tempdir");
+        let uri = Url::from_file_path(dir.path().join("sample.rb")).expect("file uri");
+        let source = concat!(
+            "class User\n",
+            "  #: (\"test\") -> void\n",
+            "  def initialize(name)\n",
+            "    @name = name\n",
+            "  end\n",
+            "\n",
+            "  def name = @name\n",
+            "\n",
+            "  def greeting = \"hello, #{@name}\"\n",
+            "end\n",
+        );
+        let param_offset = source.find("def initialize(name)").unwrap() + "def initialize(".len();
+        let ivar_offset = source.find("@name").unwrap();
+        let method_offset = source.find("  def name").unwrap() + "  def ".len();
+        let greeting_offset = source.find("greeting").unwrap();
+        let assignment_end = source.find("    @name = name").unwrap() + "    @name = name".len();
+        let method_end = source.find("  def name = @name").unwrap() + "  def name = @name".len();
+        let greeting_end = source.find("  def greeting = \"hello, #{@name}\"").unwrap()
+            + "  def greeting = \"hello, #{@name}\"".len();
+        let checks = [
+            (
+                source.find("User").unwrap(),
+                source.find("class User").unwrap() + "class User".len(),
+                "[Tyda] singleton(User)",
+            ),
+            // LSP widens callable parameter types for definition hovers.
+            (param_offset, assignment_end, "[Tyda] String"),
+            (ivar_offset, assignment_end, "[Tyda] \"test\""),
+            (method_offset, method_end, "[Tyda] -> \"test\""),
+            (greeting_offset, greeting_end, "[Tyda] -> \"hello, test\""),
+        ];
+
+        let (mut service, mut socket) = initialize_lsp(None).await;
+        let _ = open_document(&mut service, &mut socket, &uri, "").await;
+        for (index, &prefix_end) in [assignment_end, method_end, greeting_end]
+            .iter()
+            .enumerate()
+        {
+            let prefix = &source[..prefix_end];
+            let _ =
+                change_document(&mut service, &mut socket, &uri, index as i32 + 2, prefix).await;
+            for &(offset, ready_end, expected) in &checks {
+                if prefix_end < ready_end {
+                    continue;
+                }
+                let position = byte_offset_to_lsp_position(source, offset);
+                let hover = request_hover(
+                    &mut service,
+                    &uri,
+                    position.line,
+                    position.character,
+                    index as i64 + 100,
+                )
+                .await;
+                assert_eq!(
+                    hover_language_value(hover),
+                    expected,
+                    "hover at source offset {offset} after prefix {prefix_end}: {prefix:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn lsp_hover_uses_live_concern_class_methods_after_did_change() {
         let dir = tempdir().expect("tempdir");
         let shared_uri =
