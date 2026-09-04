@@ -1,17 +1,19 @@
 # Tyda
 
-> Type inference for lazy Rubyists.
+Tyda is a type-inference tool for lazy Rubyists.
 
-Tyda is a fast static type inference engine for Ruby. It aims to infer useful types
-without requiring type annotations, with a TypeProf-compatible language server as its
-main interface. It also provides a CLI for RBS output and supplementary type checking.
+It aims to infer useful types from Ruby without requiring type annotations, with a
+TypeProf-compatible language server as its main interface. It also provides a CLI for
+RBS output and supplementary type checking.
+
+Tyda is pronounced /ˈtaɪdə/—a nod to 怠惰 ("laziness" in Japanese).
 
 ## Overview
 
 - Infer useful types from Ruby / Rails code without writing type annotations
 - Explore inferred types in the editor through TypeProf-compatible CodeLens, Hover, definition, and typeDefinition support
 - Use the CLI to emit RBS and run supplementary type checks and diagnostics
-- Type-info priority: Ruby code / `.rbs` inference (highest) → inline RBS comments `#:` (next) → type checking (assistive). Sorbet (`sig` / `.rbi`) syntax-based inference is experimental
+- Type-info priority for displayed method types: inline RBS comments (`#:` / `# @rbs`) → Sorbet `sig` → `.rbs` → `.rbi` → Ruby code inference. Type checking is assistive, and unsupported Sorbet syntax remains experimental
 
 ## Quick start
 
