@@ -51,6 +51,7 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
 2. 既存の query backend / plugin / 宣言テーブルに合流できる設計を選ぶ。
 3. 実装、回帰テスト、対応する living document を同じ変更に含める。
 4. `git diff --check` と `./scripts/check.sh` を実行する。
+5. PR 本文では、変更の背景・動機（Background / Motivation）、実装（Implementation）、検証（Verification）を説明する。
 
 個別 repository の名前に依存する分岐や、一時的な debug API は追加しない。DSL が runtime に
 登録されるだけで静的に証明できない場合は、外部 RBS / RBI の入力を選ぶ。

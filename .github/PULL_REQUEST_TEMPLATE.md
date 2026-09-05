@@ -2,9 +2,17 @@
 
 ## Summary
 
-<!-- Briefly explain what changed and why in bullet points. Use subheadings by area for large PRs. -->
+<!-- Optional for small PRs. Remove this section when Background is sufficient. -->
+
+## Background
+
+<!-- Explain the problem or context behind this change. -->
+
+## Implementation
+
+<!-- Describe the approach and the notable changes. -->
 
 ## Verification
 
 - [ ] `./scripts/check.sh` (fmt / clippy / test / release build)
-<!-- Add other relevant gates as needed: render byte comparison, benchmark non-regression, testbed counts, etc. -->
+<!-- Include tests and other relevant verification: render byte comparison, benchmark non-regression, testbed counts, etc. -->
