@@ -8,7 +8,7 @@
 
 <!-- Describe the approach and the notable changes. -->
 
-## Verification
+## Test
 
 - [ ] `./scripts/check.sh` (fmt / clippy / test / release build)
-<!-- Include tests and other relevant verification: render byte comparison, benchmark non-regression, testbed counts, etc. -->
+<!-- Include relevant tests and checks: render byte comparison, benchmark non-regression, testbed counts, etc. -->
