@@ -11,6 +11,10 @@ app (`src/main.ts`): it bundles Monaco / lz-string / the WASI shim from npm (no
 CDN), renders the RBS in the output pane, diagnostics as Monaco markers, hover
 types via a hover provider, and inferred signatures as CodeLens.
 
+Select one or more lines in either editor and press `Ctrl+/` on Windows/Linux or
+`Command+/` on macOS to toggle Ruby line comments. Press the same shortcut again
+to remove them.
+
 ## Quick start
 
 ```sh

@@ -32,6 +32,7 @@ import LZString from "lz-string";
 // language/language-service, which dominates the bundle.
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import "monaco-editor/esm/vs/editor/contrib/codelens/browser/codelensController.js";
+import "monaco-editor/esm/vs/editor/contrib/comment/browser/comment.js";
 import "monaco-editor/esm/vs/editor/contrib/hover/browser/hoverContribution.js";
 import "monaco-editor/esm/vs/basic-languages/ruby/ruby.contribution";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";

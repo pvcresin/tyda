@@ -85,6 +85,53 @@ test("prevents browser save shortcuts", async ({ page }) => {
   expect(shortcuts).toEqual([true, true]);
 });
 
+test("toggles selected lines with the platform comment shortcut", async ({ browser }) => {
+  const source = "def first\n  1\nend\n\ndef second\n  2\nend\n";
+  const commented = "# def first\n#   1\n# end\n\ndef second\n  2\nend\n";
+  const windowsUserAgent =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const macUserAgent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+  const windowsContext = await browser.newContext({ userAgent: windowsUserAgent });
+  const macContext = await browser.newContext({ userAgent: macUserAgent });
+  const windowsPage = await windowsContext.newPage();
+  const macPage = await macContext.newPage();
+
+  const toggleSelectedLines = async (page, modifier, value, expected) => {
+    await page.evaluate((nextValue) => {
+      const editor = window.__editors.ruby;
+      editor.setValue(nextValue);
+      const model = editor.getModel();
+      editor.setSelection(new window.monaco.Selection(1, 1, 3, model.getLineMaxColumn(3)));
+      editor.focus();
+    }, value);
+    await page.keyboard.press(`${modifier}+/`);
+    await expect
+      .poll(() => page.evaluate(() => window.__editors.ruby.getValue()), { timeout: 15_000 })
+      .toBe(expected);
+  };
+
+  try {
+    for (const page of [windowsPage, macPage]) {
+      await page.goto("http://localhost:8123/");
+      await page.waitForFunction(() => window.__tyda !== undefined, null, {
+        timeout: 45_000,
+      });
+    }
+
+    await toggleSelectedLines(windowsPage, "Control", source, commented);
+    await toggleSelectedLines(windowsPage, "Control", commented, source);
+    await toggleSelectedLines(macPage, "Meta", source, commented);
+    await toggleSelectedLines(macPage, "Meta", commented, source);
+  } finally {
+    await windowsContext.close();
+    await macContext.close();
+  }
+});
+
 test("shows annotated parameter hovers and literal interpolation", async ({ page }) => {
   await page.goto("/");
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
