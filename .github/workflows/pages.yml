@@ -1,6 +1,7 @@
 # Build the wasm playground, E2E-test it, and publish to GitHub Pages.
 #
-# Two jobs on purpose:
+# Three jobs on purpose:
+#   changes  : classifies the changed paths without skipping the workflow.
 #   e2e-test : builds the wasm in the CI (Ubuntu) environment, bundles RBS,
 #              and runs the Playwright E2E against THAT freshly built wasm.
 #              Uses the same mise tasks as local dev, and is reproducible
@@ -25,7 +26,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: classify changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      run_pages: ${{ steps.paths.outputs.run_pages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/ci/classify-changed-paths.sh
+
   e2e-test:
+    needs: changes
+    if: needs.changes.outputs.run_pages == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

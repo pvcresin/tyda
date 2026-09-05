@@ -24,8 +24,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  changes:
+    name: classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      run_full_ci: ${{ steps.paths.outputs.run_full_ci }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/ci/classify-changed-paths.sh
+
   build:
     name: build & verify (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.run_full_ci == 'true'
     # Verify every supported native platform on pull requests and releases.
     runs-on: ${{ matrix.runner }}
     permissions:
