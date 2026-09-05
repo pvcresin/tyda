@@ -18,8 +18,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      run_full_ci: ${{ steps.paths.outputs.run_full_ci }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/ci/classify-changed-paths.sh
+
   # Formatting does not compile, so skip clang / rust-cache / vendor-rbs / ruby.
   format:
+    needs: changes
+    if: needs.changes.outputs.run_full_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -39,6 +59,8 @@ jobs:
         run: cargo fmt -- --check
 
   lint:
+    needs: changes
+    if: needs.changes.outputs.run_full_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -76,6 +98,8 @@ jobs:
   # / debug=0 is CI-only (keeps the local edit loop on a cheap debug build).
   test:
     name: test (${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.run_full_ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -133,6 +157,8 @@ jobs:
 
   windows:
     name: windows
+    needs: changes
+    if: needs.changes.outputs.run_full_ci == 'true'
     runs-on: windows-2025
     defaults:
       run:
@@ -176,6 +202,8 @@ jobs:
 
   vscode:
     name: vscode
+    needs: changes
+    if: needs.changes.outputs.run_full_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

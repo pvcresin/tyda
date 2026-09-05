@@ -89,6 +89,7 @@ LSP は TypeProf VSCode 拡張が期待する起動・version・request 契約�
 - Hover、CodeLens、definition、typeDefinition、completion
 - diagnostics の publish と workspace refresh
 - CLI と共通の `WorkspaceState` / query backend
+- Playground の複数行選択を `Ctrl+/`（Windows/Linux）または `Command+/`（macOS）で Ruby 行コメントに切り替え
 
 Playground は同じ LSP 表示経路を wasm で実行し、Ruby と手書き RBS の結果をブラウザで確認する。
 
