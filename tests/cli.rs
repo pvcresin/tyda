@@ -292,6 +292,108 @@ fn diagnostics_flag_outputs_json_lines() {
 }
 
 #[test]
+fn diagnostics_flag_honors_line_ignore_comments() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("ignored.rb");
+    fs::write(
+        &rb_file,
+        r#"class Widget
+  #: (String) -> Integer
+  def foo(s)
+    s.length
+  end
+end
+
+Widget.new.missing # tyda: ignore[missing_method]
+Widget.new.foo(1) # tyda: ignore[argument_type_mismatch]
+Widget.new.missing
+Widget.new.foo(1)
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<(String, u64)> = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("diagnostic JSON"))
+        .map(|diagnostic| {
+            (
+                diagnostic["code"].as_str().unwrap().to_string(),
+                diagnostic["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        diagnostics,
+        vec![
+            ("missing_method".to_string(), 10),
+            ("argument_type_mismatch".to_string(), 11),
+        ],
+        "only the unsuppressed lines should remain: {stdout}"
+    );
+}
+
+#[test]
+fn diagnostics_flag_reports_unused_line_ignore_comments() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("unused_ignore.rb");
+    fs::write(
+        &rb_file,
+        r#"class Widget
+  #: (String) -> Integer
+  def foo(s)
+    s.length
+  end
+end
+
+Widget.new.missing # tyda: ignore[argument_type_mismatch]
+Widget.new.foo(1) # tyda: ignore[missing_method]
+Widget.new.foo("ok") # tyda: ignore
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic JSON"))
+        .collect();
+    assert_eq!(
+        diagnostics.len(),
+        5,
+        "unused ignores must be reported: {stdout}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "missing_method" && diagnostic["line"] == 8)
+    );
+    assert!(diagnostics.iter().any(
+        |diagnostic| diagnostic["code"] == "argument_type_mismatch" && diagnostic["line"] == 9
+    ));
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic["code"] == "unused_ignore")
+            .count(),
+        3,
+        "all non-matching ignores must be reported: {stdout}"
+    );
+}
+
+#[test]
 fn diagnostics_flag_suppresses_class_body_dsl_noise() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("dsl.rb");
