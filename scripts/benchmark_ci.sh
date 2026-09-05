@@ -10,7 +10,7 @@ THREADS="${TYDA_PERF_THREADS:-2}"
 TIMEOUT_SECONDS="${TYDA_PERF_TIMEOUT_SECONDS:-180}"
 BASE_REF="${TYDA_PERF_BASE_REF:-}"
 OUTPUT_DIR="${TYDA_PERF_OUTPUT_DIR:-$ROOT_DIR/target/performance}"
-TARGET_ROOT="${TYDA_PERF_TARGET_DIR:-$ROOT_DIR/target}"
+ALLOW_BASE_TIMEOUT="${TYDA_PERF_ALLOW_BASE_TIMEOUT:-0}"
 
 # A warning is useful for trend monitoring; only the larger limit fails PR CI.
 TIME_WARN_PERCENT="15"
@@ -30,7 +30,11 @@ if ! [[ "$THREADS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ ! -d "$SUBJECT_PATH" ]]; then
   echo "performance subject not found: $SUBJECT_PATH" >&2
-  echo "run ./scripts/setup_subjects.sh gitlab first" >&2
+  echo "run ./scripts/setup_subjects.sh <subject> first" >&2
+  exit 2
+fi
+if [[ "$ALLOW_BASE_TIMEOUT" != 0 && "$ALLOW_BASE_TIMEOUT" != 1 ]]; then
+  echo "TYDA_PERF_ALLOW_BASE_TIMEOUT must be 0 or 1" >&2
   exit 2
 fi
 
@@ -38,8 +42,11 @@ mkdir -p "$OUTPUT_DIR"
 RUN_DIR="$(mktemp -d "$OUTPUT_DIR/run.XXXXXX")"
 METRICS_TSV="$RUN_DIR/metrics.tsv"
 RESULT_JSON="$OUTPUT_DIR/result.json"
+TARGET_ROOT="${TYDA_PERF_TARGET_DIR:-$OUTPUT_DIR/targets}"
 BASE_DIR="$RUN_DIR/base"
 HEAD_DIR="$ROOT_DIR"
+BASE_TARGET="$TARGET_ROOT/base"
+HEAD_TARGET="$TARGET_ROOT/head"
 mkdir -p "$TARGET_ROOT"
 touch "$METRICS_TSV"
 
@@ -55,7 +62,7 @@ if [[ -z "$BASE_REF" || "$BASE_REF" =~ ^0+$ ]]; then
   BASE_REF="$(git -C "$ROOT_DIR" rev-parse HEAD^)"
 fi
 
-echo "=== Large application performance gate ==="
+echo "=== Performance gate ==="
 echo "subject: $SUBJECT_PATH"
 echo "runs: $RUNS (paired, alternating, median)"
 echo "threads: $THREADS"
@@ -106,15 +113,17 @@ build_variant() {
   cp "$target/release/tyda" "$binary_dir/tyda"
 }
 
-build_variant base "$BASE_DIR" "$TARGET_ROOT"
-build_variant head "$HEAD_DIR" "$TARGET_ROOT"
+build_variant base "$BASE_DIR" "$BASE_TARGET"
+build_variant head "$HEAD_DIR" "$HEAD_TARGET"
 
 measure_process() {
   local meta_path="$1"
   local log_path="$2"
-  shift 2
+  local allow_timeout="$3"
+  shift 3
   local status
 
+  MEASURE_TIMED_OUT=0
   set +e
   ruby "$ROOT_DIR/scripts/measure_process.rb" \
     --log "$log_path" \
@@ -124,6 +133,11 @@ measure_process() {
   status=$?
   set -e
   if [[ "$status" -ne 0 ]]; then
+    if [[ "$status" -eq 124 && "$allow_timeout" == 1 ]]; then
+      MEASURE_TIMED_OUT=1
+      echo "benchmark command timed out; accepting base timeout as the comparison limit: $*" >&2
+      return 0
+    fi
     echo "benchmark command failed (status=$status): $*" >&2
     cat "$log_path" >&2
     exit "$status"
@@ -159,12 +173,22 @@ measure_cli() {
   local binary="$RUN_DIR/bin/$variant/tyda"
   local meta="$RUN_DIR/cli-$variant-$run.meta"
   local log="$RUN_DIR/cli-$variant-$run.log"
+  local allow_timeout=0
+  if [[ "$variant" == base && "$ALLOW_BASE_TIMEOUT" == 1 ]]; then
+    allow_timeout=1
+  fi
 
-  measure_process "$meta" "$log" \
+  measure_process "$meta" "$log" "$allow_timeout" \
     env TYDA_CLI_ANALYSIS_THREADS="$THREADS" \
     nice -n 19 "$binary" "$SUBJECT_PATH"
   local elapsed_ms rss_bytes
-  IFS=$'\t' read -r elapsed_ms rss_bytes < <(read_meta "$meta")
+  IFS=$'\t' read -r _ rss_bytes < <(read_meta "$meta")
+  if [[ "$MEASURE_TIMED_OUT" == 1 ]]; then
+    elapsed_ms=$((TIMEOUT_SECONDS * 1000))
+    rss_bytes=-1
+  else
+    IFS=$'\t' read -r elapsed_ms _ < <(read_meta "$meta")
+  fi
   if [[ "$run" != "warmup" ]]; then
     record "$run" "$variant" cli_elapsed_ms "$elapsed_ms"
     record "$run" "$variant" cli_max_rss_bytes "$rss_bytes"
@@ -177,14 +201,23 @@ measure_lsp() {
   local binary="$RUN_DIR/bin/$variant/tyda"
   local meta="$RUN_DIR/lsp-$variant-$run.meta"
   local log="$RUN_DIR/lsp-$variant-$run.log"
+  local allow_timeout=0
+  if [[ "$variant" == base && "$ALLOW_BASE_TIMEOUT" == 1 ]]; then
+    allow_timeout=1
+  fi
 
-  measure_process "$meta" "$log" \
+  measure_process "$meta" "$log" "$allow_timeout" \
     env TYDA_LSP_BENCH_ROOT="$SUBJECT_PATH" \
     TYDA_LSP_ANALYSIS_THREADS="$THREADS" \
     nice -n 19 ruby "$ROOT_DIR/scripts/benchmark_lsp_client.rb" "$binary" "$SUBJECT_PATH"
   local scan_ms rss_bytes
-  scan_ms="$(scan_ms_from_log "$log")"
-  IFS=$'\t' read -r _ rss_bytes < <(read_meta "$meta")
+  if [[ "$MEASURE_TIMED_OUT" == 1 ]]; then
+    scan_ms=$((TIMEOUT_SECONDS * 1000))
+    rss_bytes=-1
+  else
+    scan_ms="$(scan_ms_from_log "$log")"
+    IFS=$'\t' read -r _ rss_bytes < <(read_meta "$meta")
+  fi
   if [[ "$run" != "warmup" ]]; then
     record "$run" "$variant" lsp_scan_ms "$scan_ms"
     record "$run" "$variant" lsp_max_rss_bytes "$rss_bytes"

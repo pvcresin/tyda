@@ -92,6 +92,28 @@ warned = false
 
 METRICS.each do |metric, kind, unit|
   values = measurements.fetch(metric)
+  if kind == "memory" && values.fetch("base").any?(&:negative?)
+    puts format("SKIP %-20s base timed out; memory comparison unavailable", metric)
+    results << {
+      "name" => metric,
+      "kind" => kind,
+      "unit" => unit,
+      "status" => "skipped",
+      "reason" => "base timed out",
+      "base_samples" => [],
+      "head_samples" => values.fetch("head"),
+      "base_median" => nil,
+      "head_median" => nil,
+      "delta_percent" => nil,
+      "warn" => false,
+      "fail" => false,
+      "warn_percent" => options[:memory_warn_percent],
+      "fail_percent" => options[:memory_fail_percent],
+      "minimum_delta" => options[:min_memory_delta_bytes],
+    }
+    next
+  end
+
   base_median = median(values.fetch("base"))
   head_median = median(values.fetch("head"))
   delta = head_median - base_median
@@ -137,6 +159,7 @@ METRICS.each do |metric, kind, unit|
     "name" => metric,
     "kind" => kind,
     "unit" => unit,
+    "status" => "compared",
     "base_samples" => values.fetch("base"),
     "head_samples" => values.fetch("head"),
     "base_median" => base_median,

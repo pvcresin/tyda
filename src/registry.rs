@@ -2536,6 +2536,37 @@ fn empty_registry_cold_tail() -> &'static RegistryColdTail {
     EMPTY.get_or_init(RegistryColdTail::default)
 }
 
+/// Bounds one method-return slot's deferred-reference expansion without
+/// imposing a low fixed depth on normal recursive inference.
+struct GlobalResolveBudget {
+    remaining_nodes: usize,
+    exhausted: bool,
+}
+
+impl GlobalResolveBudget {
+    const NODE_LIMIT: usize = 100_000;
+
+    fn new() -> Self {
+        Self {
+            remaining_nodes: Self::NODE_LIMIT,
+            exhausted: false,
+        }
+    }
+
+    fn consume(&mut self) -> bool {
+        if self.remaining_nodes == 0 {
+            self.exhausted = true;
+            return false;
+        }
+        self.remaining_nodes -= 1;
+        true
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.exhausted
+    }
+}
+
 impl Clone for TypeRegistry {
     fn clone(&self) -> Self {
         Self {
@@ -6968,12 +6999,14 @@ impl TypeRegistry {
                 RETURN_TYPE_READS.with(|cell| {
                     *cell.borrow_mut() = Some(FxHashSet::default());
                 });
+                let mut resolve_budget = GlobalResolveBudget::new();
                 let resolved = self.resolve_global_refs(
                     class_name.as_str(),
                     &method.raw_return_type,
                     &mut visiting,
                     &mut memo,
                     0,
+                    &mut resolve_budget,
                 );
                 let reads: Vec<(Sym, Sym)> = RETURN_TYPE_READS
                     .with(|cell| cell.borrow_mut().take())
@@ -7126,6 +7159,19 @@ impl TypeRegistry {
         }
     }
 
+    fn deferred_receiver_method_ref(
+        original_receiver: &Type,
+        resolved_receiver: Type,
+        method_name: Sym,
+    ) -> Type {
+        let receiver = if Self::global_type_contains_ref(original_receiver) {
+            original_receiver.clone()
+        } else {
+            resolved_receiver
+        };
+        Type::ReceiverMethodRef(Box::new(receiver), method_name)
+    }
+
     fn resolve_global_refs(
         &self,
         context_class: &str,
@@ -7133,12 +7179,19 @@ impl TypeRegistry {
         visiting: &mut FxHashSet<(Sym, Sym)>,
         memo: &mut FxHashMap<Sym, FxHashMap<Type, Type>>,
         depth: usize,
+        budget: &mut GlobalResolveBudget,
     ) -> Type {
+        if budget.is_exhausted() {
+            return Type::Untyped;
+        }
         if depth >= 12 {
             return ty.clone();
         }
         if !Self::global_type_contains_ref(ty) {
             return ty.clone();
+        }
+        if !budget.consume() {
+            return Type::Untyped;
         }
         // keyed per context so the type probes by reference: building a `(Sym, Type)`
         // key would deep-clone `ty` on every lookup, which outweighs the memo on wide unions.
@@ -7187,6 +7240,7 @@ impl TypeRegistry {
                                 visiting,
                                 memo,
                                 depth + 1,
+                                budget,
                             );
                             if Self::is_concrete_for_global_resolve(&deep) {
                                 deep
@@ -7215,8 +7269,14 @@ impl TypeRegistry {
                         .or_else(|| self.lookup_method_return_type(class_name, method_name));
                     if let Some(ret) = ret {
                         visiting.insert((*class_name, *method_name));
-                        let resolved =
-                            self.resolve_global_refs(class_name, &ret, visiting, memo, depth + 1);
+                        let resolved = self.resolve_global_refs(
+                            class_name,
+                            &ret,
+                            visiting,
+                            memo,
+                            depth + 1,
+                            budget,
+                        );
                         visiting.remove(&(*class_name, *method_name));
                         if Self::is_concrete_for_global_resolve(&resolved) {
                             resolved
@@ -7235,7 +7295,11 @@ impl TypeRegistry {
                     visiting,
                     memo,
                     depth + 1,
+                    budget,
                 );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
                 // union receiver: only produce a union return type once all members are concretized, otherwise keep the ref (prevents incorrect concretization).
                 if let Type::Union(members) = &resolved_receiver {
                     let mut resolved_members: Vec<Type> = Vec::with_capacity(members.len());
@@ -7249,7 +7313,11 @@ impl TypeRegistry {
                             visiting,
                             memo,
                             depth + 1,
+                            budget,
                         );
+                        if budget.is_exhausted() {
+                            return Type::Untyped;
+                        }
                         if Self::is_concrete_for_global_resolve(&resolved_member) {
                             resolved_members.push(resolved_member);
                         } else {
@@ -7260,7 +7328,11 @@ impl TypeRegistry {
                     if all_concrete {
                         Type::from_type_vec(resolved_members)
                     } else {
-                        Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+                        Self::deferred_receiver_method_ref(
+                            receiver_type,
+                            resolved_receiver,
+                            *method_name,
+                        )
                     }
                 } else if let Some(receiver_class) = Self::type_to_class_name(&resolved_receiver) {
                     let prefer_singleton = matches!(resolved_receiver, Type::Singleton(_));
@@ -7274,7 +7346,11 @@ impl TypeRegistry {
                             visiting,
                             memo,
                             depth + 1,
+                            budget,
                         );
+                        if budget.is_exhausted() {
+                            return Type::Untyped;
+                        }
                         // even on the deferred path, resolve `instance` to the receiver's instance type (prevents collapsing to the owner).
                         let resolved = resolved.replace_instance_type(
                             &Self::instance_type_for_receiver(&resolved_receiver),
@@ -7288,7 +7364,11 @@ impl TypeRegistry {
                         ) {
                             ivar_ty
                         } else {
-                            Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+                            Self::deferred_receiver_method_ref(
+                                receiver_type,
+                                resolved_receiver,
+                                *method_name,
+                            )
                         }
                     } else if let Some(ivar_ty) = self.resolve_attr_reader_return_type(
                         &receiver_class,
@@ -7303,18 +7383,36 @@ impl TypeRegistry {
                         // stdlib on the deferred path: a pure table of return-invariant entries only (no lazy loader).
                         stdlib_ret
                     } else {
-                        Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+                        Self::deferred_receiver_method_ref(
+                            receiver_type,
+                            resolved_receiver,
+                            *method_name,
+                        )
                     }
                 } else {
-                    Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+                    Self::deferred_receiver_method_ref(
+                        receiver_type,
+                        resolved_receiver,
+                        *method_name,
+                    )
                 }
             }
             // a no-progress container is returned as-is without re-normalizing (avoids sort/dedup CPU cost dominating every round for blocked slots).
             Type::Union(parts) => {
-                let resolved: Vec<Type> = parts
-                    .iter()
-                    .map(|t| self.resolve_global_refs(context_class, t, visiting, memo, depth + 1))
-                    .collect();
+                let mut resolved = Vec::with_capacity(parts.len());
+                for part in parts {
+                    resolved.push(self.resolve_global_refs(
+                        context_class,
+                        part,
+                        visiting,
+                        memo,
+                        depth + 1,
+                        budget,
+                    ));
+                    if budget.is_exhausted() {
+                        return Type::Untyped;
+                    }
+                }
                 if resolved == *parts {
                     ty.clone()
                 } else if resolved
@@ -7329,10 +7427,20 @@ impl TypeRegistry {
                 }
             }
             Type::Intersection(parts) => {
-                let resolved: Vec<Type> = parts
-                    .iter()
-                    .map(|t| self.resolve_global_refs(context_class, t, visiting, memo, depth + 1))
-                    .collect();
+                let mut resolved = Vec::with_capacity(parts.len());
+                for part in parts {
+                    resolved.push(self.resolve_global_refs(
+                        context_class,
+                        part,
+                        visiting,
+                        memo,
+                        depth + 1,
+                        budget,
+                    ));
+                    if budget.is_exhausted() {
+                        return Type::Untyped;
+                    }
+                }
                 if resolved == *parts {
                     ty.clone()
                 } else {
@@ -7340,8 +7448,17 @@ impl TypeRegistry {
                 }
             }
             Type::Array(Some(inner)) => {
-                let resolved =
-                    self.resolve_global_refs(context_class, inner, visiting, memo, depth + 1);
+                let resolved = self.resolve_global_refs(
+                    context_class,
+                    inner,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
                 if resolved == **inner {
                     ty.clone()
                 } else {
@@ -7350,9 +7467,21 @@ impl TypeRegistry {
             }
             Type::Hash(Some(key), Some(value)) => {
                 let resolved_key =
-                    self.resolve_global_refs(context_class, key, visiting, memo, depth + 1);
-                let resolved_value =
-                    self.resolve_global_refs(context_class, value, visiting, memo, depth + 1);
+                    self.resolve_global_refs(context_class, key, visiting, memo, depth + 1, budget);
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
+                let resolved_value = self.resolve_global_refs(
+                    context_class,
+                    value,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
                 if resolved_key == **key && resolved_value == **value {
                     ty.clone()
                 } else {
@@ -7361,7 +7490,10 @@ impl TypeRegistry {
             }
             Type::Hash(Some(key), None) => {
                 let resolved =
-                    self.resolve_global_refs(context_class, key, visiting, memo, depth + 1);
+                    self.resolve_global_refs(context_class, key, visiting, memo, depth + 1, budget);
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
                 if resolved == **key {
                     ty.clone()
                 } else {
@@ -7369,8 +7501,17 @@ impl TypeRegistry {
                 }
             }
             Type::Hash(None, Some(value)) => {
-                let resolved =
-                    self.resolve_global_refs(context_class, value, visiting, memo, depth + 1);
+                let resolved = self.resolve_global_refs(
+                    context_class,
+                    value,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
                 if resolved == **value {
                     ty.clone()
                 } else {
@@ -7378,9 +7519,9 @@ impl TypeRegistry {
                 }
             }
             Type::Record(fields) => {
-                let resolved: Vec<RecordField> = fields
-                    .iter()
-                    .map(|field| RecordField {
+                let mut resolved = Vec::with_capacity(fields.len());
+                for field in fields {
+                    resolved.push(RecordField {
                         key: field.key.clone(),
                         value: self.resolve_global_refs(
                             context_class,
@@ -7388,10 +7529,14 @@ impl TypeRegistry {
                             visiting,
                             memo,
                             depth + 1,
+                            budget,
                         ),
                         optional: field.optional,
-                    })
-                    .collect();
+                    });
+                    if budget.is_exhausted() {
+                        return Type::Untyped;
+                    }
+                }
                 if resolved == *fields {
                     ty.clone()
                 } else {
@@ -7399,10 +7544,20 @@ impl TypeRegistry {
                 }
             }
             Type::Tuple(elems) => {
-                let resolved: Vec<Type> = elems
-                    .iter()
-                    .map(|t| self.resolve_global_refs(context_class, t, visiting, memo, depth + 1))
-                    .collect();
+                let mut resolved = Vec::with_capacity(elems.len());
+                for elem in elems {
+                    resolved.push(self.resolve_global_refs(
+                        context_class,
+                        elem,
+                        visiting,
+                        memo,
+                        depth + 1,
+                        budget,
+                    ));
+                    if budget.is_exhausted() {
+                        return Type::Untyped;
+                    }
+                }
                 if resolved == *elems {
                     ty.clone()
                 } else {
@@ -7419,12 +7574,22 @@ impl TypeRegistry {
                     visiting,
                     memo,
                     depth + 1,
+                    budget,
                 )),
                 param_count: *param_count,
             },
             Type::PatternIndexRef(subject, index) => {
-                let resolved_subject =
-                    self.resolve_global_refs(context_class, subject, visiting, memo, depth + 1);
+                let resolved_subject = self.resolve_global_refs(
+                    context_class,
+                    subject,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
                 if Self::global_type_contains_ref(&resolved_subject) {
                     Type::PatternIndexRef(Box::new(resolved_subject), *index)
                 } else {
@@ -7432,8 +7597,17 @@ impl TypeRegistry {
                 }
             }
             Type::PatternRestRef(subject) => {
-                let resolved_subject =
-                    self.resolve_global_refs(context_class, subject, visiting, memo, depth + 1);
+                let resolved_subject = self.resolve_global_refs(
+                    context_class,
+                    subject,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
                 if Self::global_type_contains_ref(&resolved_subject) {
                     Type::PatternRestRef(Box::new(resolved_subject))
                 } else {
@@ -7441,8 +7615,17 @@ impl TypeRegistry {
                 }
             }
             Type::PatternTrailingRef(subject, from_end) => {
-                let resolved_subject =
-                    self.resolve_global_refs(context_class, subject, visiting, memo, depth + 1);
+                let resolved_subject = self.resolve_global_refs(
+                    context_class,
+                    subject,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
                 if Self::global_type_contains_ref(&resolved_subject) {
                     Type::PatternTrailingRef(Box::new(resolved_subject), *from_end)
                 } else {
@@ -7450,8 +7633,17 @@ impl TypeRegistry {
                 }
             }
             Type::PatternKeyRef(subject, key) => {
-                let resolved_subject =
-                    self.resolve_global_refs(context_class, subject, visiting, memo, depth + 1);
+                let resolved_subject = self.resolve_global_refs(
+                    context_class,
+                    subject,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
                 if Self::global_type_contains_ref(&resolved_subject) {
                     Type::PatternKeyRef(Box::new(resolved_subject), key.clone())
                 } else {
@@ -7459,8 +7651,17 @@ impl TypeRegistry {
                 }
             }
             Type::PatternKeyRestRef(subject, matched_keys) => {
-                let resolved_subject =
-                    self.resolve_global_refs(context_class, subject, visiting, memo, depth + 1);
+                let resolved_subject = self.resolve_global_refs(
+                    context_class,
+                    subject,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
                 if Self::global_type_contains_ref(&resolved_subject) {
                     Type::PatternKeyRestRef(Box::new(resolved_subject), matched_keys.clone())
                 } else {
@@ -7469,6 +7670,9 @@ impl TypeRegistry {
             }
             _ => ty.clone(),
         };
+        if budget.is_exhausted() {
+            return Type::Untyped;
+        }
         if Self::is_concrete_for_global_resolve(&resolved) {
             memo.entry(context_key)
                 .or_default()

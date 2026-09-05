@@ -16,10 +16,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  large-app:
-    name: large-app
+  performance:
+    name: performance (${{ matrix.subject }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - subject: gitlab
+            subject_path: subject/gitlab/app
+            timeout_seconds: 180
+            allow_base_timeout: "0"
+          - subject: optcarrot
+            subject_path: subject/optcarrot
+            timeout_seconds: 30
+            allow_base_timeout: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -50,26 +62,31 @@ jobs:
           mise install ruby
           mise run vendor-rbs
 
-      - name: Cache GitLab subject
+      - name: Cache performance subject
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: subject/gitlab
-          key: ${{ runner.os }}-subject-gitlab-${{ hashFiles('scripts/setup_subjects.sh') }}
+          path: subject/${{ matrix.subject }}
+          key: ${{ runner.os }}-subject-${{ matrix.subject }}-${{ hashFiles('scripts/setup_subjects.sh') }}
 
-      - name: Prepare pinned GitLab subject
-        run: ./scripts/setup_subjects.sh gitlab
+      - name: Prepare pinned performance subject
+        run: ./scripts/setup_subjects.sh "${{ matrix.subject }}"
 
-      - name: Compare base and head performance
+      - name: Compare base and head performance (${{ matrix.subject }})
         env:
           TYDA_PERF_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           TYDA_PERF_RUNS: ${{ github.event_name == 'pull_request' && '3' || '5' }}
           TYDA_PERF_THREADS: "2"
+          # The pre-fix optcarrot base is intentionally allowed to hit the short limit.
+          TYDA_PERF_ALLOW_BASE_TIMEOUT: ${{ matrix.allow_base_timeout }}
+          TYDA_PERF_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
+          TYDA_PERF_SUBJECT: ${{ github.workspace }}/${{ matrix.subject_path }}
+          TYDA_PERF_OUTPUT_DIR: ${{ github.workspace }}/target/performance/${{ matrix.subject }}
         run: ./scripts/benchmark_ci.sh
 
-      - name: Upload performance result
+      - name: Upload performance result (${{ matrix.subject }})
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: performance-result
-          path: target/performance/result.json
+          name: performance-result-${{ matrix.subject }}
+          path: target/performance/${{ matrix.subject }}/result.json
           if-no-files-found: ignore
