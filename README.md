@@ -1,5 +1,7 @@
 # Tyda
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/pvcresin/tyda)
+
 Tyda is a type-inference tool for lazy Rubyists.
 
 It aims to infer useful types from Ruby without requiring type annotations, with a
