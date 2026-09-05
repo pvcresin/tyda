@@ -68,6 +68,7 @@ fn diagnostics_change_debounce_ms() -> u64 {
 const MISSING_METHOD_DIAGNOSTIC_CODE: &str = "tyda.missingMethod";
 const ARGUMENT_TYPE_MISMATCH_DIAGNOSTIC_CODE: &str = "tyda.argumentTypeMismatch";
 const UNRESOLVED_CONSTANT_DIAGNOSTIC_CODE: &str = "tyda.unresolvedConstant";
+const UNUSED_IGNORE_DIAGNOSTIC_CODE: &str = "tyda.unusedIgnore";
 
 #[allow(clippy::large_enum_variant)]
 enum WorkspaceScanResult {
@@ -1849,16 +1850,27 @@ impl TydaLsp {
             lazy_rbi_loader.as_deref(),
             Some(&workspace_registry),
         );
-        // Suppresses diagnostics inside a syntax-error region (same policy as codelens).
+        // Suppresses syntax-error regions and same-line diagnostic comments.
         let def_lines: Vec<u32> = analysis
             .methods_for_file(&file_path)
             .iter()
             .filter_map(|(_, sig)| sig.loc.map(|loc| loc.line))
             .collect();
         let suppressor = SyntaxErrorSuppressor::new(source, &def_lines);
-        if suppressor.is_active() {
-            diagnostics.retain(|diag| !suppressor.suppresses_line(diag.range.start.line + 1));
-        }
+        let unused_ignore_diagnostics = if workspace_knowledge_incomplete {
+            Vec::new()
+        } else {
+            unused_ignore_lsp_diagnostics(&diagnostics, source, &suppressor)
+        };
+        diagnostics.retain(|diag| {
+            let line = diag.range.start.line + 1;
+            let syntax_suppressed = suppressor.suppresses_line(line);
+            let comment_suppressed = match &diag.code {
+                Some(NumberOrString::String(code)) => suppressor.suppresses_diagnostic(line, code),
+                _ => false,
+            };
+            !syntax_suppressed && !comment_suppressed
+        });
         if workspace_knowledge_incomplete {
             diagnostics.retain(|diag| {
                 !matches!(
@@ -1869,6 +1881,7 @@ impl TydaLsp {
                 )
             });
         }
+        diagnostics.extend(unused_ignore_diagnostics);
         diagnostics
     }
 }
@@ -2035,6 +2048,48 @@ fn method_call_lsp_diagnostics(
         }
     }));
     diagnostics
+}
+
+fn unused_ignore_lsp_diagnostics(
+    diagnostics: &[Diagnostic],
+    source: &str,
+    suppressor: &SyntaxErrorSuppressor,
+) -> Vec<Diagnostic> {
+    suppressor
+        .diagnostic_comment_lines()
+        .into_iter()
+        .filter_map(|line| {
+            if suppressor.suppresses_line(line)
+                || diagnostics.iter().any(|diagnostic| {
+                    let diagnostic_line = diagnostic.range.start.line + 1;
+                    diagnostic_line == line
+                        && match &diagnostic.code {
+                            Some(NumberOrString::String(code)) => {
+                                suppressor.suppresses_diagnostic(line, code)
+                            }
+                            _ => false,
+                        }
+                })
+            {
+                return None;
+            }
+            let (byte_start, byte_end) = suppressor.diagnostic_comment_range(line)?;
+            Some(Diagnostic {
+                range: Range::new(
+                    byte_offset_to_lsp_position(source, byte_start),
+                    byte_offset_to_lsp_position(source, byte_end),
+                ),
+                severity: Some(DiagnosticSeverity::WARNING),
+                code: Some(NumberOrString::String(
+                    UNUSED_IGNORE_DIAGNOSTIC_CODE.to_string(),
+                )),
+                source: Some("Tyda".to_string()),
+                message: "Diagnostic ignore comment does not match any diagnostic on this line"
+                    .to_string(),
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 
 fn missing_method_diagnostic_message(method_name: &str, unresolved_method: &str) -> String {
@@ -10155,6 +10210,96 @@ end
             .last()
             .expect("diagnostics clear on close");
         assert!(cleared.diagnostics.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lsp_suppresses_diagnostics_with_line_ignore_comments() {
+        let dir = tempdir().expect("tempdir");
+        let uri = Url::from_file_path(dir.path().join("ignored.rb")).expect("file uri");
+        let source = concat!(
+            "class Widget\n",
+            "  #: (String) -> Integer\n",
+            "  def foo(s)\n",
+            "    s.length\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "Widget.new.missing # tyda: ignore[missing_method]\n",
+            "Widget.new.foo(1) # tyda: ignore[argument_type_mismatch]\n",
+            "Widget.new.missing\n",
+            "Widget.new.foo(1)\n",
+        );
+
+        let (mut service, mut socket) = initialize_lsp(None).await;
+        let requests = open_document(&mut service, &mut socket, &uri, source).await;
+        let diagnostics = diagnostics_notifications(&requests, &uri);
+        let published = diagnostics.last().expect("publish diagnostics");
+
+        assert_eq!(published.diagnostics.len(), 2, "{published:?}");
+        assert!(published.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == Some(NumberOrString::String(
+                    MISSING_METHOD_DIAGNOSTIC_CODE.to_string(),
+                ))
+                && diagnostic.range.start.line == 9
+        }));
+        assert!(published.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == Some(NumberOrString::String(
+                    ARGUMENT_TYPE_MISMATCH_DIAGNOSTIC_CODE.to_string(),
+                ))
+                && diagnostic.range.start.line == 10
+        }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lsp_reports_unused_line_ignore_comments() {
+        let dir = tempdir().expect("tempdir");
+        let uri = Url::from_file_path(dir.path().join("unused_ignore.rb")).expect("file uri");
+        let source = concat!(
+            "class Widget\n",
+            "  #: (String) -> Integer\n",
+            "  def foo(s)\n",
+            "    s.length\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "Widget.new.missing # tyda: ignore[argument_type_mismatch]\n",
+            "Widget.new.foo(1) # tyda: ignore[missing_method]\n",
+            "Widget.new.foo(\"ok\") # tyda: ignore\n",
+        );
+
+        let (mut service, mut socket) = initialize_lsp(None).await;
+        let requests = open_document(&mut service, &mut socket, &uri, source).await;
+        let diagnostics = diagnostics_notifications(&requests, &uri);
+        let published = diagnostics.last().expect("publish diagnostics");
+
+        assert_eq!(published.diagnostics.len(), 5, "{published:?}");
+        assert!(published.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == Some(NumberOrString::String(
+                    MISSING_METHOD_DIAGNOSTIC_CODE.to_string(),
+                ))
+        }));
+        assert!(published.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == Some(NumberOrString::String(
+                    ARGUMENT_TYPE_MISMATCH_DIAGNOSTIC_CODE.to_string(),
+                ))
+        }));
+        assert_eq!(
+            published
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.code
+                        == Some(NumberOrString::String(
+                            UNUSED_IGNORE_DIAGNOSTIC_CODE.to_string(),
+                        ))
+                })
+                .count(),
+            3
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

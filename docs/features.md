@@ -57,6 +57,13 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 Unknown、`untyped`、開いた `method_missing` 面、未解決の祖先は誤検知を避けて沈黙する。
 詳細は [incomplete-code-policy.md](incomplete-code-policy.md) を参照する。
 
+診断を一行だけ抑制するには、対象式の行末に `# tyda: ignore` を置く。特定の種類だけを
+抑制する場合は `# tyda: ignore[missing_method]` のように診断 code を指定できる。現在の
+code は `missing_method`、`argument_type_mismatch`、`unresolved_constant` などで、CLI・LSP・
+Playground で同じ書式を使う。コメントは同じ行の末尾に置いた場合だけ有効で、単独行の
+コメントが次の行へ影響することはない。対応する診断がない ignore は `unused_ignore` warning
+になり、診断が解消したあとに不要な抑制を見つけられる。
+
 `--diagnostics` の JSON Lines 出力は実行間で byte-identical になる。ファイルは
 辞書順の走査順（CLI に明示的に渡したパスはその順序を保つ）、ファイル内の各行は
 position 順（line/column 昇順）で並ぶため、複数回実行した出力をそのまま diff できる。

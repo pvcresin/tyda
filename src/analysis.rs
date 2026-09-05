@@ -1,4 +1,5 @@
 use ruby_prism::{self as prism, Node};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,9 @@ use crate::types::Type;
 
 /// 64MiB because a deep AST can exhaust the default worker stack (~2MiB); this is just a virtual reservation, so it's RSS-neutral.
 pub const ANALYSIS_WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
+const UNUSED_IGNORE_DIAGNOSTIC_CODE: &str = "unused_ignore";
+const UNUSED_IGNORE_DIAGNOSTIC_MESSAGE: &str =
+    "Diagnostic ignore comment does not match any diagnostic on this line";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DependencyCollection {
@@ -635,9 +639,8 @@ fn playground_result_from_snapshot(
         None,
         user_rbs,
     );
-    if projection.suppressor.is_active() {
-        diagnostics.retain(|diag| !projection.suppressor.suppresses_line(diag.line));
-    }
+    diagnostics =
+        apply_diagnostic_suppressions(diagnostics, source, file_path, &projection.suppressor);
 
     PlaygroundResult {
         rbs: projection.rbs,
@@ -788,10 +791,24 @@ fn format_hover_type_params(type_params: &[(String, Type)]) -> Option<String> {
     )
 }
 
-/// Suppresses codelens / diagnostics / hover only for methods whose value is broken by a syntax error (shared by LSP / playground).
+/// Suppresses broken syntax regions and one-line diagnostic comments (shared by CLI / LSP / playground).
 pub struct SyntaxErrorSuppressor {
     method_def_lines: Vec<u32>,
     broken_def_lines: std::collections::HashSet<u32>,
+    diagnostic_comment_suppressions: HashMap<u32, DiagnosticCommentSuppression>,
+}
+
+#[derive(Debug, Clone)]
+struct DiagnosticCommentSuppression {
+    start_offset: usize,
+    end_offset: usize,
+    rule: DiagnosticCommentRule,
+}
+
+#[derive(Debug, Clone)]
+enum DiagnosticCommentRule {
+    All,
+    Codes(Vec<String>),
 }
 
 impl SyntaxErrorSuppressor {
@@ -801,6 +818,7 @@ impl SyntaxErrorSuppressor {
         sorted.dedup();
 
         let mut broken = std::collections::HashSet::new();
+        let mut diagnostic_comment_suppressions = HashMap::new();
         let parsed = prism::parse(source.as_bytes());
         for error in parsed.errors() {
             // An unclosed `def` / EOF means the input is mid-edit and the partial AST is still valid — avoids codelens flicker.
@@ -813,10 +831,32 @@ impl SyntaxErrorSuppressor {
                 broken.insert(def);
             }
         }
+        for comment in parsed.comments() {
+            let Some(suppression) = parse_diagnostic_suppression(comment.text()) else {
+                continue;
+            };
+            let start_offset = comment.location().start_offset();
+            let line_start = source[..start_offset]
+                .rfind('\n')
+                .map_or(0, |newline| newline + 1);
+            if source[line_start..start_offset].trim().is_empty() {
+                continue;
+            }
+            let line = offset_to_line_col(source, start_offset).0;
+            diagnostic_comment_suppressions.insert(
+                line,
+                DiagnosticCommentSuppression {
+                    start_offset,
+                    end_offset: comment.location().end_offset(),
+                    rule: suppression,
+                },
+            );
+        }
 
         Self {
             method_def_lines: sorted,
             broken_def_lines: broken,
+            diagnostic_comment_suppressions,
         }
     }
 
@@ -839,6 +879,125 @@ impl SyntaxErrorSuppressor {
             None => false,
         }
     }
+
+    pub fn suppresses_diagnostic(&self, line: u32, code: &str) -> bool {
+        let Some(suppression) = self.diagnostic_comment_suppressions.get(&line) else {
+            return false;
+        };
+        match &suppression.rule {
+            DiagnosticCommentRule::All => true,
+            DiagnosticCommentRule::Codes(codes) => {
+                let normalized = normalize_diagnostic_code(code);
+                codes.iter().any(|candidate| candidate == &normalized)
+            }
+        }
+    }
+
+    pub fn diagnostic_comment_lines(&self) -> Vec<u32> {
+        let mut lines: Vec<u32> = self
+            .diagnostic_comment_suppressions
+            .keys()
+            .copied()
+            .collect();
+        lines.sort_unstable();
+        lines
+    }
+
+    pub fn diagnostic_comment_range(&self, line: u32) -> Option<(usize, usize)> {
+        let suppression = self.diagnostic_comment_suppressions.get(&line)?;
+        Some((suppression.start_offset, suppression.end_offset))
+    }
+}
+
+fn parse_diagnostic_suppression(text: &[u8]) -> Option<DiagnosticCommentRule> {
+    let text = std::str::from_utf8(text).ok()?.trim_end();
+    let rest = text.strip_prefix("# tyda: ignore")?.trim();
+    if rest.is_empty() {
+        return Some(DiagnosticCommentRule::All);
+    }
+
+    let codes = rest.strip_prefix('[')?.strip_suffix(']')?;
+    let raw_codes: Vec<&str> = codes.split(',').map(str::trim).collect();
+    if raw_codes.is_empty() || raw_codes.iter().any(|code| code.is_empty()) {
+        return None;
+    }
+    let codes = raw_codes
+        .into_iter()
+        .map(normalize_diagnostic_code)
+        .collect();
+    Some(DiagnosticCommentRule::Codes(codes))
+}
+
+fn normalize_diagnostic_code(code: &str) -> String {
+    let code = code.strip_prefix("tyda.").unwrap_or(code);
+    let mut normalized = String::with_capacity(code.len());
+    for ch in code.chars() {
+        if ch.is_ascii_uppercase() {
+            normalized.push('_');
+            normalized.push(ch.to_ascii_lowercase());
+        } else if matches!(ch, '-' | '.') {
+            normalized.push('_');
+        } else {
+            normalized.push(ch);
+        }
+    }
+    normalized
+}
+
+fn apply_diagnostic_suppressions(
+    mut diagnostics: Vec<crate::diagnostics::TypeDiagnostic>,
+    source: &str,
+    file_path: &str,
+    suppressor: &SyntaxErrorSuppressor,
+) -> Vec<crate::diagnostics::TypeDiagnostic> {
+    let unused = unused_ignore_diagnostics(&diagnostics, source, file_path, suppressor);
+    diagnostics.retain(|diag| {
+        !suppressor.suppresses_line(diag.line)
+            && !suppressor.suppresses_diagnostic(diag.line, diag.code)
+    });
+    diagnostics.extend(unused);
+    diagnostics
+}
+
+fn unused_ignore_diagnostics(
+    diagnostics: &[crate::diagnostics::TypeDiagnostic],
+    source: &str,
+    file_path: &str,
+    suppressor: &SyntaxErrorSuppressor,
+) -> Vec<crate::diagnostics::TypeDiagnostic> {
+    suppressor
+        .diagnostic_comment_lines()
+        .into_iter()
+        .filter_map(|line| {
+            if suppressor.suppresses_line(line)
+                || diagnostics.iter().any(|diag| {
+                    diag.line == line && suppressor.suppresses_diagnostic(line, diag.code)
+                })
+            {
+                return None;
+            }
+            let (byte_start, byte_end) = suppressor.diagnostic_comment_range(line)?;
+            let (line, column) = offset_to_line_col(source, byte_start);
+            let (end_line, end_column) = offset_to_line_col(source, byte_end);
+            Some(crate::diagnostics::TypeDiagnostic {
+                path: file_path.to_string(),
+                line,
+                column,
+                end_line,
+                end_column,
+                byte_start,
+                byte_end,
+                severity: "warning",
+                code: UNUSED_IGNORE_DIAGNOSTIC_CODE,
+                message: UNUSED_IGNORE_DIAGNOSTIC_MESSAGE.to_string(),
+                method_name: String::new(),
+                unresolved_method: String::new(),
+                expected_type: None,
+                actual_type: None,
+                param_name: None,
+            })
+        })
+        .collect()
 }
 
 fn offset_to_line_col(source: &str, offset: usize) -> (u32, u32) {
@@ -1072,7 +1231,7 @@ pub fn cli_diagnostics_from_snapshot_owned(
     workspace_registry: Option<&TypeRegistry>,
 ) -> Vec<crate::diagnostics::TypeDiagnostic> {
     let method_def_lines = diagnostic_method_def_lines(&snapshot, file_path, workspace_registry);
-    let mut diagnostics = crate::diagnostics::method_call_diagnostics_owned(
+    let diagnostics = crate::diagnostics::method_call_diagnostics_owned(
         snapshot,
         source,
         file_path,
@@ -1081,10 +1240,7 @@ pub fn cli_diagnostics_from_snapshot_owned(
         workspace_registry,
     );
     let suppressor = SyntaxErrorSuppressor::new(source, &method_def_lines);
-    if suppressor.is_active() {
-        diagnostics.retain(|diag| !suppressor.suppresses_line(diag.line));
-    }
-    diagnostics
+    apply_diagnostic_suppressions(diagnostics, source, file_path, &suppressor)
 }
 
 fn diagnostic_method_def_lines(
@@ -1106,7 +1262,7 @@ fn diagnostic_method_def_lines(
 }
 
 fn suppress_diagnostics_in_broken_methods(
-    mut diagnostics: Vec<crate::diagnostics::TypeDiagnostic>,
+    diagnostics: Vec<crate::diagnostics::TypeDiagnostic>,
     snapshot: &crate::inference::FileAnalysisSnapshot,
     source: &str,
     file_path: &str,
@@ -1114,10 +1270,7 @@ fn suppress_diagnostics_in_broken_methods(
 ) -> Vec<crate::diagnostics::TypeDiagnostic> {
     let method_def_lines = diagnostic_method_def_lines(snapshot, file_path, workspace_registry);
     let suppressor = SyntaxErrorSuppressor::new(source, &method_def_lines);
-    if suppressor.is_active() {
-        diagnostics.retain(|diag| !suppressor.suppresses_line(diag.line));
-    }
-    diagnostics
+    apply_diagnostic_suppressions(diagnostics, source, file_path, &suppressor)
 }
 
 /// CLI `--diagnostics` single-file replay (tests / fallback): workspace-visible
@@ -2206,6 +2359,30 @@ end
     }
 
     #[test]
+    fn diagnostic_comments_suppress_only_their_line() {
+        let source = concat!(
+            "Widget.new.missing # tyda: ignore[missing_method]\n",
+            "Widget.new.foo(1) # tyda: ignore[missing_method, argument_type_mismatch]\n",
+            "Widget.new.foo(1) # tyda: ignore\n",
+            "# tyda: ignore[missing_method]\n",
+            "Widget.new.missing\n",
+            "message = \"# tyda: ignore[missing_method]\"\n",
+        );
+        let suppressor = SyntaxErrorSuppressor::new(source, &[]);
+
+        assert!(suppressor.suppresses_diagnostic(1, "missing_method"));
+        assert!(suppressor.suppresses_diagnostic(1, "tyda.missingMethod"));
+        assert!(!suppressor.suppresses_diagnostic(1, "argument_type_mismatch"));
+        assert!(suppressor.suppresses_diagnostic(2, "missing_method"));
+        assert!(suppressor.suppresses_diagnostic(2, "tyda.argumentTypeMismatch"));
+        assert!(suppressor.suppresses_diagnostic(3, "missing_method"));
+        assert!(suppressor.suppresses_diagnostic(3, "argument_type_mismatch"));
+        assert!(!suppressor.suppresses_diagnostic(4, "missing_method"));
+        assert!(!suppressor.suppresses_diagnostic(5, "missing_method"));
+        assert!(!suppressor.suppresses_diagnostic(6, "missing_method"));
+    }
+
+    #[test]
     fn playground_hover_for_method_call_is_not_double_prefixed() {
         let loader = playground_loader();
         let source = "class A\n  def a = rand(1) < 0.5 ? :a : \"2\"\n\n  def b\n    return 10 if a == :a\n    a\n  end\nend\n";
@@ -2217,6 +2394,71 @@ end
             .expect("hover on the `a` call in the condition");
         // Mirrors the LSP/editor body exactly: no `a: a:` double prefix.
         assert_eq!(call_hover.display, "[Tyda] -> \"2\" | :a");
+    }
+
+    #[test]
+    fn playground_diagnostics_honor_line_ignore_comments() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class Widget\n",
+            "  #: (String) -> Integer\n",
+            "  def foo(s)\n",
+            "    s.length\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "Widget.new.missing # tyda: ignore[missing_method]\n",
+            "Widget.new.foo(1) # tyda: ignore[argument_type_mismatch]\n",
+            "Widget.new.missing\n",
+            "Widget.new.foo(1)\n",
+        );
+        let result = playground_analyze(source, "", &loader, "ignored.rb");
+
+        assert_eq!(result.diagnostics.len(), 2);
+        assert_eq!(result.diagnostics[0].code, "missing_method");
+        assert_eq!(result.diagnostics[0].line, 10);
+        assert_eq!(result.diagnostics[1].code, "argument_type_mismatch");
+        assert_eq!(result.diagnostics[1].line, 11);
+    }
+
+    #[test]
+    fn playground_reports_unused_line_ignore_comments() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class Widget\n",
+            "  #: (String) -> Integer\n",
+            "  def foo(s)\n",
+            "    s.length\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "Widget.new.missing # tyda: ignore[argument_type_mismatch]\n",
+            "Widget.new.foo(1) # tyda: ignore[missing_method]\n",
+            "Widget.new.foo(\"ok\") # tyda: ignore\n",
+        );
+        let result = playground_analyze(source, "", &loader, "ignored.rb");
+
+        assert_eq!(result.diagnostics.len(), 5);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diag| diag.code == "missing_method" && diag.line == 8)
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diag| diag.code == "argument_type_mismatch" && diag.line == 9)
+        );
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .filter(|diag| diag.code == "unused_ignore")
+                .count(),
+            3
+        );
     }
 
     #[test]
