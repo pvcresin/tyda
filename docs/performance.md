@@ -41,10 +41,12 @@ cargo test --release bench_workspace_rescan_mastodon_scale -- --nocapture
 
 ## CI の性能ゲート
 
-`.github/workflows/performance.yml` は pinned commit の `subject/gitlab/app` を使い、同じ runner 上で
-base と head を交互に計測する。pull request は 3 回、main push と手動実行は 5 回とし、CLI の全体解析と
-LSP の workspace scan を対象にする。各 run の最大 RSS も同時に取る。解析 worker 数は 2 に固定し、
-大きな subject は並列化せず `nice -n 19` で実行する。
+`.github/workflows/performance.yml` は pinned commit の `subject/gitlab/app` と
+`subject/optcarrot` を matrix の別 runner で計測し、同じ runner 上で base と head を交互に計測する。
+pull request は 3 回、main push と手動実行は 5 回とし、CLI の全体解析と LSP の workspace scan を対象にする。
+各 run の最大 RSS も同時に取る。解析 worker 数は 2 に固定し、大きな subject は並列化せず `nice -n 19` で実行する。
+今回のように optcarrot の base がまだ timeout する場合は、同 subject のみ base timeout を30秒の比較上限として
+扱う。head がその上限内に収まらない場合は失敗する。
 
 両variantのrelease binaryは1つのCargo target directoryで順にビルドしてから退避する。LSPはテスト
 harnessを再ビルドせず、同じrelease binaryを軽量なLSP clientから駆動するため、base/head間で依存crateの
@@ -61,9 +63,10 @@ TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
 小さな劣化を許容しつつ、実質的な回帰は PR の段階で止めるための初期値である。基準を別 runner の
 過去値と比較せず、base/head を同じ job で測ることで CPU や runner の世代差を打ち消す。
 
-GitHub の branch protection では、この workflow の `large-app` check を required に設定する。
+GitHub の branch protection では、この workflow の `large-app (gitlab)` と `large-app (optcarrot)` check を
+required に設定する。
 
-結果は `target/performance/result.json` として artifact に保存する。warning が継続する場合や runner
+結果は subject ごとに `target/performance/<subject>/result.json` として artifact に保存する。warning が継続する場合や runner
 環境が変わった場合は、まず複数回の結果を確認してから閾値を見直す。性能計測の対象を追加するときも、
 同じ測定順序・worker 数・subject pin を維持する。
 
@@ -82,6 +85,7 @@ GitHub の branch protection では、この workflow の `large-app` check を 
 | `subject/rubygems` | 中 | 3.0s | 122MB |
 | `subject/mastodon` | 中 | 0.88s（3 runs、2026-08-27） | 147–161MB |
 | `subject/gitlab/app` | 大、6,455 files | 1.84s（6 runs 中央、2026-08-27、compact-scan 0.75s） | 283–297MB（6 runs、range） |
+| `subject/optcarrot` | 小、42 files | 0.30s（3 runs 中央、2026-09-05、worker 2） | 54–61MB（3 runs、range） |
 
 `--diagnostics` は targets に加えて workspace context を読むため、通常の RBS render と別軸で
 比較する。
@@ -91,6 +95,7 @@ GitHub の branch protection では、この workflow の `large-app` check を 
 | subject | workspace scan | rescan | first display | cached / dirty display | scan 後 RSS |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `subject/gitlab/app` | 0.44–0.50s（3 runs、2026-08-27、6,458 files） | 5ms（no-op、6,458 known files） | 1–2ms | 0–2ms | 177–184MB（phys footprint、5 runs range） |
+| `subject/optcarrot` | 0.45s（3 runs、2026-09-05、42 files、worker 2） | - | - | - | 53–58MB（3 runs、range） |
 
 subject、build mode、run 数が違う値を同じ行へ混ぜない。手元の非公開プロジェクトを
 subject にする場合は `TYDA_EXTRA_SUBJECT` で指すことができるが、再現できない値は

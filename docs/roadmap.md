@@ -41,6 +41,7 @@
 
 - [ ] 一時 debug API を bench 専用へ移すか削除する
 - [ ] demand-driven receiver post-pass を再評価する
+- [ ] method-return-ref の依存グラフを SCC 単位で解き、収束しない循環を `untyped` にする方式を再考する
 - [ ] `DirtyPattern`、`CallSiteStore`、LSP scan state を段階的に整理する
 
 個別 repository の runtime DSL 登録（Redmine など）は対象外。型が必要な場合は外部 RBS / RBI

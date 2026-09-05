@@ -58,3 +58,37 @@ class Object < BasicObject
   def f: -> bool
 end
 ```
+
+## Unresolved receiver cycle remains bounded and untyped
+
+### update
+
+```ruby
+class ReceiverA
+  def call(other) = other.call
+end
+
+class ReceiverB
+  def call(other) = other.call
+end
+
+def use_a = ReceiverA.new.call(ReceiverB.new)
+def use_b = ReceiverB.new.call(ReceiverA.new)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def use_a: -> untyped
+  def use_b: -> untyped
+end
+
+class ReceiverA
+  def call: (ReceiverB other) -> untyped
+end
+
+class ReceiverB
+  def call: (ReceiverA other) -> untyped
+end
+```
