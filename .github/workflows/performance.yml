@@ -16,8 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  large-app:
-    name: large-app (${{ matrix.subject }})
+  performance:
+    name: performance (${{ matrix.subject }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

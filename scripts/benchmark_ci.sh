@@ -10,7 +10,6 @@ THREADS="${TYDA_PERF_THREADS:-2}"
 TIMEOUT_SECONDS="${TYDA_PERF_TIMEOUT_SECONDS:-180}"
 BASE_REF="${TYDA_PERF_BASE_REF:-}"
 OUTPUT_DIR="${TYDA_PERF_OUTPUT_DIR:-$ROOT_DIR/target/performance}"
-TARGET_ROOT="${TYDA_PERF_TARGET_DIR:-$ROOT_DIR/target}"
 ALLOW_BASE_TIMEOUT="${TYDA_PERF_ALLOW_BASE_TIMEOUT:-0}"
 
 # A warning is useful for trend monitoring; only the larger limit fails PR CI.
@@ -43,8 +42,11 @@ mkdir -p "$OUTPUT_DIR"
 RUN_DIR="$(mktemp -d "$OUTPUT_DIR/run.XXXXXX")"
 METRICS_TSV="$RUN_DIR/metrics.tsv"
 RESULT_JSON="$OUTPUT_DIR/result.json"
+TARGET_ROOT="${TYDA_PERF_TARGET_DIR:-$OUTPUT_DIR/targets}"
 BASE_DIR="$RUN_DIR/base"
 HEAD_DIR="$ROOT_DIR"
+BASE_TARGET="$TARGET_ROOT/base"
+HEAD_TARGET="$TARGET_ROOT/head"
 mkdir -p "$TARGET_ROOT"
 touch "$METRICS_TSV"
 
@@ -60,7 +62,7 @@ if [[ -z "$BASE_REF" || "$BASE_REF" =~ ^0+$ ]]; then
   BASE_REF="$(git -C "$ROOT_DIR" rev-parse HEAD^)"
 fi
 
-echo "=== Large application performance gate ==="
+echo "=== Performance gate ==="
 echo "subject: $SUBJECT_PATH"
 echo "runs: $RUNS (paired, alternating, median)"
 echo "threads: $THREADS"
@@ -111,8 +113,8 @@ build_variant() {
   cp "$target/release/tyda" "$binary_dir/tyda"
 }
 
-build_variant base "$BASE_DIR" "$TARGET_ROOT"
-build_variant head "$HEAD_DIR" "$TARGET_ROOT"
+build_variant base "$BASE_DIR" "$BASE_TARGET"
+build_variant head "$HEAD_DIR" "$HEAD_TARGET"
 
 measure_process() {
   local meta_path="$1"
@@ -183,6 +185,7 @@ measure_cli() {
   IFS=$'\t' read -r _ rss_bytes < <(read_meta "$meta")
   if [[ "$MEASURE_TIMED_OUT" == 1 ]]; then
     elapsed_ms=$((TIMEOUT_SECONDS * 1000))
+    rss_bytes=-1
   else
     IFS=$'\t' read -r elapsed_ms _ < <(read_meta "$meta")
   fi
@@ -210,10 +213,11 @@ measure_lsp() {
   local scan_ms rss_bytes
   if [[ "$MEASURE_TIMED_OUT" == 1 ]]; then
     scan_ms=$((TIMEOUT_SECONDS * 1000))
+    rss_bytes=-1
   else
     scan_ms="$(scan_ms_from_log "$log")"
+    IFS=$'\t' read -r _ rss_bytes < <(read_meta "$meta")
   fi
-  IFS=$'\t' read -r _ rss_bytes < <(read_meta "$meta")
   if [[ "$run" != "warmup" ]]; then
     record "$run" "$variant" lsp_scan_ms "$scan_ms"
     record "$run" "$variant" lsp_max_rss_bytes "$rss_bytes"

@@ -45,12 +45,16 @@ cargo test --release bench_workspace_rescan_mastodon_scale -- --nocapture
 `subject/optcarrot` を matrix の別 runner で計測し、同じ runner 上で base と head を交互に計測する。
 pull request は 3 回、main push と手動実行は 5 回とし、CLI の全体解析と LSP の workspace scan を対象にする。
 各 run の最大 RSS も同時に取る。解析 worker 数は 2 に固定し、大きな subject は並列化せず `nice -n 19` で実行する。
+`setup_subjects.sh` は rack / rake / RubyGems / Mastodon / Redmine / GitLab など複数のOSSを既に扱える。
+以前の性能workflowはGitLabだけを対象にしていたが、現在は matrix の1行にsubject名・解析path・timeoutを追加すれば、
+repositoryごとのCLI/LSPチェックを独立したrunnerで並列実行できる。
 今回のように optcarrot の base がまだ timeout する場合は、同 subject のみ base timeout を30秒の比較上限として
-扱う。head がその上限内に収まらない場合は失敗する。
+扱う。head がその上限内に収まらない場合は失敗し、timeoutしたbaseのRSSは比較対象から除外する。
 
-両variantのrelease binaryは1つのCargo target directoryで順にビルドしてから退避する。LSPはテスト
-harnessを再ビルドせず、同じrelease binaryを軽量なLSP clientから駆動するため、base/head間で依存crateの
-コンパイル成果物を共有できる。Perf job専用のRust cacheにはworkspace crateを含むこのtarget directoryも保存する。
+base/headのrelease binaryは別々のCargo target directoryでビルドしてから退避する。worktree間でtarget
+directoryを共有すると、Cargoが別revisionのworkspace crateを再ビルドせず、baseのbinaryをheadとして
+計測する可能性があるためである。LSPはテスト harnessを再ビルドせず、同じrelease binaryを軽量なLSP
+clientから駆動する。Perf job専用のRust cacheにはvariantごとのtarget directoryも保存する。
 
 手元で同じ比較を行う場合は、subject と vendor/RBS を用意したうえで次を実行する。
 
@@ -63,7 +67,7 @@ TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
 小さな劣化を許容しつつ、実質的な回帰は PR の段階で止めるための初期値である。基準を別 runner の
 過去値と比較せず、base/head を同じ job で測ることで CPU や runner の世代差を打ち消す。
 
-GitHub の branch protection では、この workflow の `large-app (gitlab)` と `large-app (optcarrot)` check を
+GitHub の branch protection では、この workflow の `performance (gitlab)` と `performance (optcarrot)` check を
 required に設定する。
 
 結果は subject ごとに `target/performance/<subject>/result.json` として artifact に保存する。warning が継続する場合や runner
