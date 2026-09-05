@@ -1,9 +1,5 @@
 <!-- Title and body: English. Use an imperative title, like a commit subject. -->
 
-## Summary
-
-<!-- Optional for small PRs. Remove this section when Background is sufficient. -->
-
 ## Background
 
 <!-- Explain the problem or context behind this change. -->
