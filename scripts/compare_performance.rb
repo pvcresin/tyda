@@ -19,6 +19,7 @@ parser = OptionParser.new do |opts|
   opts.on("--output PATH", String) { |value| options[:output] = value }
   opts.on("--runs N", Integer) { |value| options[:runs] = value }
   opts.on("--subject PATH", String) { |value| options[:subject] = value }
+  opts.on("--subject-ref SHA", String) { |value| options[:subject_ref] = value }
   opts.on("--time-fail-percent N", Float) { |value| options[:time_fail_percent] = value }
   opts.on("--time-warn-percent N", Float) { |value| options[:time_warn_percent] = value }
   opts.on("--memory-fail-percent N", Float) { |value| options[:memory_fail_percent] = value }
@@ -175,6 +176,7 @@ end
 
 output = {
   "subject" => options[:subject],
+  "subject_ref" => options[:subject_ref],
   "runs" => options[:runs],
   "base_sha" => options[:base_sha],
   "head_sha" => options[:head_sha],

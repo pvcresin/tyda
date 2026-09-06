@@ -7,8 +7,8 @@
 
 subject は `scripts/setup_subjects.sh` が固定コミットで取得する（`--list` で
 pin 一覧、引数で個別指定）。redmine と gitlab は解析対象のディレクトリだけを
-sparse checkout する。合計約440MB、取得は数分。表の値は同じ pin での計測なので、
-subject を更新したら基準値も測り直す。`subject/sample` だけは repo 同梱。
+sparse checkout する。表の値は同じ pin での計測なので、subject を更新したら
+基準値も測り直す。`subject/sample` だけは repo 同梱。
 
 ### CLI
 
@@ -41,20 +41,30 @@ cargo test --release bench_workspace_rescan_mastodon_scale -- --nocapture
 
 ## CI の性能ゲート
 
-`.github/workflows/performance.yml` は pinned commit の `subject/gitlab/app` と
-`subject/optcarrot` を matrix の別 runner で計測し、同じ runner 上で base と head を交互に計測する。
-pull request は 3 回、main push と手動実行は 5 回とし、CLI の全体解析と LSP の workspace scan を対象にする。
-各 run の最大 RSS も同時に取る。解析 worker 数は 2 に固定し、大きな subject は並列化せず `nice -n 19` で実行する。
-`setup_subjects.sh` は rack / rake / RubyGems / Mastodon / Redmine / GitLab など複数のOSSを既に扱える。
-以前の性能workflowはGitLabだけを対象にしていたが、現在は matrix の1行にsubject名・解析path・timeoutを追加すれば、
-repositoryごとのCLI/LSPチェックを独立したrunnerで並列実行できる。
-今回のように optcarrot の base がまだ timeout する場合は、同 subject のみ base timeout を30秒の比較上限として
-扱う。head がその上限内に収まらない場合は失敗し、timeoutしたbaseのRSSは比較対象から除外する。
+`.github/workflows/performance.yml` はまず `performance-build` で base と head の
+release binary、および同じ `vendor/rbs` を一度だけ作って artifact にする。その後、
+各 subject を別 runner の matrix job で計測し、同じ binary pair に対して CLI 全体解析と
+LSP workspace scan の速度・最大 RSS を比較する。対象は Ruby-only の小→中、Rails の
+小→中→大の順に並べている。PR は 3 回、main push と手動実行は 5 回、解析 worker 数は
+2 に固定する。matrix は最大 10 job を並列に実行し、各解析 job の上限は 10 分とする。
 
-base/headのrelease binaryは別々のCargo target directoryでビルドしてから退避する。worktree間でtarget
-directoryを共有すると、Cargoが別revisionのworkspace crateを再ビルドせず、baseのbinaryをheadとして
-計測する可能性があるためである。LSPはテスト harnessを再ビルドせず、同じrelease binaryを軽量なLSP
-clientから駆動する。Perf job専用のRust cacheにはvariantごとのtarget directoryも保存する。
+TypeProf PR #449 の4対象は、TypeProf自身（v0.32.0）、Optcarrot、RubyGems.org、Redmine
+である。Tydaでは Optcarrot と Redmine は既存の subject pin をそのまま再利用し、
+既存の RubyGems source (`ruby/rubygems`) と RubyGems.org (`rubygems/rubygems.org`) は
+別 subject として扱う。RubyKaigi由来のRails素材には `kaigionrails/conference-app`
+を追加した。これらはCIのmatrix対象を増やすもので、ローカルのsnapshot対象は増やさない。
+
+対象を追加するときは `setup_subjects.sh` に remote と commit を追加し、workflow の
+matrix に subject名・解析path・timeoutを追加する。base/headのbinary buildは増えず、
+subjectごとの解析だけが独立runnerで増える。optcarrot の base がまだ timeout する場合は、
+同 subject のみ base timeout を30秒の比較上限として扱う。headがその上限内に収まらない
+場合は失敗し、timeoutしたbaseのRSSは比較対象から除外する。
+
+build job は base/head を別々の Cargo target directory でビルドする。worktree間で target
+directory を共有すると、Cargoが別revisionのworkspace crateを再ビルドせず、baseのbinaryを
+headとして計測する可能性があるためである。matrix job は Rustを再ビルドせず、artifactの
+binaryを `TYDA_RBS_DIR` で同じRBSへ向ける。LSPはテスト harnessを再ビルドせず、同じrelease
+binaryを軽量なLSP clientから駆動する。
 
 手元で同じ比較を行う場合は、subject と vendor/RBS を用意したうえで次を実行する。
 
@@ -67,8 +77,8 @@ TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
 小さな劣化を許容しつつ、実質的な回帰は PR の段階で止めるための初期値である。基準を別 runner の
 過去値と比較せず、base/head を同じ job で測ることで CPU や runner の世代差を打ち消す。
 
-GitHub の branch protection では、この workflow の `performance (gitlab)` と `performance (optcarrot)` check を
-required に設定する。
+GitHub の branch protection では、この workflow の `performance-build` と全ての
+`performance (<subject>)` check を required に設定する。
 
 結果は subject ごとに `target/performance/<subject>/result.json` として artifact に保存する。warning が継続する場合や runner
 環境が変わった場合は、まず複数回の結果を確認してから閾値を見直す。性能計測の対象を追加するときも、
@@ -76,6 +86,21 @@ required に設定する。
 
 計測のプロセス監視と結果比較は Ruby の `scripts/measure_process.rb` と
 `scripts/compare_performance.rb` で行い、リポジトリの開発用 Ruby 環境を共有する。
+
+### CI subjects
+
+| 分類 | subject | 規模の目安 | 解析 path | pinned commit |
+| --- | --- | --- | --- | --- |
+| Ruby-only | `rack` | 小 | `subject/rack` | `ca8a404704ed043797c4f9d482c97d722c0dc719` |
+| Ruby-only | `rake` | 小 | `subject/rake` | `353f51da83616397b50b01ccc5c39607811ad691` |
+| Ruby-only | `optcarrot` | 小 | `subject/optcarrot` | `c215378a27b2dce8d8e5d98a3ed75e0354c5a840` |
+| Ruby-only | `typeprof` | 中 | `subject/typeprof` | `e20d7783c85911c601c8b535cd174f2951f4c430`（v0.32.0） |
+| Ruby-only | `rubygems` | 中 | `subject/rubygems` | `f72d9d9f9e42a246e5301f8f6492e8258134baee` |
+| Rails | `conference-app` | 小 | `subject/conference-app` | `12e49b9d8d35b2fbbec419e756cffca8bed2a800` |
+| Rails | `redmine` | 中 | `subject/redmine` | `890812e49cc60e96c7c252b7dedbd881a4edba55` |
+| Rails | `rubygems.org` | 中 | `subject/rubygems.org` | `2abc82667d02ef7ae3a1433d621c1f7463985c6d` |
+| Rails | `mastodon` | 中 | `subject/mastodon` | `eb848d082afc8864b2aa15858f414e4867902c65` |
+| Rails | `gitlab` | 大 | `subject/gitlab/app` | `088eaeded42c93b4cbb0389b567e2f48d5b08b7c` |
 
 ## 現在の基準値
 

@@ -60,7 +60,7 @@ cargo test <module>::<test>
 ~~~
 
 GitHub Actions では `Test`、`Performance`、`pages`、`Workflow lint` をPRゲートとする。`Test` はLinuxとWindowsの
-Rust build / clippy / test、`Performance` は pinned な GitLab workspace の base/head 比較、release workflowはgem / VSIXのLinux x86_64・Windows x64・Intel macOS・
+Rust build / clippy / test、`Performance` は pinned な Ruby / Rails OSS subject ごとの base/head 比較、release workflowはgem / VSIXのLinux x86_64・Windows x64・Intel macOS・
 ARM macOS package smoke testも確認する。Linux ARM64はrunnerの利用条件が整い次第追加する。
 
 scenario の期待 RBS は whitespace を正規化して比較するが、意味のない出力変更を許容する

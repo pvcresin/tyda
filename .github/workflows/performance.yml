@@ -34,29 +34,25 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/ci/classify-changed-paths.sh
 
-  performance:
-    name: performance (${{ matrix.subject }})
+  build:
+    name: performance-build
     needs: changes
     if: needs.changes.outputs.run_full_ci == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - subject: gitlab
-            subject_path: subject/gitlab/app
-            timeout_seconds: 180
-            allow_base_timeout: "0"
-          - subject: optcarrot
-            subject_path: subject/optcarrot
-            timeout_seconds: 30
-            allow_base_timeout: "1"
+    timeout-minutes: 10
+    outputs:
+      base_sha: ${{ steps.revisions.outputs.base_sha }}
+      head_sha: ${{ steps.revisions.outputs.head_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
+
+      - name: Install system dependencies
+        uses: awalsh128/cache-apt-pkgs-action@2c09a5e66da6c8016428a2172bd76e5e4f14bb17 # v1.5.3
+        with:
+          packages: clang libclang-dev
 
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
         with:
@@ -67,7 +63,7 @@ jobs:
         with:
           cache-targets: true
           cache-workspace-crates: true
-          shared-key: performance-v2
+          shared-key: performance-v3
 
       - name: Cache vendor/rbs
         id: cache-rbs
@@ -82,6 +78,111 @@ jobs:
           mise install ruby
           mise run vendor-rbs
 
+      - name: Cache performance binaries
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: target/performance-runtime
+          key: ${{ runner.os }}-performance-runtime-${{ hashFiles('Cargo.lock', 'Gemfile.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+
+      - name: Build base and head binaries
+        env:
+          TYDA_PERF_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: ./scripts/build_performance_binaries.sh target/performance-runtime
+
+      - name: Export comparison revisions
+        id: revisions
+        shell: bash
+        run: |
+          metadata=target/performance-runtime/metadata.env
+          base_sha="$(sed -n 's/^base_sha=//p' "$metadata")"
+          head_sha="$(sed -n 's/^head_sha=//p' "$metadata")"
+          test -n "$base_sha"
+          test -n "$head_sha"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload performance runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: performance-runtime
+          path: target/performance-runtime
+          if-no-files-found: error
+
+  performance:
+    needs:
+      - changes
+      - build
+    if: needs.changes.outputs.run_full_ci == 'true'
+    name: performance (${{ matrix.subject }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include:
+          # Ruby-only subjects: small → medium.
+          - subject: rack
+            subject_path: subject/rack
+            timeout_seconds: 60
+            allow_base_timeout: "0"
+          - subject: rake
+            subject_path: subject/rake
+            timeout_seconds: 60
+            allow_base_timeout: "0"
+          - subject: optcarrot
+            subject_path: subject/optcarrot
+            timeout_seconds: 30
+            allow_base_timeout: "1"
+          - subject: typeprof
+            subject_path: subject/typeprof
+            timeout_seconds: 120
+            allow_base_timeout: "0"
+          - subject: rubygems
+            subject_path: subject/rubygems
+            timeout_seconds: 180
+            allow_base_timeout: "0"
+
+          # Rails subjects: small → medium → large.
+          - subject: conference-app
+            subject_path: subject/conference-app
+            timeout_seconds: 120
+            allow_base_timeout: "0"
+          - subject: redmine
+            subject_path: subject/redmine
+            timeout_seconds: 180
+            allow_base_timeout: "0"
+          - subject: rubygems.org
+            subject_path: subject/rubygems.org
+            timeout_seconds: 180
+            allow_base_timeout: "0"
+          - subject: mastodon
+            subject_path: subject/mastodon
+            timeout_seconds: 180
+            allow_base_timeout: "0"
+          - subject: gitlab
+            subject_path: subject/gitlab/app
+            timeout_seconds: 180
+            allow_base_timeout: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # The build job resolves the exact base/head commits; the matrix only
+          # needs the current tree and the scripts.
+          fetch-depth: 1
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+
+      - name: Download performance runtime
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: performance-runtime
+          path: target/performance-runtime
+
       - name: Cache performance subject
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -93,14 +194,16 @@ jobs:
 
       - name: Compare base and head performance (${{ matrix.subject }})
         env:
-          TYDA_PERF_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          TYDA_PERF_BASE_SHA: ${{ needs.build.outputs.base_sha }}
+          TYDA_PERF_HEAD_SHA: ${{ needs.build.outputs.head_sha }}
           TYDA_PERF_RUNS: ${{ github.event_name == 'pull_request' && '3' || '5' }}
           TYDA_PERF_THREADS: "2"
-          # The pre-fix optcarrot base is intentionally allowed to hit the short limit.
           TYDA_PERF_ALLOW_BASE_TIMEOUT: ${{ matrix.allow_base_timeout }}
           TYDA_PERF_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
           TYDA_PERF_SUBJECT: ${{ github.workspace }}/${{ matrix.subject_path }}
+          TYDA_PERF_BINARY_DIR: ${{ github.workspace }}/target/performance-runtime/bin
           TYDA_PERF_OUTPUT_DIR: ${{ github.workspace }}/target/performance/${{ matrix.subject }}
+          TYDA_RBS_DIR: ${{ github.workspace }}/target/performance-runtime/vendor/rbs
         run: ./scripts/benchmark_ci.sh
 
       - name: Upload performance result (${{ matrix.subject }})

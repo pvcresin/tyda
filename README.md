@@ -100,9 +100,12 @@ Benchmarks run against real OSS projects, fetched at pinned commits so the numbe
 [`docs/performance.md`](docs/performance.md) are reproducible:
 
 ```bash
-./scripts/setup_subjects.sh          # rack, rake, rubygems, mastodon, redmine, gitlab
+./scripts/setup_subjects.sh          # fetch all pinned subjects (CI uses one per matrix job)
 ./scripts/setup_subjects.sh --list   # the pinned commit table
 ```
+
+The exhaustive real-world regression matrix runs in CI; the local snapshot checks remain
+intentionally small.
 
 Details: [`docs/development.md`](docs/development.md).
 
