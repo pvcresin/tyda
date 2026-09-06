@@ -147,7 +147,7 @@ impl<'a> InferenceEngine<'a> {
                 owners.push((owner, owner_is_singleton));
             }
         };
-        for mixin in &data.mixins {
+        for mixin in data.mixins.iter().rev() {
             let mixin_name = mixin.module_name.to_string();
             match mixin.kind {
                 crate::registry::MixinKind::Extend => {

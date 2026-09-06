@@ -29,6 +29,7 @@ fn note_return_type_read(owner_class: impl Into<Sym>, method_name: impl Into<Sym
 }
 
 const MAX_RESOLVE_DEPTH: usize = 64;
+const MAX_EXACT_ANCESTOR_CHAIN_LENGTH: usize = 64;
 
 struct ResolveDepthGuard;
 
@@ -3275,6 +3276,89 @@ impl TypeRegistry {
             .and_then(|d| d.superclass.as_deref())
     }
 
+    /// Return the statically known runtime ancestor chain in Ruby's lookup order.
+    ///
+    /// `None` means that an edge in the chain is unknown or the bounded walk was
+    /// not able to prove a complete result. Required ancestors are intentionally
+    /// excluded: they affect type requirements, not `Module#ancestors`.
+    pub fn ordered_ancestor_names(&self, class_name: &str) -> Option<Vec<SharedName>> {
+        let mut names = Vec::with_capacity(16);
+        let mut seen = FxHashSet::default();
+        let mut active = FxHashSet::default();
+        self.collect_ordered_ancestor_names(class_name, &mut seen, &mut active, &mut names)
+            .then_some(names)
+    }
+
+    fn collect_ordered_ancestor_names(
+        &self,
+        class_name: &str,
+        seen: &mut FxHashSet<SharedName>,
+        active: &mut FxHashSet<SharedName>,
+        names: &mut Vec<SharedName>,
+    ) -> bool {
+        let class_name = self.resolve_scoped_class_ref_borrow("", class_name);
+        let name = self.shared_name(class_name);
+        if seen.contains(&name) {
+            return !active.contains(&name);
+        }
+        if names.len() >= MAX_EXACT_ANCESTOR_CHAIN_LENGTH {
+            return false;
+        }
+
+        let Some(data) = self.class_data.get(class_name) else {
+            return false;
+        };
+        if !data.has_type_substance() {
+            return false;
+        }
+
+        let is_module = data.is_module;
+        let superclass = data.superclass.clone();
+        seen.insert(name.clone());
+        active.insert(name.clone());
+
+        for mixin in data.mixins.iter().rev() {
+            if mixin.kind != MixinKind::Prepend {
+                continue;
+            }
+            let mixin_name =
+                self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
+            if !self.collect_ordered_ancestor_names(mixin_name, seen, active, names) {
+                return false;
+            }
+        }
+
+        names.push(name.clone());
+
+        for mixin in data.mixins.iter().rev() {
+            if mixin.kind != MixinKind::Include {
+                continue;
+            }
+            let mixin_name =
+                self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
+            if !self.collect_ordered_ancestor_names(mixin_name, seen, active, names) {
+                return false;
+            }
+        }
+
+        let complete = if let Some(superclass) = superclass.as_deref() {
+            let superclass_name = self.resolve_scoped_class_ref_borrow(class_name, superclass);
+            self.collect_ordered_ancestor_names(superclass_name, seen, active, names)
+        } else if is_module {
+            true
+        } else if class_name == "Object" {
+            // Object's implicit BasicObject edge is supplied by the stdlib RBS.
+            false
+        } else if class_name == "BasicObject" {
+            true
+        } else {
+            self.collect_ordered_ancestor_names("Object", seen, active, names)
+        };
+
+        active.remove(&name);
+        complete
+    }
+
     pub fn get_required_ancestors(&self, class_name: &str) -> &[SharedName] {
         self.class_data
             .get(class_name)
@@ -3728,7 +3812,7 @@ impl TypeRegistry {
             return Some(location);
         }
         let data = self.class_data.get(class_name)?;
-        for mixin in &data.mixins {
+        for mixin in data.mixins.iter().rev() {
             if matches!(mixin.kind, MixinKind::Include | MixinKind::Prepend)
                 && let Some(location) = self
                     .lookup_constant_definition_location_through_ancestors_inner(
@@ -4051,7 +4135,7 @@ impl TypeRegistry {
         }
         // mixin/superclass names are first resolved to an FQN in the enclosing scope, just like
         // `lookup_constant_through_ancestors_inner`, then walked (supports nested includes).
-        for mixin in &data.mixins {
+        for mixin in data.mixins.iter().rev() {
             if matches!(mixin.kind, MixinKind::Include | MixinKind::Prepend) {
                 let resolved =
                     self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
@@ -4088,7 +4172,7 @@ impl TypeRegistry {
             return Some(def.const_type.clone());
         }
         // shortened mixin/superclass names are resolved to an FQN in the enclosing scope before being walked.
-        for mixin in &data.mixins {
+        for mixin in data.mixins.iter().rev() {
             if matches!(mixin.kind, MixinKind::Include | MixinKind::Prepend) {
                 let resolved =
                     self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
@@ -4218,57 +4302,11 @@ impl TypeRegistry {
         method_name: &str,
         is_singleton: bool,
     ) -> Option<String> {
-        let mut seen = Vec::new();
-        self.attr_ivar_name_through_ancestors_inner(
-            class_name,
-            method_name,
-            is_singleton,
-            &mut seen,
-        )
-    }
-
-    fn attr_ivar_name_through_ancestors_inner<'a>(
-        &'a self,
-        class_name: &'a str,
-        method_name: &str,
-        is_singleton: bool,
-        seen: &mut Vec<&'a str>,
-    ) -> Option<String> {
-        if seen.contains(&class_name) {
-            return None;
-        }
-        seen.push(class_name);
-        let data = self.class_data.get(class_name)?;
-        if let Some(method) = Self::method_for_lookup_kind(data, method_name, Some(is_singleton))
-            && let Some(ivar) = method.attr_ivar.as_ref()
-        {
-            return Some(ivar.clone());
-        }
-        if !is_singleton {
-            for mixin in &data.mixins {
-                if matches!(mixin.kind, MixinKind::Include | MixinKind::Prepend)
-                    && let Some(ivar) = self.attr_ivar_name_through_ancestors_inner(
-                        mixin.module_name.as_ref(),
-                        method_name,
-                        false,
-                        seen,
-                    )
-                {
-                    return Some(ivar);
-                }
-            }
-        }
-        if let Some(superclass) = &data.superclass
-            && let Some(ivar) = self.attr_ivar_name_through_ancestors_inner(
-                superclass.as_ref(),
-                method_name,
-                is_singleton,
-                seen,
-            )
-        {
-            return Some(ivar);
-        }
-        None
+        let (owner, owner_is_singleton) =
+            self.resolve_method_call_owner_ref(class_name, method_name, is_singleton)?;
+        let data = self.class_data.get(owner)?;
+        Self::method_for_lookup_kind(data, method_name, Some(owner_is_singleton))
+            .and_then(|method| method.attr_ivar.clone())
     }
 
     /// determines whether a method is a pure reader (attr/ivar/AR column reader, excluding associations): used for self-fact narrowing. Also walks the mixin chain.
@@ -4280,6 +4318,7 @@ impl TypeRegistry {
     ) -> bool {
         let mut seen = Vec::new();
         self.is_pure_ivar_reader_through_ancestors(class_name, method_name, is_singleton, &mut seen)
+            .unwrap_or(false)
     }
 
     fn is_pure_ivar_reader_through_ancestors<'a>(
@@ -4288,60 +4327,74 @@ impl TypeRegistry {
         method_name: &str,
         is_singleton: bool,
         seen: &mut Vec<&'a str>,
-    ) -> bool {
+    ) -> Option<bool> {
         if seen.contains(&class_name) {
-            return false;
+            return None;
         }
         seen.push(class_name);
-        let Some(data) = self.class_data.get(class_name) else {
-            return false;
-        };
-        // comes from `attr_reader` / `attr_accessor` (holds a backing ivar).
-        if let Some(method) = Self::method_for_lookup_kind(data, method_name, Some(is_singleton))
-            && method.attr_ivar.is_some()
-        {
-            return true;
+        let data = self.class_data.get(class_name)?;
+
+        if !is_singleton {
+            for mixin in data.mixins.iter().rev() {
+                if mixin.kind != MixinKind::Prepend {
+                    continue;
+                }
+                let mixin_ref =
+                    self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
+                if let Some(result) =
+                    self.is_pure_ivar_reader_through_ancestors(mixin_ref, method_name, false, seen)
+                {
+                    return Some(result);
+                }
+            }
         }
+
         // a hand-written bare ivar reader (`def x = @x` / `def x; @x; end`).
-        if data
-            .cold()
-            .bare_ivar_readers
-            .contains(&(Sym::new(method_name), is_singleton))
+        if !is_singleton
+            && data
+                .cold()
+                .bare_ivar_readers
+                .contains(&(Sym::new(method_name), false))
         {
-            return true;
+            return Some(true);
+        }
+        // comes from `attr_reader` / `attr_accessor` (holds a backing ivar).
+        if let Some(method) = Self::method_for_lookup_kind(data, method_name, Some(is_singleton)) {
+            return Some(method.attr_ivar.is_some());
         }
         // a DB column reader from the AR schema (matches a column name; excludes associations/writers/predicates).
         if !is_singleton
             && let Some(pattern) = data.cold().dirty_method_pattern.as_ref()
             && pattern.has_column(method_name)
         {
-            return true;
+            return Some(true);
         }
+
         if !is_singleton {
-            for mixin in &data.mixins {
-                if matches!(mixin.kind, MixinKind::Include | MixinKind::Prepend)
-                    && self.is_pure_ivar_reader_through_ancestors(
-                        mixin.module_name.as_ref(),
-                        method_name,
-                        false,
-                        seen,
-                    )
+            for mixin in data.mixins.iter().rev() {
+                if mixin.kind != MixinKind::Include {
+                    continue;
+                }
+                let mixin_ref =
+                    self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
+                if let Some(result) =
+                    self.is_pure_ivar_reader_through_ancestors(mixin_ref, method_name, false, seen)
                 {
-                    return true;
+                    return Some(result);
                 }
             }
         }
         if let Some(superclass) = &data.superclass
-            && self.is_pure_ivar_reader_through_ancestors(
-                superclass.as_ref(),
+            && let Some(result) = self.is_pure_ivar_reader_through_ancestors(
+                self.resolve_scoped_class_ref_borrow(class_name, superclass.as_ref()),
                 method_name,
                 is_singleton,
                 seen,
             )
         {
-            return true;
+            return Some(result);
         }
-        false
+        None
     }
 
     fn enable_owner_lookup_cache(&self) {
@@ -5502,7 +5555,7 @@ impl TypeRegistry {
         };
 
         if !method_is_singleton {
-            for mixin in &data.mixins {
+            for mixin in data.mixins.iter().rev() {
                 if mixin.kind != MixinKind::Prepend {
                     continue;
                 }
@@ -5535,7 +5588,7 @@ impl TypeRegistry {
         );
 
         if method_is_singleton {
-            for mixin in &data.mixins {
+            for mixin in data.mixins.iter().rev() {
                 let mixin_ref =
                     self.resolve_scoped_class_ref_borrow(owner_class, mixin.module_name.as_ref());
                 if mixin.kind == MixinKind::Extend {
@@ -5598,7 +5651,7 @@ impl TypeRegistry {
                 );
             }
         } else {
-            for mixin in &data.mixins {
+            for mixin in data.mixins.iter().rev() {
                 if mixin.kind != MixinKind::Include {
                     continue;
                 }
@@ -9997,9 +10050,9 @@ impl TypeRegistry {
 
         let data = self.class_data.get(class_name)?;
 
-        // instance ancestor order: `prepend` comes before self (the singleton side stays self-first).
+        // Ruby applies the last mixin first during instance method lookup.
         if !method_is_singleton {
-            for mixin in &data.mixins {
+            for mixin in data.mixins.iter().rev() {
                 if mixin.kind != MixinKind::Prepend {
                     continue;
                 }
@@ -10022,7 +10075,9 @@ impl TypeRegistry {
         }
 
         if method_is_singleton {
-            for mixin in &data.mixins {
+            // `extend` and Concern class methods follow the same reverse
+            // application order as the singleton ancestor chain.
+            for mixin in data.mixins.iter().rev() {
                 let mixin_ref =
                     self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
                 if mixin.kind == MixinKind::Extend {
@@ -10080,7 +10135,7 @@ impl TypeRegistry {
                 }
             }
         } else {
-            for mixin in &data.mixins {
+            for mixin in data.mixins.iter().rev() {
                 // Prepend was already walked before checking the class
                 // itself; Extend lives on the singleton side.
                 if mixin.kind != MixinKind::Include {
@@ -11104,6 +11159,99 @@ mod tests {
         // Every superclass / mixin edge resolves to a substantive definition;
         // an empty-but-declared module counts as a fully known surface.
         assert!(registry.ancestor_knowledge_complete("Leaf"));
+    }
+
+    #[test]
+    fn mixin_lookup_and_ancestor_order_follow_latest_application() {
+        let mut registry = TypeRegistry::new();
+
+        declare_class(&mut registry, "IncludeFirst");
+        registry.set_is_module("IncludeFirst", true);
+        registry.add_method_def(
+            "IncludeFirst",
+            test_method("value", Type::LiteralInteger(1)),
+        );
+        declare_class(&mut registry, "IncludeSecond");
+        registry.set_is_module("IncludeSecond", true);
+        registry.add_method_def(
+            "IncludeSecond",
+            test_method("value", Type::LiteralInteger(2)),
+        );
+        declare_class(&mut registry, "IncludeHost");
+        registry.add_mixin("IncludeHost", "IncludeFirst", MixinKind::Include);
+        registry.add_mixin("IncludeHost", "IncludeSecond", MixinKind::Include);
+        assert_eq!(
+            registry.resolve_instance_method_call_owners("IncludeHost", "value"),
+            vec!["IncludeSecond"]
+        );
+
+        declare_class(&mut registry, "PrependFirst");
+        registry.set_is_module("PrependFirst", true);
+        registry.add_method_def(
+            "PrependFirst",
+            test_method("value", Type::LiteralInteger(1)),
+        );
+        declare_class(&mut registry, "PrependSecond");
+        registry.set_is_module("PrependSecond", true);
+        registry.add_method_def(
+            "PrependSecond",
+            test_method("value", Type::LiteralInteger(2)),
+        );
+        declare_class(&mut registry, "PrependHost");
+        registry.add_mixin("PrependHost", "PrependFirst", MixinKind::Prepend);
+        registry.add_mixin("PrependHost", "PrependSecond", MixinKind::Prepend);
+        assert_eq!(
+            registry.resolve_instance_method_call_owners("PrependHost", "value"),
+            vec!["PrependSecond"]
+        );
+
+        declare_class(&mut registry, "ExtendFirst");
+        registry.set_is_module("ExtendFirst", true);
+        registry.add_method_def("ExtendFirst", test_method("value", Type::LiteralInteger(1)));
+        declare_class(&mut registry, "ExtendSecond");
+        registry.set_is_module("ExtendSecond", true);
+        registry.add_method_def(
+            "ExtendSecond",
+            test_method("value", Type::LiteralInteger(2)),
+        );
+        declare_class(&mut registry, "ExtendHost");
+        registry.add_mixin("ExtendHost", "ExtendFirst", MixinKind::Extend);
+        registry.add_mixin("ExtendHost", "ExtendSecond", MixinKind::Extend);
+        assert_eq!(
+            registry.resolve_method_call_owners("ExtendHost", "value", true),
+            vec![("ExtendSecond".to_string(), false)]
+        );
+
+        declare_class(&mut registry, "BasicObject");
+        declare_class(&mut registry, "Kernel");
+        registry.set_is_module("Kernel", true);
+        declare_class(&mut registry, "Object");
+        registry.set_superclass("Object", "BasicObject");
+        registry.add_mixin("Object", "Kernel", MixinKind::Include);
+        declare_class(&mut registry, "AncestorHost");
+        registry.add_mixin("AncestorHost", "IncludeFirst", MixinKind::Include);
+        registry.add_mixin("AncestorHost", "IncludeSecond", MixinKind::Include);
+        registry.add_mixin("AncestorHost", "PrependFirst", MixinKind::Prepend);
+        registry.add_mixin("AncestorHost", "PrependSecond", MixinKind::Prepend);
+
+        assert_eq!(
+            registry
+                .ordered_ancestor_names("AncestorHost")
+                .expect("complete ancestor chain")
+                .into_iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "PrependSecond",
+                "PrependFirst",
+                "AncestorHost",
+                "IncludeSecond",
+                "IncludeFirst",
+                "Object",
+                "Kernel",
+                "BasicObject",
+            ]
+        );
     }
 
     #[test]

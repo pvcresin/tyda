@@ -2186,7 +2186,7 @@ impl<'a> InferenceEngine<'a> {
         if self.class_exists_cross_registry(&nested) {
             return Some(nested);
         }
-        for mixin in &data.mixins {
+        for mixin in data.mixins.iter().rev() {
             if matches!(mixin.kind, MixinKind::Include | MixinKind::Prepend) {
                 let resolved = self.resolve_scoped_class_ref_cross_registry(
                     class_name,
@@ -21378,6 +21378,14 @@ impl<'a> InferenceEngine<'a> {
                                 0,
                             );
                             break 'recv wrap(override_ty);
+                        }
+                        if call_node.block().is_none()
+                            && let Some(ancestors_result) = self.resolve_static_ancestors_return(
+                                &safe_nav_receiver_type,
+                                &method_name,
+                            )
+                        {
+                            break 'recv wrap(ancestors_result);
                         }
                         if matches!(method_name.as_str(), "const_get" | "const_defined?")
                             && let Some(owner) =
@@ -43224,8 +43232,13 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => return Type::Untyped,
         };
-        self.ensure_class_available(class_name);
         let is_singleton = matches!(receiver_type, Type::Singleton(_));
+        if let Some(result) =
+            self.resolve_static_ancestors_return(receiver_type, effective_method_name)
+        {
+            return result;
+        }
+        self.ensure_class_available(class_name);
         // gem plugin override hook: supply only the names whose calls to a phantom stub (an undefined gem constant) get resolved to the wrong owner by the universal fallback (Class/Module/Object -> Kernel), e.g. `Oj.load` -> `Kernel#load -> bool`, ahead of signature resolution. The plugin itself judges "the receiver has no real definition of its own", so a real definition still wins.
         if let Some(result) =
             self.dsl_plugin_method_return_override(receiver_type, effective_method_name)
@@ -43293,6 +43306,55 @@ impl<'a> InferenceEngine<'a> {
             }
         }
         self.resolve_self_type(&ret, receiver_type)
+    }
+
+    fn resolve_static_ancestors_return(
+        &mut self,
+        receiver_type: &Type,
+        method_name: &str,
+    ) -> Option<Type> {
+        if method_name != "ancestors" || !matches!(receiver_type, Type::Singleton(_)) {
+            return None;
+        }
+
+        let class_name = self.type_to_class_name(receiver_type)?;
+        self.ensure_class_available(&class_name);
+        // Load project overrides for the class-object surface without eagerly
+        // materializing the standard library just to identify the builtin.
+        self.ensure_external_class("Class");
+        self.ensure_external_class("Module");
+        let ancestors_owner = self
+            .registry
+            .resolve_method_call_owners(&class_name, method_name, true)
+            .into_iter()
+            .next();
+        let uses_builtin_ancestors = match ancestors_owner {
+            Some((owner, owner_is_singleton)) => {
+                !owner_is_singleton && matches!(owner.as_str(), "Class" | "Module")
+            }
+            None => true,
+        };
+        if !uses_builtin_ancestors {
+            return None;
+        }
+
+        let needs_object = self
+            .registry
+            .class_data_for(&class_name)
+            .is_some_and(|data| !data.is_module);
+        if needs_object {
+            self.ensure_class_available("Object");
+        }
+        self.registry
+            .ordered_ancestor_names(&class_name)
+            .map(|ancestor_names| {
+                Type::Tuple(
+                    ancestor_names
+                        .into_iter()
+                        .map(|name| Type::Singleton(Sym::new(name.as_ref())))
+                        .collect(),
+                )
+            })
     }
 
     fn synthetic_arel_method_return(receiver_type: &Type, method_name: &str) -> Option<Type> {

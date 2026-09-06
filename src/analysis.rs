@@ -2397,6 +2397,55 @@ end
     }
 
     #[test]
+    fn playground_mixin_dispatch_and_ancestors_keep_ruby_order() {
+        let loader = playground_loader();
+        let source = concat!(
+            "module M1\n",
+            "  def m = 1\n",
+            "end\n",
+            "\n",
+            "module M2\n",
+            "  def m = 2\n",
+            "end\n",
+            "\n",
+            "class C1\n",
+            "  include M1\n",
+            "  include M2\n",
+            "end\n",
+            "\n",
+            "puts C1.new.m\n",
+            "puts C1.ancestors\n",
+        );
+        let result = playground_analyze(source, "", &loader, "mixin_order.rb");
+
+        assert!(
+            result
+                .hovers
+                .iter()
+                .any(|hover| hover.name == "m" && hover.display == "[Tyda] -> 2"),
+            "the latest included module must own the method call: {:?}",
+            result.hovers
+        );
+        let ancestors = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "ancestors")
+            .expect("hover on C1.ancestors");
+        let m2 = ancestors
+            .display
+            .find("singleton(M2)")
+            .unwrap_or_else(|| panic!("M2 in the ancestor tuple: {ancestors:?}"));
+        let m1 = ancestors
+            .display
+            .find("singleton(M1)")
+            .unwrap_or_else(|| panic!("M1 in the ancestor tuple: {ancestors:?}"));
+        assert!(
+            m2 < m1,
+            "ancestor tuple must keep lookup order: {ancestors:?}"
+        );
+    }
+
+    #[test]
     fn playground_diagnostics_honor_line_ignore_comments() {
         let loader = playground_loader();
         let source = concat!(
