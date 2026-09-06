@@ -9,8 +9,22 @@ RUNS="${TYDA_PERF_RUNS:-5}"
 THREADS="${TYDA_PERF_THREADS:-2}"
 TIMEOUT_SECONDS="${TYDA_PERF_TIMEOUT_SECONDS:-180}"
 BASE_REF="${TYDA_PERF_BASE_REF:-}"
+BASE_SHA="${TYDA_PERF_BASE_SHA:-}"
+HEAD_SHA="${TYDA_PERF_HEAD_SHA:-}"
 OUTPUT_DIR="${TYDA_PERF_OUTPUT_DIR:-$ROOT_DIR/target/performance}"
 ALLOW_BASE_TIMEOUT="${TYDA_PERF_ALLOW_BASE_TIMEOUT:-0}"
+BINARY_DIR="${TYDA_PERF_BINARY_DIR:-}"
+RBS_DIR="${TYDA_RBS_DIR:-$ROOT_DIR/vendor/rbs}"
+
+if [[ "$OUTPUT_DIR" != /* ]]; then
+  OUTPUT_DIR="$ROOT_DIR/$OUTPUT_DIR"
+fi
+if [[ -n "$BINARY_DIR" && "$BINARY_DIR" != /* ]]; then
+  BINARY_DIR="$ROOT_DIR/$BINARY_DIR"
+fi
+if [[ "$RBS_DIR" != /* ]]; then
+  RBS_DIR="$ROOT_DIR/$RBS_DIR"
+fi
 
 # A warning is useful for trend monitoring; only the larger limit fails PR CI.
 TIME_WARN_PERCENT="15"
@@ -33,6 +47,11 @@ if [[ ! -d "$SUBJECT_PATH" ]]; then
   echo "run ./scripts/setup_subjects.sh <subject> first" >&2
   exit 2
 fi
+if [[ ! -d "$RBS_DIR" ]]; then
+  echo "vendor/rbs is missing: $RBS_DIR" >&2
+  echo "run ./scripts/vendor-rbs.sh first" >&2
+  exit 2
+fi
 if [[ "$ALLOW_BASE_TIMEOUT" != 0 && "$ALLOW_BASE_TIMEOUT" != 1 ]]; then
   echo "TYDA_PERF_ALLOW_BASE_TIMEOUT must be 0 or 1" >&2
   exit 2
@@ -43,52 +62,57 @@ RUN_DIR="$(mktemp -d "$OUTPUT_DIR/run.XXXXXX")"
 METRICS_TSV="$RUN_DIR/metrics.tsv"
 RESULT_JSON="$OUTPUT_DIR/result.json"
 TARGET_ROOT="${TYDA_PERF_TARGET_DIR:-$OUTPUT_DIR/targets}"
+if [[ "$TARGET_ROOT" != /* ]]; then
+  TARGET_ROOT="$ROOT_DIR/$TARGET_ROOT"
+fi
 BASE_DIR="$RUN_DIR/base"
 HEAD_DIR="$ROOT_DIR"
 BASE_TARGET="$TARGET_ROOT/base"
 HEAD_TARGET="$TARGET_ROOT/head"
+BASE_WORKTREE_ADDED=0
 mkdir -p "$TARGET_ROOT"
 touch "$METRICS_TSV"
+PERF_BINARY_DIR="$BINARY_DIR"
 
 cleanup() {
-  if [[ -d "$BASE_DIR" ]]; then
+  if [[ "$BASE_WORKTREE_ADDED" -eq 1 || -d "$BASE_DIR" ]]; then
     git -C "$ROOT_DIR" worktree remove --force "$BASE_DIR" >/dev/null 2>&1 || true
   fi
   rm -rf "$RUN_DIR"
 }
 trap cleanup EXIT
 
-if [[ -z "$BASE_REF" || "$BASE_REF" =~ ^0+$ ]]; then
+if [[ -z "$BASE_SHA" && ( -z "$BASE_REF" || "$BASE_REF" =~ ^0+$ ) ]]; then
   BASE_REF="$(git -C "$ROOT_DIR" rev-parse HEAD^)"
 fi
+
+if [[ -z "$BASE_SHA" ]]; then
+  if BASE_SHA="$(git -C "$ROOT_DIR" rev-parse --verify "${BASE_REF}^{commit}" 2>/dev/null)"; then
+    :
+  else
+    FETCH_REF="$BASE_REF"
+    if [[ "$FETCH_REF" == origin/* ]]; then
+      FETCH_REF="${FETCH_REF#origin/}"
+    fi
+    git -C "$ROOT_DIR" fetch --no-tags --depth=1 origin "$FETCH_REF" >/dev/null
+    BASE_SHA="$(git -C "$ROOT_DIR" rev-parse 'FETCH_HEAD^{commit}')"
+  fi
+fi
+if [[ -z "$HEAD_SHA" ]]; then
+  HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse 'HEAD^{commit}')"
+fi
+
+SUBJECT_REF="$(git -C "$SUBJECT_PATH" rev-parse HEAD 2>/dev/null || true)"
 
 echo "=== Performance gate ==="
 echo "subject: $SUBJECT_PATH"
 echo "runs: $RUNS (paired, alternating, median)"
 echo "threads: $THREADS"
-echo "base: $BASE_REF"
-echo "head: $(git -C "$ROOT_DIR" rev-parse HEAD)"
+echo "base ref: ${BASE_REF:-provided via SHA}"
+echo "base sha: $BASE_SHA"
+echo "head: $HEAD_SHA"
+echo "subject revision: ${SUBJECT_REF:-unknown}"
 echo ""
-
-if BASE_SHA="$(git -C "$ROOT_DIR" rev-parse --verify "${BASE_REF}^{commit}" 2>/dev/null)"; then
-  :
-else
-  FETCH_REF="$BASE_REF"
-  if [[ "$FETCH_REF" == origin/* ]]; then
-    FETCH_REF="${FETCH_REF#origin/}"
-  fi
-  git -C "$ROOT_DIR" fetch --no-tags --depth=1 origin "$FETCH_REF" >/dev/null
-  BASE_SHA="$(git -C "$ROOT_DIR" rev-parse 'FETCH_HEAD^{commit}')"
-fi
-HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse 'HEAD^{commit}')"
-git -C "$ROOT_DIR" worktree add --detach "$BASE_DIR" "$BASE_SHA" >/dev/null
-
-if [[ ! -e "$ROOT_DIR/vendor/rbs" ]]; then
-  echo "vendor/rbs is missing; run ./scripts/vendor-rbs.sh first" >&2
-  exit 2
-fi
-mkdir -p "$BASE_DIR/vendor"
-ln -s "$ROOT_DIR/vendor/rbs" "$BASE_DIR/vendor/rbs"
 
 export CARGO_INCREMENTAL=0
 
@@ -113,15 +137,33 @@ build_variant() {
   cp "$target/release/tyda" "$binary_dir/tyda"
 }
 
-build_variant base "$BASE_DIR" "$BASE_TARGET"
-build_variant head "$HEAD_DIR" "$HEAD_TARGET"
+if [[ -n "$BINARY_DIR" ]]; then
+  for variant in base head; do
+    binary="$BINARY_DIR/$variant/tyda"
+    if [[ -f "$binary" ]]; then
+      chmod +x "$binary"
+    fi
+    if [[ ! -x "$binary" ]]; then
+      echo "performance binary not found or not executable: $binary" >&2
+      exit 2
+    fi
+  done
+else
+  git -C "$ROOT_DIR" worktree add --detach "$BASE_DIR" "$BASE_SHA" >/dev/null
+  BASE_WORKTREE_ADDED=1
+  mkdir -p "$BASE_DIR/vendor"
+  ln -s "$RBS_DIR" "$BASE_DIR/vendor/rbs"
+  build_variant base "$BASE_DIR" "$BASE_TARGET"
+  build_variant head "$HEAD_DIR" "$HEAD_TARGET"
+  PERF_BINARY_DIR="$RUN_DIR/bin"
+fi
 
 measure_process() {
   local meta_path="$1"
   local log_path="$2"
   local allow_timeout="$3"
   shift 3
-  local status
+  local exit_code
 
   MEASURE_TIMED_OUT=0
   set +e
@@ -130,17 +172,17 @@ measure_process() {
     --output "$meta_path" \
     --timeout "$TIMEOUT_SECONDS" \
     -- "$@"
-  status=$?
+  exit_code=$?
   set -e
-  if [[ "$status" -ne 0 ]]; then
-    if [[ "$status" -eq 124 && "$allow_timeout" == 1 ]]; then
+  if [[ "$exit_code" -ne 0 ]]; then
+    if [[ "$exit_code" -eq 124 && "$allow_timeout" == 1 ]]; then
       MEASURE_TIMED_OUT=1
       echo "benchmark command timed out; accepting base timeout as the comparison limit: $*" >&2
       return 0
     fi
-    echo "benchmark command failed (status=$status): $*" >&2
+    echo "benchmark command failed (status=$exit_code): $*" >&2
     cat "$log_path" >&2
-    exit "$status"
+    exit "$exit_code"
   fi
 }
 
@@ -170,7 +212,7 @@ RUBY
 measure_cli() {
   local run="$1"
   local variant="$2"
-  local binary="$RUN_DIR/bin/$variant/tyda"
+  local binary="$PERF_BINARY_DIR/$variant/tyda"
   local meta="$RUN_DIR/cli-$variant-$run.meta"
   local log="$RUN_DIR/cli-$variant-$run.log"
   local allow_timeout=0
@@ -180,6 +222,7 @@ measure_cli() {
 
   measure_process "$meta" "$log" "$allow_timeout" \
     env TYDA_CLI_ANALYSIS_THREADS="$THREADS" \
+    TYDA_RBS_DIR="$RBS_DIR" \
     nice -n 19 "$binary" "$SUBJECT_PATH"
   local elapsed_ms rss_bytes
   IFS=$'\t' read -r _ rss_bytes < <(read_meta "$meta")
@@ -198,7 +241,7 @@ measure_cli() {
 measure_lsp() {
   local run="$1"
   local variant="$2"
-  local binary="$RUN_DIR/bin/$variant/tyda"
+  local binary="$PERF_BINARY_DIR/$variant/tyda"
   local meta="$RUN_DIR/lsp-$variant-$run.meta"
   local log="$RUN_DIR/lsp-$variant-$run.log"
   local allow_timeout=0
@@ -209,6 +252,7 @@ measure_lsp() {
   measure_process "$meta" "$log" "$allow_timeout" \
     env TYDA_LSP_BENCH_ROOT="$SUBJECT_PATH" \
     TYDA_LSP_ANALYSIS_THREADS="$THREADS" \
+    TYDA_RBS_DIR="$RBS_DIR" \
     nice -n 19 ruby "$ROOT_DIR/scripts/benchmark_lsp_client.rb" "$binary" "$SUBJECT_PATH"
   local scan_ms rss_bytes
   if [[ "$MEASURE_TIMED_OUT" == 1 ]]; then
@@ -262,6 +306,7 @@ ruby "$ROOT_DIR/scripts/compare_performance.rb" \
   --output "$RESULT_JSON" \
   --runs "$RUNS" \
   --subject "$SUBJECT_PATH" \
+  --subject-ref "$SUBJECT_REF" \
   --time-warn-percent "$TIME_WARN_PERCENT" \
   --time-fail-percent "$TIME_FAIL_PERCENT" \
   --memory-warn-percent "$MEMORY_WARN_PERCENT" \

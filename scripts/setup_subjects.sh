@@ -15,10 +15,13 @@ SUBJECT_DIR="${TYDA_SUBJECT_DIR:-$ROOT_DIR/subject}"
 SUBJECTS=(
   "rack|https://github.com/rack/rack.git|ca8a404704ed043797c4f9d482c97d722c0dc719|"
   "rake|https://github.com/ruby/rake.git|353f51da83616397b50b01ccc5c39607811ad691|"
-  "rubygems|https://github.com/ruby/rubygems.git|f72d9d9f9e42a246e5301f8f6492e8258134baee|"
   "optcarrot|https://github.com/mame/optcarrot.git|c215378a27b2dce8d8e5d98a3ed75e0354c5a840|"
-  "mastodon|https://github.com/mastodon/mastodon.git|eb848d082afc8864b2aa15858f414e4867902c65|"
+  "typeprof|https://github.com/ruby/typeprof.git|e20d7783c85911c601c8b535cd174f2951f4c430|"
+  "rubygems|https://github.com/ruby/rubygems.git|f72d9d9f9e42a246e5301f8f6492e8258134baee|"
+  "conference-app|https://github.com/kaigionrails/conference-app.git|12e49b9d8d35b2fbbec419e756cffca8bed2a800|"
   "redmine|https://github.com/redmine/redmine.git|890812e49cc60e96c7c252b7dedbd881a4edba55|/app/ /config/ /db/ /lib/ /test/ /Gemfile /Gemfile.lock /.ruby-version /.rubocop.yml"
+  "rubygems.org|https://github.com/rubygems/rubygems.org.git|2abc82667d02ef7ae3a1433d621c1f7463985c6d|"
+  "mastodon|https://github.com/mastodon/mastodon.git|eb848d082afc8864b2aa15858f414e4867902c65|"
   "gitlab|https://github.com/gitlabhq/gitlabhq.git|088eaeded42c93b4cbb0389b567e2f48d5b08b7c|/ /app/ /config/ /db/ /lib/ /gems/ /Gemfile /Gemfile.lock /.ruby-version /.rubocop.yml"
 )
 
