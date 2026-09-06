@@ -130,6 +130,13 @@ impl TypeRegistry {
         from_user_source: bool,
         constants_external: bool,
     ) {
+        if rbs_data
+            .methods
+            .iter()
+            .any(|method| Self::method_needs_mixin_hook_call_site(method))
+        {
+            self.has_mixin_hook_methods = true;
+        }
         // set the registry flag if this merge brings in a dirty pattern (a global gate for the synthesis
         // path; write to self before borrowing `data`).
         if rbs_data.cold().dirty_method_pattern.is_some() {
@@ -545,10 +552,11 @@ impl TypeRegistry {
                 method.synthetic_dsl_source = false;
             }
         }
+        self.refresh_mixin_hook_method_flag();
     }
 
     pub fn remove_external_methods_for_class(&mut self, class_name: &str) -> bool {
-        if let Some(data) = self.class_data.get_mut(class_name) {
+        let removed = if let Some(data) = self.class_data.get_mut(class_name) {
             let before = data.methods.len();
             data.methods.retain(|m| !m.is_external_rbs_source());
             if data.methods.len() != before {
@@ -557,7 +565,12 @@ impl TypeRegistry {
             data.methods.len() != before
         } else {
             false
+        };
+        if removed {
+            self.refresh_mixin_hook_method_flag();
+            self.mixin_hook_mixins_applied = false;
         }
+        removed
     }
 
     pub fn remove_class_if_external_only(&mut self, class_name: &str) {
@@ -566,6 +579,8 @@ impl TypeRegistry {
             && data.methods.iter().all(|m| m.is_external_rbs_source())
         {
             self.class_data.remove(class_name);
+            self.refresh_mixin_hook_method_flag();
+            self.mixin_hook_mixins_applied = false;
         }
     }
 }

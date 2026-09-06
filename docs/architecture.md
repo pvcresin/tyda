@@ -87,6 +87,11 @@ Ruby の method lookup ではその配列を mixin 種別ごとに後ろから�
 `include` / `prepend` / `extend` を先に解決する。`extend` はクラスオブジェクト側だけに
 現れ、インスタンス側の `ancestors` には含めない。
 
+静的に解決できる mixin edge には、Ruby が実行時に呼ぶ `included` / `extended` /
+`prepended` callback の call site も対応付ける。callback の第一引数には mixin の適用先を
+`singleton(...)` として渡し、既存の call site ベースの引数型推論で同じ hook の複数の適用先を
+union にまとめる。適用先や hook の定義を解決できない場合は、推測で補わず `untyped` に縮退する。
+
 静的に class / module、mixin、superclass の全 edge を確認でき、かつ上限内に収まる
 `Module#ancestors` だけは探索順の `Tuple` として返す。未解決 edge、循環、深すぎる chain
 では `Array[Module]` へ縮退し、推測した順序を型として固定しない。

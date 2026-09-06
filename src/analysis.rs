@@ -2446,6 +2446,33 @@ end
     }
 
     #[test]
+    fn playground_infers_mixin_hook_target_singletons() {
+        let loader = playground_loader();
+        let source = concat!(
+            "module M\n",
+            "  def self.included(other) = nil\n",
+            "end\n",
+            "\n",
+            "class A\n",
+            "  include M\n",
+            "end\n",
+            "\n",
+            "class B\n",
+            "  include M\n",
+            "end\n",
+        );
+        let result = playground_analyze(source, "", &loader, "mixin_hook.rb");
+
+        assert!(
+            result
+                .rbs
+                .contains("def self.included: ((singleton(A) | singleton(B)) other) -> nil"),
+            "mixin hook signature should use all including class objects: {}",
+            result.rbs
+        );
+    }
+
+    #[test]
     fn playground_diagnostics_honor_line_ignore_comments() {
         let loader = playground_loader();
         let source = concat!(

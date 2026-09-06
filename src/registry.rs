@@ -1285,6 +1285,16 @@ pub enum MixinKind {
     Prepend,
 }
 
+impl MixinKind {
+    fn hook_method_name(&self) -> &'static str {
+        match self {
+            Self::Include => "included",
+            Self::Extend => "extended",
+            Self::Prepend => "prepended",
+        }
+    }
+}
+
 /// RBS has no `protected`, so `Protected` degrades to `private`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
@@ -2490,6 +2500,7 @@ pub struct TypeRegistry {
     file_contribution_method_names: HashSet<Sym>,
     name_pool_enabled: bool,
     has_mixin_hook_mixins: bool,
+    has_mixin_hook_methods: bool,
     mixin_hook_mixins_applied: bool,
     has_includer_bound_dsl: bool,
     includer_bound_dsl_applied: bool,
@@ -2577,6 +2588,7 @@ impl Clone for TypeRegistry {
             file_contribution_method_names: self.file_contribution_method_names.clone(),
             name_pool_enabled: self.name_pool_enabled,
             has_mixin_hook_mixins: self.has_mixin_hook_mixins,
+            has_mixin_hook_methods: self.has_mixin_hook_methods,
             mixin_hook_mixins_applied: self.mixin_hook_mixins_applied,
             has_includer_bound_dsl: self.has_includer_bound_dsl,
             includer_bound_dsl_applied: self.includer_bound_dsl_applied,
@@ -3390,6 +3402,10 @@ impl TypeRegistry {
 
     pub fn add_method_def(&mut self, class_name: &str, mut method: MethodDef) {
         method.shrink_to_fit_after_collect();
+        if Self::method_needs_mixin_hook_call_site(&method) {
+            self.has_mixin_hook_methods = true;
+            self.mixin_hook_mixins_applied = false;
+        }
         let is_user = !method.rbs_file_source && !method.synthetic_dsl_source;
         if is_user {
             self.file_contribution_names.insert(class_name.to_string());
@@ -3615,13 +3631,11 @@ impl TypeRegistry {
         method_name: &str,
         is_singleton: bool,
     ) {
-        let Some(data) = self.class_data.get_mut(class_name) else {
-            return;
-        };
-        if let Some(idx) = data
-            .methods
-            .iter()
-            .position(|method| method.name == method_name && method.is_singleton == is_singleton)
+        let mut removed = false;
+        if let Some(data) = self.class_data.get_mut(class_name)
+            && let Some(idx) = data.methods.iter().position(|method| {
+                method.name == method_name && method.is_singleton == is_singleton
+            })
         {
             let removed_name = data.methods[idx].name;
             data.methods.remove(idx);
@@ -3632,16 +3646,23 @@ impl TypeRegistry {
                 let is_singleton = data.methods[new_idx].is_singleton;
                 Self::index_method_if_absent(data, name, is_singleton, new_idx);
             }
+            removed = true;
+        }
+        if removed {
+            self.refresh_mixin_hook_method_flag();
+            self.mixin_hook_mixins_applied = false;
         }
     }
 
     pub fn strip_methods_defined_in(&mut self, file_path: &str) {
+        let mut removed = false;
         for data in self.class_data.values_mut() {
             let drop_all = matches!(
                 &data.method_file_paths,
                 MethodFilePaths::Uniform(uniform) if uniform.path.as_ref() == file_path
             );
             if drop_all {
+                removed |= !data.methods.is_empty();
                 data.methods.clear();
                 data.method_index.clear();
                 data.method_file_paths = MethodFilePaths::Empty;
@@ -3658,6 +3679,7 @@ impl TypeRegistry {
             if drop_keys.is_empty() {
                 continue;
             }
+            removed = true;
             data.methods
                 .retain(|method| !drop_keys.contains(&(method.name, method.is_singleton)));
             data.method_file_paths
@@ -3671,6 +3693,10 @@ impl TypeRegistry {
             for (idx, (name, is_singleton)) in names.into_iter().enumerate() {
                 Self::index_method_if_absent(data, name, is_singleton, idx);
             }
+        }
+        if removed {
+            self.refresh_mixin_hook_method_flag();
+            self.mixin_hook_mixins_applied = false;
         }
     }
 
@@ -9913,6 +9939,90 @@ impl TypeRegistry {
             .unwrap_or_else(|| self.resolve_scoped_class_ref(hook_owner, raw_name))
     }
 
+    fn is_mixin_hook_method(method_name: &str, is_singleton: bool) -> bool {
+        is_singleton && matches!(method_name, "included" | "extended" | "prepended")
+    }
+
+    fn method_needs_mixin_hook_call_site(method: &MethodDef) -> bool {
+        Self::is_mixin_hook_method(method.name.as_str(), method.is_singleton)
+            && !method.has_annotation()
+            && !method.is_external_rbs_source()
+            && !method.synthetic_dsl_source
+            && method.param_infos.iter().any(|param| {
+                matches!(
+                    param.kind,
+                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                )
+            })
+    }
+
+    fn refresh_mixin_hook_method_flag(&mut self) {
+        self.has_mixin_hook_methods = self.class_data.values().any(|data| {
+            data.methods
+                .iter()
+                .any(|method| Self::method_needs_mixin_hook_call_site(method))
+        });
+    }
+
+    fn add_mixin_hook_call_sites(&mut self) {
+        if !self.has_mixin_hook_methods {
+            return;
+        }
+
+        let mut callbacks: Vec<(String, &'static str, Sym)> = Vec::new();
+        for (target_class, data) in &self.class_data {
+            for mixin in &data.mixins {
+                let hook_owner = self
+                    .resolve_scoped_class_ref(target_class.as_str(), mixin.module_name.as_ref());
+                let Some(hook_owner_data) = self.class_data.get(hook_owner.as_str()) else {
+                    continue;
+                };
+                if !hook_owner_data.is_module {
+                    continue;
+                }
+                let hook_method_name = mixin.kind.hook_method_name();
+                let Some(hook_method_idx) = hook_owner_data
+                    .method_index
+                    .get(hook_method_name)
+                    .and_then(|slots| slots.singleton)
+                else {
+                    continue;
+                };
+                let Some(hook_method) = hook_owner_data.methods.get(hook_method_idx) else {
+                    continue;
+                };
+                if !Self::method_needs_mixin_hook_call_site(hook_method) {
+                    continue;
+                }
+                callbacks.push((hook_owner, hook_method_name, *target_class));
+            }
+        }
+        callbacks.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then(left.1.cmp(right.1))
+                .then(left.2.cmp(&right.2))
+        });
+
+        let generated_callback_count = callbacks.len();
+        for (hook_owner, hook_method_name, target_class) in callbacks {
+            self.add_call_site(
+                &hook_owner,
+                CallSite {
+                    method_name: hook_method_name.into(),
+                    method_is_singleton: true,
+                    arg_types: vec![Type::Singleton(target_class)],
+                    keyword_arg_types: KeywordArgTypes::new(),
+                    block: None,
+                    caller_context: None,
+                },
+            );
+        }
+        if generated_callback_count > 0 {
+            self.invalidate_resolve_cache();
+        }
+    }
+
     pub fn apply_mixin_hook_mixins(&mut self) {
         if !self.mixin_hook_mixins_applied {
             if self.has_mixin_hook_mixins {
@@ -9949,6 +10059,7 @@ impl TypeRegistry {
                     }
                 }
             }
+            self.add_mixin_hook_call_sites();
             self.mixin_hook_mixins_applied = true;
         }
         self.apply_includer_bound_dsl();
@@ -11251,6 +11362,45 @@ mod tests {
                 "Kernel",
                 "BasicObject",
             ]
+        );
+    }
+
+    #[test]
+    fn mixin_hook_call_sites_use_singleton_targets() {
+        let mut registry = TypeRegistry::new();
+        registry.set_is_module("Hook", true);
+
+        let mut hook = test_method("included", Type::Untyped);
+        hook.is_singleton = true;
+        hook.param_infos = vec![ParamInfo {
+            name: "base".to_string(),
+            kind: ParamKind::Required,
+            default_type: None,
+        }];
+        registry.add_method_def("Hook", hook);
+        registry.add_mixin("First", "Hook", MixinKind::Include);
+        registry.add_mixin("Second", "Hook", MixinKind::Include);
+
+        registry.apply_mixin_hook_mixins();
+
+        let method = registry
+            .lookup_method_def("Hook", "included", true)
+            .expect("hook method should be present");
+        let params = registry.resolve_params("Hook", method);
+        assert_eq!(
+            params[0].param_type,
+            Type::from_type_vec(vec![
+                Type::Singleton(Sym::new("First")),
+                Type::Singleton(Sym::new("Second")),
+            ])
+        );
+        assert_eq!(
+            registry
+                .get_call_sites("Hook")
+                .iter()
+                .filter(|site| site.method_name.as_ref() == "included")
+                .count(),
+            2
         );
     }
 

@@ -132,6 +132,7 @@ impl TypeRegistry {
 
     // a per-file snapshot references the external registry for accuracy, while keeping retained facts scoped to the file.
     pub fn retain_file_facts(&mut self, file_path: &str) {
+        let mut removed_methods = false;
         self.class_data.retain(|_, data| {
             data.constants
                 .retain(|_, constant| constant.file_path.as_deref() == Some(file_path));
@@ -140,11 +141,13 @@ impl TypeRegistry {
             if !data.methods.is_empty() {
                 // every retained path already equals `file_path`, so presence is the filter.
                 let method_file_paths = std::mem::take(&mut data.method_file_paths);
+                let before = data.methods.len();
                 data.methods.retain(|method| {
                     method_file_paths
                         .get(&(method.name, method.is_singleton))
                         .is_some()
                 });
+                removed_methods |= data.methods.len() != before;
                 data.method_file_paths = method_file_paths;
                 Self::rebuild_method_index(data);
             }
@@ -160,6 +163,9 @@ impl TypeRegistry {
             tail.type_aliases.clear();
         }
         self.invalidate_reverse_indexes();
+        if removed_methods {
+            self.refresh_mixin_hook_method_flag();
+        }
         self.mixin_hook_mixins_applied = false;
     }
 
@@ -179,14 +185,18 @@ impl TypeRegistry {
         if keep.is_empty() {
             return;
         }
+        let mut removed_facts = false;
         self.class_data.retain(|name, data| {
             if !keep.contains(name.as_str()) {
+                removed_facts = true;
                 return false;
             }
             if Self::is_stdlib_root_class(name) {
+                let before = data.methods.len();
                 data.methods
                     .retain(|method| contributed_methods.contains(&method.name));
                 Self::rebuild_method_index(data);
+                removed_facts |= data.methods.len() != before;
                 return !data.methods.is_empty() || !data.constants.is_empty();
             }
             true
@@ -197,6 +207,9 @@ impl TypeRegistry {
             tail.type_aliases.clear();
         }
         self.invalidate_reverse_indexes();
+        if removed_facts {
+            self.refresh_mixin_hook_method_flag();
+        }
         self.mixin_hook_mixins_applied = false;
     }
 
