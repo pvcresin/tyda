@@ -221,7 +221,7 @@ def result = Item.build(1)
 
 ```rbs
 module Attachable
-  def self.included: (untyped base) -> untyped
+  def self.included: (singleton(Item) base) -> singleton(Item)
 end
 
 module Attachable::ClassMethods
@@ -266,7 +266,7 @@ def check = Entry.enabled?
 
 ```rbs
 module Configurable
-  def self.included: (untyped base) -> (nil | untyped)
+  def self.included: (singleton(Entry) base) -> singleton(Entry)?
 end
 
 module Configurable::BuilderMethods
@@ -506,7 +506,7 @@ class Record
 end
 
 module Usable
-  def self.extended: (untyped base) -> untyped
+  def self.extended: (singleton(Record) base) -> singleton(Record)
 end
 
 module Usable::InstanceMethods
@@ -557,11 +557,61 @@ class Object < BasicObject
 end
 
 module Wrapped
-  def self.prepended: (untyped base) -> untyped
+  def self.prepended: (singleton(Entry) base) -> singleton(Entry)
   def name: -> "wrapped"
 end
 
 module Wrapped::ClassMethods
   def build: -> :built
 end
+```
+
+## Infer mixin hook targets from runtime callbacks
+
+### update
+
+```ruby
+module M
+  module ClassMethods
+    def foo = 'foo'
+  end
+
+  def self.included(other)
+    other.extend(ClassMethods)
+  end
+end
+
+class A
+  include M
+end
+
+class B
+  include M
+end
+
+p A.foo
+p B.foo
+```
+
+### result
+
+```rbs
+class A
+  include M
+  extend M::ClassMethods
+end
+
+class B
+  include M
+  extend M::ClassMethods
+end
+
+module M
+  def self.included: ((singleton(A) | singleton(B)) other) -> (singleton(A) | singleton(B))
+end
+
+module M::ClassMethods
+  def foo: -> "foo"
+end
+```
 ```
