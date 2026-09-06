@@ -591,3 +591,165 @@ class Object < BasicObject
   def outside: -> untyped
 end
 ```
+
+## Mixin lookup and ancestors follow application order
+
+### update
+
+```ruby
+module IncludeFirst
+  def value = 1
+end
+
+module IncludeSecond
+  def value = 2
+end
+
+class IncludeHost
+  include IncludeFirst
+  include IncludeSecond
+end
+
+module PrependFirst
+  def value = 1
+end
+
+module PrependSecond
+  def value = 2
+end
+
+class PrependHost
+  prepend PrependFirst
+  prepend PrependSecond
+end
+
+module ExtendFirst
+  def value = 1
+end
+
+module ExtendSecond
+  def value = 2
+end
+
+class ExtendHost
+  extend ExtendFirst
+  extend ExtendSecond
+end
+
+module ArityFirst
+  def value(arg) = 1
+end
+
+module AritySecond
+  def value(x, y) = 2
+end
+
+class ArityHost
+  include ArityFirst
+  include AritySecond
+end
+
+module ConstantFirst
+  VALUE = 1
+end
+
+module ConstantSecond
+  VALUE = 2
+end
+
+class ConstantHost
+  include ConstantFirst
+  include ConstantSecond
+end
+
+class MixinProbe
+  def include_value = IncludeHost.new.value
+  def prepend_value = PrependHost.new.value
+  def extend_value = ExtendHost.value
+  def arity_value = ArityHost.new.value(1, 2)
+  def constant_value = ConstantHost::VALUE
+  def ancestors = IncludeHost.ancestors
+  def first_ancestor = IncludeHost.ancestors.first
+  def second_ancestor = IncludeHost.ancestors[1]
+end
+```
+
+### result
+
+```rbs
+module ArityFirst
+  def value: (untyped arg) -> 1
+end
+
+class ArityHost
+  include ArityFirst
+  include AritySecond
+end
+
+module AritySecond
+  def value: (untyped x, untyped y) -> 2
+end
+
+module ConstantFirst
+  VALUE: 1
+end
+
+class ConstantHost
+  include ConstantFirst
+  include ConstantSecond
+end
+
+module ConstantSecond
+  VALUE: 2
+end
+
+module ExtendFirst
+  def value: -> 1
+end
+
+class ExtendHost
+  extend ExtendFirst
+  extend ExtendSecond
+end
+
+module ExtendSecond
+  def value: -> 2
+end
+
+module IncludeFirst
+  def value: -> 1
+end
+
+class IncludeHost
+  include IncludeFirst
+  include IncludeSecond
+end
+
+module IncludeSecond
+  def value: -> 2
+end
+
+class MixinProbe
+  def include_value: -> 2
+  def prepend_value: -> 2
+  def extend_value: -> 2
+  def arity_value: -> 2
+  def constant_value: -> 2
+  def ancestors: -> [singleton(IncludeHost), singleton(IncludeSecond), singleton(IncludeFirst), singleton(Object), singleton(Kernel), singleton(BasicObject)]
+  def first_ancestor: -> singleton(IncludeHost)
+  def second_ancestor: -> singleton(IncludeSecond)
+end
+
+module PrependFirst
+  def value: -> 1
+end
+
+class PrependHost
+  prepend PrependFirst
+  prepend PrependSecond
+end
+
+module PrependSecond
+  def value: -> 2
+end
+```

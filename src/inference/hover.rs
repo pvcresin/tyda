@@ -1781,7 +1781,12 @@ impl<'a> InferenceEngine<'a> {
                     &class_context,
                     method_context.as_deref(),
                 );
-                let display_rbs = self.resolve_hover_method_signature(&name, &resolved_receiver);
+                let display_rbs =
+                    if name == "ancestors" && matches!(&resolved_result, Type::Tuple(_)) {
+                        None
+                    } else {
+                        self.resolve_hover_method_signature(&name, &resolved_receiver)
+                    };
                 let type_params = self.resolve_hover_type_params(&resolved_receiver);
                 let unresolved = if matches!(resolved_result, Type::Untyped | Type::Todo) {
                     if self.method_call_is_discoverable(result_type) {

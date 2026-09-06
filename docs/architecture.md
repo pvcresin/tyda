@@ -80,6 +80,17 @@ Ruby source に明示された `class X < Y` は外部宣言で上書きしな�
 framework DSL は library-scoped に有効化し、plugin のフックは `PluginCx` を通す。個別 repository の
 runtime DSL 登録を解析コアへ持ち込まず、動的な API は外部 RBS / RBI を入力する。
 
+### Ruby の ancestor order
+
+`ClassData.mixins` は merge と render の決定性を保つため、ソース上の適用順で保持する。
+Ruby の method lookup ではその配列を mixin 種別ごとに後ろから探索し、後から適用した
+`include` / `prepend` / `extend` を先に解決する。`extend` はクラスオブジェクト側だけに
+現れ、インスタンス側の `ancestors` には含めない。
+
+静的に class / module、mixin、superclass の全 edge を確認でき、かつ上限内に収まる
+`Module#ancestors` だけは探索順の `Tuple` として返す。未解決 edge、循環、深すぎる chain
+では `Array[Module]` へ縮退し、推測した順序を型として固定しない。
+
 ### 外部型
 
 stdlib RBS と project の RBS / RBI は必要な file / class を lazy に読み込む。parse 結果は
