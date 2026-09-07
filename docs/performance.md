@@ -96,13 +96,14 @@ GitHub の branch protection では、この workflow の `performance-build` �
 `performance (<subject>)` check を required に設定する。
 
 結果は subject ごとに `target/performance/<subject>/result.json` として artifact に保存する。
-PR の `report` job は全 subject の job が終わってから artifact をまとめ、次の形式のコメントを一つ投稿する。
+PR の `report` job は全 subject の job が終わってから artifact をまとめ、CI matrix と同じ順序
+（Ruby-only の小→中、続いて Rails の小→大）で、次の形式のコメントを一つ投稿する。
 
-| Subject | CLI time (base → head) | CLI max RSS (base → head) | LSP scan (base → head) | LSP max RSS (base → head) | Result |
+| Subject | CLI time | CLI max RSS | LSP scan | LSP max RSS | Result |
 | --- | ---: | ---: | ---: | ---: | :--- |
-| `rack` | `100 ms → 120 ms (+20.0%)` | `32.0 MiB → 33.1 MiB (+3.4%)` | `50 ms → 45 ms (-10.0%)` | `28.0 MiB → 28.0 MiB (+0.0%)` | ⚠️ WARN |
+| `rack` | `120 ms (+20.0%)` | `33.1 MiB (+3.4%)` | `45 ms (-10.0%)` | `28.0 MiB (+0.0%)` | ⚠️ WARN |
 
-各セルは base と head の中央値、続けて差分率を示す。コメント冒頭には比較コミット、実行回数、
+各セルは head の中央値、続けて base から head への差分率を示す。コメント冒頭には比較コミット、実行回数、
 閾値、workflow run へのリンクを置き、`SKIP` は base timeout などで比較できない指標にだけ表示する。
 同じPRに新しい commit が積まれた場合は、marker `<!-- tyda-performance-report -->` を持つ前回の
 GitHub Actions コメントを削除してから、新しい結果を追加する。性能計測を分類で省略した場合も、古い結果を

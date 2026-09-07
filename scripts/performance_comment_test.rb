@@ -24,11 +24,29 @@ class PerformanceCommentTest < Minitest::Test
       )
 
       assert_includes body, "<!-- tyda-performance-report -->"
-      assert_includes body, "| Subject | CLI time (base → head)"
-      assert_includes body, "| rack | 100 ms → 120 ms (+20.0%)"
+      assert_includes body, "| Subject | CLI time | CLI max RSS | LSP scan | LSP max RSS | Result |"
+      assert_includes body, "| rack | 120 ms (+20.0%)"
+      refute_includes body, "100 ms →"
       assert_includes body, "11.0 MiB (+10.0%)"
       assert_includes body, "⚠️ WARN"
       assert_includes body, "[View the workflow run]"
+    end
+  end
+
+  def test_orders_subjects_like_the_ci_matrix
+    Dir.mktmpdir do |dir|
+      write_result(dir, "performance-result-gitlab", "gitlab", "passed", [])
+      write_result(dir, "performance-result-rack", "rack", "passed", [])
+      write_result(dir, "performance-result-conference-app", "conference-app", "passed", [])
+
+      body = PerformanceComment.build_comment(
+        results_dir: dir,
+        performance_result: "success",
+        build_result: "success",
+      )
+
+      assert_operator body.index("| rack |"), :<, body.index("| conference-app |")
+      assert_operator body.index("| conference-app |"), :<, body.index("| gitlab |")
     end
   end
 

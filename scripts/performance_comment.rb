@@ -6,6 +6,19 @@ require "optparse"
 
 module PerformanceComment
   MARKER = "<!-- tyda-performance-report -->"
+  SUBJECT_ORDER = %w[
+    rack
+    rake
+    optcarrot
+    typeprof
+    rubygems
+    conference-app
+    redmine
+    rubygems.org
+    mastodon
+    gitlab
+  ].freeze
+  SUBJECT_ORDER_INDEX = SUBJECT_ORDER.each_with_index.to_h.freeze
   METRICS = [
     ["cli_elapsed_ms", "CLI time"],
     ["cli_max_rss_bytes", "CLI max RSS"],
@@ -40,7 +53,10 @@ module PerformanceComment
       lines << ""
     end
 
-    lines << "| Subject | CLI time (base → head) | CLI max RSS (base → head) | LSP scan (base → head) | LSP max RSS (base → head) | Result |"
+    lines << "Table values are head medians; parentheses show the change from base to head."
+    lines << "The order follows the CI matrix: Ruby-only subjects, then Rails subjects, each from small to large."
+    lines << ""
+    lines << "| Subject | CLI time | CLI max RSS | LSP scan | LSP max RSS | Result |"
     lines << "| --- | ---: | ---: | ---: | ---: | :--- |"
     if reports.empty?
       result = run_full_ci == "true" ? "❌ No result" : "⏭️ SKIP"
@@ -82,7 +98,10 @@ module PerformanceComment
     rescue JSON::ParserError, Errno::ENOENT => error
       warn "skipping invalid performance result #{path}: #{error.message}"
       nil
-    end.sort_by { |report| report.fetch("subject_name") }
+    end.sort_by do |report|
+      subject_name = report.fetch("subject_name")
+      [SUBJECT_ORDER_INDEX.fetch(subject_name, SUBJECT_ORDER.length), subject_name]
+    end
   end
 
   def subject_name(path, report)
@@ -101,10 +120,9 @@ module PerformanceComment
       return "— (#{metric.fetch("reason", "skipped")})"
     end
 
-    base = format_value(metric.fetch("base_median"), metric.fetch("unit"))
     head = format_value(metric.fetch("head_median"), metric.fetch("unit"))
     delta = format("%+.1f%%", metric.fetch("delta_percent").to_f)
-    "#{base} → #{head} (#{delta})"
+    "#{head} (#{delta})"
   end
 
   def format_value(value, unit)
