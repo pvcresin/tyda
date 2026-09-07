@@ -37,6 +37,16 @@ impl Plugin for RailsConfigure {
         synthetic_method_return(cx, receiver_type, method_name)
     }
 
+    fn synthetic_block_self_type(
+        &self,
+        cx: &mut PluginCx<'_, '_>,
+        receiver_type: Option<&Type>,
+        current_self_type: &Type,
+        method_name: &str,
+    ) -> Option<Type> {
+        synthetic_block_self_type(cx, receiver_type, current_self_type, method_name)
+    }
+
     fn synthetic_method_return_fallback(
         &self,
         cx: &mut PluginCx<'_, '_>,
@@ -127,6 +137,30 @@ pub(in crate::inference) fn synthetic_method_return(
         return Some(Type::Untyped);
     }
     None
+}
+
+pub(in crate::inference) fn synthetic_block_self_type(
+    engine: &mut PluginCx<'_, '_>,
+    receiver_type: Option<&Type>,
+    current_self_type: &Type,
+    method_name: &str,
+) -> Option<Type> {
+    if method_name != "configure" || !engine.dsl_enabled(DslLibrary::RailsConfigure) {
+        return None;
+    }
+
+    let block_self_type = receiver_type.unwrap_or(current_self_type);
+    let class_name = match block_self_type {
+        Type::Class(name) | Type::Singleton(name) => name.as_str(),
+        _ => return None,
+    };
+    if class_name == "Rails::Application"
+        || engine.class_matches_or_inherits(class_name, APPLICATION_BASES)
+    {
+        Some(block_self_type.clone())
+    } else {
+        None
+    }
 }
 
 /// `Rails::Application::Configuration` is a settings bag — any attribute (`config.assets`, `config.active_record`, custom keys) is readable and writable at runtime.

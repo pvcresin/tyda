@@ -77,16 +77,28 @@ pub fn format_hover_method_sig(name: &str, overloads: &[HoverOverloadSig]) -> St
 }
 
 pub fn format_hover_inferred_method_sig(name: &str, method: &MethodSig) -> String {
-    format!(
-        "{name}: {}",
-        format_signature_with_names(
-            &method.params,
-            method.block.as_ref(),
-            &method.return_type,
-            true,
-            !method.has_explicit_signature(),
-        )
-    )
+    let primary = format_signature_with_names(
+        &method.params,
+        method.block.as_ref(),
+        &method.return_type,
+        true,
+        !method.has_explicit_signature(),
+    );
+    if method.overloads.is_empty() {
+        return format!("{name}: {primary}");
+    }
+
+    let mut lines = Vec::with_capacity(method.overloads.len() + 1);
+    lines.push(format!("{name}: {primary}"));
+    lines.extend(method.overloads.iter().map(|overload| {
+        let hover_overload = HoverOverloadSig {
+            params: overload.params.clone(),
+            return_type: overload.return_type.clone(),
+            block: overload.block.clone(),
+        };
+        format!("    | {}", format_hover_overload(&hover_overload))
+    }));
+    lines.join("\n")
 }
 
 pub fn format_hover_callable_type(method: &MethodSig) -> String {
@@ -503,6 +515,48 @@ mod tests {
         );
 
         assert_eq!(rendered, "foo: (untyped x) -> untyped");
+    }
+
+    #[test]
+    fn hover_inferred_signature_formats_overloads() {
+        let rendered = format_hover_inferred_method_sig(
+            "find",
+            &MethodSig {
+                name: "find".to_string(),
+                params: vec![Param {
+                    name: "id".to_string(),
+                    param_type: Type::Integer,
+                    kind: ParamKind::Required,
+                }],
+                return_type: Type::Class(crate::types::Sym::new("Post")),
+                block: None,
+                sorbet_modifier_comments: Vec::new(),
+                is_singleton: true,
+                rbs_annotated: true,
+                rbs_inline_annotated: false,
+                sig_annotated: false,
+                rbs_file_source: true,
+                synthetic_dsl_source: true,
+                overloads: vec![OverloadSig {
+                    params: vec![Param {
+                        name: "ids".to_string(),
+                        param_type: Type::Array(Some(Box::new(Type::Integer))),
+                        kind: ParamKind::Required,
+                    }],
+                    return_type: Type::Array(Some(Box::new(Type::Class(crate::types::Sym::new(
+                        "Post",
+                    ))))),
+                    block: None,
+                }],
+                loc: None,
+                is_private: false,
+            },
+        );
+
+        assert_eq!(
+            rendered,
+            "find: (Integer id) -> Post\n    | (Array[Integer] ids) -> Array[Post]"
+        );
     }
 
     #[test]

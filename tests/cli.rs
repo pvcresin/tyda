@@ -126,6 +126,41 @@ fn analyze_single_file_uses_rbs_collection_config() {
 }
 
 #[test]
+fn include_synthetic_methods_renders_active_record_find_overloads() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let models_dir = dir.path().join("app").join("models");
+    fs::create_dir_all(&models_dir).expect("failed to create models dir");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("failed to write Gemfile");
+    fs::write(
+        models_dir.join("post.rb"),
+        "class Post < ApplicationRecord\nend\n",
+    )
+    .expect("failed to write model");
+
+    let output = tyda_bin()
+        .arg("--include-synthetic-dsl-methods")
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("def self.find: ((Integer | String) id_or_ids) -> Post"),
+        "missing scalar ActiveRecord.find signature: {stdout}"
+    );
+    assert!(
+        stdout.contains("| (Array[Integer | String] id_or_ids) -> Array[Post]"),
+        "missing array ActiveRecord.find overload: {stdout}"
+    );
+    let variadic_signature =
+        "| ((Integer | String) id_or_ids, *(Integer | String) ids) -> Array[Post]";
+    assert!(
+        stdout.contains(variadic_signature),
+        "missing variadic ActiveRecord.find overload: {stdout}"
+    );
+}
+
+#[test]
 fn analyze_renders_struct_in_default_compact_scan() {
     // Regression: the default (non-verbose) CLI renders the workspace registry
     // built by the compact scan, whose `retain_file_facts` keeps a class only
