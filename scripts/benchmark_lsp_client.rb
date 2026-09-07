@@ -99,7 +99,11 @@ stdin = stdout = stderr = wait_thread = socket = stderr_thread = nil
 begin
   stdin, stdout, stderr, wait_thread = Open3.popen3(binary, "--lsp")
   stdin.close
-  stderr_thread = Thread.new { stderr.read }
+  stderr_thread = Thread.new do
+    stderr.read
+  rescue IOError
+    nil
+  end
 
   startup_line = Timeout.timeout(STARTUP_TIMEOUT_SECONDS) { stdout.gets }
   raise "LSP server did not publish startup information" unless startup_line
@@ -160,6 +164,10 @@ ensure
       Process.kill("KILL", wait_thread.pid) rescue nil
       wait_thread.join
     end
+  end
+  stderr_thread&.join(1)
+  if stderr_thread&.alive?
+    stderr&.close unless stderr&.closed?
   end
   [stdout, stderr].compact.each { |io| io.close unless io.closed? }
   stderr_thread&.join(1)

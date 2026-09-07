@@ -92,8 +92,10 @@ position 順（line/column 昇順）で並ぶため、複数回実行した出�
 
 `type_coverage_percent` は `typed / total`、`tracking_coverage_percent` は
 `(typed + untyped) / total` である。型が `String` から `Integer` に変わるような、両方とも
-`typed` の精度差はこのレポートでは扱わない。CI での差分ゲートはまだ設けず、まずは
-`cargo run -- --coverage <path>` の結果を記録・観測する用途に限定する。
+`typed` の精度差はこのレポートでは扱わない。Performance workflow では既存の全 subject を
+base/head の同じ release binary で一度ずつ解析し、解析ファイル数の減少、`typed` / tracked
+サイトの減少、`unknown` の増加を失敗として検出する。`untyped` の増加は警告として結果 JSON
+と CI log に残す。Perf と同じ matrix 内で実行するため、追加の Rust build や PR comment は発生しない。
 
 ## Rails / gem DSL
 

@@ -75,6 +75,14 @@ subjectごとの解析だけが独立runnerで増える。optcarrot の base が
 同 subject のみ base timeout を30秒の比較上限として扱う。headがその上限内に収まらない
 場合は失敗し、timeoutしたbaseのRSSは比較対象から除外する。
 
+各 matrix job は Perf の比較後に、同じ subject と base/head binary pair で `--coverage` を
+base/head 一度ずつ実行する。coverage は `target/coverage/<subject>/result.json` に保存し、
+`declarations` / `references` と各 `by_kind` の counter を比較する。解析対象ファイル数の減少、
+`typed` または tracked site の減少、`unknown` の増加は失敗、`untyped` の増加は warning とする。
+後者には `unknown` から `untyped` へ改善したケースを回帰扱いしない意図がある。既存の release
+binary、subject cache、最大10並列、各解析 jobの10分上限を共有するため、coverage追加のための
+Rust buildや別の直列workflowは発生しない。
+
 build job は base/head を別々の Cargo target directory でビルドする。worktree間で target
 directory を共有すると、Cargoが別revisionのworkspace crateを再ビルドせず、baseのbinaryを
 headとして計測する可能性があるためである。matrix job は Rustを再ビルドせず、artifactの
@@ -95,26 +103,18 @@ TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
 GitHub の branch protection では、この workflow の `performance-build` と全ての
 `performance (<subject>)` check を required に設定する。
 
-結果は subject ごとに `target/performance/<subject>/result.json` として artifact に保存する。
-PR の `report` job は全 subject の job が終わってから artifact をまとめ、CI matrix と同じ順序
-（Ruby-only の小→中、続いて Rails の小→大）で、次の形式のコメントを一つ投稿する。
-
-| Subject | CLI time | CLI max RSS | LSP scan | LSP max RSS | Result |
-| --- | ---: | ---: | ---: | ---: | :--- |
-| `rack` | `120 ms (+20.0%)` | `33.1 MiB (+3.4%)` | `45 ms (-10.0%)` | `28.0 MiB (+0.0%)` | ⚠️ WARN |
-
-各セルは head の中央値、続けて base から head への差分率を示す。コメント冒頭には比較コミット、実行回数、
-閾値、workflow run へのリンクを置き、`SKIP` は base timeout などで比較できない指標にだけ表示する。
-同じPRに新しい commit が積まれた場合は、marker `<!-- tyda-performance-report -->` を持つ前回の
-GitHub Actions コメントを削除してから、新しい結果を追加する。性能計測を分類で省略した場合も、古い結果を
-残さず `SKIP` のコメントへ置き換える。fork からの PR は write token を持たない
-ため、性能計測自体は実行するがコメント job は安全のため実行しない。
+結果は subject ごとに `target/performance/<subject>/result.json` と
+`target/coverage/<subject>/result.json` として artifact に保存する。coverage の base/head
+生JSON、プロセスログ、計測メタデータも同じ artifact に含める。Perf と coverage は CI log と
+artifact を正本とし、PRへの自動コメントは投稿しない。これにより、GitHubのbot commentに
+対するメール通知設定に依存せず、通知の増加を避ける。
 
 warning が継続する場合や runner 環境が変わった場合は、まず複数回の結果を確認してから閾値を見直す。
 性能計測の対象を追加するときも、同じ測定順序・worker 数・subject pin を維持する。
 
 計測のプロセス監視と結果比較は Ruby の `scripts/measure_process.rb` と
-`scripts/compare_performance.rb` で行い、リポジトリの開発用 Ruby 環境を共有する。
+`scripts/compare_performance.rb` で行う。coverage は `scripts/coverage_ci.sh` と
+`scripts/compare_coverage.rb` が担当し、プロセス監視は同じ `measure_process.rb` を共有する。
 
 ### CI subjects
 
