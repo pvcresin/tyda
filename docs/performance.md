@@ -28,6 +28,21 @@ stdlib lazy loader / 保持中の file source / sym interner）を stderr に出
 max RSS（`rss=`）と実測 RSS（`live=`）を併記する。両方 off のときは env var の存在チェック
 のみでホットパスに影響しない。
 
+### 型カバレッジ計測
+
+`--coverage` は推論サイトの snapshot を追加で保持するため、通常の RBS CLI と同じ速度・
+メモリ基準には混ぜない。型カバレッジを記録するときは、通常の性能計測とは別 run として
+次を使う。
+
+~~~bash
+cargo run --release -- --coverage <path> > target/coverage.json
+~~~
+
+通常の compact scan は snapshot を記録しないため、`--coverage` を付けない既存の CLI は
+この機能による追加メモリを負わない。デフォルト経路の推論結果が変わっていないことは、
+通常の RBS snapshot の byte comparison で確認する。coverage の型分類には深さ・ノード数の
+上限があり、極端な型構造は `untyped` に安全側で倒す。
+
 ### LSP
 
 ~~~bash
@@ -80,9 +95,22 @@ TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
 GitHub の branch protection では、この workflow の `performance-build` と全ての
 `performance (<subject>)` check を required に設定する。
 
-結果は subject ごとに `target/performance/<subject>/result.json` として artifact に保存する。warning が継続する場合や runner
-環境が変わった場合は、まず複数回の結果を確認してから閾値を見直す。性能計測の対象を追加するときも、
-同じ測定順序・worker 数・subject pin を維持する。
+結果は subject ごとに `target/performance/<subject>/result.json` として artifact に保存する。
+PR の `report` job は全 subject の job が終わってから artifact をまとめ、次の形式のコメントを一つ投稿する。
+
+| Subject | CLI time (base → head) | CLI max RSS (base → head) | LSP scan (base → head) | LSP max RSS (base → head) | Result |
+| --- | ---: | ---: | ---: | ---: | :--- |
+| `rack` | `100 ms → 120 ms (+20.0%)` | `32.0 MiB → 33.1 MiB (+3.4%)` | `50 ms → 45 ms (-10.0%)` | `28.0 MiB → 28.0 MiB (+0.0%)` | ⚠️ WARN |
+
+各セルは base と head の中央値、続けて差分率を示す。コメント冒頭には比較コミット、実行回数、
+閾値、workflow run へのリンクを置き、`SKIP` は base timeout などで比較できない指標にだけ表示する。
+同じPRに新しい commit が積まれた場合は、marker `<!-- tyda-performance-report -->` を持つ前回の
+GitHub Actions コメントを削除してから、新しい結果を追加する。性能計測を分類で省略した場合も、古い結果を
+残さず `SKIP` のコメントへ置き換える。fork からの PR は write token を持たない
+ため、性能計測自体は実行するがコメント job は安全のため実行しない。
+
+warning が継続する場合や runner 環境が変わった場合は、まず複数回の結果を確認してから閾値を見直す。
+性能計測の対象を追加するときも、同じ測定順序・worker 数・subject pin を維持する。
 
 計測のプロセス監視と結果比較は Ruby の `scripts/measure_process.rb` と
 `scripts/compare_performance.rb` で行い、リポジトリの開発用 Ruby 環境を共有する。

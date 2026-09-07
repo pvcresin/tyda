@@ -36,7 +36,7 @@ use crate::types::{
 
 mod deps;
 mod dsl_patterns;
-mod hover;
+pub(crate) mod hover;
 mod method_tables;
 mod passes;
 mod plugins;
@@ -532,6 +532,7 @@ pub struct InferenceEngine<'a> {
     record_annotated_method_body_hover_snapshots: bool,
     analyzing_rbi_declaration: bool,
     var_snapshots: Vec<HoverSnapshot>,
+    coverage_recorder: Option<crate::coverage::CoverageRecorder>,
     definition_snapshots: Vec<DefinitionSnapshot>,
     pending_constant_definition_snapshots: Vec<PendingConstantDefinitionSnapshot>,
     arg_check_sites: Vec<ArgCheckSite>,
@@ -684,6 +685,7 @@ pub struct FileAnalysisSnapshot {
     pub facts: FileFacts,
     pub method_body_summary: MethodBodySummary,
     pub hover_index: HoverIndex,
+    pub(crate) coverage: Option<crate::coverage::CoverageFile>,
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
     rails_mode: bool,
@@ -698,6 +700,7 @@ impl FileAnalysisSnapshot {
             facts: FileFacts::new(),
             method_body_summary: MethodBodySummary::default(),
             hover_index: HoverIndex::new(),
+            coverage: None,
             file_path: None,
             project_root: None,
             rails_mode: false,
@@ -712,6 +715,7 @@ impl FileAnalysisSnapshot {
             facts: FileFacts { registry },
             method_body_summary: MethodBodySummary::default(),
             hover_index: HoverIndex::new(),
+            coverage: None,
             file_path: None,
             project_root: None,
             rails_mode: false,
@@ -732,6 +736,7 @@ impl FileAnalysisSnapshot {
             facts: FileFacts::new(),
             method_body_summary: MethodBodySummary::default(),
             hover_index: std::mem::take(&mut self.hover_index),
+            coverage: None,
             file_path: self.file_path.clone(),
             project_root: self.project_root.clone(),
             rails_mode: self.rails_mode,
@@ -1553,6 +1558,7 @@ impl<'a> InferenceEngine<'a> {
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
             var_snapshots: hover_index.snapshots,
+            coverage_recorder: None,
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: hover_index.arg_check_sites,
@@ -1610,6 +1616,7 @@ impl<'a> InferenceEngine<'a> {
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
             var_snapshots: Vec::new(),
+            coverage_recorder: None,
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: Vec::new(),
@@ -1664,6 +1671,10 @@ impl<'a> InferenceEngine<'a> {
 
     pub fn set_record_hover_snapshots(&mut self, enabled: bool) {
         self.record_hover_snapshots = enabled;
+    }
+
+    pub(crate) fn set_record_coverage(&mut self, enabled: bool) {
+        self.coverage_recorder = enabled.then(crate::coverage::CoverageRecorder::default);
     }
 
     pub fn set_analyzing_rbi_declaration(&mut self, enabled: bool) {
@@ -2842,7 +2853,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) {
-        if !self.record_hover_snapshots {
+        if !self.record_hover_snapshots && self.coverage_recorder.is_none() {
             return;
         }
 
@@ -5377,7 +5388,12 @@ impl<'a> InferenceEngine<'a> {
 
     fn push_hover_snapshot(&mut self, snapshot: HoverSnapshot) {
         if self.record_hover_snapshots {
+            if let Some(recorder) = self.coverage_recorder.as_mut() {
+                recorder.record_hover_snapshot(snapshot.clone());
+            }
             self.var_snapshots.push(snapshot);
+        } else if let Some(recorder) = self.coverage_recorder.as_mut() {
+            recorder.record_hover_snapshot(snapshot);
         }
     }
 
@@ -7849,6 +7865,10 @@ impl<'a> InferenceEngine<'a> {
                 arg_check_sites: self.arg_check_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
             },
+            coverage: self
+                .coverage_recorder
+                .take()
+                .map(|recorder| recorder.finish()),
             file_path: self.file_path,
             project_root: self.project_root,
             rails_mode: self.rails_mode,
@@ -7923,6 +7943,10 @@ impl<'a> InferenceEngine<'a> {
                 arg_check_sites: self.arg_check_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
             },
+            coverage: self
+                .coverage_recorder
+                .take()
+                .map(|recorder| recorder.finish()),
             file_path: self.file_path,
             project_root: self.project_root,
             rails_mode: self.rails_mode,
@@ -14489,7 +14513,7 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         scope: &Scope,
     ) {
-        if !self.record_hover_snapshots {
+        if !self.record_hover_snapshots && self.coverage_recorder.is_none() {
             return;
         }
         let Some(receiver) = call_node.receiver() else {
@@ -14516,12 +14540,21 @@ impl<'a> InferenceEngine<'a> {
         if start >= end {
             return;
         }
-        self.unresolved_constant_sites.push(UnresolvedConstantSite {
+        let site = UnresolvedConstantSite {
             start,
             end,
             name,
             class_context: class_name.to_string(),
-        });
+        };
+        let is_unresolved = self.registry.class_data_for(&site.name).is_none()
+            && !self.constant_is_declared(&site.name, &site.class_context)
+            && !self.constant_resolves_to_concrete(&site.name, &site.class_context);
+        if is_unresolved && let Some(recorder) = self.coverage_recorder.as_mut() {
+            recorder.record_unresolved_constant_site(site.clone());
+        }
+        if self.record_hover_snapshots {
+            self.unresolved_constant_sites.push(site);
+        }
     }
 
     fn constant_receiver_diagnostic_name(

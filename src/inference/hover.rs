@@ -294,7 +294,11 @@ impl<'a> InferenceEngine<'a> {
         )
     }
 
-    fn constant_resolves_to_concrete(&mut self, name: &str, class_context: &str) -> bool {
+    pub(super) fn constant_resolves_to_concrete(
+        &mut self,
+        name: &str,
+        class_context: &str,
+    ) -> bool {
         let bare = name.trim_scope_prefix();
         match self.resolve_constant_type_in_scope(bare, class_context) {
             Type::Untyped => false,
@@ -303,7 +307,7 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn constant_is_declared(&mut self, name: &str, class_context: &str) -> bool {
+    pub(super) fn constant_is_declared(&mut self, name: &str, class_context: &str) -> bool {
         let bare = name.trim_scope_prefix();
         if bare.is_empty() {
             return false;

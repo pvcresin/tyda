@@ -7,7 +7,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 ## プロダクト
 
 - Ruby source と `.rbs` を中心にした query 型推論 engine
-- CLI の RBS 出力、JSON Lines diagnostics
+- CLI の RBS 出力、JSON Lines diagnostics、型カバレッジ JSON
 - TypeProf VSCode 拡張と接続できる LSP server
 - Rails / gem DSL plugin
 - Sorbet `sig` / `.rbi` の実験的な補助
@@ -69,6 +69,32 @@ Playground で同じ書式を使う。コメントは同じ行の末尾に置い
 辞書順の走査順（CLI に明示的に渡したパスはその順序を保つ）、ファイル内の各行は
 position 順（line/column 昇順）で並ぶため、複数回実行した出力をそのまま diff できる。
 
+### 型カバレッジ
+
+`--coverage` は、compact scan が記録した推論サイトを最終 workspace registry で再解決し、
+宣言スロットと合わせて決定的な JSON として出力する。通常の RBS 出力ではサイトを保持しない
+ため、明示的に指定した実行だけがこの追加コストを負う。
+
+宣言と参照は意味の違う単位なので、レポートでは分母を分ける。
+
+- `declarations`: Ruby source の method parameter / return / instance variable。外部 RBS
+  だけの宣言と synthetic DSL method は含めない
+- `references`: 推論中に観測した `value` / `method_call` / `constant_reference`
+
+各グループと種別には次の三段階を出力する。
+
+- `typed`: 型が確定し、入れ子の型にも未解決 marker がない
+- `untyped`: サイトは解析経路に結び付いているが、型が `untyped` または deferred
+- `unknown`: receiver や constant の結び付き自体を確立できない
+
+型構造が極端に大きい、または深い場合は、報告処理の上限を超えたサイトを安全側に `untyped`
+として扱う。これにより coverage の計測自体が入力によって無制限に膨らまないようにする。
+
+`type_coverage_percent` は `typed / total`、`tracking_coverage_percent` は
+`(typed + untyped) / total` である。型が `String` から `Integer` に変わるような、両方とも
+`typed` の精度差はこのレポートでは扱わない。CI での差分ゲートはまだ設けず、まずは
+`cargo run -- --coverage <path>` の結果を記録・観測する用途に限定する。
+
 ## Rails / gem DSL
 
 Rails の ActiveRecord、ActiveModel、ActiveSupport、ActionController、ActionMailer、ActiveJob、
@@ -99,6 +125,7 @@ Playground は同じ LSP 表示経路を wasm で実行し、Ruby と手書き R
 ~~~bash
 cargo run -- <path>                         # RBS
 cargo run -- --diagnostics <path>           # JSON Lines diagnostics
+cargo run -- --coverage <path>              # JSON type coverage
 cargo run -- --lsp                          # LSP server
 cargo run -- --include-synthetic-dsl-methods <path>
 mise run dev                                # playground
