@@ -27,6 +27,7 @@ options = {}
 parser = OptionParser.new do |opts|
   opts.on("--log PATH", String) { |value| options[:log] = value }
   opts.on("--output PATH", String) { |value| options[:output] = value }
+  opts.on("--stdout PATH", String) { |value| options[:stdout] = value }
   opts.on("--timeout SECONDS", Float) { |value| options[:timeout] = value }
 end
 
@@ -53,30 +54,41 @@ end
 
 FileUtils.mkdir_p(File.dirname(options[:log]))
 FileUtils.mkdir_p(File.dirname(options[:output]))
+FileUtils.mkdir_p(File.dirname(options[:stdout])) if options[:stdout]
 started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 status = 0
 
-File.open(options[:log], "wb") do |log|
-  pid = Process.spawn(*command, out: log, err: [:child, :out])
-  loop do
-    waited_pid, child_status = Process.waitpid2(pid, Process::WNOHANG)
-    if waited_pid
-      status = child_status.success? ? 0 : child_status.exitstatus || 1
-      break
+stdout = options[:stdout] && File.open(options[:stdout], "wb")
+begin
+  File.open(options[:log], "wb") do |log|
+    spawn_options = if stdout
+      { out: stdout, err: log }
+    else
+      { out: log, err: [:child, :out] }
     end
-
-    if Process.clock_gettime(Process::CLOCK_MONOTONIC) - started >= options[:timeout]
-      begin
-        Process.kill("KILL", pid)
-      rescue Errno::ESRCH
-        nil
+    pid = Process.spawn(*command, **spawn_options)
+    loop do
+      waited_pid, child_status = Process.waitpid2(pid, Process::WNOHANG)
+      if waited_pid
+        status = child_status.success? ? 0 : child_status.exitstatus || 1
+        break
       end
-      Process.wait(pid)
-      status = 124
-      break
+
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) - started >= options[:timeout]
+        begin
+          Process.kill("KILL", pid)
+        rescue Errno::ESRCH
+          nil
+        end
+        Process.wait(pid)
+        status = 124
+        break
+      end
+      sleep 0.01
     end
-    sleep 0.01
   end
+ensure
+  stdout&.close
 end
 
 elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round

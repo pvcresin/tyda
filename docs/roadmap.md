@@ -18,6 +18,7 @@
 ### 診断・速度
 
 - [ ] final diagnostics の definition 二重収集を解消する
+- [ ] coverage を file / source-site 単位で base/head 比較し、aggregate では隠れる局所的な `typed` → `untyped` / `unknown` 化をCIで検出する
 
 ## 中
 

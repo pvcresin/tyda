@@ -206,6 +206,20 @@ jobs:
           TYDA_RBS_DIR: ${{ github.workspace }}/target/performance-runtime/vendor/rbs
         run: ./scripts/benchmark_ci.sh
 
+      - name: Compare base and head coverage (${{ matrix.subject }})
+        if: always()
+        env:
+          TYDA_COVERAGE_BASE_SHA: ${{ needs.build.outputs.base_sha }}
+          TYDA_COVERAGE_HEAD_SHA: ${{ needs.build.outputs.head_sha }}
+          TYDA_COVERAGE_THREADS: "2"
+          TYDA_COVERAGE_ALLOW_BASE_TIMEOUT: ${{ matrix.allow_base_timeout }}
+          TYDA_COVERAGE_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
+          TYDA_COVERAGE_SUBJECT: ${{ github.workspace }}/${{ matrix.subject_path }}
+          TYDA_COVERAGE_BINARY_DIR: ${{ github.workspace }}/target/performance-runtime/bin
+          TYDA_COVERAGE_OUTPUT_DIR: ${{ github.workspace }}/target/coverage/${{ matrix.subject }}
+          TYDA_RBS_DIR: ${{ github.workspace }}/target/performance-runtime/vendor/rbs
+        run: ./scripts/coverage_ci.sh
+
       - name: Upload performance result (${{ matrix.subject }})
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -214,80 +228,10 @@ jobs:
           path: target/performance/${{ matrix.subject }}/result.json
           if-no-files-found: ignore
 
-  report:
-    name: performance report
-    needs:
-      - changes
-      - build
-      - performance
-    if: >-
-      always() &&
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      pull-requests: write
-    steps:
-      - name: Checkout report formatter
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Upload coverage result (${{ matrix.subject }})
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Download performance results
-        id: download-results
-        continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: performance-result-*
-          path: target/performance-results
-          merge-multiple: false
-
-      - name: Build performance comment
-        env:
-          TYDA_PERF_BUILD_RESULT: ${{ needs.build.result }}
-          TYDA_PERF_COMMENT_PATH: target/performance-comment.md
-          TYDA_PERF_JOB_RESULT: ${{ needs.performance.result }}
-          TYDA_PERF_RESULTS_DIR: target/performance-results
-          TYDA_PERF_RUN_FULL_CI: ${{ needs.changes.outputs.run_full_ci }}
-          TYDA_PERF_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: ruby scripts/performance_comment.rb
-
-      - name: Replace performance comment
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        env:
-          COMMENT_PATH: target/performance-comment.md
-          COMMENT_MARKER: "<!-- tyda-performance-report -->"
-        with:
-          script: |
-            const fs = require("fs");
-            const body = fs.readFileSync(process.env.COMMENT_PATH, "utf8");
-            const marker = process.env.COMMENT_MARKER;
-            const { owner, repo } = context.repo;
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number: context.issue.number,
-              per_page: 100,
-            });
-            for (const comment of comments) {
-              if (
-                comment.user?.login === "github-actions[bot]" &&
-                comment.body?.includes(marker)
-              ) {
-                await github.rest.issues.deleteComment({
-                  owner,
-                  repo,
-                  comment_id: comment.id,
-                });
-              }
-            }
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: context.issue.number,
-              body,
-            });
+          name: coverage-result-${{ matrix.subject }}
+          path: target/coverage/${{ matrix.subject }}
+          if-no-files-found: ignore
