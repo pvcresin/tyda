@@ -22,6 +22,7 @@ pub fn reclaim_freed_memory(pool: Option<&rayon::ThreadPool>) {
 pub fn reclaim_freed_memory(_pool: Option<&rayon::ThreadPool>) {}
 
 pub mod analysis;
+pub mod coverage;
 pub mod dep_graph;
 pub mod diagnostics;
 pub mod inference;

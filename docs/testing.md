@@ -9,7 +9,7 @@ test で守る。テストの説明は現在のルールだけを置き、追加
 | --- | --- |
 | scenario | Ruby / RBS / RBI / project fixture から期待 RBS への user-facing 契約 |
 | unit | 型演算、名前解決、merge、diagnostic 判定、上限などの局所不変条件 |
-| CLI integration | 出力形式、file selection、diagnostics、debug option |
+| CLI integration | 出力形式、file selection、diagnostics、debug、coverage option |
 | LSP integration | protocol、snapshot、cache、refresh、incremental change |
 | robustness | 壊れた入力での panic / hang がないこと |
 | performance | 速度・メモリの基準値と大規模 workspace の有界性 |

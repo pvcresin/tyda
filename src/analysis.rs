@@ -38,12 +38,17 @@ impl DependencyCollection {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HoverSnapshotMode {
     Record,
+    Coverage,
     Skip,
 }
 
 impl HoverSnapshotMode {
     fn should_record(self) -> bool {
         matches!(self, Self::Record)
+    }
+
+    fn should_record_coverage(self) -> bool {
+        matches!(self, Self::Coverage)
     }
 }
 
@@ -450,6 +455,53 @@ pub fn analyze_compact_file_snapshot_timed(
     options: AnalysisOptions,
     lazy_rbs_merge: bool,
 ) -> (FileAnalysisSnapshot, AnalysisTimings) {
+    analyze_compact_file_snapshot_timed_with_mode(
+        source,
+        rbs_registry,
+        lazy_loader,
+        lazy_rbi_loader,
+        file_path,
+        options,
+        lazy_rbs_merge,
+        HoverSnapshotMode::Skip,
+    )
+}
+
+/// Compact scan variant that records the inference sites used by the opt-in
+/// CLI coverage report. The regular compact path intentionally keeps snapshots
+/// disabled because they are not needed to render RBS.
+pub fn analyze_compact_file_snapshot_with_coverage_timed(
+    source: &str,
+    rbs_registry: Option<&TypeRegistry>,
+    lazy_loader: &LazyRbsLoader,
+    lazy_rbi_loader: Option<&LazyRbiLoader>,
+    file_path: &str,
+    options: AnalysisOptions,
+    lazy_rbs_merge: bool,
+) -> (FileAnalysisSnapshot, AnalysisTimings) {
+    analyze_compact_file_snapshot_timed_with_mode(
+        source,
+        rbs_registry,
+        lazy_loader,
+        lazy_rbi_loader,
+        file_path,
+        options,
+        lazy_rbs_merge,
+        HoverSnapshotMode::Coverage,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyze_compact_file_snapshot_timed_with_mode(
+    source: &str,
+    rbs_registry: Option<&TypeRegistry>,
+    lazy_loader: &LazyRbsLoader,
+    lazy_rbi_loader: Option<&LazyRbiLoader>,
+    file_path: &str,
+    options: AnalysisOptions,
+    lazy_rbs_merge: bool,
+    hover_snapshot_mode: HoverSnapshotMode,
+) -> (FileAnalysisSnapshot, AnalysisTimings) {
     let (engine, timings) = build_compact_scan_engine(
         source,
         rbs_registry,
@@ -458,7 +510,7 @@ pub fn analyze_compact_file_snapshot_timed(
         file_path,
         &options,
         lazy_rbs_merge,
-        HoverSnapshotMode::Skip,
+        hover_snapshot_mode,
     );
     (
         compact_file_snapshot(engine.into_file_analysis_snapshot()),
@@ -1546,6 +1598,7 @@ fn build_engine_with_timings<'a>(
 
     let mut engine = InferenceEngine::new();
     engine.set_record_hover_snapshots(hover_snapshot_mode.should_record());
+    engine.set_record_coverage(hover_snapshot_mode.should_record_coverage());
     engine.set_record_annotated_method_body_hover_snapshots(
         annotated_body_hover_mode.should_record(),
     );

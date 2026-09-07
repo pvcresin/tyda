@@ -9,9 +9,10 @@ use rayon::prelude::*;
 
 use tyda::analysis::{
     AnalysisOptions, AnalysisTimings, analyze_cli_diagnostic_target_snapshot_timed,
-    analyze_compact_file_snapshot_timed, analyze_definitions_only_snapshot_timed,
-    analyze_source_for_display,
+    analyze_compact_file_snapshot_timed, analyze_compact_file_snapshot_with_coverage_timed,
+    analyze_definitions_only_snapshot_timed, analyze_source_for_display,
 };
+use tyda::coverage::CoverageAccumulator;
 use tyda::diagnostics::{
     TypeDiagnostic, TypeHoleSummary, build_scenario_seed, summarize_type_holes,
 };
@@ -120,6 +121,13 @@ struct Cli {
     #[arg(
         long,
         global = true,
+        help = "Print inference coverage as a deterministic JSON report"
+    )]
+    coverage: bool,
+
+    #[arg(
+        long,
+        global = true,
         help = "Verbose mode: print each file name before processing (useful for finding hangs)"
     )]
     verbose: bool,
@@ -164,6 +172,7 @@ enum Commands {
 struct CliRunOptions {
     debug: bool,
     diagnostics: bool,
+    coverage: bool,
     verbose: bool,
     include_synthetic_dsl_methods: bool,
 }
@@ -227,6 +236,11 @@ fn print_version() {
 fn main() {
     let cli = Cli::parse();
 
+    if cli.coverage && (cli.version || cli.lsp || cli.capability_matrix || cli.command.is_some()) {
+        eprintln!("--coverage requires the default CLI analysis mode");
+        std::process::exit(2);
+    }
+
     if cli.version {
         print_version();
         return;
@@ -256,9 +270,15 @@ fn main() {
             std::process::exit(1);
         }
         None => {
+            if cli.coverage && (cli.debug || cli.diagnostics || cli.verbose) {
+                eprintln!(
+                    "--coverage cannot be combined with --debug, --diagnostics, or --verbose"
+                );
+                std::process::exit(2);
+            }
             if cli.paths.is_empty() {
                 eprintln!(
-                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --include-synthetic-dsl-methods <path> | tyda --capability-matrix | tyda --lsp | tyda --version"
+                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda --capability-matrix | tyda --lsp | tyda --version"
                 );
                 std::process::exit(1);
             }
@@ -267,6 +287,7 @@ fn main() {
                 CliRunOptions {
                     debug: cli.debug,
                     diagnostics: cli.diagnostics,
+                    coverage: cli.coverage,
                     verbose: cli.verbose,
                     include_synthetic_dsl_methods: cli.include_synthetic_dsl_methods,
                 },
@@ -616,6 +637,7 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
 
     let mut context_file_count = 0usize;
     let mut diagnostic_replays: Vec<FileAnalysisSnapshot> = Vec::new();
+    let mut coverage = options.coverage.then(CoverageAccumulator::new);
     let workspace_rbs = if options.diagnostics {
         // Skeleton first (all production files, definitions-only) so target
         // compact+hover sees cross-file ancestors / DSL bases. Judgment then
@@ -789,23 +811,36 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
             let compact_chunk_start = Instant::now();
             let compact_user_rbs = &base_user_rbs;
             let compact_lazy_rbi_loader = lazy_rbi_loader.as_ref();
-            let compact_analyses = pool.install(|| {
+            let mut compact_analyses = pool.install(|| {
                 chunk
                     .par_iter()
                     .filter_map(|path| {
                         let source = fs::read_to_string(path).ok()?;
                         let file_path_str = path.to_string_lossy();
                         let job_start = scan_job_timing.then(Instant::now);
-                        let snapshot = analyze_compact_file_snapshot_timed(
-                            &source,
-                            Some(compact_user_rbs),
-                            &stdlib_loader,
-                            compact_lazy_rbi_loader,
-                            &file_path_str,
-                            opts.clone(),
-                            true,
-                        )
-                        .0;
+                        let snapshot = if options.coverage {
+                            analyze_compact_file_snapshot_with_coverage_timed(
+                                &source,
+                                Some(compact_user_rbs),
+                                &stdlib_loader,
+                                compact_lazy_rbi_loader,
+                                &file_path_str,
+                                opts.clone(),
+                                true,
+                            )
+                            .0
+                        } else {
+                            analyze_compact_file_snapshot_timed(
+                                &source,
+                                Some(compact_user_rbs),
+                                &stdlib_loader,
+                                compact_lazy_rbi_loader,
+                                &file_path_str,
+                                opts.clone(),
+                                true,
+                            )
+                            .0
+                        };
                         if let Some(job_start) = job_start {
                             let elapsed = job_start.elapsed();
                             if elapsed.as_millis() >= 500 {
@@ -820,6 +855,12 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
                     .collect::<Vec<_>>()
             });
             compact_collection_elapsed += compact_chunk_start.elapsed();
+
+            if let Some(coverage) = coverage.as_mut() {
+                for (_file_path, snapshot) in &mut compact_analyses {
+                    coverage.add_file(snapshot);
+                }
+            }
 
             let merge_chunk_start = Instant::now();
             batch_builder.apply_chunk(compact_analyses);
@@ -916,7 +957,31 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
     let summary_project_versions = compact_scan_project_versions;
 
     let mut diagnostic_count = None;
-    if options.diagnostics {
+    if options.coverage {
+        let Some(coverage) = coverage.as_mut() else {
+            eprintln!("coverage accumulator was not initialized");
+            std::process::exit(1);
+        };
+        coverage.add_declarations(&workspace_rbs);
+        let report = coverage.report(total_files);
+        match serde_json::to_writer_pretty(&mut stdout, &report) {
+            Ok(()) => {
+                if let Err(error) = writeln!(stdout) {
+                    eprintln!("failed to write coverage report: {error}");
+                    std::process::exit(1);
+                }
+            }
+            Err(error) => {
+                eprintln!("failed to serialize coverage report: {error}");
+                std::process::exit(1);
+            }
+        }
+        if let Err(error) = stdout.flush() {
+            eprintln!("failed to flush coverage report: {error}");
+            std::process::exit(1);
+        }
+        processed_count.store(total_files, Ordering::Relaxed);
+    } else if options.diagnostics {
         eprintln!(
             "Emitting diagnostics for {} files...",
             diagnostic_sources.len()
@@ -1076,14 +1141,20 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
                 - merge_elapsed.as_secs_f64(),
         );
     } else {
+        let final_stage = if options.coverage {
+            "final-resolution+coverage"
+        } else {
+            "final-resolution+render"
+        };
         eprintln!(
-            "\nTyda v{} — analyzed {} files in {:.3}s (preload {:.3}s, compact-scan {:.3}s, merge {:.3}s, final-resolution+render {:.3}s)",
+            "\nTyda v{} — analyzed {} files in {:.3}s (preload {:.3}s, compact-scan {:.3}s, merge {:.3}s, {} {:.3}s)",
             TYDA_VERSION,
             summary.total_files,
             summary.elapsed.as_secs_f64(),
             preload_elapsed.as_secs_f64(),
             compact_collection_elapsed.as_secs_f64(),
             merge_elapsed.as_secs_f64(),
+            final_stage,
             summary.elapsed.as_secs_f64()
                 - preload_elapsed.as_secs_f64()
                 - compact_collection_elapsed.as_secs_f64()

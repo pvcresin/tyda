@@ -251,6 +251,164 @@ fn debug_shows_timing_report() {
 }
 
 #[test]
+fn coverage_flag_outputs_deterministic_json_report() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("coverage.rb");
+    fs::write(
+        &rb_file,
+        "class Widget\n  def answer = 42\n\n  def echo(value)\n    value\n  end\nend\n\nWidget.new.answer\nCoverageMissingConstant.call\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["files"]["discovered"], 1);
+    assert_eq!(report["files"]["analyzed"], 1);
+    let total = report["declarations"]["total"]
+        .as_u64()
+        .expect("declaration total should be an integer")
+        + report["references"]["total"]
+            .as_u64()
+            .expect("reference total should be an integer");
+    let typed = report["declarations"]["typed"]
+        .as_u64()
+        .expect("declaration typed should be an integer")
+        + report["references"]["typed"]
+            .as_u64()
+            .expect("reference typed should be an integer");
+    let untyped = report["declarations"]["untyped"]
+        .as_u64()
+        .expect("declaration untyped should be an integer")
+        + report["references"]["untyped"]
+            .as_u64()
+            .expect("reference untyped should be an integer");
+    let unknown = report["declarations"]["unknown"]
+        .as_u64()
+        .expect("declaration unknown should be an integer")
+        + report["references"]["unknown"]
+            .as_u64()
+            .expect("reference unknown should be an integer");
+    assert!(
+        report["declarations"]["total"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+    );
+    assert_eq!(total, typed + untyped + unknown);
+    assert!(
+        typed > 0,
+        "a literal-returning method should be typed: {report}"
+    );
+    assert!(
+        report["references"]["untyped"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "an uncalled parameter should remain untyped: {report}"
+    );
+    assert!(
+        report["references"]["unknown"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "an unresolved constant receiver should be unknown: {report}"
+    );
+    assert!(
+        report["by_kind"]["constant_reference"]["unknown"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+    );
+    assert!(
+        report["by_kind"]["method_return"]["total"]
+            .as_u64()
+            .is_some_and(|count| count >= 2)
+    );
+    assert!(
+        report["declarations"]["type_coverage_percent"]
+            .as_f64()
+            .is_some()
+    );
+    assert!(
+        report["references"]["tracking_coverage_percent"]
+            .as_f64()
+            .is_some()
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("class Widget"));
+
+    let repeated = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(repeated.status.success());
+    assert_eq!(output.stdout, repeated.stdout);
+}
+
+#[test]
+fn coverage_resolves_cross_file_references_after_workspace_merge() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("producer.rb"),
+        "class Producer\n  def value = 42\nend\n",
+    )
+    .expect("failed to write producer");
+    fs::write(
+        dir.path().join("consumer.rb"),
+        "class Consumer\n  def value = Producer.new.value\nend\n\nConsumer.new.value\n",
+    )
+    .expect("failed to write consumer");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(dir.path())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["files"]["discovered"], 2);
+    assert_eq!(report["files"]["analyzed"], 2);
+    assert!(
+        report["by_kind"]["constant_reference"]["typed"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "a class defined in another source file should be tracked: {report}"
+    );
+    assert_eq!(report["by_kind"]["constant_reference"]["unknown"], 0);
+    assert!(
+        report["by_kind"]["method_call"]["typed"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "a method call resolved through the workspace should be typed: {report}"
+    );
+}
+
+#[test]
+fn coverage_flag_rejects_display_and_diagnostic_modes() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("coverage.rb");
+    fs::write(&rb_file, "def answer = 42\n").expect("failed to write");
+
+    for conflicting_flag in ["--debug", "--diagnostics", "--verbose"] {
+        let output = tyda_bin()
+            .arg("--coverage")
+            .arg(conflicting_flag)
+            .arg(rb_file.to_str().unwrap())
+            .output()
+            .expect("failed to run");
+        assert!(
+            !output.status.success(),
+            "{conflicting_flag} should be rejected"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("--coverage"));
+    }
+}
+
+#[test]
 fn diagnostics_flag_outputs_json_lines() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("missing.rb");

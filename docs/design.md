@@ -46,6 +46,20 @@ request ごとの workspace 全体の再解析・再 merge を避ける。
 RBS 出力、Hover、CodeLens、completion、diagnostics はこの query backend の projection であり、
 render や LSP adapter を意味論の正本にしない。
 
+## 型カバレッジの境界
+
+型カバレッジも render 結果の逆解析ではなく、同じ推論 backend が観測したサイトを最終 registry
+で再解決し、宣言スロットと合わせて作る projection とする。Ruby source の method parameter / return / instance variable は
+`declarations`、式と method call の観測点は `references` に分け、性質の違うサイトを一つの
+分母に混ぜない。
+
+サイトの状態は `typed` / `untyped` / `unknown` の三段階だけを最初の契約とする。`typed` は
+入れ子も含めて未解決 marker がなく、`untyped` は解析経路に結び付いているが型が確定せず、
+`unknown` は receiver や constant の結び付きを確立できない状態である。型名同士の精密な
+比較は推論アルゴリズムの変更でノイズになりやすいため、coverage の初期版では扱わない。
+サイトの記録は明示的な opt-in とし、通常の CLI の hot path とメモリ契約を変えない。巨大または
+深すぎる型構造は報告処理の上限で安全側に `untyped` とする。
+
 ## LSP の境界
 
 TypeProf VSCode 拡張との連携に必要な起動、version、request / notification の契約は LSP adapter
