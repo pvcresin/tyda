@@ -1,5 +1,7 @@
 use super::*;
+use crate::rbs::ir as rbs_ir;
 use crate::types::{SharedName, Sym};
+use std::sync::Arc;
 
 const ACTIVE_RECORD_RELATION_CLASS: &str = "ActiveRecord::Relation";
 const ACTIVE_RECORD_COLLECTION_PROXY_CLASS: &str = "ActiveRecord::Associations::CollectionProxy";
@@ -95,6 +97,78 @@ pub(super) struct AssociationOptions {
 impl<'a> InferenceEngine<'a> {
     fn active_record_model_type(class_name: &str) -> Type {
         Type::Class(Sym::new(class_name))
+    }
+
+    fn active_record_find_id_type() -> Type {
+        Type::Integer.union_with(Type::String)
+    }
+
+    fn active_record_find_method_type(
+        required_positionals: Box<[rbs_ir::FunctionParam]>,
+        rest_positionals: Option<Box<rbs_ir::FunctionParam>>,
+        return_type: rbs_ir::RbsType,
+    ) -> rbs_ir::MethodType {
+        rbs_ir::MethodType {
+            function_type: rbs_ir::FunctionType {
+                required_positionals,
+                optional_positionals: Box::default(),
+                rest_positionals,
+                trailing_positionals: Box::default(),
+                required_keywords: Box::default(),
+                optional_keywords: Box::default(),
+                rest_keywords: None,
+                return_type,
+            },
+            block: None,
+            self_type: None,
+            type_params: Box::default(),
+            type_param_bounds: Box::default(),
+            type_param_lower_bounds: Box::default(),
+            annotations: Box::default(),
+        }
+    }
+
+    fn active_record_find_param(type_: rbs_ir::RbsType) -> rbs_ir::FunctionParam {
+        rbs_ir::FunctionParam {
+            type_,
+            name: Some(Sym::new("id_or_ids")),
+        }
+    }
+
+    fn active_record_find_rest_param(type_: rbs_ir::RbsType) -> rbs_ir::FunctionParam {
+        rbs_ir::FunctionParam {
+            type_,
+            name: Some(Sym::new("ids")),
+        }
+    }
+
+    fn active_record_find_method_types(class_name: &str) -> Arc<Vec<rbs_ir::MethodType>> {
+        let id_type = rbs_ir::RbsType::Union(Box::new([
+            rbs_ir::RbsType::Integer,
+            rbs_ir::RbsType::String,
+        ]));
+        let model_type = rbs_ir::RbsType::Class(Sym::new(class_name), Box::default());
+        let array_id_type = rbs_ir::RbsType::Class(Sym::new("Array"), Box::new([id_type.clone()]));
+        let array_model_type =
+            rbs_ir::RbsType::Class(Sym::new("Array"), Box::new([model_type.clone()]));
+
+        Arc::new(vec![
+            Self::active_record_find_method_type(
+                vec![Self::active_record_find_param(id_type.clone())].into_boxed_slice(),
+                None,
+                model_type,
+            ),
+            Self::active_record_find_method_type(
+                vec![Self::active_record_find_param(array_id_type)].into_boxed_slice(),
+                None,
+                array_model_type.clone(),
+            ),
+            Self::active_record_find_method_type(
+                vec![Self::active_record_find_param(id_type.clone())].into_boxed_slice(),
+                Some(Box::new(Self::active_record_find_rest_param(id_type))),
+                array_model_type,
+            ),
+        ])
     }
 
     fn active_record_optional_model_type(class_name: &str) -> Type {
@@ -1467,7 +1541,7 @@ impl<'a> InferenceEngine<'a> {
                 param_infos: vec![ParamInfo {
                     name: "id_or_ids".to_string(),
                     kind: ParamKind::Required,
-                    default_type: Some(Type::Untyped),
+                    default_type: Some(Self::active_record_find_id_type()),
                 }],
                 raw_return_type: Self::active_record_model_type(class_name),
                 sorbet_modifier_comments: Vec::new(),
@@ -1478,7 +1552,7 @@ impl<'a> InferenceEngine<'a> {
                 is_singleton: true,
                 rbs_file_source: true,
                 synthetic_dsl_source: true,
-                rbs_method_types: Default::default(),
+                rbs_method_types: Self::active_record_find_method_types(class_name),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),
             },
@@ -2131,6 +2205,7 @@ impl<'a> InferenceEngine<'a> {
         let elem_type = Self::active_record_relation_element_type(receiver_type)?;
         let return_type = self.synthetic_active_record_method_return(receiver_type, method_name)?;
         let relation_type = Self::active_record_relation_type_for_elem(&elem_type);
+        let mut overloads = Vec::new();
 
         let params = match method_name {
             "async" | "load_async" | "async_count" | "async_ids" => Vec::new(),
@@ -2141,11 +2216,42 @@ impl<'a> InferenceEngine<'a> {
             | "fifth!" | "forty_two" | "forty_two!" | "third_to_last" | "third_to_last!"
             | "second_to_last" | "second_to_last!" | "first" | "first!" | "last" | "last!"
             | "take" | "take!" | "sole" => Vec::new(),
-            "find" => vec![crate::types::Param {
-                name: "id_or_ids".to_string(),
-                param_type: Type::Untyped,
-                kind: ParamKind::Required,
-            }],
+            "find" => {
+                let id_type = Self::active_record_find_id_type();
+                let array_return = Type::Array(Some(Box::new(elem_type.clone())));
+                overloads = vec![
+                    crate::types::OverloadSig {
+                        params: vec![crate::types::Param {
+                            name: "id_or_ids".to_string(),
+                            param_type: Type::Array(Some(Box::new(id_type.clone()))),
+                            kind: ParamKind::Required,
+                        }],
+                        return_type: array_return.clone(),
+                        block: None,
+                    },
+                    crate::types::OverloadSig {
+                        params: vec![
+                            crate::types::Param {
+                                name: "id_or_ids".to_string(),
+                                param_type: id_type.clone(),
+                                kind: ParamKind::Required,
+                            },
+                            crate::types::Param {
+                                name: "ids".to_string(),
+                                param_type: id_type.clone(),
+                                kind: ParamKind::Rest,
+                            },
+                        ],
+                        return_type: array_return,
+                        block: None,
+                    },
+                ];
+                vec![crate::types::Param {
+                    name: "id_or_ids".to_string(),
+                    param_type: id_type,
+                    kind: ParamKind::Required,
+                }]
+            }
             "find_by" | "find_by!" | "find_sole_by" | "rewhere" | "create_with" => {
                 vec![crate::types::Param {
                     name: "attributes".to_string(),
@@ -2322,7 +2428,7 @@ impl<'a> InferenceEngine<'a> {
             rbs_file_source: true,
             synthetic_dsl_source: true,
             sig_annotated: false,
-            overloads: Vec::new(),
+            overloads,
             loc: None,
             is_private: false,
         })

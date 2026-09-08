@@ -15086,6 +15086,14 @@ impl<'a> InferenceEngine<'a> {
                     .as_ref()
                     .and_then(|seed| seed.self_type.clone());
             }
+            if block_self_type.is_none() {
+                let current_self_type = scope.current_self_type(class_name);
+                block_self_type = self.dsl_plugin_block_self_type(
+                    Some(&receiver_type),
+                    &current_self_type,
+                    method_name.as_ref(),
+                );
+            }
             let side_effect_param_types = if method_name == "zip" {
                 self.array_zip_block_param_types(
                     class_name,
@@ -15365,6 +15373,11 @@ impl<'a> InferenceEngine<'a> {
                     &mut block_scope,
                 );
             }
+        }
+        if block_self_type.is_none() {
+            let current_self_type = scope.current_self_type(class_name);
+            block_self_type =
+                self.dsl_plugin_block_self_type(None, &current_self_type, method_name.as_ref());
         }
         if has_only_plain_required_params && !named_requireds.is_empty() {
             Self::set_named_block_param_definition_locations(
@@ -16640,6 +16653,7 @@ impl<'a> InferenceEngine<'a> {
                     target.class_name,
                     target_method,
                     target.method_is_singleton,
+                    None,
                     class_name,
                     call_node,
                     parse_result,
@@ -16933,6 +16947,7 @@ impl<'a> InferenceEngine<'a> {
             owner_class,
             method_name,
             method_is_singleton,
+            None,
             caller_class,
             call_node,
             parse_result,
@@ -16962,6 +16977,7 @@ impl<'a> InferenceEngine<'a> {
         owner_class: &str,
         method_name: &str,
         method_is_singleton: bool,
+        receiver_type: Option<&Type>,
         class_name: &str,
         call_node: &ruby_prism::CallNode<'_>,
         parse_result: &ParseResult<'_>,
@@ -17008,6 +17024,11 @@ impl<'a> InferenceEngine<'a> {
             0,
         ) {
             block_scope.self_override = Some(block_self_type);
+        }
+        if block_scope.self_override.is_none() {
+            let current_self_type = scope.current_self_type(class_name);
+            block_scope.self_override =
+                self.dsl_plugin_block_self_type(receiver_type, &current_self_type, method_name);
         }
         let block_local_names = Self::block_scoped_local_names(&block, parse_result);
         let named_requireds =
@@ -18448,6 +18469,7 @@ impl<'a> InferenceEngine<'a> {
                         class_name,
                         &method_name,
                         scope.singleton_dispatch,
+                        None,
                         class_name,
                         &call_node,
                         parse_result,
@@ -20642,8 +20664,7 @@ impl<'a> InferenceEngine<'a> {
                                 _ => {}
                             }
                         }
-                        if !self_overridden
-                            && matches!(method_name.as_str(), "proc" | "lambda")
+                        if matches!(method_name.as_str(), "proc" | "lambda")
                             && let Some(block) = call_node.block()
                             && let Some(block_node) = block.as_block_node()
                         {
@@ -21082,6 +21103,7 @@ impl<'a> InferenceEngine<'a> {
                                 class_name,
                                 &method_name,
                                 scope.singleton_dispatch,
+                                None,
                                 class_name,
                                 &call_node,
                                 parse_result,
@@ -22365,6 +22387,7 @@ impl<'a> InferenceEngine<'a> {
                                     &target_class,
                                     &method_name,
                                     method_is_singleton,
+                                    Some(&safe_nav_receiver_type),
                                     class_name,
                                     &call_node,
                                     parse_result,

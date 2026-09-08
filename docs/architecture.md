@@ -78,7 +78,9 @@ Ruby code inference の順に優先する。これは query / projection の型�
 Ruby source に明示された `class X < Y` は外部宣言で上書きしない。
 
 framework DSL は library-scoped に有効化し、plugin のフックは `PluginCx` を通す。個別 repository の
-runtime DSL 登録を解析コアへ持ち込まず、動的な API は外部 RBS / RBI を入力する。
+runtime DSL 登録を解析コアへ持ち込まず、動的な API は外部 RBS / RBI を入力する。block の `self` を
+runtime semantics から補う必要がある場合も plugin の block-self hook を通し、source / RBS に明示された
+self を優先して、未解決時だけ plugin の補完を適用する。
 
 ### Ruby の ancestor order
 

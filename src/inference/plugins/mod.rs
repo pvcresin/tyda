@@ -55,6 +55,16 @@ pub(in crate::inference) trait Plugin: Sync {
         None
     }
 
+    fn synthetic_block_self_type(
+        &self,
+        _cx: &mut PluginCx<'_, '_>,
+        _receiver_type: Option<&Type>,
+        _current_self_type: &Type,
+        _method_name: &str,
+    ) -> Option<Type> {
+        None
+    }
+
     // Returns the gem's function type before a phantom-stub receiver falls back to Kernel; yields if a real definition exists.
     fn synthetic_method_return_override(
         &self,
@@ -1106,6 +1116,32 @@ impl<'e, 'src> PluginCx<'e, 'src> {
 }
 
 impl<'a> InferenceEngine<'a> {
+    pub(super) fn dsl_plugin_block_self_type(
+        &mut self,
+        receiver_type: Option<&Type>,
+        current_self_type: &Type,
+        method_name: &str,
+    ) -> Option<Type> {
+        let mut cx = PluginCx::new(self);
+        for plugin in PLUGINS {
+            if let Some(ty) = plugin.synthetic_block_self_type(
+                &mut cx,
+                receiver_type,
+                current_self_type,
+                method_name,
+            ) {
+                if *DSL_PLUGIN_DEBUG {
+                    eprintln!(
+                        "[dsl-plugin] block_self recv={receiver_type:?} current={current_self_type:?} m={method_name} -> {ty:?} matched={:?}",
+                        plugin.manifest().id
+                    );
+                }
+                return Some(ty);
+            }
+        }
+        None
+    }
+
     pub(super) fn dsl_plugin_method_return(
         &mut self,
         receiver_type: &Type,

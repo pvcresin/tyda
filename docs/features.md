@@ -105,6 +105,8 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 
 - schema / `attribute` / relation から model の型を補う
 - Concern、association、scope、enum、delegate などの静的な DSL を展開する
+- ActiveRecord の `find` は単一 ID、ID 配列、複数 ID の overload とモデル／配列の戻り値を出力する
+- `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
 - GitLab in-tree の Presenter / CurrentSettings / Metrics / EE 拡張を検出する
 - Redmine の `acts_as_*` など、ライブラリ内部の実行時登録は展開しない。必要なら手書き
