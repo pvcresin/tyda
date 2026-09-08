@@ -20664,8 +20664,7 @@ impl<'a> InferenceEngine<'a> {
                                 _ => {}
                             }
                         }
-                        if !self_overridden
-                            && matches!(method_name.as_str(), "proc" | "lambda")
+                        if matches!(method_name.as_str(), "proc" | "lambda")
                             && let Some(block) = call_node.block()
                             && let Some(block_node) = block.as_block_node()
                         {

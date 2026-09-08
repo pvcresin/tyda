@@ -59,3 +59,36 @@ class Rails::Application
   def marker: -> 1
 end
 ```
+
+## Nested lambda keeps the configure self
+
+### update
+
+```ruby
+class Rails::Application
+  def marker = 1
+end
+
+class ConfigReader
+  def value
+    result = nil
+    Rails.application.configure do
+      callback = lambda { marker }
+      result = callback.call
+    end
+    result
+  end
+end
+```
+
+### result
+
+```rbs
+class ConfigReader
+  def value: -> 1?
+end
+
+class Rails::Application
+  def marker: -> 1
+end
+```
