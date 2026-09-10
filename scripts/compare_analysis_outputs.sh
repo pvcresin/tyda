@@ -25,6 +25,9 @@ if [[ ! -d "$SUBJECT_PATH" ]]; then
   exit 2
 fi
 for variant in base head; do
+  if [[ -f "$BINARY_DIR/$variant/tyda" ]]; then
+    chmod +x "$BINARY_DIR/$variant/tyda"
+  fi
   if [[ ! -x "$BINARY_DIR/$variant/tyda" ]]; then
     echo "analysis binary not found: $BINARY_DIR/$variant/tyda" >&2
     exit 2
