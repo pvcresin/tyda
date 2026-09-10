@@ -1,0 +1,21 @@
+name: Invalidate analysis approval
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  remove-label:
+    name: remove stale analysis approval
+    if: contains(github.event.pull_request.labels.*.name, 'approved-analysis-change')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove approval label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr edit "$PR_URL" --remove-label approved-analysis-change

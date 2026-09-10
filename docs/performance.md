@@ -103,6 +103,17 @@ TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
 GitHub の branch protection では、この workflow の `performance-build` と全ての
 `performance (<subject>)` check を required に設定する。
 
+## 解析出力の互換性ゲート
+
+`Analysis compatibility` workflow は、Performanceの速度・メモリ比較とは別に、base/headを
+それぞれのGemfile.lockからvendorしたRBSでビルドする。`sample` と代表的なpinned OSS subjectに
+対して、CLIのRBS出力、diagnostics、`--coverage` の結果を比較し、差分をJob Summaryとartifactに
+保存する。RBS更新そのものによる推論改善もこの比較対象に含まれる。
+
+出力またはcoverageに差分があれば通常は失敗する。意図した改善や仕様変更の場合だけ、差分を確認した
+Maintainer/AdminがPRに `approved-analysis-change` を付ける。このラベルは現在のcommitにだけ有効で、
+`synchronize` 時に自動削除される。比較の実行自体が失敗した場合は、ラベルがあっても許可しない。
+
 結果は subject ごとに `target/performance/<subject>/result.json` と
 `target/coverage/<subject>/result.json` として artifact に保存する。coverage の base/head
 生JSON、プロセスログ、計測メタデータも同じ artifact に含める。Perf と coverage は CI log と

@@ -246,6 +246,7 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--base PATH", String) { |value| options[:base] = value }
     opts.on("--base-sha SHA", String) { |value| options[:base_sha] = value }
     opts.on("--base-timeout") { options[:base_timeout] = true }
+    opts.on("--allow-regressions") { options[:allow_regressions] = true }
     opts.on("--head PATH", String) { |value| options[:head] = value }
     opts.on("--head-sha SHA", String) { |value| options[:head_sha] = value }
     opts.on("--output PATH", String) { |value| options[:output] = value }
@@ -332,5 +333,9 @@ if $PROGRAM_NAME == __FILE__
 
   FileUtils.mkdir_p(File.dirname(options.fetch(:output)))
   File.write(options.fetch(:output), JSON.pretty_generate(result) + "\n")
-  exit(result.fetch("status") == "failed" ? 1 : 0)
+  failed = result.fetch("status") == "failed"
+  if failed && options.fetch(:allow_regressions, false)
+    puts "WARN coverage regressions approved by maintainer/admin label"
+  end
+  exit(failed && !options.fetch(:allow_regressions, false) ? 1 : 0)
 end

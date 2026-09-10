@@ -1,0 +1,239 @@
+name: Analysis compatibility
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: analysis-compatibility-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      run_analysis: ${{ steps.paths.outputs.run_analysis }}
+      analysis_approved: ${{ steps.approval.outputs.analysis_approved }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+        run: bash scripts/ci/classify-changed-paths.sh
+
+      - name: Resolve analysis-change approval
+        id: approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+        run: |
+          approved=0
+          if [[ "$EVENT_ACTION" == labeled && "$EVENT_LABEL" == approved-analysis-change ]]; then
+            permission="$(gh api \
+              "repos/$GITHUB_REPOSITORY/collaborators/$SENDER_LOGIN/permission" \
+              --jq .permission 2>/dev/null || true)"
+            case "$permission" in
+              admin|maintain)
+                approved=1
+                ;;
+              *)
+                echo "Ignoring approved-analysis-change from $SENDER_LOGIN (permission=$permission)."
+                ;;
+            esac
+          fi
+          echo "analysis_approved=$approved" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: analysis-build
+    needs: changes
+    if: needs.changes.outputs.run_analysis == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        uses: awalsh128/cache-apt-pkgs-action@2c09a5e66da6c8016428a2172bd76e5e4f14bb17 # v1.5.3
+        with:
+          packages: clang libclang-dev
+
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+        with:
+          install_args: rust
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          cache-targets: true
+          cache-workspace-crates: true
+          shared-key: analysis-compatibility-v1
+
+      - name: Build base/head compatibility binaries
+        env:
+          TYDA_COMPAT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TYDA_COMPAT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/build_compatibility_binaries.sh target/analysis-runtime
+
+      - name: Export comparison revisions
+        id: revisions
+        run: |
+          metadata=target/analysis-runtime/metadata
+          base_sha="$(sed -n 's/^base_sha=//p' "$metadata")"
+          head_sha="$(sed -n 's/^head_sha=//p' "$metadata")"
+          test -n "$base_sha"
+          test -n "$head_sha"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload compatibility runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: analysis-compatibility-runtime
+          path: target/analysis-runtime
+          if-no-files-found: error
+
+  analysis:
+    needs:
+      - changes
+      - build
+    if: needs.changes.outputs.run_analysis == 'true'
+    name: analysis (${{ matrix.subject }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 11
+      matrix:
+        include:
+          - subject: sample
+            subject_path: subject/sample
+            timeout_seconds: 60
+          - subject: rack
+            subject_path: subject/rack
+            timeout_seconds: 60
+          - subject: rake
+            subject_path: subject/rake
+            timeout_seconds: 60
+          - subject: optcarrot
+            subject_path: subject/optcarrot
+            timeout_seconds: 60
+          - subject: typeprof
+            subject_path: subject/typeprof
+            timeout_seconds: 180
+          - subject: rubygems
+            subject_path: subject/rubygems
+            timeout_seconds: 180
+          - subject: conference-app
+            subject_path: subject/conference-app
+            timeout_seconds: 180
+          - subject: redmine
+            subject_path: subject/redmine
+            timeout_seconds: 180
+          - subject: rubygems.org
+            subject_path: subject/rubygems.org
+            timeout_seconds: 180
+          - subject: mastodon
+            subject_path: subject/mastodon
+            timeout_seconds: 180
+          - subject: gitlab
+            subject_path: subject/gitlab/app
+            timeout_seconds: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+
+      - name: Download compatibility runtime
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: analysis-compatibility-runtime
+          path: target/analysis-runtime
+
+      - name: Cache analysis subject
+        if: matrix.subject != 'sample'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: subject/${{ matrix.subject }}
+          key: ${{ runner.os }}-analysis-subject-${{ matrix.subject }}-${{ hashFiles('scripts/setup_subjects.sh') }}
+
+      - name: Prepare pinned analysis subject
+        if: matrix.subject != 'sample'
+        run: ./scripts/setup_subjects.sh "${{ matrix.subject }}"
+
+      - name: Compare analysis output and coverage
+        env:
+          TYDA_ANALYSIS_APPROVED: ${{ needs.changes.outputs.analysis_approved }}
+          TYDA_ANALYSIS_BINARY_DIR: ${{ github.workspace }}/target/analysis-runtime/bin
+          TYDA_ANALYSIS_BASE_RBS_DIR: ${{ github.workspace }}/target/analysis-runtime/rbs/base
+          TYDA_ANALYSIS_HEAD_RBS_DIR: ${{ github.workspace }}/target/analysis-runtime/rbs/head
+          TYDA_ANALYSIS_OUTPUT_DIR: ${{ github.workspace }}/target/analysis/${{ matrix.subject }}
+          TYDA_ANALYSIS_SUBJECT_NAME: ${{ matrix.subject }}
+          TYDA_ANALYSIS_SUBJECT_PATH: ${{ github.workspace }}/${{ matrix.subject_path }}
+          TYDA_ANALYSIS_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
+          TYDA_COVERAGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TYDA_COVERAGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TYDA_COVERAGE_THREADS: "2"
+          TYDA_COVERAGE_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
+          TYDA_COVERAGE_ALLOW_BASE_TIMEOUT: "0"
+          TYDA_COVERAGE_ALLOW_REGRESSIONS: ${{ needs.changes.outputs.analysis_approved }}
+        run: ./scripts/run_analysis_compatibility.sh
+
+      - name: Upload analysis comparison
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: analysis-comparison-${{ matrix.subject }}
+          path: target/analysis/${{ matrix.subject }}
+          if-no-files-found: warn
+
+  analysis-compatibility:
+    name: analysis-compatibility
+    needs:
+      - changes
+      - build
+      - analysis
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require compatibility checks
+        env:
+          RUN_ANALYSIS: ${{ needs.changes.outputs.run_analysis }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          ANALYSIS_RESULT: ${{ needs.analysis.result }}
+        run: |
+          if [[ "$RUN_ANALYSIS" != true ]]; then
+            echo "Analysis compatibility is not required for this change set."
+            exit 0
+          fi
+          if [[ "$BUILD_RESULT" != success || "$ANALYSIS_RESULT" != success ]]; then
+            echo "Analysis compatibility failed (build=$BUILD_RESULT analysis=$ANALYSIS_RESULT)." >&2
+            exit 1
+          fi

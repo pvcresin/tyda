@@ -11,8 +11,11 @@ BASE_SHA="${TYDA_COVERAGE_BASE_SHA:-unknown}"
 HEAD_SHA="${TYDA_COVERAGE_HEAD_SHA:-}"
 OUTPUT_DIR="${TYDA_COVERAGE_OUTPUT_DIR:-$ROOT_DIR/target/coverage}"
 ALLOW_BASE_TIMEOUT="${TYDA_COVERAGE_ALLOW_BASE_TIMEOUT:-0}"
+ALLOW_REGRESSIONS="${TYDA_COVERAGE_ALLOW_REGRESSIONS:-0}"
 BINARY_DIR="${TYDA_COVERAGE_BINARY_DIR:-$ROOT_DIR/target/performance-runtime/bin}"
 RBS_DIR="${TYDA_RBS_DIR:-$ROOT_DIR/vendor/rbs}"
+BASE_RBS_DIR="${TYDA_COVERAGE_BASE_RBS_DIR:-$RBS_DIR}"
+HEAD_RBS_DIR="${TYDA_COVERAGE_HEAD_RBS_DIR:-$RBS_DIR}"
 
 if [[ "$SUBJECT_PATH" != /* ]]; then
   SUBJECT_PATH="$ROOT_DIR/$SUBJECT_PATH"
@@ -25,6 +28,12 @@ if [[ "$BINARY_DIR" != /* ]]; then
 fi
 if [[ "$RBS_DIR" != /* ]]; then
   RBS_DIR="$ROOT_DIR/$RBS_DIR"
+fi
+if [[ "$BASE_RBS_DIR" != /* ]]; then
+  BASE_RBS_DIR="$ROOT_DIR/$BASE_RBS_DIR"
+fi
+if [[ "$HEAD_RBS_DIR" != /* ]]; then
+  HEAD_RBS_DIR="$ROOT_DIR/$HEAD_RBS_DIR"
 fi
 if [[ -z "$HEAD_SHA" ]]; then
   HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse HEAD)"
@@ -42,16 +51,22 @@ if [[ "$ALLOW_BASE_TIMEOUT" != 0 && "$ALLOW_BASE_TIMEOUT" != 1 ]]; then
   echo "TYDA_COVERAGE_ALLOW_BASE_TIMEOUT must be 0 or 1" >&2
   exit 2
 fi
+if [[ "$ALLOW_REGRESSIONS" != 0 && "$ALLOW_REGRESSIONS" != 1 ]]; then
+  echo "TYDA_COVERAGE_ALLOW_REGRESSIONS must be 0 or 1" >&2
+  exit 2
+fi
 if [[ ! -d "$SUBJECT_PATH" ]]; then
   echo "coverage subject not found: $SUBJECT_PATH" >&2
   echo "run ./scripts/setup_subjects.sh <subject> first" >&2
   exit 2
 fi
-if [[ ! -d "$RBS_DIR" ]]; then
-  echo "vendor/rbs is missing: $RBS_DIR" >&2
-  echo "run ./scripts/vendor-rbs.sh first" >&2
-  exit 2
-fi
+for rbs_dir in "$BASE_RBS_DIR" "$HEAD_RBS_DIR"; do
+  if [[ ! -d "$rbs_dir" ]]; then
+    echo "RBS directory is missing: $rbs_dir" >&2
+    echo "run ./scripts/vendor-rbs.sh first" >&2
+    exit 2
+  fi
+done
 
 BASE_BINARY="$BINARY_DIR/base/tyda"
 HEAD_BINARY="$BINARY_DIR/head/tyda"
@@ -84,6 +99,8 @@ echo "threads: $THREADS"
 echo "timeout: ${TIMEOUT_SECONDS}s"
 echo "base: $BASE_SHA"
 echo "head: $HEAD_SHA"
+echo "base RBS: $BASE_RBS_DIR"
+echo "head RBS: $HEAD_RBS_DIR"
 echo "subject revision: ${SUBJECT_REF:-unknown}"
 echo ""
 
@@ -93,6 +110,7 @@ run_coverage() {
   local report="$3"
   local log="$4"
   local meta="$5"
+  local rbs_dir="$6"
   local exit_code
 
   echo "Running $variant coverage..."
@@ -103,7 +121,7 @@ run_coverage() {
     --stdout "$report" \
     --timeout "$TIMEOUT_SECONDS" \
     -- env TYDA_CLI_ANALYSIS_THREADS="$THREADS" \
-      TYDA_RBS_DIR="$RBS_DIR" \
+      TYDA_RBS_DIR="$rbs_dir" \
       nice -n 19 "$binary" --coverage "$SUBJECT_PATH"
   exit_code=$?
   set -e
@@ -125,8 +143,8 @@ run_coverage() {
   fi
 }
 
-run_coverage base "$BASE_BINARY" "$BASE_REPORT" "$BASE_LOG" "$BASE_META"
-run_coverage head "$HEAD_BINARY" "$HEAD_REPORT" "$HEAD_LOG" "$HEAD_META"
+run_coverage base "$BASE_BINARY" "$BASE_REPORT" "$BASE_LOG" "$BASE_META" "$BASE_RBS_DIR"
+run_coverage head "$HEAD_BINARY" "$HEAD_REPORT" "$HEAD_LOG" "$HEAD_META" "$HEAD_RBS_DIR"
 
 comparison_args=(
   --base "$BASE_REPORT"
@@ -139,6 +157,9 @@ comparison_args=(
 )
 if [[ "$BASE_TIMED_OUT" -eq 1 ]]; then
   comparison_args+=(--base-timeout)
+fi
+if [[ "$ALLOW_REGRESSIONS" -eq 1 ]]; then
+  comparison_args+=(--allow-regressions)
 fi
 
 ruby "$ROOT_DIR/scripts/compare_coverage.rb" "${comparison_args[@]}"
