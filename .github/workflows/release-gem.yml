@@ -18,6 +18,11 @@
 #   - confirm spec.name is free on rubygems.org
 name: release-gem
 
+env:
+  CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+
 on:
   push:
     branches: [main]
@@ -80,10 +85,16 @@ jobs:
       - name: Vendor stdlib RBS (rbs gem → vendor/rbs)
         run: ./scripts/vendor-rbs.sh
 
-      - name: Cache cargo + target
+      - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
         with:
+          cache-targets: false
           key: ${{ matrix.platform }}
+
+      - name: Cache Rust compiler outputs
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: "v0.17.0"
 
       # Cut the release version: MAJOR.MINOR from tyda-version.txt + the merge
       # commit's UTC timestamp as the patch. It is derived from the commit, so

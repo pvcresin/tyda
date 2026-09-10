@@ -85,9 +85,10 @@ Rust buildや別の直列workflowは発生しない。
 
 build job は base/head を別々の Cargo target directory でビルドする。worktree間で target
 directory を共有すると、Cargoが別revisionのworkspace crateを再ビルドせず、baseのbinaryを
-headとして計測する可能性があるためである。matrix job は Rustを再ビルドせず、artifactの
-binaryを `TYDA_RBS_DIR` で同じRBSへ向ける。LSPはテスト harnessを再ビルドせず、同じrelease
-binaryを軽量なLSP clientから駆動する。
+headとして計測する可能性があるためである。target directory自体は保存せず、CIのRust
+compile jobは `CARGO_INCREMENTAL=0` と sccache の GitHub Actions backendでコンパイラ成果物を
+再利用する。matrix job は Rustを再ビルドせず、artifactのbinaryを `TYDA_RBS_DIR` で同じRBSへ
+向ける。LSPはテスト harnessを再ビルドせず、同じrelease binaryを軽量なLSP clientから駆動する。
 
 手元で同じ比較を行う場合は、subject と vendor/RBS を用意したうえで次を実行する。
 

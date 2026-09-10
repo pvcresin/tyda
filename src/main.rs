@@ -1400,7 +1400,7 @@ fn print_debug_report(summary: &CliRunSummary) {
     }
 
     let mut slowest = summary.file_timings.clone();
-    slowest.sort_by(|a, b| b.elapsed.cmp(&a.elapsed));
+    slowest.sort_by_key(|a| std::cmp::Reverse(a.elapsed));
     eprintln!("DEBUG slowest files:");
     for timing in slowest.into_iter().take(10) {
         eprintln!(

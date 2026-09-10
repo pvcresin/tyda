@@ -53,8 +53,10 @@ if [ "${#failed_targets[@]}" -gt 0 ]; then
 fi
 echo "All test targets passed."
 
-echo "=== Release Build ==="
-cargo build --release
+# The production release profile is built by the packaging and performance
+# workflows. Keep this local gate on the faster optimized validation profile.
+echo "=== Fast Release Build ==="
+cargo build --profile release-fast
 
 echo ""
 echo "All checks passed."

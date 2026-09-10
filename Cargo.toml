@@ -63,3 +63,10 @@ features = ["user-hooks"]
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Keep the production release profile optimized for runtime performance while
+# making local and CI validation builds finish quickly.
+[profile.release-fast]
+inherits = "release"
+lto = "off"
+codegen-units = 16
