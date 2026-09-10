@@ -28,8 +28,28 @@ mise run dev
 mise run e2e
 ~~~
 
-`./scripts/check.sh` は lockfile に合わせた stdlib RBS の生成確認と、Rust の format、clippy、test、release build をまとめて実行する。
+Rust の日常的な反復では、まず `mise run check-quick`（全targetの型確認）を使う。
+実行可能な最適化バイナリが必要なときは `mise run build-fast` を使う。このタスクと
+`./scripts/check.sh` は、実行性能を重視する `release`（thin LTO、codegen 1）ではなく、
+LTOを無効にしてcodegenを並列化した `release-fast` を使う。配布物、性能計測、package
+workflowは引き続き `release` を使う。
+
+`./scripts/check.sh` は lockfile に合わせた stdlib RBS の生成確認と、Rust の format、clippy、test、release-fast build をまとめて実行する。
 wasm feature の clippy と playground の整形確認も含め、変更の完了条件はこの check とする。
+
+クリーンなreleaseビルドやCI以外の再ビルドでは、任意でsccacheを使える。macOSは
+`brew install sccache`、その他の環境は各OSのパッケージまたは `cargo install sccache --locked`
+で導入し、次のように実行する。
+
+~~~bash
+CARGO_INCREMENTAL=0 RUSTC_WRAPPER=sccache cargo build --release
+sccache --show-stats
+~~~
+
+通常の `cargo build` / `cargo check` はincremental compilationが有効なdev profileのまま
+使うほうが速い。sccacheはincrementalなRust crateをキャッシュしないため、常用する場合も
+このrelease/clean build用の指定に限定する。CIでは同じ設定を自動で適用し、GitHub Actions
+backendへコンパイラ成果物を保存する。
 
 実験的な arity diagnostics は次で確認できる。
 
@@ -59,7 +79,9 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
 
 - PR の基本ゲートは `Test`、`Performance`、`Analysis compatibility`、`pages`、`Workflow lint`。`Test` は Ubuntu の format / lint / test shards、Windows の Rust build / clippy / test、VS Code 拡張の型検査・bundleを確認し、`Performance` は pinned な Ruby / Rails OSS subject の速度・max RSSを base/head で比較する。`Analysis compatibility` は base/headそれぞれのTydaと対応するRBSを組み合わせ、OSS subjectのRBS出力、diagnostics、coverageを比較する。Performance は binary を一度だけ build して subject ごとの matrix jobへ配布し、`pages` は wasm build と E2E を確認する。
 - PRでは各workflowが `scripts/ci/classify-changed-paths.sh` で変更範囲を分類する。Markdownと `playground/**` だけの変更では汎用Rust・性能・VS Code CIをjob-levelでskipし、Playgroundのコード変更時は `pages` の wasm build + E2Eを実行する。workflow自体は起動するため、required checkがPendingのまま取り残されない。`approved-analysis-change` ラベルを付けたときだけ、MaintainerまたはAdminが付けたことをGitHub APIで確認したうえで、解析出力・coverageの意図した差分を許可する。新しいcommitが積まれた場合はラベルを自動削除し、再確認を要求する。
-- `Test` は Linux と Windows の Rust build / clippy / test を確認する。
+- `Test` は Linux と Windows の Rust build / clippy / test を確認する。Rust compile jobは
+  `CARGO_INCREMENTAL=0` とsccacheのGitHub Actions backendを使い、`rust-cache`はCargoの
+  registry/gitだけを保存する（target directoryとの二重キャッシュを避ける）。
 - Dependabot は Bundler、root / `vscode/` の npm、Cargo、GitHub Actionsを週次で更新する。Major更新はPRを作るが自動mergeせず、Major以外と手動PRは全required checkが通った後にGitHubのauto-mergeへ登録する。auto-merge workflowは `main` がbranch protectionで保護されていない場合は登録を拒否する。手動PRでworkflowや `scripts/**` などCIポリシーを変更した場合はauto-mergeを登録せず、Maintainer/Adminのレビューと手動mergeを要求する。
 - release workflow は VSIX packaging と smoke test、main マージごとの platform gem packaging / smoke test / RubyGems Trusted Publishing を確認する。gem 公開後は同じバージョンの `v...` tag と GitHub Release を作成し、前回 Release 以降のマージPRを自動生成ノートに記録する。RubyGems 側の pending trusted publisher を事前に設定する。Linux ARM64 はGitHub-hosted runnerの利用条件が整い次第追加する。
 - Actions は commit SHA で固定し、`Workflow lint` の `actionlint` で workflow の構文・context を検査する。

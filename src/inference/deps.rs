@@ -202,10 +202,8 @@ impl<'a> InferenceEngine<'a> {
             Type::ReceiverMethodRef(recv, _) => {
                 Self::collect_type_references_into(recv, defined, refs);
             }
-            Type::MethodReturnRef(class, _) => {
-                if !defined.contains(class.as_str()) {
-                    refs.insert((class.clone()).to_string());
-                }
+            Type::MethodReturnRef(class, _) if !defined.contains(class.as_str()) => {
+                refs.insert((class.clone()).to_string());
             }
             _ => {}
         }

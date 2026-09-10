@@ -15,7 +15,7 @@
 # Keep version/components in sync with rust-toolchain.toml. mise installs
 # rustup and this toolchain plus clippy/rustfmt. wasm32-wasip1 is added by
 # `mise run setup` / build-wasm.sh (not every cargo invocation).
-rust = { version = "1.93.1", components = "clippy,rustfmt" }
+rust = { version = "1.98.1", components = "clippy,rustfmt" }
 node = "20"
 # Fetch the rbs gem and expand into vendor/rbs/ (vendor-rbs). Build-time only;
 # the shipped CLI/wasm have no Ruby runtime dependency.
@@ -132,8 +132,18 @@ run = [
   "cargo clippy --no-default-features --features wasm -- -D warnings",
 ]
 
+[tasks.check-quick]
+description = "Fast Rust workspace type-check without code generation"
+depends = ["vendor-rbs"]
+run = "cargo check --workspace --all-targets"
+
+[tasks.build-fast]
+description = "Fast optimized Tyda binary for local development"
+depends = ["vendor-rbs"]
+run = "cargo build --profile release-fast --bin tyda"
+
 [tasks.check]
-description = "fmt + clippy + test + release build + oxfmt --check (pre-commit)"
+description = "fmt + clippy + test + optimized validation build + oxfmt --check (pre-commit)"
 depends = ["vendor-rbs"]
 run = [
   "./scripts/check.sh",

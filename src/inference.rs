@@ -13086,13 +13086,11 @@ impl<'a> InferenceEngine<'a> {
                         scope.set(&pi.name, Type::KeywordParamRef(Sym::new(&pi.name)));
                     }
                 }
-                ParamKind::DoubleRest => {
-                    if !pi.name.is_empty() {
-                        scope.set(
-                            &pi.name,
-                            Type::Hash(Some(Box::new(Type::Symbol)), Some(Box::new(Type::Untyped))),
-                        );
-                    }
+                ParamKind::DoubleRest if !pi.name.is_empty() => {
+                    scope.set(
+                        &pi.name,
+                        Type::Hash(Some(Box::new(Type::Symbol)), Some(Box::new(Type::Untyped))),
+                    );
                 }
                 _ => {}
             }
@@ -13829,27 +13827,25 @@ impl<'a> InferenceEngine<'a> {
                             });
                         }
                     }
-                    Node::ForwardingParameterNode { .. } => {
-                        if self.supports_forwarding_syntax() {
-                            names.push(String::new());
-                            infos.push(ParamInfo {
-                                name: String::new(),
-                                kind: ParamKind::Rest,
-                                default_type: None,
-                            });
-                            names.push(String::new());
-                            infos.push(ParamInfo {
-                                name: String::new(),
-                                kind: ParamKind::DoubleRest,
-                                default_type: None,
-                            });
-                            names.push("block".to_string());
-                            infos.push(ParamInfo {
-                                name: "block".to_string(),
-                                kind: ParamKind::Block,
-                                default_type: None,
-                            });
-                        }
+                    Node::ForwardingParameterNode { .. } if self.supports_forwarding_syntax() => {
+                        names.push(String::new());
+                        infos.push(ParamInfo {
+                            name: String::new(),
+                            kind: ParamKind::Rest,
+                            default_type: None,
+                        });
+                        names.push(String::new());
+                        infos.push(ParamInfo {
+                            name: String::new(),
+                            kind: ParamKind::DoubleRest,
+                            default_type: None,
+                        });
+                        names.push("block".to_string());
+                        infos.push(ParamInfo {
+                            name: "block".to_string(),
+                            kind: ParamKind::Block,
+                            default_type: None,
+                        });
                     }
                     _ => {}
                 }
@@ -15224,10 +15220,8 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             None
                         };
-                    for (idx, ((name, _, _), ty)) in named_requireds
-                        .iter()
-                        .zip(param_types.into_iter())
-                        .enumerate()
+                    for (idx, ((name, _, _), ty)) in
+                        named_requireds.iter().zip(param_types).enumerate()
                     {
                         if accumulator_param_index == Some(idx) {
                             Self::set_block_param_or_alias(
@@ -45443,18 +45437,16 @@ impl<'a> InferenceEngine<'a> {
             return Some((var_name, narrowed));
         }
 
-        let (var_name, literal_ty) = if let Some(var_name) =
-            Self::extract_local_var_name_in_scope(&receiver, scope)
-        {
-            (
-                var_name,
-                Self::literal_singleton_type_from_node(&first_arg)?,
-            )
-        } else if let Some(var_name) = Self::extract_local_var_name_in_scope(&first_arg, scope) {
-            (var_name, Self::literal_singleton_type_from_node(&receiver)?)
-        } else {
-            return None;
-        };
+        let (var_name, literal_ty) =
+            if let Some(var_name) = Self::extract_local_var_name_in_scope(&receiver, scope) {
+                (
+                    var_name,
+                    Self::literal_singleton_type_from_node(&first_arg)?,
+                )
+            } else {
+                let var_name = Self::extract_local_var_name_in_scope(&first_arg, scope)?;
+                (var_name, Self::literal_singleton_type_from_node(&receiver)?)
+            };
 
         if method == "==" {
             return Some((var_name, literal_ty));
@@ -45480,10 +45472,9 @@ impl<'a> InferenceEngine<'a> {
         let ((var_name, key), literal_ty) =
             if let Some(target) = Self::extract_record_index_local_target(left, scope) {
                 (target, Self::literal_singleton_type_from_node(right)?)
-            } else if let Some(target) = Self::extract_record_index_local_target(right, scope) {
-                (target, Self::literal_singleton_type_from_node(left)?)
             } else {
-                return None;
+                let target = Self::extract_record_index_local_target(right, scope)?;
+                (target, Self::literal_singleton_type_from_node(left)?)
             };
 
         let current = self.resolve_narrowing_input_type(class_name, scope, scope.get(&var_name)?);
