@@ -48,7 +48,7 @@ required-features = ["wasm"]
 [dev-dependencies]
 futures = "0.3"
 tempfile = "3.26.0"
-tower = "0.4"
+tower = "0.5"
 walkdir = "2"
 
 [dev-dependencies.cargo-husky]
