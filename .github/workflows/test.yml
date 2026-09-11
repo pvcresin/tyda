@@ -174,8 +174,8 @@ jobs:
       - name: Run tests
         run: cargo test --locked ${{ matrix.args }} -- --test-threads=1
 
-  windows:
-    name: windows
+  windows-checks:
+    name: windows checks
     needs: changes
     if: needs.changes.outputs.run_full_ci == 'true'
     runs-on: windows-2025
@@ -232,10 +232,96 @@ jobs:
       - name: Run clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      # Keep every test target, but compile once and run independent test
-      # processes concurrently. This changes scheduling, not test coverage.
-      - name: Run tests in parallel
-        run: bash scripts/ci/run-tests-parallel.sh
+  windows-tests:
+    name: windows tests (${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.run_full_ci == 'true'
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - unit
+          - integration
+          - mutation
+          - pathological
+          - doc
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # Windows 2025 provides LLVM and libclang in the base image. bindgen
+      # needs the directory containing libclang.dll explicitly.
+      - name: Configure libclang
+        shell: pwsh
+        run: |
+          $clang = Get-Command clang.exe -ErrorAction Stop
+          $llvmBin = Split-Path $clang.Source
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Cache vendor/rbs
+        id: cache-rbs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/rbs
+          key: ${{ runner.os }}-vendor-rbs-${{ hashFiles('Gemfile.lock') }}
+
+      - name: Set up Ruby
+        if: steps.cache-rbs.outputs.cache-hit != 'true'
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Set up the pinned Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component clippy,rustfmt
+
+      - name: Vendor RBS (rbs gem → vendor/rbs)
+        if: steps.cache-rbs.outputs.cache-hit != 'true'
+        run: ./scripts/vendor-rbs.sh
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-targets: false
+
+      - name: Cache Rust compiler outputs
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: "v0.17.0"
+
+      # Every test target runs in exactly one shard. Heavy targets get their
+      # own runners so their watchdogs are not distorted by CPU contention.
+      - name: Run tests for shard
+        run: bash scripts/ci/run-tests-parallel.sh "${{ matrix.shard }}"
+
+  # Keep the existing required check name while making every Windows shard
+  # part of the same merge gate.
+  windows:
+    name: windows
+    needs:
+      - changes
+      - windows-checks
+      - windows-tests
+    if: always() && needs.changes.outputs.run_full_ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify Windows checks
+        env:
+          CHECKS_RESULT: ${{ needs.windows-checks.result }}
+          TESTS_RESULT: ${{ needs.windows-tests.result }}
+        run: |
+          if [[ "$CHECKS_RESULT" != "success" ]]; then
+            echo "Windows checks result: $CHECKS_RESULT"
+            exit 1
+          fi
+          if [[ "$TESTS_RESULT" != "success" ]]; then
+            echo "Windows tests result: $TESTS_RESULT"
+            exit 1
+          fi
 
   vscode:
     name: vscode
