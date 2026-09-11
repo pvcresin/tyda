@@ -81,7 +81,7 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
 - PRでは各workflowが `scripts/ci/classify-changed-paths.sh` で変更範囲を分類する。Markdownと `playground/**` だけの変更では汎用Rust・性能・VS Code CIをjob-levelでskipし、Playgroundのコード変更時は `pages` の wasm build + E2Eを実行する。workflow自体は起動するため、required checkがPendingのまま取り残されない。`approved-analysis-change` ラベルを付けたときだけ、MaintainerまたはAdminが付けたことをGitHub APIで確認したうえで、解析出力・coverageの意図した差分を許可する。新しいcommitが積まれた場合はラベルを自動削除し、再確認を要求する。
 - `Test` は Linux と Windows の Rust build / clippy / test を確認する。Windowsも全test targetを実行し、
   `scripts/ci/run-tests-parallel.sh` で一度だけコンパイルしてから独立したテストプロセスを並列実行する。
-  Linuxのshardと同じtest profile最適化（opt-level=1、debug=0）で実行時間を抑える。Rust compile jobは
+  Windowsの既存test profileを維持したまま、スケジューリングだけを変えて初回コンパイルの負荷を増やさない。Rust compile jobは
   `CARGO_INCREMENTAL=0` とsccacheのGitHub Actions backendを使い、`rust-cache`はCargoの
   registry/gitだけを保存する（target directoryとの二重キャッシュを避ける）。
 - `pages` はPlaygroundの `format:check`、typecheck、oxlintを明示的に通した後、wasm buildとE2Eを実行する。既存の `e2e-test` required checkの中で実行するため、auto-mergeの保護対象を分散させない。
