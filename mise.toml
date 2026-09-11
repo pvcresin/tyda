@@ -121,7 +121,7 @@ run = "cargo test"
 description = "cargo fmt + oxfmt (playground js/json/css/html)"
 run = [
   "cargo fmt --all",
-  "npx oxfmt --write playground",
+  "npm run format",
 ]
 
 [tasks.clippy]
@@ -143,11 +143,11 @@ depends = ["vendor-rbs"]
 run = "cargo build --profile release-fast --bin tyda"
 
 [tasks.check]
-description = "fmt + clippy + test + optimized validation build + oxfmt --check (pre-commit)"
+description = "fmt + clippy + test + build + playground checks (pre-commit)"
 depends = ["vendor-rbs"]
 run = [
   "./scripts/check.sh",
-  "npx oxfmt --check playground",
+  "npm run check:playground",
 ]
 
 [tasks.clean]

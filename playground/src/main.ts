@@ -143,7 +143,7 @@ function decodeState(hash: string): State | null {
       return null;
     }
     return parsed;
-  } catch (_e) {
+  } catch {
     return null;
   }
 }
@@ -228,7 +228,7 @@ async function analyze(ruby: string, rbs: string): Promise<AnalysisResult> {
   if (!text) return empty;
   try {
     return { ...empty, ...JSON.parse(text) };
-  } catch (_e) {
+  } catch {
     // Non-JSON stdout: treat as raw RBS text (older wasm builds).
     return { ...empty, rbs: text };
   }
