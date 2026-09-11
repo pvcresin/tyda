@@ -60,8 +60,10 @@ cargo test <module>::<test>
 ~~~
 
 GitHub Actions では `Test`、`Performance`、`Analysis compatibility`、`pages`、`Workflow lint` をPRゲートとする。`Test` はLinuxとWindowsの
-Rust build / clippy / test、`Performance` は pinned な Ruby / Rails OSS subject ごとの base/head 比較、release workflowはgem / VSIXのLinux x86_64・Windows x64・Intel macOS・
+Rust build / clippy / test（Windowsも全test targetを実行し、`scripts/ci/run-tests-parallel.sh` で一度だけコンパイルしてから独立したテストプロセスを並列実行し、test profileだけ最適化する）、`Performance` は pinned な Ruby / Rails OSS subject ごとの base/head 比較、release workflowはgem / VSIXのLinux x86_64・Windows x64・Intel macOS・
 ARM macOS package smoke testも確認する。Linux ARM64はrunnerの利用条件が整い次第追加する。
+
+`pages / e2e-test` は `npm run format:check`、`npm run typecheck`、`npm run lint` を実行してからPlaygroundのwasm buildとE2Eを行う。これらは既存の `e2e-test` required checkに含める。
 
 `Analysis compatibility` は base commit と head commitをそれぞれのGemfile.lockから生成したRBSと組み合わせ、sample・pinned OSS subjectのCLI RBS出力とdiagnosticsをbyte単位で比較する。coverageも同じ組み合わせで比較し、差分があるPRはデフォルトで失敗する。意図した推論・coverage変更はJob SummaryのdiffをレビューしたMaintainer/Adminだけが `approved-analysis-change` ラベルで許可できる。新しいcommitではラベルを自動削除するため、古い承認を再利用できない。
 

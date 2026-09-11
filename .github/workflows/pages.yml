@@ -121,9 +121,14 @@ jobs:
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
 
-      # oxfmt formats playground ts/js/json/css/html (md excluded; see .oxfmtrc.jsonc).
       - name: Check playground formatting (oxfmt)
-        run: npx oxfmt --check playground
+        run: npm run format:check
+
+      - name: Check playground types
+        run: npm run typecheck
+
+      - name: Lint playground
+        run: npm run lint
 
       # Builds wasm + RBS bundle + Vite (→ playground/dist) and E2Es the built
       # app via `vite preview`. Same mise task as local dev.

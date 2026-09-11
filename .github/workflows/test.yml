@@ -195,7 +195,15 @@ jobs:
           $llvmBin = Split-Path $clang.Source
           "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Cache vendor/rbs
+        id: cache-rbs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/rbs
+          key: ${{ runner.os }}-vendor-rbs-${{ hashFiles('Gemfile.lock') }}
+
       - name: Set up Ruby
+        if: steps.cache-rbs.outputs.cache-hit != 'true'
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
         with:
           ruby-version: "3.4"
@@ -205,6 +213,7 @@ jobs:
         run: rustup toolchain install 1.98.1 --profile minimal --component clippy,rustfmt
 
       - name: Vendor RBS (rbs gem → vendor/rbs)
+        if: steps.cache-rbs.outputs.cache-hit != 'true'
         run: ./scripts/vendor-rbs.sh
 
       - name: Cache Rust dependencies
@@ -223,8 +232,13 @@ jobs:
       - name: Run clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Run tests
-        run: cargo test --locked
+      # Keep every test target, but compile once and run independent test
+      # processes concurrently. This changes scheduling, not test coverage.
+      - name: Run tests in parallel
+        env:
+          CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: bash scripts/ci/run-tests-parallel.sh
 
   vscode:
     name: vscode
