@@ -60,7 +60,7 @@ cargo test <module>::<test>
 ~~~
 
 GitHub Actions では `Test`、`Performance`、`Analysis compatibility`、`pages`、`Workflow lint` をPRゲートとする。`Test` はLinuxとWindowsの
-Rust build / clippy / test（Windowsも全test targetを実行し、`scripts/ci/run-tests-parallel.sh` で一度だけコンパイルしてから独立したテストプロセスを並列実行し、test profileだけ最適化する）、`Performance` は pinned な Ruby / Rails OSS subject ごとの base/head 比較、release workflowはgem / VSIXのLinux x86_64・Windows x64・Intel macOS・
+Rust build / clippy / test（Windowsも全test targetを実行し、unit、軽量integration、mutation、pathological、docのshardを独立したrunnerで並列実行し、`windows` required checkでformat / clippyと併せて集約する）、`Performance` は pinned な Ruby / Rails OSS subject ごとの base/head 比較、release workflowはgem / VSIXのLinux x86_64・Windows x64・Intel macOS・
 ARM macOS package smoke testも確認する。Linux ARM64はrunnerの利用条件が整い次第追加する。
 
 `pages / e2e-test` は `npm run format:check`、`npm run typecheck`、`npm run lint` を実行してからPlaygroundのwasm buildとE2Eを行う。これらは既存の `e2e-test` required checkに含める。
