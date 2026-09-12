@@ -12,7 +12,7 @@ import {
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient | undefined;
-let output: vscode.OutputChannel;
+let output: vscode.LogOutputChannel;
 let statusBar: vscode.StatusBarItem;
 let signaturesEnabled = true;
 
@@ -118,7 +118,7 @@ function updateStatusBar(): void {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  output = vscode.window.createOutputChannel('Tyda');
+  output = vscode.window.createOutputChannel('Tyda', { log: true });
   context.subscriptions.push(output);
 
   const folder = vscode.workspace.workspaceFolders?.[0];
