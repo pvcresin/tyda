@@ -20,6 +20,9 @@
     "lz-string": "^1.5.0",
     "monaco-editor": "^0.56.0"
   },
+  "overrides": {
+    "dompurify": "3.4.15"
+  },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "oxfmt": "^0.67.0",
