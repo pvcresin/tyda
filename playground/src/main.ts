@@ -30,12 +30,12 @@ import LZString from "lz-string";
 // uses (CodeLens and hover) + the Ruby Monarch grammar. Importing the full
 // "monaco-editor" (or edcore.main) pulls in ~50 editor contributions and every
 // language/language-service, which dominates the bundle.
-import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
-import "monaco-editor/esm/vs/editor/contrib/codelens/browser/codelensController.js";
-import "monaco-editor/esm/vs/editor/contrib/comment/browser/comment.js";
-import "monaco-editor/esm/vs/editor/contrib/hover/browser/hoverContribution.js";
-import "monaco-editor/esm/vs/basic-languages/ruby/ruby.contribution";
-import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+import * as monaco from "monaco-editor/editor/editor.api";
+import "monaco-editor/editor/contrib/codelens/browser/codelensController.js";
+import "monaco-editor/editor/contrib/comment/browser/comment.js";
+import "monaco-editor/editor/contrib/hover/browser/hoverContribution.js";
+import "monaco-editor/languages/definitions/ruby/register.js";
+import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 
 // The playground only edits the "ruby" language (no JSON/TS/CSS language
 // services), so the base editor worker is all Monaco needs.
@@ -374,7 +374,7 @@ async function main(): Promise<void> {
     // this pane shares it for highlighting — but those overlays describe the
     // right-hand Ruby analysis, so disable them here to keep the rbs pane clean.
     codeLens: false,
-    hover: { enabled: false },
+    hover: { enabled: "off" },
   });
 
   // Expose the editors for E2E tests / debugging.

@@ -13,7 +13,7 @@
     "directory": "vscode"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.136.0"
   },
   "categories": [
     "Programming Languages"
@@ -66,11 +66,11 @@
     "package": "vsce package --no-dependencies -o tyda.vsix"
   },
   "dependencies": {
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^10.1.1"
   },
   "devDependencies": {
     "@types/node": "^26.5.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "^1.136.0",
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
