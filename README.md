@@ -6,21 +6,26 @@ Type inference for lazy Rubyists.
 
 [Website](https://pvcresin.github.io/tyda/) · [Playground](https://pvcresin.github.io/tyda/play/) · [Documentation](https://pvcresin.github.io/tyda/docs/)
 
-Tyda (/ˈtaɪdə/, “tie-duh”) is a Ruby type-inference tool that infers useful types from Ruby and Rails code without requiring type annotations. The name comes from 怠惰, the Japanese word for “laziness”.
+Tyda (pronounced “tie-duh”, /ˈtaɪdə/) is a type-inference tool for Ruby and Rails. It infers useful types without requiring type annotations; its name comes from 怠惰, the Japanese word for “laziness”.
 
 > **Note:** Tyda is pre-1.0. Its API, CLI, language server, and inference behavior may change.
 
-## What Tyda does
+## Features
 
-- **Editor integration** — Explore inferred types through a TypeProf-compatible language server with hover, CodeLens, definition, and type definition support.
-- **CLI output** — Emit RBS and supplementary JSON Lines diagnostics for batch use.
-- **Playground** — Try Ruby and RBS in the browser without installing Tyda.
+- 🧠 **Inference without annotations** — Infer useful types from Ruby and Rails code without annotating every method.
+- 🧑‍💻 **Editor integration** — Explore inferred signatures and types in VS Code with hover, CodeLens, and navigation.
+- 📄 **RBS output and diagnostics** — Emit inferred RBS and supplementary JSON Lines diagnostics from the CLI.
+- 🎮 **Browser Playground** — Try Ruby and RBS in the browser without installing Tyda.
 
 ## Get started
 
-The [Playground](https://pvcresin.github.io/tyda/play/) is the quickest way to try Tyda.
+### Try the Playground
 
-To use Tyda in VS Code, install Tyda and the [Ruby TypeProf extension](https://marketplace.visualstudio.com/items?itemName=mame.ruby-typeprof):
+The [Playground](https://pvcresin.github.io/tyda/play/) is the quickest way to try Tyda. No installation is required.
+
+### Use Tyda in VS Code
+
+Tyda provides the language server, while the [Ruby TypeProf extension](https://marketplace.visualstudio.com/items?itemName=mame.ruby-typeprof) displays its inferred signatures and types in VS Code. Install both:
 
 ```sh
 gem install tyda
@@ -35,9 +40,11 @@ Set Tyda as the language server in your project's `.vscode/settings.json`:
 }
 ```
 
-Open a Ruby file to see inferred signatures and types. You do not need to install the `typeprof` gem separately.
+Open a Ruby file to see inferred signatures and types. If VS Code cannot find `tyda` on `PATH`, use the absolute path returned by `which tyda`. You do not need to install the `typeprof` gem separately.
 
 ## CLI
+
+Use the CLI for batch RBS output and supplementary diagnostics:
 
 ```sh
 tyda path/to/file.rb                 # print inferred RBS
