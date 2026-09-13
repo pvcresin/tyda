@@ -45,12 +45,10 @@ Treat 0.x minor updates and all major updates as potentially breaking; validate 
 API, build, and runtime behavior rather than relying on semver alone. Do not force a
 downgrade to make the resolver succeed.
 
-Do not introduce npm `overrides`, Yarn `resolutions`, or equivalent patch mechanisms
-merely to silence an alert. Use one only after confirming that no compatible direct
-or upstream release exists and the user explicitly accepts the compatibility risk.
-If one is approved, record the owning dependency, why the patched version is
-compatible, and a concrete removal condition. Verify it with a clean install,
-dependency-tree/lockfile inspection, the relevant audit, and the normal runtime gate.
+Do not introduce npm `overrides`, Yarn `resolutions`, or equivalent patch mechanisms.
+Use canonical direct or parent dependency updates only. Verify them with a clean
+install, dependency-tree/lockfile inspection, the relevant audit, and the normal
+runtime gate.
 When the parent package ships a bundled copy of the transitive library, also inspect
 the generated artifact: a lockfile override may clear the package-manager alert
 without changing the vulnerable code that users execute.

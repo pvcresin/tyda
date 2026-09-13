@@ -87,7 +87,7 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
   registry/gitだけを保存する（target directoryとの二重キャッシュを避ける）。
 - `pages` はPlaygroundの `format:check`、typecheck、oxlintを明示的に通した後、wasm buildとE2Eを実行する。既存の `e2e-test` required checkの中で実行するため、auto-mergeの保護対象を分散させない。
 - Dependabot は Bundler、root / `vscode/` の npm、Cargo、GitHub Actionsを週次で更新する。Major更新はPRを作るが自動mergeせず、Major以外と手動PRは全required checkが通った後にGitHubのauto-mergeへ登録する。auto-merge workflowは `main` がbranch protectionで保護されていない場合は登録を拒否する。手動PRでworkflowや `scripts/**` などCIポリシーを変更した場合はauto-mergeを登録せず、Maintainer/Adminのレビューと手動mergeを要求する。
-- 依存更新で脆弱性が見つかった場合は、direct / transitive、runtime / development-only、実際の到達経路と生成物へのバンドル有無を確認する。`overrides` や `resolutions` は通常の解決手段にせず、まず直接依存または上流の修正版を待つ。正規の解決経路がない場合は無理に解消扱いにせず、Dependabot alertをopenのまま保持して上流修正版のリリース後に再評価する。現在の `monaco-editor@0.56.0` は `dompurify@3.4.8` を成果物へバンドルしているため、利用側のlockfileだけでは更新できない。上流Issue [#5454](https://github.com/microsoft/monaco-editor/issues/5454) の修正版リリースを待ち、リリース後に直接依存の更新へ置き換える。
+- 依存更新で脆弱性が見つかった場合は、direct / transitive、runtime / development-only、実際の到達経路と生成物へのバンドル有無を確認する。まず直接依存または親依存の正規の更新で修正版を取り込めるか検証し、解決できる場合だけ対応する。`overrides` や `resolutions` は使用しない。正規の更新で解決できない場合はライブラリ側の対応を待ち、脆弱性は無理に解消扱いにせずDependabot alertをopenのまま保持する。上流修正版がリリースされたら、通常の依存更新として再評価する。
 - release workflow は VSIX packaging と smoke test、main マージごとの platform gem packaging / smoke test / RubyGems Trusted Publishing を確認する。gem 公開後は同じバージョンの `v...` tag と GitHub Release を作成し、前回 Release 以降のマージPRを自動生成ノートに記録する。RubyGems 側の pending trusted publisher を事前に設定する。Linux ARM64 はGitHub-hosted runnerの利用条件が整い次第追加する。
 - Actions は commit SHA で固定し、`Workflow lint` の `actionlint` で workflow の構文・context を検査する。
 
