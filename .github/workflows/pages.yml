@@ -133,7 +133,7 @@ jobs:
         run: npm run lint
 
       # Builds docs + wasm + RBS + Vite, assembles pages-dist, and E2Es the
-      # Playground at /play/. Same mise task as local dev.
+      # project Pages site at /tyda/play/. Same mise task as local dev.
       - name: Build + E2E (mise run e2e)
         run: mise run e2e
 

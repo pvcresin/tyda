@@ -9,6 +9,7 @@ hero:
     - theme: brand
       text: Try the Playground
       link: /play/
+      target: _self
     - theme: alt
       text: Read the Documentation
       link: /docs/

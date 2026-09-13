@@ -1,6 +1,23 @@
 import { test, expect } from "@playwright/test";
 
-const PLAYGROUND_PATH = "/play/";
+const PAGES_BASE_PATH = "/tyda";
+const LANDING_PATH = `${PAGES_BASE_PATH}/`;
+const DOCS_PATH = `${PAGES_BASE_PATH}/docs/`;
+const PLAYGROUND_PATH = `${PAGES_BASE_PATH}/play/`;
+
+async function waitForPlayground(page) {
+  await expect(page).toHaveTitle(/Tyda Playground/);
+  await page.waitForFunction(() => window.__tyda !== undefined, null, {
+    timeout: 45_000,
+  });
+}
+
+async function expectLanding(page) {
+  await expect(page).toHaveTitle(/Tyda/);
+  await expect(
+    page.getByText("Type inference tool for lazy Rubyists", { exact: true }),
+  ).toBeVisible();
+}
 
 // End-to-end check that the Tyda Playground delivers a TypeProf.wasm-style,
 // LSP-like experience against the freshly built wasm:
@@ -9,18 +26,82 @@ const PLAYGROUND_PATH = "/play/";
 //   - diagnostics (squiggles) for an unresolved call
 //   - hover spans carrying inferred types
 //   - URL state restoration (lz-string in location.hash)
+//   - project Pages navigation and browser history across the static routes
 // Asserts behavior, not binary identity, so local (macOS) and CI (Ubuntu)
 // builds can differ bit-for-bit.
 
 test("serves the landing page and documentation routes", async ({ page }) => {
-  await page.goto("/");
-  await expect(page).toHaveTitle(/Tyda/);
-  await expect(
-    page.getByText("Type inference tool for lazy Rubyists", { exact: true }),
-  ).toBeVisible();
+  await page.goto(LANDING_PATH);
+  await expectLanding(page);
+  await expect(page.getByRole("link", { name: "Try the Playground", exact: true })).toHaveAttribute(
+    "target",
+    "_self",
+  );
+  await page.getByRole("link", { name: "Try the Playground", exact: true }).click();
+  await waitForPlayground(page);
+  await expect(page).toHaveURL(new RegExp(`${PAGES_BASE_PATH}/play/$`));
 
-  await page.goto("/docs/");
+  await page.goto(DOCS_PATH);
   await expect(page.locator("h1")).toHaveText("Documentation Index");
+});
+
+test("round-trips landing and Playground state through browser history", async ({ page }) => {
+  const source = "class Widget\n  def size = 42\nend\n";
+
+  await page.goto(LANDING_PATH);
+  await page.getByRole("link", { name: "Try the Playground", exact: true }).click();
+  await waitForPlayground(page);
+
+  await page.evaluate((value) => window.__editors.ruby.setValue(value), source);
+  await page.waitForFunction(() => location.hash.length > 1, null, {
+    timeout: 45_000,
+  });
+
+  await page.goBack();
+  await expectLanding(page);
+  await expect(page).toHaveURL(new RegExp(`${PAGES_BASE_PATH}/$`));
+
+  await page.goForward();
+  await waitForPlayground(page);
+  await expect(page).toHaveURL(new RegExp(`${PAGES_BASE_PATH}/play/#.+`));
+  await expect
+    .poll(() => page.evaluate(() => window.__editors.ruby.getValue()), { timeout: 45_000 })
+    .toBe(source);
+});
+
+test("navigates Home, Docs, and Playground through the Pages base path", async ({ page }) => {
+  const source = "class DocsWidget\n  def size = 42\nend\n";
+
+  await page.goto(DOCS_PATH);
+  await expect(page.locator("h1")).toHaveText("Documentation Index");
+
+  const homeLink = page
+    .locator("nav.VPNavBarMenu")
+    .getByRole("link", { name: "Home", exact: true });
+  await homeLink.click();
+  await expectLanding(page);
+  await expect(page).toHaveURL(new RegExp(`${PAGES_BASE_PATH}/$`));
+
+  await page.goBack();
+  await expect(page.locator("h1")).toHaveText("Documentation Index");
+  const playgroundLink = page
+    .locator("nav.VPNavBarMenu")
+    .getByRole("link", { name: "Playground", exact: true });
+  await expect(playgroundLink).toHaveAttribute("target", "_self");
+  await playgroundLink.click();
+  await waitForPlayground(page);
+  await page.evaluate((value) => window.__editors.ruby.setValue(value), source);
+  await page.waitForFunction(() => location.hash.length > 1, null, {
+    timeout: 45_000,
+  });
+
+  await page.goBack();
+  await expect(page.locator("h1")).toHaveText("Documentation Index");
+  await page.goForward();
+  await waitForPlayground(page);
+  await expect
+    .poll(() => page.evaluate(() => window.__editors.ruby.getValue()), { timeout: 45_000 })
+    .toBe(source);
 });
 
 test("infers RBS, emits CodeLens + diagnostics + hover", async ({ page }) => {
@@ -278,6 +359,52 @@ test("restores ruby + rbs state from the URL hash", async ({ page }) => {
   expect(result.rbs).toContain("def size: -> 42"); // literal-typed inference ran
 });
 
+test("restores edited Ruby and RBS after reloading a Pages URL", async ({ page }) => {
+  const ruby = "class Widget\n  def size = 42\nend\n";
+  const rbs = "class Widget\n  def size: () -> Integer\nend\n";
+
+  await page.goto(PLAYGROUND_PATH);
+  await waitForPlayground(page);
+  await page.evaluate(
+    ([nextRuby, nextRbs]) => {
+      window.__editors.ruby.setValue(nextRuby);
+      window.__editors.rbs.setValue(nextRbs);
+    },
+    [ruby, rbs],
+  );
+  await page.waitForFunction(() => location.hash.length > 1, null, {
+    timeout: 45_000,
+  });
+  const savedHash = await page.evaluate(() => location.hash);
+
+  await page.reload();
+  await waitForPlayground(page);
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => ({
+          ruby: window.__editors.ruby.getValue(),
+          rbs: window.__editors.rbs.getValue(),
+        })),
+      { timeout: 45_000 },
+    )
+    .toEqual({ ruby, rbs });
+  expect(await page.evaluate(() => location.hash)).toBe(savedHash);
+});
+
+test("falls back to the sample for an invalid state hash", async ({ page }) => {
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(String(error)));
+
+  await page.goto(`${PLAYGROUND_PATH}#not-a-valid-state`);
+  await waitForPlayground(page);
+  await expect
+    .poll(() => page.evaluate(() => window.__editors.ruby.getValue()), { timeout: 45_000 })
+    .toContain("class User");
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("");
+  expect(pageErrors, "no uncaught page errors").toEqual([]);
+});
+
 test("clicking the title resets to the initial example with a clean URL", async ({ page }) => {
   // Boot with custom code carried in the URL hash.
   const custom = { ruby: "class Widget\n  def size = 42\nend\n", rbs: "" };
@@ -325,6 +452,13 @@ test("browser Back restores the pre-reset editor state", async ({ page }) => {
   await page.goBack();
   await page.waitForFunction(
     () => window.__editors.ruby.getValue().includes("class Widget"),
+    null,
+    { timeout: 45_000 },
+  );
+  expect(await page.evaluate(() => location.hash)).not.toBe("");
+  await page.goForward();
+  await page.waitForFunction(
+    () => window.__editors.ruby.getValue().includes("class User") && location.hash === "",
     null,
     { timeout: 45_000 },
   );
