@@ -11,6 +11,7 @@ Tyda (pronounced “tie-duh”, /ˈtaɪdə/) is a type inference tool for Ruby a
 ## Features
 
 - 🧠 **Inference without annotations** — Infer useful types from Ruby and Rails code without annotating every method.
+- ⚡ **Fast type inference** — Get useful type information quickly while working with Ruby.
 - 🧑‍💻 **Editor integration** — Explore inferred signatures and types in VS Code with hover, CodeLens, and navigation.
 - 📄 **RBS output and diagnostics** — Emit inferred RBS and supplementary JSON Lines diagnostics from the CLI.
 - 🎮 **Browser Playground** — Try Ruby and RBS in the browser without installing Tyda.
