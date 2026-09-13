@@ -55,7 +55,9 @@ When the parent package ships a bundled copy of the transitive library, also ins
 the generated artifact: a lockfile override may clear the package-manager alert
 without changing the vulnerable code that users execute.
 If no canonical resolution exists, report the blocker and the available upstream
-or mitigation options instead of forcing a resolver result.
+or mitigation options instead of forcing a resolver result. Keep the Dependabot
+alert open in that case; do not dismiss it merely to make the security dashboard
+green. Revisit it after the owning library publishes a fixed release.
 
 ## 4. Finish
 
