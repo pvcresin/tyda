@@ -2,52 +2,32 @@
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/pvcresin/tyda)
 
-Tyda is a type inference tool for lazy Rubyists.
+Type inference for lazy Rubyists.
 
-> ⚠️ **Note**: Tyda has not reached v1.0.0 yet. Its API, CLI, language server,
-> and inference behavior may change.
+[Website](https://pvcresin.github.io/tyda/) · [Playground](https://pvcresin.github.io/tyda/play/) · [Documentation](https://pvcresin.github.io/tyda/docs/)
 
-Try the [Playground](https://pvcresin.github.io/tyda/play/) or read the
-[documentation](https://pvcresin.github.io/tyda/docs/).
+Tyda (/ˈtaɪdə/, “tie-duh”) is a Ruby type-inference tool that infers useful types from Ruby and Rails code without requiring type annotations. The name comes from 怠惰, the Japanese word for “laziness”.
 
-It aims to infer useful types from Ruby without requiring type annotations, with a
-TypeProf-compatible language server as its main interface. It also provides a CLI for
-RBS output and supplementary type checking.
+> **Note:** Tyda is pre-1.0. Its API, CLI, language server, and inference behavior may change.
 
-Tyda is pronounced /ˈtaɪdə/—a nod to 怠惰 ("laziness" in Japanese).
+## What Tyda does
 
-## Overview
+- **Editor integration** — Explore inferred types through a TypeProf-compatible language server with hover, CodeLens, definition, and type definition support.
+- **CLI output** — Emit RBS and supplementary JSON Lines diagnostics for batch use.
+- **Playground** — Try Ruby and RBS in the browser without installing Tyda.
 
-- Infer useful types from Ruby / Rails code without writing type annotations
-- Explore inferred types in the editor through TypeProf-compatible CodeLens, Hover, definition, and typeDefinition support
-- Use the CLI to emit RBS and run supplementary type checks and diagnostics
-- Type-info priority for displayed method types: inline RBS comments (`#:` / `# @rbs`) → Sorbet `sig` → `.rbs` → `.rbi` → Ruby code inference. Type checking is assistive, and unsupported Sorbet syntax remains experimental
+## Get started
 
-## Quick start
+The [Playground](https://pvcresin.github.io/tyda/play/) is the quickest way to try Tyda.
 
-Tyda's main interface is the TypeProf-compatible language server. Install the gem,
-connect it to the Ruby TypeProf VS Code extension, and open a Ruby file to see inferred
-types in the editor.
+To use Tyda in VS Code, install Tyda and the [Ruby TypeProf extension](https://marketplace.visualstudio.com/items?itemName=mame.ruby-typeprof):
 
-### 1. Install Tyda
-
-```bash
+```sh
 gem install tyda
-```
-
-### 2. Install the Ruby TypeProf extension
-
-Install [Ruby TypeProf](https://marketplace.visualstudio.com/items?itemName=mame.ruby-typeprof)
-from the VS Code Marketplace, or run:
-
-```bash
 code --install-extension mame.ruby-typeprof
 ```
 
-### 3. Configure the extension to use Tyda
-
-Point the extension at the `tyda` executable installed by RubyGems. Add this to your
-project's `.vscode/settings.json`:
+Set Tyda as the language server in your project's `.vscode/settings.json`:
 
 ```json
 {
@@ -55,67 +35,29 @@ project's `.vscode/settings.json`:
 }
 ```
 
-If VS Code cannot find `tyda` on `PATH`, run `which tyda` and use the resulting absolute
-path instead. You do not need to install the `typeprof` gem separately.
+Open a Ruby file to see inferred signatures and types. You do not need to install the `typeprof` gem separately.
 
-### 4. Open a Ruby file
+## CLI
 
-Try this example:
-
-```ruby
-def greet(name)
-  "Hello, #{name}!"
-end
-
-greet("Tyda")
-```
-
-Open the file in VS Code. The TypeProf extension shows inferred method signatures and
-types on hover. Restart the TypeProf language server after changing the server path.
-
-## Optional CLI
-
-The editor is the main way to explore Tyda's inference. The CLI is also available for
-batch RBS output and supplementary diagnostics:
-
-```bash
+```sh
 tyda path/to/file.rb                 # print inferred RBS
 tyda --diagnostics path/to/file.rb  # print JSON Lines diagnostics
 ```
 
 ## Documentation
 
-See [`docs/`](docs/) ([`docs/README.md`](docs/README.md) is the index). Living docs are written in Japanese.
-
-- [Design](docs/design.md) / [Architecture](docs/architecture.md)
-- [Features](docs/features.md) / [Capability matrix](docs/capability-matrix.md)
-- [Testing](docs/testing.md) / [Performance](docs/performance.md)
-- [Development guide](docs/development.md) / [Roadmap](docs/roadmap.md)
+The [documentation](https://pvcresin.github.io/tyda/docs/) covers supported syntax, inference behavior, editor integration, architecture, and development.
 
 ## Development
 
-[mise](https://mise.jdx.dev) is the only local prerequisite. Then:
-
-```bash
-mise trust && mise run setup-core   # rust + ruby + vendor/rbs; enough for ./scripts/check.sh
-# mise run setup                    # + wasm target, npm, Playwright (playground)
-# ./scripts/bootstrap.sh            # bare Linux / Codespaces / cloud agents (clang + mise too)
+```sh
+mise trust
+mise run setup-core
+./scripts/check.sh
 ```
 
-Benchmarks run against real OSS projects, fetched at pinned commits so the numbers in
-[`docs/performance.md`](docs/performance.md) are reproducible:
-
-```bash
-./scripts/setup_subjects.sh          # fetch all pinned subjects (CI uses one per matrix job)
-./scripts/setup_subjects.sh --list   # the pinned commit table
-```
-
-The exhaustive real-world regression matrix runs in CI; the local snapshot checks remain
-intentionally small.
-
-Details: [`docs/development.md`](docs/development.md).
+See the [Development guide](https://pvcresin.github.io/tyda/docs/development) for playground, benchmark, and CI tasks.
 
 ## License
 
-MIT License ([`LICENSE`](LICENSE)). Third-party notices for bundled/linked components
-(ruby/rbs, prism, etc.) are in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+MIT License ([`LICENSE`](LICENSE)). Third-party notices for bundled/linked components (ruby/rbs, prism, etc.) are in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
