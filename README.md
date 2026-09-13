@@ -1,12 +1,10 @@
-# Tyda
+# Tyda - Type inference tool for lazy Rubyists
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/pvcresin/tyda)
 
-Type inference for lazy Rubyists.
-
 [Website](https://pvcresin.github.io/tyda/) · [Playground](https://pvcresin.github.io/tyda/play/) · [Documentation](https://pvcresin.github.io/tyda/docs/)
 
-Tyda (pronounced “tie-duh”, /ˈtaɪdə/) is a type-inference tool for Ruby and Rails. It infers useful types without requiring type annotations; its name comes from 怠惰, the Japanese word for “laziness”.
+Tyda (pronounced “tie-duh”, /ˈtaɪdə/) is a type inference tool for Ruby and Rails. It infers useful types without requiring type annotations; its name comes from 怠惰, the Japanese word for “laziness”.
 
 > **Note:** Tyda is pre-1.0. Its API, CLI, language server, and inference behavior may change.
 
