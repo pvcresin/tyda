@@ -15,6 +15,10 @@
 /playground/public/rbs-bundle.json
 # Vite build output (published to GitHub Pages by CI)
 /playground/dist
+# Documentation and combined Pages build output
+/docs/.vitepress/cache
+/docs/.vitepress/dist
+/pages-dist
 # Playground / E2E tooling
 /node_modules
 /test-results

@@ -1,10 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// E2E for the Tyda Playground. Serves the built playground (`vite preview` of
-// playground/dist) and drives it in headless Chromium. Asserts the wasm's
+// E2E for the Tyda Playground. Serves the combined Pages artifact and drives
+// the Playground mounted at /play/ in headless Chromium. Asserts the wasm's
 // behavior (inferred RBS + CodeLens + diagnostics + hover + URL restore), not
 // binary identity — so local (macOS) and CI (Ubuntu) builds can differ.
-// Build first (`mise run build` / `npm run build`); `mise run e2e` does that.
+// `mise run e2e` builds the combined Pages artifact first.
 const PORT = 8123;
 
 export default defineConfig({
@@ -22,7 +22,7 @@ export default defineConfig({
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
   ],
   webServer: {
-    command: `npm run preview`,
+    command: `node scripts/serve-pages.mjs --port ${PORT}`,
     url: `http://localhost:${PORT}/`,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,

@@ -11,7 +11,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - TypeProf VSCode 拡張と接続できる LSP server
 - Rails / gem DSL plugin
 - Sorbet `sig` / `.rbi` の実験的な補助
-- wasm playground（[playground/](../playground/)）
+- wasm playground（[Playground](https://pvcresin.github.io/tyda/play/)）
 
 ## Ruby 推論
 

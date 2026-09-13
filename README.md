@@ -2,7 +2,13 @@
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/pvcresin/tyda)
 
-Tyda is a type-inference tool for lazy Rubyists.
+Tyda is a type inference tool for lazy Rubyists.
+
+> ⚠️ **Note**: Tyda has not reached v1.0.0 yet. Its API, CLI, language server,
+> and inference behavior may change.
+
+Try the [Playground](https://pvcresin.github.io/tyda/play/) or read the
+[documentation](https://pvcresin.github.io/tyda/docs/).
 
 It aims to infer useful types from Ruby without requiring type annotations, with a
 TypeProf-compatible language server as its main interface. It also provides a CLI for

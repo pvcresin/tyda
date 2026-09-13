@@ -1,9 +1,11 @@
-# Build the wasm playground, E2E-test it, and publish to GitHub Pages.
+# Build the documentation site and wasm playground, E2E-test them, and publish
+# the combined site to GitHub Pages.
 #
 # Three jobs on purpose:
 #   changes  : classifies the changed paths without skipping the workflow.
 #   e2e-test : builds the wasm in the CI (Ubuntu) environment, bundles RBS,
-#              and runs the Playwright E2E against THAT freshly built wasm.
+#              builds the combined Pages artifact, and runs the Playwright E2E
+#              against THAT freshly built wasm and site.
 #              Uses the same mise tasks as local dev, and is reproducible
 #              locally with `mise run ci` (= `act -j e2e-test`). We assert
 #              behavior via E2E, not binary identity, so local and CI builds
@@ -11,8 +13,8 @@
 #   deploy   : main-only, GitHub-only (needs Pages OIDC). Publishes the
 #              artifact uploaded by e2e-test. Skipped under act.
 #
-# Build artifacts (playground/public/{tyda.wasm,rbs-bundle.json} and the Vite
-# bundle in playground/dist) are produced in-job and never committed.
+# Build artifacts (playground/public/{tyda.wasm,rbs-bundle.json}, the VitePress
+# output, and pages-dist) are produced in-job and never committed.
 name: pages
 
 on:
@@ -130,8 +132,8 @@ jobs:
       - name: Lint playground
         run: npm run lint
 
-      # Builds wasm + RBS bundle + Vite (→ playground/dist) and E2Es the built
-      # app via `vite preview`. Same mise task as local dev.
+      # Builds docs + wasm + RBS + Vite, assembles pages-dist, and E2Es the
+      # Playground at /play/. Same mise task as local dev.
       - name: Build + E2E (mise run e2e)
         run: mise run e2e
 
@@ -139,7 +141,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: playground/dist
+          path: pages-dist
 
   deploy:
     needs: e2e-test

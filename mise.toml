@@ -68,6 +68,15 @@ description = "Production wasm + RBS + Vite build (playground/dist)"
 depends = ["build-wasm", "build-rbs"]
 run = "npm run build"
 
+[tasks.build-docs]
+description = "Build the VitePress documentation site"
+run = "npm run docs:build"
+
+[tasks.build-pages]
+description = "Assemble the GitHub Pages site (pages-dist)"
+depends = ["build", "build-docs"]
+run = "bash ./scripts/build-pages.sh"
+
 [tasks.dev]
 description = "Build wasm+RBS and start Vite (http://localhost:8123)"
 depends = ["build-wasm", "build-rbs"]
@@ -78,8 +87,8 @@ description = "Serve built playground/dist (http://localhost:8123)"
 run = "npm run preview"
 
 [tasks.e2e]
-description = "Playwright E2E against the production build"
-depends = ["build"]
+description = "Playwright E2E against the production Pages site"
+depends = ["build-pages"]
 run = "npm run test:e2e"
 
 [tasks.ci]

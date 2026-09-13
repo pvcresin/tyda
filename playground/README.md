@@ -45,9 +45,9 @@ Run `mise run build` (or `dev`) once before first use.
 
 `.github/workflows/pages.yml` has two jobs:
 
-- **build-and-test** — build wasm + RBS + Vite in CI and run E2E against that `dist`. Uses the same mise tasks as local (`mise run e2e`); reproduce with `mise run ci` (= `act -j build-and-test`) on Ubuntu (wasi-sdk follows host arch to avoid QEMU).
-- **deploy** — `main` pushes only. Publishes `playground/dist` to GitHub Pages. Skipped under act (needs Pages OIDC).
+- **e2e-test** — build the VitePress site, wasm, RBS, and Vite in CI, assemble the combined `pages-dist` site, and run E2E against the Playground at `/play/`. Uses the same mise tasks as local (`mise run e2e`); reproduce with `mise run ci` (= `act -j e2e-test`) on Ubuntu (wasi-sdk follows host arch to avoid QEMU).
+- **deploy** — `main` pushes only. Publishes `pages-dist` to GitHub Pages, with the Playground at `/tyda/play/`. Skipped under act (needs Pages OIDC).
 
-E2E gates deploy: `main` publishes only when build-and-test is green. We require behavioral parity via E2E, not bit-identical binaries. Artifacts are CI-generated and **not committed**.
+E2E gates deploy: `main` publishes only when e2e-test is green. We require behavioral parity via E2E, not bit-identical binaries. Artifacts are CI-generated and **not committed**.
 
 First-time setup: repo Settings → Pages → Source = "GitHub Actions".

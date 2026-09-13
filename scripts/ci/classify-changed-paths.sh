@@ -18,7 +18,9 @@ if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
     run_full_ci=false
     run_pages=false
     while IFS= read -r path; do
-      if [[ "$path" != *.md ]]; then
+      if [[ "$path" == docs/* ]]; then
+        run_pages=true
+      elif [[ "$path" != *.md ]]; then
         run_pages=true
         if [[ "$path" != playground/* ]]; then
           run_full_ci=true
