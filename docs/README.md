@@ -24,4 +24,4 @@
 - 完了した roadmap 項目と一時的な調査メモは削除する。現在の制約だけを残す。
 - 長くなった文書は別ファイルへ重複コピーせず、責務を見直して縮める。
 
-更新先の対応表は [AGENTS.md](../AGENTS.md) を正とする。
+更新先の対応表は [AGENTS.md](https://github.com/pvcresin/tyda/blob/main/AGENTS.md) を正とする。

@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 
+const PLAYGROUND_PATH = "/play/";
+
 // End-to-end check that the Tyda Playground delivers a TypeProf.wasm-style,
 // LSP-like experience against the freshly built wasm:
 //   - inferred RBS for the sample User class
@@ -10,11 +12,22 @@ import { test, expect } from "@playwright/test";
 // Asserts behavior, not binary identity, so local (macOS) and CI (Ubuntu)
 // builds can differ bit-for-bit.
 
+test("serves the landing page and documentation routes", async ({ page }) => {
+  await page.goto("/");
+  await expect(page).toHaveTitle(/Tyda/);
+  await expect(
+    page.getByText("Type inference tool for lazy Rubyists", { exact: true }),
+  ).toBeVisible();
+
+  await page.goto("/docs/");
+  await expect(page.locator("h1")).toHaveText("Documentation Index");
+});
+
 test("infers RBS, emits CodeLens + diagnostics + hover", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(String(e)));
 
-  await page.goto("/");
+  await page.goto(PLAYGROUND_PATH);
 
   // Analysis is done once the front-end has exposed its result on window.__tyda.
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
@@ -62,7 +75,7 @@ test("infers RBS, emits CodeLens + diagnostics + hover", async ({ page }) => {
 });
 
 test("prevents browser save shortcuts", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(PLAYGROUND_PATH);
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
     timeout: 45_000,
   });
@@ -116,7 +129,7 @@ test("toggles selected lines with the platform comment shortcut", async ({ brows
 
   try {
     for (const page of [windowsPage, macPage]) {
-      await page.goto("http://localhost:8123/");
+      await page.goto(`http://localhost:8123${PLAYGROUND_PATH}`);
       await page.waitForFunction(() => window.__tyda !== undefined, null, {
         timeout: 45_000,
       });
@@ -133,7 +146,7 @@ test("toggles selected lines with the platform comment shortcut", async ({ brows
 });
 
 test("shows annotated parameter hovers and literal interpolation", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(PLAYGROUND_PATH);
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
     timeout: 45_000,
   });
@@ -167,7 +180,7 @@ end
 });
 
 test("clicking a CodeLens inserts a #: comment and removes that lens", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(PLAYGROUND_PATH);
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
     timeout: 45_000,
   });
@@ -195,7 +208,7 @@ test("clicking a CodeLens inserts a #: comment and removes that lens", async ({ 
 });
 
 test("shows a heading 'syntax error' badge for malformed rbs / ruby", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(PLAYGROUND_PATH);
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
     timeout: 45_000,
   });
@@ -220,7 +233,7 @@ test("shows a heading 'syntax error' badge for malformed rbs / ruby", async ({ p
 });
 
 test("keeps a clean URL by default and persists edits into the hash", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(PLAYGROUND_PATH);
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
     timeout: 45_000,
   });
@@ -242,7 +255,7 @@ test("keeps a clean URL by default and persists edits into the hash", async ({ p
 });
 
 test("restores ruby + rbs state from the URL hash", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(PLAYGROUND_PATH);
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
     timeout: 45_000,
   });
@@ -255,7 +268,7 @@ test("restores ruby + rbs state from the URL hash", async ({ page }) => {
   );
   // Set the hash, then reload so the app boots fresh and restores from it
   // (a hash-only change wouldn't re-run the page — but pasting a URL does).
-  await page.goto(`/#${customHash}`);
+  await page.goto(`${PLAYGROUND_PATH}#${customHash}`);
   await page.reload();
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
     timeout: 45_000,
@@ -268,12 +281,12 @@ test("restores ruby + rbs state from the URL hash", async ({ page }) => {
 test("clicking the title resets to the initial example with a clean URL", async ({ page }) => {
   // Boot with custom code carried in the URL hash.
   const custom = { ruby: "class Widget\n  def size = 42\nend\n", rbs: "" };
-  await page.goto("/");
+  await page.goto(PLAYGROUND_PATH);
   const customHash = await page.evaluate(
     (s) => window.LZString.compressToEncodedURIComponent(JSON.stringify(s)),
     custom,
   );
-  await page.goto(`/#${customHash}`);
+  await page.goto(`${PLAYGROUND_PATH}#${customHash}`);
   await page.reload();
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
     timeout: 45_000,
@@ -291,7 +304,7 @@ test("clicking the title resets to the initial example with a clean URL", async 
 });
 
 test("browser Back restores the pre-reset editor state", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(PLAYGROUND_PATH);
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
     timeout: 45_000,
   });

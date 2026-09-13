@@ -63,7 +63,7 @@ GitHub Actions では `Test`、`Performance`、`Analysis compatibility`、`pages
 Rust build / clippy / test（Windowsも全test targetを実行し、unit、軽量integration、mutation、pathological、docのshardを独立したrunnerで並列実行し、`windows` required checkでformat / clippyと併せて集約する）、`Performance` は pinned な Ruby / Rails OSS subject ごとの base/head 比較、release workflowはgem / VSIXのLinux x86_64・Windows x64・Intel macOS・
 ARM macOS package smoke testも確認する。Linux ARM64はrunnerの利用条件が整い次第追加する。
 
-`pages / e2e-test` は `npm run format:check`、`npm run typecheck`、`npm run lint` を実行してからPlaygroundのwasm buildとE2Eを行う。これらは既存の `e2e-test` required checkに含める。
+`pages / e2e-test` は `npm run format:check`、`npm run typecheck`、`npm run lint` を実行してからVitePressのドキュメント、Playgroundのwasm buildとE2Eを行う。これらは既存の `e2e-test` required checkに含める。
 
 `Analysis compatibility` は base commit と head commitをそれぞれのGemfile.lockから生成したRBSと組み合わせ、sample・pinned OSS subjectのCLI RBS出力とdiagnosticsをbyte単位で比較する。coverageも同じ組み合わせで比較し、差分があるPRはデフォルトで失敗する。意図した推論・coverage変更はJob SummaryのdiffをレビューしたMaintainer/Adminだけが `approved-analysis-change` ラベルで許可できる。新しいcommitではラベルを自動削除するため、古い承認を再利用できない。
 
@@ -152,8 +152,8 @@ project-backed case は `config/`、`db/`、`app/models/` 以下の最小 fixtur
 | Redmine / Mastodon / GitLab | Rails DSL、巨大 workspace、in-tree extension |
 
 Redmine の runtime DSL 登録は対象外とし、必要なら RBS / RBI fixture で表す。
-GitLab の static extension は [tests/scenarios/rails/dsl/gitlab_presenter.md](../tests/scenarios/rails/dsl/gitlab_presenter.md)、
-Redmine の縮退契約は [tests/scenarios/rails/dsl/redmine.md](../tests/scenarios/rails/dsl/redmine.md) に置く。
+GitLab の static extension は [tests/scenarios/rails/dsl/gitlab_presenter.md](https://github.com/pvcresin/tyda/blob/main/tests/scenarios/rails/dsl/gitlab_presenter.md)、
+Redmine の縮退契約は [tests/scenarios/rails/dsl/redmine.md](https://github.com/pvcresin/tyda/blob/main/tests/scenarios/rails/dsl/redmine.md) に置く。
 
 ## LSP と diagnostics
 

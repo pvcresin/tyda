@@ -1,7 +1,7 @@
 # Capability Matrix
 
 対応状況はカテゴリ単位で管理する。個別のメソッドや gem の完全な列挙はせず、
-実例は [tests/scenarios/](../tests/scenarios/) と plugin の実装を参照する。
+実例は [tests/scenarios/](https://github.com/pvcresin/tyda/tree/main/tests/scenarios) と plugin の実装を参照する。
 
 - **supported**: 現在の主要経路で回帰テストがある
 - **partial**: 静的に追える範囲だけ対応する
@@ -21,7 +21,7 @@
 | runtime-only meta programming | partial | 未知の名前・object identity は `untyped` |
 | 深さ・union・shape の制限 | supported | 上限超過時は安全に `untyped` |
 
-主な scenario は [tests/scenarios/ruby/](../tests/scenarios/ruby/) にある。
+主な scenario は [tests/scenarios/ruby/](https://github.com/pvcresin/tyda/tree/main/tests/scenarios/ruby) にある。
 
 ## 型情報と診断
 
@@ -34,9 +34,9 @@
 | 型診断 | supported | 確実な mismatch / 既知の missing method / constant |
 | experimental diagnostics | experimental | arity、union member missing method |
 
-RBS scenario は [tests/scenarios/ruby/rbs_input/](../tests/scenarios/ruby/rbs_input/)、
-inline RBS は [tests/scenarios/ruby/rbs_comment/](../tests/scenarios/ruby/rbs_comment/)、
-Sorbet は [tests/scenarios/sorbet/](../tests/scenarios/sorbet/) に置く。
+RBS scenario は [tests/scenarios/ruby/rbs_input/](https://github.com/pvcresin/tyda/tree/main/tests/scenarios/ruby/rbs_input)、
+inline RBS は [tests/scenarios/ruby/rbs_comment/](https://github.com/pvcresin/tyda/tree/main/tests/scenarios/ruby/rbs_comment)、
+Sorbet は [tests/scenarios/sorbet/](https://github.com/pvcresin/tyda/tree/main/tests/scenarios/sorbet) に置く。
 
 ## DSL / framework
 
@@ -53,7 +53,7 @@ Sorbet は [tests/scenarios/sorbet/](../tests/scenarios/sorbet/) に置く。
 | GitLab in-tree | supported | Presenter、CurrentSettings、Metrics、EE 拡張 |
 | Redmine の動的登録 | partial | runtime DSL は推測せず、外部定義を利用 |
 
-Rails scenario は [tests/scenarios/rails/](../tests/scenarios/rails/) に置く。対応 gem の
+Rails scenario は [tests/scenarios/rails/](https://github.com/pvcresin/tyda/tree/main/tests/scenarios/rails) に置く。対応 gem の
 有効化と実装は `src/inference/plugins/` を正とする。
 
 ## Ruby / Rails version
