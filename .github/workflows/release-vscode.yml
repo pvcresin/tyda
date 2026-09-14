@@ -19,6 +19,10 @@ env:
   RUSTC_WRAPPER: sccache
   SCCACHE_GHA_ENABLED: "true"
 
+concurrency:
+  group: release-vscode-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 name: release-vscode
 
 on:
@@ -43,8 +47,9 @@ jobs:
       - name: Classify changed paths
         id: paths
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
         run: bash scripts/ci/classify-changed-paths.sh
 
   build:
@@ -193,8 +198,26 @@ jobs:
           path: vscode/*.vsix
           if-no-files-found: error
 
+  package-gate:
+    name: release-vscode
+    needs:
+      - changes
+      - build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require VS Code package jobs
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_full_ci }}
+          REQUIRED_RESULTS: |
+            build=${{ needs.build.result }}
+        run: bash scripts/ci/require-ci-results.sh
+
   publish:
-    needs: build
+    needs:
+      - build
+      - package-gate
     # Disabled until a Marketplace publisher + VSCE_PAT (and OVSX_PAT) are set up
     # (nothing is published yet). Re-enable by deleting the trailing ` && false`.
     if: startsWith(github.ref, 'refs/tags/v') && false

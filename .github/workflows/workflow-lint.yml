@@ -30,3 +30,8 @@ jobs:
         run: |
           actionlint_bin="$(go env GOPATH)/bin/actionlint"
           "$actionlint_bin"
+
+      - name: Test CI helper scripts
+        run: |
+          bash -n scripts/ci/*.sh
+          bash scripts/ci/test-ci-gates.sh

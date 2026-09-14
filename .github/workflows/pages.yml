@@ -1,11 +1,13 @@
 # Build the documentation site and wasm playground, E2E-test them, and publish
 # the combined site to GitHub Pages.
 #
-# Three jobs on purpose:
+# Four jobs on purpose:
 #   changes  : classifies the changed paths without skipping the workflow.
 #   e2e-test : builds the wasm in the CI (Ubuntu) environment, bundles RBS,
 #              builds the combined Pages artifact, and runs the Playwright E2E
 #              against THAT freshly built wasm and site.
+#   pages-gate: always reports the stable required check and fails closed when
+#               the applicable Pages job does not succeed.
 #              Uses the same mise tasks as local dev, and is reproducible
 #              locally with `mise run ci` (= `act -j e2e-test`). We assert
 #              behavior via E2E, not binary identity, so local and CI builds
@@ -49,8 +51,8 @@ jobs:
       - name: Classify changed paths
         id: paths
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
         run: bash scripts/ci/classify-changed-paths.sh
 
@@ -143,11 +145,33 @@ jobs:
         with:
           path: pages-dist
 
+  pages-gate:
+    name: pages
+    needs:
+      - changes
+      - e2e-test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require Pages jobs
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_pages }}
+          REQUIRED_RESULTS: |
+            e2e-test=${{ needs.e2e-test.result }}
+        run: bash scripts/ci/require-ci-results.sh
+
   deploy:
-    needs: e2e-test
+    needs:
+      - e2e-test
+      - pages-gate
     # main pushes only, and only on GitHub (deploy-pages needs Pages OIDC,
     # which act cannot provide — so this is skipped locally).
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      needs.e2e-test.result == 'success' &&
+      needs.pages-gate.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       pages: write
