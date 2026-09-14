@@ -88,6 +88,8 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
   registry/gitだけを保存する（target directoryとの二重キャッシュを避ける）。
 - `pages` はPlaygroundの `format:check`、typecheck、oxlintを明示的に通した後、VitePressのドキュメント、wasm、RBS bundle、Playgroundをbuildして `pages-dist/` に組み立て、`/play/` のPlaygroundに対してE2Eを実行する。既存の `e2e-test` required checkの中で実行するため、auto-mergeの保護対象を分散させない。
 - GitHub Pagesは `main` へのpush時だけ `pages-dist/` を公開する。トップの紹介ページは `docs/index.md` から生成し、ドキュメントは `/docs/`、Playgroundは `/play/` で提供する。`docs/README.md` は `/docs/` の索引として表示する。
+- `/play/` はVitePressのSPAルートではなく同じPages artifact内の静的アプリなので、トップとナビゲーションのリンクには `target: "_self"` を指定してフルページ遷移させる。
+- Pages のE2Eは `pages-dist/` を `/tyda/` 配下でも解決できるローカル静的サーバーで配信し、project siteの実URLに合わせてTop・Docs・Playgroundの遷移、reload、Back/Forward、hash復元を確認する。
 - Dependabot は Bundler、root / `vscode/` の npm、Cargo、GitHub Actionsを週次で更新する。Major更新はPRを作るが自動mergeせず、Major以外と手動PRは全required checkが通った後にGitHubのauto-mergeへ登録する。auto-merge workflowは `main` がbranch protectionで保護されていない場合は登録を拒否する。手動PRでworkflowや `scripts/**` などCIポリシーを変更した場合はauto-mergeを登録せず、Maintainer/Adminのレビューと手動mergeを要求する。
 - 依存更新で脆弱性が見つかった場合は、direct / transitive、runtime / development-only、実際の到達経路と生成物へのバンドル有無を確認する。まず直接依存または親依存の正規の更新で修正版を取り込めるか検証し、解決できる場合だけ対応する。`overrides` や `resolutions` は使用しない。正規の更新で解決できない場合はライブラリ側の対応を待ち、脆弱性は無理に解消扱いにせずDependabot alertをopenのまま保持する。上流修正版がリリースされたら、通常の依存更新として再評価する。
 - release workflow は VSIX packaging と smoke test、main マージごとの platform gem packaging / smoke test / RubyGems Trusted Publishing を確認する。gem 公開後は同じバージョンの `v...` tag と GitHub Release を作成し、前回 Release 以降のマージPRを自動生成ノートに記録する。RubyGems 側の pending trusted publisher を事前に設定する。Linux ARM64 はGitHub-hosted runnerの利用条件が整い次第追加する。

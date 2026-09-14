@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const portIndex = process.argv.indexOf("--port");
 const port = Number(portIndex === -1 ? process.env.PORT || 8123 : process.argv[portIndex + 1]);
 const root = resolve(fileURLToPath(new URL("../pages-dist", import.meta.url)));
+const pagesBasePath = "/tyda";
 
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
@@ -20,7 +21,16 @@ const contentTypes = {
 
 function requestedPath(requestUrl) {
   const pathname = decodeURIComponent(new URL(requestUrl, "http://localhost").pathname);
-  const filePath = resolve(root, `.${pathname}`);
+  // GitHub project Pages serves this artifact below /tyda/, while the local
+  // server exposes pages-dist at /. Accept both forms so E2E covers the
+  // deployed URL shape as well as the artifact root.
+  const artifactPath =
+    pathname === pagesBasePath
+      ? "/"
+      : pathname.startsWith(`${pagesBasePath}/`)
+        ? pathname.slice(pagesBasePath.length)
+        : pathname;
+  const filePath = resolve(root, `.${artifactPath}`);
   if (filePath !== root && !filePath.startsWith(`${root}${sep}`)) return null;
   return filePath;
 }
