@@ -78,24 +78,25 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
 
 ## CI
 
-- PR の基本ゲートは `Test`、`Performance`、`Analysis compatibility`、`pages`、`Workflow lint`。`Test` は Ubuntu の format / lint / test shards、Windows の Rust build / clippy / test、VS Code 拡張の型検査・bundleを確認し、`Performance` は pinned な Ruby / Rails OSS subject の速度・max RSSを base/head で比較する。`Analysis compatibility` は base/headそれぞれのTydaと対応するRBSを組み合わせ、OSS subjectのRBS出力、diagnostics、coverageを比較する。Performance は binary を一度だけ build して subject ごとの matrix jobへ配布し、`pages` は wasm build と E2E を確認する。
-- PRでは各workflowが `scripts/ci/classify-changed-paths.sh` で変更範囲を分類する。`docs/**` または `playground/**` だけの変更では汎用Rust・性能・VS Code CIをjob-levelでskipし、`docs/**` の変更では `pages` のドキュメント build、Playgroundのコード変更時は wasm build + E2Eを実行する。workflow自体は起動するため、required checkがPendingのまま取り残されない。`approved-analysis-change` ラベルを付けたときだけ、MaintainerまたはAdminが付けたことをGitHub APIで確認したうえで、解析出力・coverageの意図した差分を許可する。新しいcommitが積まれた場合はラベルを自動削除し、再確認を要求する。
+- PR の基本ゲートは `Test`、`Performance`、`Analysis compatibility`、`pages`、`release-vscode`、`Workflow lint`。`Test` は Ubuntu の format / lint / test shards、Windows の Rust build / clippy / test、VS Code 拡張の型検査・bundleを確認し、`Performance` は pinned な Ruby / Rails OSS subject の速度・max RSSを base/head で比較する。`Analysis compatibility` は base/headそれぞれのTydaと対応するRBSを組み合わせ、OSS subjectのRBS出力、diagnostics、coverageを比較する。Performance は binary を一度だけ build して subject ごとの matrix jobへ配布し、`pages` は wasm build と E2E を確認する。
+- PRでは各workflowが `scripts/ci/classify-changed-paths.sh` で変更範囲を分類する。`docs/**` または `playground/**` だけの変更では汎用Rust・性能・VS Code CIをjob-levelでskipし、`docs/**` の変更では `pages` のドキュメント build、Playgroundのコード変更時は wasm build + E2Eを実行する。PRゲートworkflowは常設のaggregate gateを必ず生成し、対象外のときは分類成功と依存jobの全skipを確認してsuccess、対象内のjobの失敗・想定外skip・分類失敗はfailureとして報告する。matrix個別jobは結果とログのために残すが、required checkにはしない。`approved-analysis-change` ラベルを付けたときだけ、MaintainerまたはAdminが付けたことをGitHub APIで確認したうえで、解析出力・coverageの意図した差分を許可する。新しいcommitが積まれた場合はラベルを自動削除し、再確認を要求する。
 - `Test` は Linux と Windows の Rust build / clippy / test を確認する。Windowsも全test targetを実行し、
   unit、軽量integration、mutation、pathological、docのshardに分けて独立したrunnerで並列化する。
-  高コストなtest target同士を同じrunnerで競合させない。既存のrequired check名 `windows` は、Windowsのformat / clippyと全shardの結果を集約する。
+  高コストなtest target同士を同じrunnerで競合させない。`test` gateはLinuxのformat / lint / test、Windowsの `windows` gate、VS Code checkの結果を集約し、`windows` gateはWindowsのformat / clippyと全shardの結果を集約する。
   Rust compile jobは
   `CARGO_INCREMENTAL=0` とsccacheのGitHub Actions backendを使い、`rust-cache`はCargoの
   registry/gitだけを保存する（target directoryとの二重キャッシュを避ける）。
-- `pages` はPlaygroundの `format:check`、typecheck、oxlintを明示的に通した後、VitePressのドキュメント、wasm、RBS bundle、Playgroundをbuildして `pages-dist/` に組み立て、`/play/` のPlaygroundに対してE2Eを実行する。既存の `e2e-test` required checkの中で実行するため、auto-mergeの保護対象を分散させない。
+- `pages` はPlaygroundの `format:check`、typecheck、oxlintを明示的に通した後、VitePressのドキュメント、wasm、RBS bundle、Playgroundをbuildして `pages-dist/` に組み立て、`/play/` のPlaygroundに対してE2Eを実行する。`pages` gateが `e2e-test` の結果を集約するため、matrixではない安定したcheckだけをauto-mergeの保護対象にする。
 - GitHub Pagesは `main` へのpush時だけ `pages-dist/` を公開する。トップの紹介ページは `docs/index.md` から生成し、ドキュメントは `/docs/`、Playgroundは `/play/` で提供する。`docs/README.md` は `/docs/` の索引として表示する。
 - `/play/` はVitePressのSPAルートではなく同じPages artifact内の静的アプリなので、トップとナビゲーションのリンクには `target: "_self"` を指定してフルページ遷移させる。
 - Pages のE2Eは `pages-dist/` を `/tyda/` 配下でも解決できるローカル静的サーバーで配信し、project siteの実URLに合わせてTop・Docs・Playgroundの遷移、reload、Back/Forward、hash復元を確認する。
 - Dependabot は Bundler、root / `vscode/` の npm、Cargo、GitHub Actionsを週次で更新する。Major更新はPRを作るが自動mergeせず、Major以外と手動PRは全required checkが通った後にGitHubのauto-mergeへ登録する。auto-merge workflowは `main` がbranch protectionで保護されていない場合は登録を拒否する。手動PRでworkflowや `scripts/**` などCIポリシーを変更した場合はauto-mergeを登録せず、Maintainer/Adminのレビューと手動mergeを要求する。
 - 依存更新で脆弱性が見つかった場合は、direct / transitive、runtime / development-only、実際の到達経路と生成物へのバンドル有無を確認する。まず直接依存または親依存の正規の更新で修正版を取り込めるか検証し、解決できる場合だけ対応する。`overrides` や `resolutions` は使用しない。正規の更新で解決できない場合はライブラリ側の対応を待ち、脆弱性は無理に解消扱いにせずDependabot alertをopenのまま保持する。上流修正版がリリースされたら、通常の依存更新として再評価する。
-- release workflow は VSIX packaging と smoke test、main マージごとの platform gem packaging / smoke test / RubyGems Trusted Publishing を確認する。gem 公開後は同じバージョンの `v...` tag と GitHub Release を作成し、前回 Release 以降のマージPRを自動生成ノートに記録する。RubyGems 側の pending trusted publisher を事前に設定する。Linux ARM64 はGitHub-hosted runnerの利用条件が整い次第追加する。
+- release workflow は VSIX packaging と smoke test、main マージごとの platform gem packaging / smoke test / RubyGems Trusted Publishing を確認する。`release-vscode` のPR buildは同じPRの新しいcommitで古い実行をcancelするが、tag pushとgem公開のmain workflowは公開途中の実行をcancelしない。gem 公開後は同じバージョンの `v...` tag と GitHub Release を作成し、前回 Release 以降のマージPRを自動生成ノートに記録する。RubyGems 側の pending trusted publisher を事前に設定する。Linux ARM64 はGitHub-hosted runnerの利用条件が整い次第追加する。
+- `main` の検証workflowはpush時にも変更範囲を分類し、READMEなどPagesに影響しないMarkdownだけならTest / Performance / VS Codeのfull CIを起動しない。`docs/**` や `playground/**` はPages buildを維持し、依存ファイル、Rust / Ruby / TypeScript、workflow、`scripts/**` の変更はfull CIを維持する。`release-gem` は現行の「main mergeごとに公開する」仕様のため、この分類ではskipしない。
 - Actions は commit SHA で固定し、`Workflow lint` の `actionlint` で workflow の構文・context を検査する。
 
-`main` のbranch protectionでは、`analysis-compatibility` を含むすべてのCIの最終checkをrequiredにする。依存更新PRだけでなく手動PRも同じauto-merge対象だが、解析結果を意図的に変更する場合は差分をJob Summaryとartifactで確認してから、MaintainerまたはAdminがラベルを付ける。
+`main` のbranch protectionでは、matrix個別jobではなく、常に報告される `test`、`performance`、`analysis-compatibility`、`pages`、`release-vscode`、`actionlint` のaggregate gateだけをrequiredにする。各gateは対象scopeでは全依存jobのsuccessを要求し、対象外scopeでは分類成功と依存jobの全skipを確認した場合だけsuccessとして扱う。workflow変更をmainへ反映した後、required contextsもこの一覧へ更新する。依存更新PRだけでなく手動PRも同じauto-merge対象だが、解析結果を意図的に変更する場合は差分をJob Summaryとartifactで確認してから、MaintainerまたはAdminがラベルを付ける。
 
 Windows のローカル開発は、現行の `scripts/*.sh` と `mise` task が Bash 前提のため Git Bash または WSL を使う。配布物はWindows x64をrelease workflowで検証する。
 

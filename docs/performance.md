@@ -101,8 +101,10 @@ TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
 小さな劣化を許容しつつ、実質的な回帰は PR の段階で止めるための初期値である。基準を別 runner の
 過去値と比較せず、base/head を同じ job で測ることで CPU や runner の世代差を打ち消す。
 
-GitHub の branch protection では、この workflow の `performance-build` と全ての
-`performance (<subject>)` check を required に設定する。
+GitHub の branch protection では、この workflow の `performance` gateだけを required に設定する。
+gateは対象scopeで `performance-build` と全ての `performance (<subject>)` matrix jobの
+successを要求し、対象外scopeでは分類成功と依存jobの全skipを確認した場合だけsuccessを
+返す。matrix個別jobは結果の確認と失敗箇所の特定のために残す。
 
 ## 解析出力の互換性ゲート
 

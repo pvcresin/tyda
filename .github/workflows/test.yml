@@ -37,8 +37,8 @@ jobs:
       - name: Classify changed paths
         id: paths
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
         run: bash scripts/ci/classify-changed-paths.sh
 
@@ -348,3 +348,30 @@ jobs:
       - name: Bundle extension
         working-directory: vscode
         run: npm run compile
+
+  test-gate:
+    name: test
+    needs:
+      - changes
+      - format
+      - lint
+      - test
+      - windows
+      - vscode
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Require test jobs
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_full_ci }}
+          REQUIRED_RESULTS: |
+            format=${{ needs.format.result }}
+            lint=${{ needs.lint.result }}
+            test=${{ needs.test.result }}
+            windows=${{ needs.windows.result }}
+            vscode=${{ needs.vscode.result }}
+        run: bash scripts/ci/require-ci-results.sh

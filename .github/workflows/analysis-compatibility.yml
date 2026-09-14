@@ -34,8 +34,8 @@ jobs:
       - name: Classify changed paths
         id: paths
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
         run: bash scripts/ci/classify-changed-paths.sh
 
@@ -232,17 +232,14 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
       - name: Require compatibility checks
         env:
-          RUN_ANALYSIS: ${{ needs.changes.outputs.run_analysis }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          ANALYSIS_RESULT: ${{ needs.analysis.result }}
-        run: |
-          if [[ "$RUN_ANALYSIS" != true ]]; then
-            echo "Analysis compatibility is not required for this change set."
-            exit 0
-          fi
-          if [[ "$BUILD_RESULT" != success || "$ANALYSIS_RESULT" != success ]]; then
-            echo "Analysis compatibility failed (build=$BUILD_RESULT analysis=$ANALYSIS_RESULT)." >&2
-            exit 1
-          fi
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_analysis }}
+          REQUIRED_RESULTS: |
+            analysis-build=${{ needs.build.result }}
+            analysis=${{ needs.analysis.result }}
+        run: bash scripts/ci/require-ci-results.sh
