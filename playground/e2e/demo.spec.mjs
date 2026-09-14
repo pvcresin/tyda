@@ -104,6 +104,55 @@ test("navigates Home, Docs, and Playground through the Pages base path", async (
     .toBe(source);
 });
 
+test("keeps Ruby primary and adapts the pane layout to the viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(PLAYGROUND_PATH);
+  await waitForPlayground(page);
+
+  const desktopLayout = await page.evaluate(() => {
+    const rubyPane = document.querySelector("#ruby")?.closest(".pane");
+    const rbsPane = document.querySelector("#rbs")?.closest(".pane");
+    const main = document.querySelector("main");
+    if (!rubyPane || !rbsPane || !main) throw new Error("playground layout is missing");
+    const rubyBox = rubyPane.getBoundingClientRect();
+    const rbsBox = rbsPane.getBoundingClientRect();
+    return {
+      rubyLeft: rubyBox.left,
+      rbsLeft: rbsBox.left,
+      gridColumns: getComputedStyle(main).gridTemplateColumns,
+      viewport: document.querySelector('meta[name="viewport"]')?.content,
+    };
+  });
+
+  expect(desktopLayout.rubyLeft).toBeLessThan(desktopLayout.rbsLeft);
+  expect(desktopLayout.gridColumns.split(" ")).toHaveLength(2);
+  expect(desktopLayout.viewport).toContain("viewport-fit=cover");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__editors.ruby.layout());
+  const mobileLayout = await page.evaluate(() => {
+    const rubyPane = document.querySelector("#ruby")?.closest(".pane");
+    const rbsPane = document.querySelector("#rbs")?.closest(".pane");
+    const main = document.querySelector("main");
+    if (!rubyPane || !rbsPane || !main) throw new Error("playground layout is missing");
+    const rubyBox = rubyPane.getBoundingClientRect();
+    const rbsBox = rbsPane.getBoundingClientRect();
+    return {
+      rubyTop: rubyBox.top,
+      rbsTop: rbsBox.top,
+      rubyHeight: rubyBox.height,
+      rbsHeight: rbsBox.height,
+      gridColumns: getComputedStyle(main).gridTemplateColumns,
+      gridRows: getComputedStyle(main).gridTemplateRows,
+    };
+  });
+
+  expect(mobileLayout.rubyTop).toBeLessThan(mobileLayout.rbsTop);
+  expect(mobileLayout.rubyHeight / mobileLayout.rbsHeight).toBeCloseTo(2, 1);
+  expect(mobileLayout.gridColumns).toBe("390px");
+  expect(mobileLayout.gridRows.split(" ")).toHaveLength(2);
+});
+
 test("infers RBS, emits CodeLens + diagnostics + hover", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(String(e)));

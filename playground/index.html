@@ -2,7 +2,7 @@
 <html lang="ja">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Tyda Playground — Ruby type inference in your browser (wasm)</title>
     <style>
       :root {
@@ -27,12 +27,21 @@
           "Segoe UI",
           sans-serif;
       }
+      body {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        height: 100dvh;
+        padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+          env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+      }
       header {
         display: flex;
         align-items: center;
         gap: 12px;
         padding: 10px 16px;
         border-bottom: 1px solid var(--border);
+        flex: 0 0 auto;
       }
       header h1 {
         font-size: 15px;
@@ -46,13 +55,15 @@
       }
       main {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        height: calc(100% - 46px);
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        flex: 1 1 auto;
+        min-height: 0;
       }
       .pane {
         display: flex;
         flex-direction: column;
         min-width: 0;
+        min-height: 0;
       }
       .pane + .pane {
         border-left: 1px solid var(--border);
@@ -76,6 +87,17 @@
         flex: 1;
         min-height: 0;
       }
+      /* Keep iPad mini portrait-sized viewports stacked, but leave landscape tablets split. */
+      @media (max-width: 768px) {
+        main {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: minmax(0, 2fr) minmax(0, 1fr);
+        }
+        .pane + .pane {
+          border-left: 0;
+          border-top: 1px solid var(--border);
+        }
+      }
     </style>
   </head>
   <body>
@@ -84,12 +106,12 @@
     </header>
     <main>
       <section class="pane">
-        <h2 id="rbs-title">rbs</h2>
-        <div id="rbs" class="editor"></div>
-      </section>
-      <section class="pane">
         <h2 id="rb-title">rb</h2>
         <div id="ruby" class="editor"></div>
+      </section>
+      <section class="pane">
+        <h2 id="rbs-title">rbs</h2>
+        <div id="rbs" class="editor"></div>
       </section>
     </main>
     <script type="module" src="./src/main.ts"></script>

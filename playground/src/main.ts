@@ -2,9 +2,9 @@
 //
 // Runs the same wasm32-wasip1 module the CLI builds, under a browser WASI shim,
 // with vendor/rbs mounted into a virtual fs at /rbs. The two editor panes are:
-//   left  (#rbs)  — hand-written RBS used as extra type context
-//   right (#ruby) — Ruby source, annotated with inferred-type CodeLens and
-//                   missing-method diagnostics (squiggles); hover shows types.
+//   left  (#ruby) — Ruby source, annotated with inferred-type CodeLens and
+//                  missing-method diagnostics (squiggles); hover shows types.
+//   right (#rbs)  — hand-written RBS used as extra type context
 //
 // One analysis = one fresh WASI instance. We pipe {ruby, rbs} JSON in via stdin
 // and read one JSON line from stdout:
@@ -122,7 +122,7 @@ const SAMPLE_RUBY = `class User
 end
 `;
 
-const SAMPLE_RBS = `# Hand-written RBS here is passed as type context for the Ruby pane on the right.
+const SAMPLE_RBS = `# Hand-written RBS here is passed as type context for the Ruby pane on the left.
 # Example:
 # class User
 #   def name: () -> String
@@ -353,6 +353,8 @@ async function main(): Promise<void> {
     theme: "vs-dark",
     minimap: { enabled: false },
     fontSize: 13,
+    wordWrap: "on",
+    scrollbar: { horizontal: "hidden" },
     automaticLayout: true,
     codeLens: true,
   });
@@ -369,10 +371,12 @@ async function main(): Promise<void> {
     theme: "vs-dark",
     minimap: { enabled: false },
     fontSize: 13,
+    wordWrap: "on",
+    scrollbar: { horizontal: "hidden" },
     automaticLayout: true,
     // The CodeLens / hover providers are registered for the "ruby" language and
     // this pane shares it for highlighting — but those overlays describe the
-    // right-hand Ruby analysis, so disable them here to keep the rbs pane clean.
+    // Ruby analysis, so disable them here to keep the rbs pane clean.
     codeLens: false,
     hover: { enabled: "off" },
   });
