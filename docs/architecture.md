@@ -140,6 +140,9 @@ method hover の signature は、scan で保存した receiver / result 型を�
 unify し、`Array` / `Hash` / tuple / record / union / intersection などのネストした型引数も具体化
 する。block の入力型は、receiver の型変数が結果にも残る場合は literal の精度を保ち、block の処理で
 結果が widening された場合は dispatch と同じ広い型を表示する。
+hover 専用の block shape 絞り込みと implicit-self の追加 generic block 解決は、hover snapshot を記録する
+`Record` profile だけで有効にする。既存の receiver 付き block 推論は通常解析にも必要なため維持し、
+表示用の推論を広げても、CLI batch / coverage の facts-only profile の RBS 結果と基準値を変えない。
 引数型と block の戻り値は既存の scan site を共有して hover snapshot に複製せず、scan で得た戻り値を
 再計算しないため、通常の hover は候補数と型構造に比例する bounded な query になる。候補を一意に
 確定できない場合は情報を捨てず、元の overload 群を表示する。Playground は Ruby / RBS の編集ごとに

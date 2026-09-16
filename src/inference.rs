@@ -14500,10 +14500,15 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         let keyword_names: Vec<String> = kw_spans.iter().map(|(name, _)| name.clone()).collect();
-        let block_shape = call_node
-            .block()
-            .and_then(|block| block.as_block_node())
-            .map(|block| Self::hover_block_shape(&block));
+        let block_shape = self
+            .record_hover_snapshots
+            .then(|| {
+                call_node
+                    .block()
+                    .and_then(|block| block.as_block_node())
+                    .map(|block| Self::hover_block_shape(&block))
+            })
+            .flatten();
         self.arg_check_sites.push(ArgCheckSite {
             receiver_type: receiver_type.clone(),
             method_name: method_name.to_string(),
@@ -21208,18 +21213,19 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(block_result) = user_defined_block_call_result {
                             break 'no_recv block_result;
                         }
-                        let generic_block_call_result = if call_node.block().is_some() {
-                            self.resolve_block_call_generic(
-                                class_name,
-                                &call_node,
-                                &implicit_self_type,
-                                &method_name,
-                                parse_result,
-                                scope,
-                            )
-                        } else {
-                            None
-                        };
+                        let generic_block_call_result =
+                            if self.record_hover_snapshots && call_node.block().is_some() {
+                                self.resolve_block_call_generic(
+                                    class_name,
+                                    &call_node,
+                                    &implicit_self_type,
+                                    &method_name,
+                                    parse_result,
+                                    scope,
+                                )
+                            } else {
+                                None
+                            };
                         if let Some(block_result) = generic_block_call_result {
                             break 'no_recv block_result;
                         }
@@ -31679,9 +31685,15 @@ impl<'a> InferenceEngine<'a> {
 
         let (call_arg_types, call_kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
+        let block_shape = if self.record_hover_snapshots {
+            call_node
+                .block()
+                .and_then(|block| block.as_block_node())
+                .map(|block| Self::hover_block_shape(&block))
+        } else {
+            None
+        };
         let call_arg_count = call_arg_types.len();
-        let block_shape = Self::hover_block_shape(&block);
-
         let receiver_type_args = Self::extract_type_args(receiver_type);
         let mut base_type_vars =
             self.class_type_vars_from_args(&receiver_class, &receiver_type_args);
@@ -31702,8 +31714,11 @@ impl<'a> InferenceEngine<'a> {
         let rbs_mt = rbs_overloads
             .iter()
             .find(|mt| {
-                Self::hover_overload_accepts_block_shape(&mt.method_type, true, Some(&block_shape))
-                    && mt.method_type.block.is_some()
+                Self::hover_overload_accepts_block_shape(
+                    &mt.method_type,
+                    true,
+                    block_shape.as_ref(),
+                ) && mt.method_type.block.is_some()
                     && self.rbs_method_type_accepts_call(
                         &mt.method_type,
                         &call_arg_types,
@@ -32858,10 +32873,14 @@ impl<'a> InferenceEngine<'a> {
 
         let (call_arg_types, call_kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
-        let block_shape = call_node
-            .block()
-            .and_then(|block| block.as_block_node())
-            .map(|block| Self::hover_block_shape(&block));
+        let block_shape = if self.record_hover_snapshots {
+            call_node
+                .block()
+                .and_then(|block| block.as_block_node())
+                .map(|block| Self::hover_block_shape(&block))
+        } else {
+            None
+        };
         let receiver_type_args = Self::extract_type_args(receiver_type);
         let mut base_type_vars =
             self.class_type_vars_from_args(&receiver_class, &receiver_type_args);
@@ -35828,16 +35847,40 @@ impl<'a> InferenceEngine<'a> {
             }
             rbs_ir::RbsType::Union(variants) => {
                 if let Type::Union(actual_parts) = actual_type {
-                    for actual_part in actual_parts {
-                        let mut matched = false;
-                        for variant in variants
+                    if self.record_hover_snapshots {
+                        for actual_part in actual_parts {
+                            let mut matched = false;
+                            for variant in variants
+                                .iter()
+                                .filter(|v| !matches!(v, rbs_ir::RbsType::Variable(_)))
+                            {
+                                if Self::rbs_type_structurally_matches(variant, actual_part) {
+                                    self.resolve_type_variable(variant, actual_part, vars);
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                            if !matched
+                                && let Some(first_var) = variants
+                                    .iter()
+                                    .find(|v| matches!(v, rbs_ir::RbsType::Variable(_)))
+                            {
+                                self.resolve_type_variable(first_var, actual_part, vars);
+                            }
+                        }
+                    } else {
+                        let non_var_variants: Vec<_> = variants
                             .iter()
                             .filter(|v| !matches!(v, rbs_ir::RbsType::Variable(_)))
-                        {
-                            if Self::rbs_type_structurally_matches(variant, actual_part) {
-                                self.resolve_type_variable(variant, actual_part, vars);
-                                matched = true;
-                                break;
+                            .collect();
+                        let mut matched = false;
+                        for actual_part in actual_parts {
+                            for variant in &non_var_variants {
+                                if Self::rbs_type_structurally_matches(variant, actual_part) {
+                                    self.resolve_type_variable(variant, actual_part, vars);
+                                    matched = true;
+                                    break;
+                                }
                             }
                         }
                         if !matched
@@ -35845,7 +35888,7 @@ impl<'a> InferenceEngine<'a> {
                                 .iter()
                                 .find(|v| matches!(v, rbs_ir::RbsType::Variable(_)))
                         {
-                            self.resolve_type_variable(first_var, actual_part, vars);
+                            self.resolve_type_variable(first_var, actual_type, vars);
                         }
                     }
                 } else {
@@ -35863,7 +35906,7 @@ impl<'a> InferenceEngine<'a> {
                     }
                 }
             }
-            rbs_ir::RbsType::Intersection(parts) => {
+            rbs_ir::RbsType::Intersection(parts) if self.record_hover_snapshots => {
                 if let Type::Intersection(actual_parts) = actual_type {
                     for part in parts {
                         let mut matched = false;

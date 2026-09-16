@@ -1963,6 +1963,33 @@ box.value
     }
 
     #[test]
+    fn compact_scan_preserves_receiver_block_inference() {
+        let source = "class Sample\n  def foo = [1, 2]\n\n  def bar\n    foo.map { |item| item }\n  end\nend\n";
+        let loader = playground_loader();
+        let snapshot = analyze_compact_file_snapshot_timed(
+            source,
+            None,
+            &loader,
+            None,
+            "sample.rb",
+            AnalysisOptions::default(),
+            false,
+        )
+        .0;
+
+        assert_eq!(
+            snapshot
+                .registry()
+                .lookup_method_return_type("Sample", "bar"),
+            Some(Type::Array(Some(Box::new(Type::Union(vec![
+                Type::LiteralInteger(1),
+                Type::LiteralInteger(2),
+            ]))))),
+            "compact scans must keep the existing receiver block resolution"
+        );
+    }
+
+    #[test]
     fn file_facts_only_keeps_class_variable_only_classes() {
         let source = r#"
 class Source
