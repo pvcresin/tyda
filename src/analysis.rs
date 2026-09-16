@@ -693,7 +693,6 @@ fn playground_result_from_snapshot(
     );
     diagnostics =
         apply_diagnostic_suppressions(diagnostics, source, file_path, &projection.suppressor);
-
     PlaygroundResult {
         rbs: projection.rbs,
         diagnostics,
@@ -1964,6 +1963,33 @@ box.value
     }
 
     #[test]
+    fn compact_scan_preserves_receiver_block_inference() {
+        let source = "class Sample\n  def foo = [1, 2]\n\n  def bar\n    foo.map { |item| item }\n  end\nend\n";
+        let loader = playground_loader();
+        let snapshot = analyze_compact_file_snapshot_timed(
+            source,
+            None,
+            &loader,
+            None,
+            "sample.rb",
+            AnalysisOptions::default(),
+            false,
+        )
+        .0;
+
+        assert_eq!(
+            snapshot
+                .registry()
+                .lookup_method_return_type("Sample", "bar"),
+            Some(Type::Array(Some(Box::new(Type::Union(vec![
+                Type::LiteralInteger(1),
+                Type::LiteralInteger(2),
+            ]))))),
+            "compact scans must keep the existing receiver block resolution"
+        );
+    }
+
+    #[test]
     fn file_facts_only_keeps_class_variable_only_classes() {
         let source = r#"
 class Source
@@ -2614,6 +2640,287 @@ end
                 .collect::<Vec<_>>(),
             vec!["[Tyda] 1 | 2 | \"3\"", "[Tyda] 1 | 2 | \"3\""]
         );
+    }
+
+    #[test]
+    fn playground_map_hover_infers_map_block_types() {
+        let loader = playground_loader();
+        let source = "class User\n  def ids = [1, 2, 3].map { |n| n * 2 }\nend\n";
+        let result = playground_analyze(source, "", &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "map")
+            .expect("expected hover on map");
+
+        assert!(hover.display.starts_with("[Tyda] [Integer] () {"));
+        assert!(hover.display.contains("(Integer item) -> Integer"));
+        assert!(hover.display.contains("-> Array[Integer]"));
+        assert!(!hover.display.contains("Enumerator"));
+        assert_eq!(hover.display.matches("-> Array[Integer]").count(), 1);
+    }
+
+    #[test]
+    fn playground_identity_map_hover_preserves_literal_union() {
+        let loader = playground_loader();
+        let source = "class User\n  def ids = [1, 2, 3].map { |n| n }\nend\n";
+        let result = playground_analyze(source, "", &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "map")
+            .expect("expected hover on map");
+        assert!(
+            hover.display.contains("[1 | 2 | 3] () {"),
+            "{}",
+            hover.display
+        );
+        assert!(hover.display.contains("-> Array[1 | 2 | 3]"));
+        assert!(!hover.display.contains("Enumerator"));
+    }
+
+    #[test]
+    fn playground_enumerable_hover_infers_nested_generic_types() {
+        let loader = playground_loader();
+        let source = "class User\n  def ids = [1, 2, 3].group_by { |n| n }\nend\n";
+        let result = playground_analyze(source, "", &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "group_by")
+            .expect("expected hover on group_by");
+
+        assert!(
+            hover.display.contains("[1 | 2 | 3] () {"),
+            "{}",
+            hover.display
+        );
+        assert!(
+            hover
+                .display
+                .contains("-> Hash[1 | 2 | 3, Array[1 | 2 | 3]]")
+        );
+        assert!(!hover.display.contains("Enumerator"));
+    }
+
+    #[test]
+    fn playground_hover_infers_generic_from_nested_block_return() {
+        let loader = playground_loader();
+        let source = "class User\n  def value = consume { |n| \"value\" }\nend\n";
+        let user_rbs = "class User\n  def consume: [U] () { (Integer) -> U } -> nil\nend\n";
+        let result = playground_analyze(source, user_rbs, &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "consume")
+            .expect("expected hover on consume");
+
+        assert!(hover.display.contains("[\"value\"]"), "{}", hover.display);
+        assert!(
+            hover.display.contains("(Integer arg0) -> \"value\""),
+            "{}",
+            hover.display
+        );
+        assert!(hover.display.ends_with("-> nil"), "{}", hover.display);
+    }
+
+    #[test]
+    fn playground_hover_infers_generic_through_an_alias() {
+        let loader = playground_loader();
+        let source = "class User\n  def value = consume { |n| [[n]] }\nend\n";
+        let user_rbs = concat!(
+            "type wrapped[T] = Array[Array[T]]\n",
+            "class User\n",
+            "  def consume: [U] () { (Integer) -> wrapped[U] } -> wrapped[U]\n",
+            "end\n",
+        );
+        let result = playground_analyze(source, user_rbs, &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "consume")
+            .expect("expected hover on consume");
+
+        assert!(hover.display.contains("[Integer]"), "{}", hover.display);
+        assert!(
+            hover
+                .display
+                .contains("(Integer arg0) -> Array[Array[Integer]]"),
+            "{}",
+            hover.display
+        );
+        assert!(
+            hover.display.ends_with("-> Array[Array[Integer]]"),
+            "{}",
+            hover.display
+        );
+    }
+
+    #[test]
+    fn playground_hover_infers_generic_when_block_uses_its_parameter() {
+        let loader = playground_loader();
+        let source = "class User\n  def value = consume { |n| [n] }\nend\n";
+        let user_rbs =
+            "class User\n  def consume: [U] () { (Integer) -> Array[U] } -> Array[Array[U]]\nend\n";
+        let result = playground_analyze(source, user_rbs, &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "consume")
+            .expect("expected hover on consume");
+
+        assert!(hover.display.contains("[Integer]"), "{}", hover.display);
+        assert!(
+            hover.display.contains("Array[Integer]"),
+            "{}",
+            hover.display
+        );
+    }
+
+    #[test]
+    fn playground_hover_infers_generic_for_a_receiver_user_rbs_method() {
+        let loader = playground_loader();
+        let source = "class User\n  def value = self.consume { |n| [n] }\nend\n";
+        let user_rbs =
+            "class User\n  def consume: [U] () { (Integer) -> Array[U] } -> Array[Array[U]]\nend\n";
+        let result = playground_analyze(source, user_rbs, &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "consume")
+            .expect("expected hover on consume");
+
+        assert!(hover.display.contains("[Integer]"), "{}", hover.display);
+        assert!(
+            hover.display.contains("Array[Integer]"),
+            "{}",
+            hover.display
+        );
+    }
+
+    #[test]
+    fn playground_hover_infers_generic_from_a_union_block_return() {
+        let loader = playground_loader();
+        let source = "class User\n  def value = consume { |n| n }\nend\n";
+        let user_rbs = "class User\n  def consume: [U] () { (1 | 2 | 3) -> U? } -> Array[U]\nend\n";
+        let result = playground_analyze(source, user_rbs, &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "consume")
+            .expect("expected hover on consume");
+
+        assert!(hover.display.contains("[1 | 2 | 3]"), "{}", hover.display);
+        assert!(
+            hover.display.contains("(1 | 2 | 3 arg0) -> (1 | 2 | 3)?"),
+            "{}",
+            hover.display
+        );
+        assert!(
+            hover.display.ends_with("-> Array[1 | 2 | 3]"),
+            "{}",
+            hover.display
+        );
+    }
+
+    #[test]
+    fn playground_hover_selects_block_arity_overload() {
+        let loader = playground_loader();
+        let source = "class User\n  def value = choose { |left, right| left }\nend\n";
+        let user_rbs = concat!(
+            "class User\n",
+            "  def choose: () { (Integer) -> String } -> String\n",
+            "             | () { (Integer, String) -> String } -> Integer\n",
+            "end\n",
+        );
+        let result = playground_analyze(source, user_rbs, &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "choose")
+            .expect("expected hover on choose");
+
+        assert_eq!(
+            hover.display,
+            "[Tyda] () { (Integer arg0, String arg1) -> String } -> Integer"
+        );
+    }
+
+    #[test]
+    fn playground_hover_keeps_known_arguments_with_splat() {
+        let loader = playground_loader();
+        let source = "class User\n  def value(values) = choose(1, *values)\nend\n";
+        let user_rbs = concat!(
+            "class User\n",
+            "  def choose: (Integer, String) -> String\n",
+            "             | (String, Integer) -> Integer\n",
+            "end\n",
+        );
+        let result = playground_analyze(source, user_rbs, &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "choose")
+            .expect("expected hover on choose");
+
+        assert_eq!(
+            hover.display,
+            "[Tyda] (Integer arg0, String arg1) -> String"
+        );
+    }
+
+    #[test]
+    fn playground_hover_matches_overload_keyword_shape() {
+        let loader = playground_loader();
+        let source = "class User\n  def value = choose(1, mode: \"fast\")\nend\n";
+        let user_rbs = concat!(
+            "class User\n",
+            "  def choose: (Integer, mode: String) -> Integer\n",
+            "             | (Integer, count: Integer) -> String\n",
+            "end\n",
+        );
+        let result = playground_analyze(source, user_rbs, &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "choose")
+            .expect("expected hover on choose");
+
+        assert_eq!(
+            hover.display,
+            "[Tyda] (Integer arg0, mode: String) -> Integer"
+        );
+    }
+
+    #[test]
+    fn playground_hover_matches_overload_argument_shape() {
+        let loader = playground_loader();
+        let source = "class User\n  def value = choose(1)\nend\n";
+        let user_rbs = "class User\n  def choose: (Integer) -> Integer\n             | (String) -> String\nend\n";
+        let result = playground_analyze(source, user_rbs, &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "choose")
+            .expect("expected hover on choose");
+
+        assert_eq!(hover.display, "[Tyda] (Integer arg0) -> Integer");
+    }
+
+    #[test]
+    fn playground_map_hover_matches_the_no_block_shape() {
+        let loader = playground_loader();
+        let source = "class User\n  def ids = [1, 2, 3].map\nend\n";
+        let result = playground_analyze(source, "", &loader, "probe.rb");
+        let hover = result
+            .hovers
+            .iter()
+            .find(|hover| hover.name == "map")
+            .expect("expected hover on map");
+
+        assert!(hover.display.starts_with("[Tyda] () -> Enumerator"));
+        assert!(!hover.display.contains("} -> Array[untyped]"));
+        assert_eq!(hover.display.matches("Enumerator").count(), 1);
     }
 
     #[test]

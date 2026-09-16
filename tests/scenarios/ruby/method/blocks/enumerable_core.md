@@ -869,6 +869,22 @@ class Object < BasicObject
 end
 ```
 
+## map preserves a literal tuple's element union
+
+### update
+
+```ruby
+def literal_map = [1, 2, 3].map { |n| n }
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def literal_map: -> Array[1 | 2 | 3]
+end
+```
+
 ## numbered-parameter map widens integer increments
 
 ### update

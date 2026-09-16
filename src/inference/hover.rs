@@ -6,6 +6,7 @@ use crate::rbs::display::{
 use crate::rbs::ir as rbs_ir;
 use crate::types::Sym;
 use crate::types::{HoverBlockSig, HoverOverloadSig, Param, ParamKind};
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 
 #[derive(Clone)]
@@ -14,6 +15,7 @@ pub(crate) enum HoverTarget {
     MethodCall {
         receiver_type: Type,
         result_type: Type,
+        has_block: bool,
     },
     MethodDefinition {
         owner_type: Type,
@@ -37,6 +39,7 @@ pub(crate) struct ArgCheckArg {
     pub(crate) end: usize,
     pub(crate) ty: Type,
     pub(crate) keyword: Option<String>,
+    pub(crate) positional_index: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -51,8 +54,31 @@ pub(crate) struct ArgCheckSite {
     pub(crate) has_pos_splat: bool,
     pub(crate) keyword_names: Vec<String>,
     pub(crate) has_kwsplat: bool,
+    pub(crate) block_shape: Option<HoverBlockShape>,
+    pub(crate) block_return_type: Option<Type>,
     pub(crate) call_start: usize,
     pub(crate) call_end: usize,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct HoverBlockShape {
+    pub(crate) required_positionals: usize,
+    pub(crate) rest_positionals: bool,
+    pub(crate) trailing_positionals: usize,
+    pub(crate) required_keywords: Vec<String>,
+    pub(crate) optional_keywords: Vec<String>,
+    pub(crate) rest_keywords: bool,
+}
+
+#[derive(Clone)]
+struct HoverCallArguments {
+    positional: Vec<Type>,
+    positional_slots: Vec<Option<Type>>,
+    keywords: HashMap<String, Type>,
+    has_pos_splat: bool,
+    has_kwsplat: bool,
+    block_shape: Option<HoverBlockShape>,
+    block_return_type: Option<Type>,
 }
 
 #[derive(Clone)]
@@ -431,8 +457,8 @@ impl<'a> InferenceEngine<'a> {
                 let mut structural_rbs: Option<&rbs_ir::RbsType> = None;
                 let param = match &arg.keyword {
                     None => {
-                        let idx = pos_i;
-                        pos_i += 1;
+                        let idx = arg.positional_index.unwrap_or(pos_i);
+                        pos_i = pos_i.max(idx.saturating_add(1));
                         if positional_ambiguous {
                             continue;
                         }
@@ -662,8 +688,8 @@ impl<'a> InferenceEngine<'a> {
             let mut structural_rbs: Option<&rbs_ir::RbsType> = None;
             let param = match &arg.keyword {
                 None => {
-                    let idx = pos_i;
-                    pos_i += 1;
+                    let idx = arg.positional_index.unwrap_or(pos_i);
+                    pos_i = pos_i.max(idx.saturating_add(1));
                     if positional_ambiguous {
                         continue;
                     }
@@ -1773,6 +1799,7 @@ impl<'a> InferenceEngine<'a> {
             HoverTarget::MethodCall {
                 receiver_type,
                 ref result_type,
+                has_block,
             } => {
                 let unresolved = Self::describe_unresolved_ref(result_type);
                 let resolved_receiver = self.resolve_type_for_hover(
@@ -1785,11 +1812,18 @@ impl<'a> InferenceEngine<'a> {
                     &class_context,
                     method_context.as_deref(),
                 );
+                let call_arguments = self.hover_call_arguments(snap.start, snap.end, &name);
                 let display_rbs =
                     if name == "ancestors" && matches!(&resolved_result, Type::Tuple(_)) {
                         None
                     } else {
-                        self.resolve_hover_method_signature(&name, &resolved_receiver)
+                        self.resolve_hover_method_signature(
+                            &name,
+                            &resolved_receiver,
+                            &resolved_result,
+                            has_block,
+                            call_arguments.as_ref(),
+                        )
                     };
                 let type_params = self.resolve_hover_type_params(&resolved_receiver);
                 let unresolved = if matches!(resolved_result, Type::Untyped | Type::Todo) {
@@ -2441,6 +2475,7 @@ impl<'a> InferenceEngine<'a> {
             HoverTarget::MethodCall {
                 receiver_type,
                 result_type,
+                ..
             } => {
                 let _ = receiver_type;
                 self.resolve_type_for_hover(
@@ -2523,7 +2558,6 @@ impl<'a> InferenceEngine<'a> {
                 (distance, byte_offset.abs_diff(snap.start))
             })?
             .clone();
-
         let raw_target = match snap.target {
             HoverTarget::Value(ty) => ty,
             _ => return None,
@@ -2641,23 +2675,32 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         method_name: &str,
         receiver_type: &Type,
+        result_type: &Type,
+        has_block: bool,
+        call_arguments: Option<&HoverCallArguments>,
     ) -> Option<String> {
-        let receiver_type = Self::normalize_receiver_type_for_signature(receiver_type);
+        let normalized_receiver_type = Self::normalize_receiver_type_for_signature(receiver_type);
         if method_name == "new"
-            && let Some(method_sig) = self.resolve_hover_constructor_sig(&receiver_type)
+            && let Some(method_sig) = self.resolve_hover_constructor_sig(&normalized_receiver_type)
         {
             return Some(format_hover_inferred_method_sig(method_name, &method_sig));
         }
         if let Some(method_sig) =
-            self.synthetic_active_record_method_sig(&receiver_type, method_name)
+            self.synthetic_active_record_method_sig(&normalized_receiver_type, method_name)
         {
             return Some(format_hover_inferred_method_sig(method_name, &method_sig));
         }
-        if let Some(overloads) = self.resolve_hover_method_overloads(method_name, &receiver_type) {
+        if let Some(overloads) = self.resolve_hover_method_overloads(
+            method_name,
+            receiver_type,
+            result_type,
+            has_block,
+            call_arguments,
+        ) {
             return Some(format_hover_method_sig(method_name, &overloads));
         }
 
-        let method_sig = self.resolve_hover_method_sig(method_name, &receiver_type)?;
+        let method_sig = self.resolve_hover_method_sig(method_name, &normalized_receiver_type)?;
         Some(format_hover_inferred_method_sig(method_name, &method_sig))
     }
 
@@ -2707,6 +2750,9 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         method_name: &str,
         receiver_type: &Type,
+        result_type: &Type,
+        has_block: bool,
+        call_arguments: Option<&HoverCallArguments>,
     ) -> Option<Vec<HoverOverloadSig>> {
         let receiver_class = TypeRegistry::type_to_class_name_pub(receiver_type)?;
         self.preload_hover_lookup_hierarchy(&receiver_class);
@@ -2725,31 +2771,585 @@ impl<'a> InferenceEngine<'a> {
             return None;
         }
 
-        let receiver_type_args = Self::extract_type_args(receiver_type);
-        let mut base_type_vars =
-            self.class_type_vars_from_args(&receiver_class, &receiver_type_args);
-        Self::seed_enumerable_elem_type_var(
-            &receiver_class,
-            &receiver_type_args,
-            &mut base_type_vars,
-        );
-
-        Some(
+        let matching: Vec<_> = overloads
+            .iter()
+            .filter(|overload| {
+                Self::hover_overload_accepts_block_shape(
+                    &overload.method_type,
+                    has_block,
+                    call_arguments.and_then(|arguments| arguments.block_shape.as_ref()),
+                )
+            })
+            .cloned()
+            .collect();
+        let overloads = if matching.is_empty() {
             overloads
+        } else {
+            matching
+        };
+
+        let overloads = if let Some(arguments) = call_arguments {
+            let mut relation_cache = HashMap::new();
+            let matching: Vec<_> = overloads
                 .iter()
-                .map(|overload| {
-                    let mut type_vars = self.class_type_vars_for_method_owner(
-                        &receiver_class,
+                .filter(|overload| {
+                    self.hover_overload_accepts_call(
+                        &overload.method_type,
+                        arguments,
                         receiver_type,
-                        &overload.owner_class,
-                    );
-                    for (name, ty) in &base_type_vars {
-                        type_vars.entry(name.clone()).or_insert_with(|| ty.clone());
-                    }
-                    self.concretize_hover_overload(&overload.method_type, receiver_type, &type_vars)
+                        &mut relation_cache,
+                    )
                 })
-                .collect(),
-        )
+                .cloned()
+                .collect();
+            if matching.is_empty() {
+                overloads
+            } else {
+                matching
+            }
+        } else {
+            overloads
+        };
+
+        let normalized_receiver_type = Self::normalize_receiver_type_for_signature(receiver_type);
+        let mut seen = HashSet::new();
+        let mut concretized = Vec::with_capacity(overloads.len());
+        for overload in &overloads {
+            let signature_receiver_type = if overload.method_type.type_params.is_empty() {
+                &normalized_receiver_type
+            } else {
+                receiver_type
+            };
+            let receiver_type_args = Self::extract_type_args(signature_receiver_type);
+            let mut base_type_vars =
+                self.class_type_vars_from_args(&receiver_class, &receiver_type_args);
+            Self::seed_enumerable_elem_type_var(
+                &receiver_class,
+                &receiver_type_args,
+                &mut base_type_vars,
+            );
+            let mut type_vars = self.class_type_vars_for_method_owner(
+                &receiver_class,
+                signature_receiver_type,
+                &overload.owner_class,
+            );
+            for (name, ty) in &base_type_vars {
+                type_vars.entry(name.clone()).or_insert_with(|| ty.clone());
+            }
+            if !overload.method_type.type_params.is_empty()
+                && let Some(arguments) = call_arguments
+                && !arguments.has_pos_splat
+                && !arguments.has_kwsplat
+            {
+                self.resolve_method_type_params_from_arg_types(
+                    &overload.method_type,
+                    &arguments.positional,
+                    &arguments.keywords,
+                    signature_receiver_type,
+                    &mut type_vars,
+                );
+            }
+            if let Some(arguments) = call_arguments
+                && let Some(block_return_type) = arguments.block_return_type.as_ref()
+                && let Some(block) = overload.method_type.block.as_deref()
+            {
+                self.resolve_method_type_params_from_block_return(
+                    &overload.method_type,
+                    &block.function_type.return_type,
+                    block_return_type,
+                    signature_receiver_type,
+                    &mut type_vars,
+                );
+            }
+            self.resolve_hover_type_vars_from_result(
+                &overload.method_type,
+                result_type,
+                signature_receiver_type,
+                &mut type_vars,
+            );
+            let block_type_vars =
+                self.hover_block_type_vars_for_display(&overload.method_type, &type_vars);
+            let overload = self.concretize_hover_overload(
+                &overload.method_type,
+                signature_receiver_type,
+                &type_vars,
+                block_type_vars.as_ref(),
+            );
+            if seen.insert(overload.clone()) {
+                concretized.push(overload);
+            }
+        }
+        Some(concretized)
+    }
+
+    fn hover_call_arguments(
+        &mut self,
+        call_start: usize,
+        call_end: usize,
+        method_name: &str,
+    ) -> Option<HoverCallArguments> {
+        let site = self
+            .arg_check_sites
+            .iter()
+            .rev()
+            .find(|site| {
+                site.call_start == call_start
+                    && site.call_end == call_end
+                    && site.method_name == method_name
+            })?
+            .clone();
+        let mut positional_slots = vec![None; site.positional_count];
+        for arg in site.args.iter().filter(|arg| arg.keyword.is_none()) {
+            let Some(index) = arg.positional_index else {
+                continue;
+            };
+            if let Some(slot) = positional_slots.get_mut(index) {
+                *slot = Some(self.resolve_type_for_hover(
+                    &arg.ty,
+                    &site.class_context,
+                    site.method_context.as_deref(),
+                ));
+            }
+        }
+        let positional: Vec<Type> = if site.has_pos_splat {
+            Vec::new()
+        } else {
+            if positional_slots.iter().any(Option::is_none) {
+                return None;
+            }
+            positional_slots.iter().filter_map(Clone::clone).collect()
+        };
+
+        let keywords: HashMap<String, Type> = site
+            .args
+            .iter()
+            .filter_map(|arg| {
+                arg.keyword.as_ref().map(|name| {
+                    (
+                        name.clone(),
+                        self.resolve_type_for_hover(
+                            &arg.ty,
+                            &site.class_context,
+                            site.method_context.as_deref(),
+                        ),
+                    )
+                })
+            })
+            .collect();
+        if !site.has_kwsplat && keywords.len() != site.keyword_names.len() {
+            return None;
+        }
+
+        Some(HoverCallArguments {
+            positional,
+            positional_slots,
+            keywords,
+            has_pos_splat: site.has_pos_splat,
+            has_kwsplat: site.has_kwsplat,
+            block_shape: site.block_shape,
+            block_return_type: site.block_return_type,
+        })
+    }
+
+    pub(super) fn hover_overload_accepts_block_shape(
+        method_type: &rbs_ir::MethodType,
+        has_block: bool,
+        shape: Option<&HoverBlockShape>,
+    ) -> bool {
+        let accepts_presence = match (has_block, method_type.block.as_deref()) {
+            (true, Some(_)) | (false, None) => true,
+            (false, Some(block)) => !block.required,
+            (true, None) => false,
+        };
+        if !accepts_presence {
+            return false;
+        }
+        let Some(shape) = shape else {
+            return true;
+        };
+        let Some(block) = method_type.block.as_deref() else {
+            return true;
+        };
+
+        let source_minimum = shape
+            .required_positionals
+            .saturating_add(shape.trailing_positionals);
+        let candidate_maximum = (!shape.rest_positionals
+            && block.function_type.rest_positionals.is_none())
+        .then(|| {
+            block
+                .function_type
+                .required_positionals
+                .len()
+                .saturating_add(block.function_type.optional_positionals.len())
+                .saturating_add(block.function_type.trailing_positionals.len())
+        });
+        let can_destructure_single_tuple = source_minimum >= 2
+            && candidate_maximum == Some(1)
+            && block.function_type.required_positionals.len() == 1
+            && Self::rbs_type_may_destructure_as_block_parameters(
+                &block.function_type.required_positionals[0].type_,
+            );
+        if candidate_maximum
+            .is_some_and(|maximum| source_minimum > maximum && !can_destructure_single_tuple)
+        {
+            return false;
+        }
+
+        // A block's required keyword names are part of the call shape: a yield
+        // signature without that keyword cannot invoke the source block.
+        if shape.required_keywords.iter().any(|name| {
+            !block
+                .function_type
+                .required_keywords
+                .iter()
+                .chain(block.function_type.optional_keywords.iter())
+                .any(|(candidate, _)| candidate.as_str() == name)
+                && block.function_type.rest_keywords.is_none()
+        }) {
+            return false;
+        }
+
+        // A source block without `**kwargs` cannot consume a required keyword
+        // that it did not declare. This keeps overload selection symmetric for
+        // keyword-shaped blocks while still allowing optional yielded keywords
+        // to be ignored by the source block.
+        if !shape.rest_keywords {
+            let declared_keywords: HashSet<&str> = shape
+                .required_keywords
+                .iter()
+                .chain(shape.optional_keywords.iter())
+                .map(String::as_str)
+                .collect();
+            if block
+                .function_type
+                .required_keywords
+                .iter()
+                .any(|(name, _)| !declared_keywords.contains(name.as_str()))
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn rbs_type_may_destructure_as_block_parameters(ty: &rbs_ir::RbsType) -> bool {
+        match ty {
+            // A generic enumerable element may be a tuple at the call site.
+            rbs_ir::RbsType::Variable(_) => true,
+            rbs_ir::RbsType::Tuple(parts) => parts.len() >= 2,
+            rbs_ir::RbsType::Class(name, args) => {
+                name.as_str().trim_scope_prefix() == "Array" && !args.is_empty()
+            }
+            rbs_ir::RbsType::Alias(name, args) => {
+                matches!(name.as_str().trim_scope_prefix(), "Array" | "array") && !args.is_empty()
+            }
+            rbs_ir::RbsType::Union(parts) => parts
+                .iter()
+                .all(Self::rbs_type_may_destructure_as_block_parameters),
+            rbs_ir::RbsType::Optional(inner) => {
+                Self::rbs_type_may_destructure_as_block_parameters(inner)
+            }
+            _ => false,
+        }
+    }
+
+    fn hover_overload_accepts_call(
+        &self,
+        method_type: &rbs_ir::MethodType,
+        arguments: &HoverCallArguments,
+        receiver_type: &Type,
+        relation_cache: &mut RbsRelationCache,
+    ) -> bool {
+        if !arguments.has_pos_splat && !arguments.has_kwsplat {
+            return self.rbs_method_type_accepts_call(
+                method_type,
+                &arguments.positional,
+                &arguments.keywords,
+                receiver_type,
+                relation_cache,
+            );
+        }
+
+        let ft = &method_type.function_type;
+        if arguments.has_pos_splat {
+            if !self.hover_partial_positional_call_matches(
+                ft,
+                &arguments.positional_slots,
+                receiver_type,
+                relation_cache,
+            ) {
+                return false;
+            }
+        } else if !self.rbs_method_type_accepts_positional_call(
+            method_type,
+            &arguments.positional,
+            receiver_type,
+            relation_cache,
+        ) {
+            return false;
+        }
+
+        for (keyword, arg_type) in &arguments.keywords {
+            let Some(expected) = Self::rbs_keyword_param_type(ft, keyword) else {
+                return false;
+            };
+            if !Self::is_unresolved_call_arg_type(arg_type)
+                && !self.rbs_param_type_structurally_matches_with_registry_cached(
+                    expected,
+                    arg_type,
+                    receiver_type,
+                    relation_cache,
+                )
+            {
+                return false;
+            }
+        }
+        if !arguments.has_kwsplat
+            && ft
+                .required_keywords
+                .iter()
+                .any(|(name, _)| !arguments.keywords.contains_key(name.as_str()))
+        {
+            return false;
+        }
+        true
+    }
+
+    fn hover_partial_positional_call_matches(
+        &self,
+        ft: &rbs_ir::FunctionType,
+        slots: &[Option<Type>],
+        receiver_type: &Type,
+        relation_cache: &mut RbsRelationCache,
+    ) -> bool {
+        let known_indices: Vec<usize> = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| slot.as_ref().map(|_| index))
+            .collect();
+        let minimum_count = ft.required_positionals.len() + ft.trailing_positionals.len();
+        let maximum_count = if ft.rest_positionals.is_some() {
+            None
+        } else {
+            Some(
+                ft.required_positionals.len()
+                    + ft.optional_positionals.len()
+                    + ft.trailing_positionals.len(),
+            )
+        };
+        let lower_bound = known_indices
+            .last()
+            .copied()
+            .map_or(minimum_count, |index| {
+                minimum_count.max(index.saturating_add(1))
+            });
+        if maximum_count.is_some_and(|maximum| lower_bound > maximum) {
+            return false;
+        }
+
+        // When a splat appears, trailing RBS parameters depend on the total
+        // expanded arity. Check every possible finite arity; with a rest
+        // parameter, the prefix plus the known trailing window is sufficient.
+        let upper_bound = maximum_count.unwrap_or_else(|| {
+            lower_bound
+                .max(ft.required_positionals.len())
+                .saturating_add(ft.trailing_positionals.len())
+                .saturating_add(1)
+        });
+        let counts = lower_bound..=upper_bound;
+        for count in counts {
+            if known_indices.iter().all(|index| {
+                let Some(expected) = Self::rbs_positional_param_type_for_arg(ft, count, *index)
+                else {
+                    return false;
+                };
+                let Some(actual) = slots[*index].as_ref() else {
+                    return true;
+                };
+                Self::is_unresolved_call_arg_type(actual)
+                    || self.rbs_param_type_structurally_matches_with_registry_cached(
+                        expected,
+                        actual,
+                        receiver_type,
+                        relation_cache,
+                    )
+            }) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn resolve_hover_type_vars_from_result(
+        &self,
+        method_type: &rbs_ir::MethodType,
+        result_type: &Type,
+        receiver_type: &Type,
+        type_vars: &mut HashMap<String, Type>,
+    ) {
+        if !Self::is_resolved_hover_type(result_type) {
+            return;
+        }
+        self.resolve_type_variable(
+            &method_type.function_type.return_type,
+            result_type,
+            type_vars,
+        );
+        self.fill_unresolved_method_type_vars_from_upper_bounds(
+            method_type,
+            receiver_type,
+            type_vars,
+        );
+        self.retain_method_type_vars_satisfying_bounds(method_type, receiver_type, type_vars);
+    }
+
+    fn is_resolved_hover_type(ty: &Type) -> bool {
+        if !Self::is_concrete(ty) || Self::type_needs_backward_propagation(ty) {
+            return false;
+        }
+        match ty {
+            Type::Untyped | Type::Todo | Type::Top | Type::BlockReturnRef => false,
+            Type::Union(parts) | Type::Intersection(parts) => {
+                parts.iter().all(Self::is_resolved_hover_type)
+            }
+            Type::Array(Some(inner)) => Self::is_resolved_hover_type(inner),
+            Type::Hash(Some(key), Some(value)) => {
+                Self::is_resolved_hover_type(key) && Self::is_resolved_hover_type(value)
+            }
+            Type::Hash(Some(key), None) => Self::is_resolved_hover_type(key),
+            Type::Hash(None, Some(value)) => Self::is_resolved_hover_type(value),
+            Type::Tuple(parts) => parts.iter().all(Self::is_resolved_hover_type),
+            Type::Record(fields) => fields
+                .iter()
+                .all(|field| Self::is_resolved_hover_type(&field.value)),
+            Type::Proc { return_type, .. } => Self::is_resolved_hover_type(return_type),
+            Type::Generic { args, .. } => args.iter().all(Self::is_resolved_hover_type),
+            Type::PatternIndexRef(..)
+            | Type::PatternRestRef(..)
+            | Type::PatternTrailingRef(..)
+            | Type::PatternKeyRef(..)
+            | Type::PatternKeyRestRef(..) => false,
+            _ => true,
+        }
+    }
+
+    fn hover_block_type_vars_for_display<'b>(
+        &self,
+        method_type: &rbs_ir::MethodType,
+        type_vars: &'b HashMap<String, Type>,
+    ) -> Cow<'b, HashMap<String, Type>> {
+        let Some(block) = method_type.block.as_deref() else {
+            return Cow::Borrowed(type_vars);
+        };
+        let method_type_params: HashSet<&str> =
+            method_type.type_params.iter().map(Sym::as_str).collect();
+        let mut widened = Vec::new();
+        for (name, ty) in type_vars {
+            if method_type_params.contains(name.as_str())
+                || !Self::rbs_function_type_uses_variable(&block.function_type, name)
+                || Self::rbs_type_uses_variable(&method_type.function_type.return_type, name)
+            {
+                continue;
+            }
+            let method_type_var_preserves_shape = method_type.type_params.iter().any(|param| {
+                type_vars
+                    .get(param.as_str())
+                    .is_some_and(|method_ty| Self::type_contains_type(method_ty, ty))
+            });
+            if !method_type_var_preserves_shape {
+                widened.push((name.clone(), ty.widen()));
+            }
+        }
+        if widened.is_empty() {
+            Cow::Borrowed(type_vars)
+        } else {
+            let mut block_type_vars = type_vars.clone();
+            for (name, ty) in widened {
+                block_type_vars.insert(name, ty);
+            }
+            Cow::Owned(block_type_vars)
+        }
+    }
+
+    fn type_contains_type(container: &Type, target: &Type) -> bool {
+        if container == target {
+            return true;
+        }
+        match container {
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => parts
+                .iter()
+                .any(|part| Self::type_contains_type(part, target)),
+            Type::Array(Some(inner)) => Self::type_contains_type(inner, target),
+            Type::Hash(key, value) => {
+                key.as_deref()
+                    .is_some_and(|key| Self::type_contains_type(key, target))
+                    || value
+                        .as_deref()
+                        .is_some_and(|value| Self::type_contains_type(value, target))
+            }
+            Type::Record(fields) => fields
+                .iter()
+                .any(|field| Self::type_contains_type(&field.value, target)),
+            Type::Proc { return_type, .. } => Self::type_contains_type(return_type, target),
+            Type::Generic { args, .. } => {
+                args.iter().any(|arg| Self::type_contains_type(arg, target))
+            }
+            Type::ReceiverMethodRef(receiver, _)
+            | Type::PatternIndexRef(receiver, _)
+            | Type::PatternRestRef(receiver)
+            | Type::PatternTrailingRef(receiver, _)
+            | Type::PatternKeyRef(receiver, _)
+            | Type::PatternKeyRestRef(receiver, _) => Self::type_contains_type(receiver, target),
+            _ => false,
+        }
+    }
+
+    fn rbs_function_type_uses_variable(ft: &rbs_ir::FunctionType, name: &str) -> bool {
+        ft.required_positionals
+            .iter()
+            .chain(ft.optional_positionals.iter())
+            .chain(ft.rest_positionals.iter().map(Box::as_ref))
+            .chain(ft.trailing_positionals.iter())
+            .any(|param| Self::rbs_type_uses_variable(&param.type_, name))
+            || ft
+                .required_keywords
+                .iter()
+                .chain(ft.optional_keywords.iter())
+                .any(|(_, param)| Self::rbs_type_uses_variable(&param.type_, name))
+            || ft
+                .rest_keywords
+                .as_ref()
+                .is_some_and(|param| Self::rbs_type_uses_variable(&param.type_, name))
+    }
+
+    fn rbs_type_uses_variable(rbs_type: &rbs_ir::RbsType, name: &str) -> bool {
+        match rbs_type {
+            rbs_ir::RbsType::Variable(variable) => variable.as_str() == name,
+            rbs_ir::RbsType::Class(_, args)
+            | rbs_ir::RbsType::Alias(_, args)
+            | rbs_ir::RbsType::Union(args)
+            | rbs_ir::RbsType::Intersection(args)
+            | rbs_ir::RbsType::Tuple(args) => args
+                .iter()
+                .any(|arg| Self::rbs_type_uses_variable(arg, name)),
+            rbs_ir::RbsType::Optional(inner) => Self::rbs_type_uses_variable(inner, name),
+            rbs_ir::RbsType::Record(fields) => fields
+                .iter()
+                .any(|field| Self::rbs_type_uses_variable(&field.type_, name)),
+            rbs_ir::RbsType::Proc(method_type) => {
+                Self::rbs_function_type_uses_variable(&method_type.function_type, name)
+                    || Self::rbs_type_uses_variable(&method_type.function_type.return_type, name)
+                    || method_type.block.as_deref().is_some_and(|block| {
+                        Self::rbs_function_type_uses_variable(&block.function_type, name)
+                            || block
+                                .self_type
+                                .as_deref()
+                                .is_some_and(|ty| Self::rbs_type_uses_variable(ty, name))
+                    })
+            }
+            _ => false,
+        }
     }
 
     fn concretize_hover_overload(
@@ -2757,8 +3357,23 @@ impl<'a> InferenceEngine<'a> {
         overload: &rbs_ir::MethodType,
         receiver_type: &Type,
         type_vars: &HashMap<String, Type>,
+        block_type_vars: &HashMap<String, Type>,
     ) -> HoverOverloadSig {
+        let method_type_params = if overload.type_params.iter().all(|name| {
+            type_vars
+                .get(name.as_str())
+                .is_some_and(Self::is_resolved_hover_type)
+        }) {
+            overload
+                .type_params
+                .iter()
+                .filter_map(|name| type_vars.get(name.as_str()).cloned())
+                .collect()
+        } else {
+            Vec::new()
+        };
         HoverOverloadSig {
+            method_type_params,
             params: self.concretize_hover_function_params(
                 &overload.function_type,
                 receiver_type,
@@ -2773,12 +3388,12 @@ impl<'a> InferenceEngine<'a> {
                 params: self.concretize_hover_function_params(
                     &block.function_type,
                     receiver_type,
-                    type_vars,
+                    block_type_vars,
                 ),
                 return_type: self.concretize_hover_type(
                     &block.function_type.return_type,
                     receiver_type,
-                    type_vars,
+                    block_type_vars,
                 ),
                 required: block.required,
             }),

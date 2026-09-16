@@ -168,6 +168,7 @@ impl CoverageRecorder {
             HoverTarget::MethodCall {
                 receiver_type,
                 result_type,
+                ..
             } => (
                 CoverageSiteKind::MethodCall,
                 method_call_level(
@@ -562,6 +563,7 @@ mod tests {
             HoverTarget::MethodCall {
                 receiver_type: Type::Untyped,
                 result_type: Type::String,
+                has_block: false,
             },
         );
         let mut recorder = CoverageRecorder::default();

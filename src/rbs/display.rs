@@ -92,6 +92,7 @@ pub fn format_hover_inferred_method_sig(name: &str, method: &MethodSig) -> Strin
     lines.push(format!("{name}: {primary}"));
     lines.extend(method.overloads.iter().map(|overload| {
         let hover_overload = HoverOverloadSig {
+            method_type_params: Vec::new(),
             params: overload.params.clone(),
             return_type: overload.return_type.clone(),
             block: overload.block.clone(),
@@ -155,24 +156,33 @@ fn format_signature_with_names(
 }
 
 fn format_hover_overload(overload: &HoverOverloadSig) -> String {
-    let mut rendered =
-        format_callable_signature(&overload.params, &overload.return_type, true, false);
-    if let Some(block) = &overload.block {
-        let block_rendered = format_block_signature(block, false);
-        if let Some((params, ret)) = rendered.split_once(" -> ") {
-            rendered = format!("{params}{block_rendered} -> {ret}");
-        }
-    }
-    rendered
+    let generic_prefix = if overload.method_type_params.is_empty() {
+        String::new()
+    } else {
+        let params = overload
+            .method_type_params
+            .iter()
+            .map(format_param_type)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("[{params}] ")
+    };
+    let params_str = format_callable_params(&overload.params, true, false);
+    let return_str = format_return_type(&overload.return_type, !overload.params.is_empty());
+    let block_str = overload
+        .block
+        .as_ref()
+        .map(|block| format_block_signature(block, false))
+        .unwrap_or_default();
+    format!("{generic_prefix}{params_str}{block_str} -> {return_str}")
 }
 
-fn format_callable_signature(
+fn format_callable_params(
     params: &[Param],
-    return_type: &Type,
     output_parameter_names: bool,
     widen_params: bool,
 ) -> String {
-    let params_str = if params.is_empty() {
+    if params.is_empty() {
         "()".to_string()
     } else {
         let param_strs: Vec<String> = params
@@ -180,9 +190,7 @@ fn format_callable_signature(
             .map(|param| format_param(param, output_parameter_names, widen_params))
             .collect();
         format!("({})", param_strs.join(", "))
-    };
-    let return_str = format_return_type(return_type, !params.is_empty());
-    format!("{params_str} -> {return_str}")
+    }
 }
 
 fn format_block_signature(block: &HoverBlockSig, widen_params: bool) -> String {
@@ -457,6 +465,7 @@ mod tests {
             "each",
             &[
                 HoverOverloadSig {
+                    method_type_params: Vec::new(),
                     params: Vec::new(),
                     return_type: Type::Class(crate::types::Sym::new(
                         "Enumerator[Integer, Array[Integer]]",
@@ -464,6 +473,7 @@ mod tests {
                     block: None,
                 },
                 HoverOverloadSig {
+                    method_type_params: Vec::new(),
                     params: Vec::new(),
                     return_type: Type::Array(Some(Box::new(Type::Integer))),
                     block: Some(HoverBlockSig {
@@ -485,6 +495,28 @@ mod tests {
                 "each: () -> Enumerator[Integer, Array[Integer]]\n",
                 "    | () { (Integer item) -> void } -> Array[Integer]"
             )
+        );
+    }
+
+    #[test]
+    fn hover_signature_keeps_embedded_arrow_generic_prefix_intact() {
+        let rendered = format_hover_method_sig(
+            "call",
+            &[HoverOverloadSig {
+                method_type_params: vec![Type::LiteralString("() -> Integer".to_string())],
+                params: Vec::new(),
+                return_type: Type::String,
+                block: Some(HoverBlockSig {
+                    params: Vec::new(),
+                    return_type: Type::Void,
+                    required: true,
+                }),
+            }],
+        );
+
+        assert_eq!(
+            rendered,
+            "call: [\"() -> Integer\"] () { () -> void } -> String"
         );
     }
 
