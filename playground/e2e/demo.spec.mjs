@@ -200,8 +200,63 @@ test("infers RBS, emits CodeLens + diagnostics + hover", async ({ page }) => {
   expect(result.hovers.length).toBeGreaterThan(0);
   const hoverTypes = result.hovers.map((h) => h.display).join(" ");
   expect(hoverTypes.length).toBeGreaterThan(0);
+  const mapHover = result.hovers.find((h) => h.name === "map");
+  expect(mapHover?.display).toContain("[Integer] () {");
+  expect(mapHover?.display).toContain("(Integer item) -> Integer");
+  expect(mapHover?.display).toContain("-> Array[Integer]");
+  expect(mapHover?.display).not.toContain("Enumerator");
 
   expect(pageErrors, "no uncaught page errors").toEqual([]);
+});
+
+test("updates Ruby hovers when the user RBS changes", async ({ page }) => {
+  await page.goto(PLAYGROUND_PATH);
+  await waitForPlayground(page);
+
+  const source = `class User
+  def value = self.choose
+end
+`;
+  const stringRbs = `class User
+  def choose: () -> String
+end
+`;
+  const integerRbs = `class User
+  def choose: () -> Integer
+end
+`;
+
+  await page.evaluate(
+    ({ source, rbs }) => {
+      window.__editors.ruby.setValue(source);
+      window.__editors.rbs.setValue(rbs);
+    },
+    { source, rbs: stringRbs },
+  );
+  await page.waitForFunction(
+    () =>
+      window.__tyda?.hovers?.some((h) => h.name === "choose" && h.display.includes("-> String")),
+    null,
+    { timeout: 45_000 },
+  );
+  const firstHover = await page.evaluate(
+    () => window.__tyda.hovers.find((h) => h.name === "choose")?.display,
+  );
+
+  await page.evaluate((rbs) => window.__editors.rbs.setValue(rbs), integerRbs);
+  await page.waitForFunction(
+    () =>
+      window.__tyda?.hovers?.some((h) => h.name === "choose" && h.display.includes("-> Integer")),
+    null,
+    { timeout: 45_000 },
+  );
+  const secondHover = await page.evaluate(
+    () => window.__tyda.hovers.find((h) => h.name === "choose")?.display,
+  );
+
+  expect(firstHover).toContain("-> String");
+  expect(secondHover).toContain("-> Integer");
+  expect(secondHover).not.toContain("-> String");
 });
 
 test("prevents browser save shortcuts", async ({ page }) => {

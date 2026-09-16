@@ -45,7 +45,9 @@ mod rails_dsl;
 mod rbs;
 mod ruby_dsl;
 
-use hover::{ArgCheckArg, ArgCheckSite, HoverSnapshot, HoverTarget, UnresolvedConstantSite};
+use hover::{
+    ArgCheckArg, ArgCheckSite, HoverBlockShape, HoverSnapshot, HoverTarget, UnresolvedConstantSite,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DynamicNamespaceKind {
@@ -229,6 +231,7 @@ enum NumericStepKind {
 struct EnumeratorBlockFallback<'ctx, 'src> {
     class_name: &'ctx str,
     block: &'ctx ruby_prism::BlockNode<'src>,
+    call_node: &'ctx ruby_prism::CallNode<'src>,
     receiver_class: &'ctx str,
     receiver_type: &'ctx Type,
     rbs_overloads: &'ctx [RbsMethodTypeWithOwner],
@@ -5495,6 +5498,7 @@ impl<'a> InferenceEngine<'a> {
                     Box::new(receiver_type.clone()),
                     Sym::new(method_name),
                 ),
+                has_block: false,
             },
             class_context: String::new(),
             method_context: None,
@@ -14446,46 +14450,60 @@ impl<'a> InferenceEngine<'a> {
         }
         let (positional_spans, kw_spans, pos_splat_or_fwd, kwsplat) =
             Self::collect_call_arg_spans(call_node, parse_result);
-        // Bail on any structural divergence from the inferred positional types.
-        if positional_spans.len() != positional_types.len() {
+        // A forwarding argument has no source span of its own, so it can be
+        // recorded without requiring the inferred placeholder count to match.
+        if positional_spans.len() != positional_types.len() && !pos_splat_or_fwd {
             return;
         }
         let mut args: Vec<ArgCheckArg> = Vec::new();
-        if !pos_splat_or_fwd {
-            for (span, ty) in positional_spans.iter().zip(positional_types.iter()) {
-                if let Some((start, end)) = span
-                    && start < end
-                {
-                    args.push(ArgCheckArg {
-                        start: *start,
-                        end: *end,
-                        ty: ty.clone(),
-                        keyword: None,
-                    });
+        let mut inferred_index = 0usize;
+        let mut past_unknown_positional = false;
+        for (index, span) in positional_spans.iter().enumerate() {
+            let ty = if past_unknown_positional {
+                None
+            } else {
+                let ty = positional_types.get(inferred_index);
+                if span.is_none() {
+                    past_unknown_positional = true;
+                } else {
+                    inferred_index = inferred_index.saturating_add(1);
                 }
+                ty
+            };
+            if let Some((start, end)) = span
+                && start < end
+                && let Some(ty) = ty
+            {
+                args.push(ArgCheckArg {
+                    start: *start,
+                    end: *end,
+                    ty: ty.clone(),
+                    keyword: None,
+                    positional_index: Some(index),
+                });
             }
         }
-        if !kwsplat {
-            for (name, (start, end)) in &kw_spans {
-                if start < end
-                    && let Some(ty) = kw_types.get(name)
-                {
-                    args.push(ArgCheckArg {
-                        start: *start,
-                        end: *end,
-                        ty: ty.clone(),
-                        keyword: Some(name.clone()),
-                    });
-                }
+        for (name, (start, end)) in &kw_spans {
+            if start < end
+                && let Some(ty) = kw_types.get(name)
+            {
+                args.push(ArgCheckArg {
+                    start: *start,
+                    end: *end,
+                    ty: ty.clone(),
+                    keyword: Some(name.clone()),
+                    positional_index: None,
+                });
             }
-        }
-        if args.is_empty() && !crate::diagnostics::experimental_checks_enabled() {
-            return;
         }
         let Some(msg_loc) = call_node.message_loc() else {
             return;
         };
         let keyword_names: Vec<String> = kw_spans.iter().map(|(name, _)| name.clone()).collect();
+        let block_shape = call_node
+            .block()
+            .and_then(|block| block.as_block_node())
+            .map(|block| Self::hover_block_shape(&block));
         self.arg_check_sites.push(ArgCheckSite {
             receiver_type: receiver_type.clone(),
             method_name: method_name.to_string(),
@@ -14493,13 +14511,41 @@ impl<'a> InferenceEngine<'a> {
             class_context: class_name.to_string(),
             method_context: method_context.map(str::to_string),
             args,
-            positional_count: positional_types.len(),
+            positional_count: if pos_splat_or_fwd {
+                positional_spans.len()
+            } else {
+                positional_types.len()
+            },
             has_pos_splat: pos_splat_or_fwd,
             keyword_names,
             has_kwsplat: kwsplat,
+            block_shape,
+            block_return_type: None,
             call_start: msg_loc.start_offset(),
             call_end: msg_loc.end_offset(),
         });
+    }
+
+    fn record_hover_block_return(
+        &mut self,
+        call_node: &ruby_prism::CallNode<'_>,
+        block_return_type: Type,
+    ) {
+        if !self.record_hover_snapshots {
+            return;
+        }
+        let Some(msg_loc) = call_node.message_loc() else {
+            return;
+        };
+        let call_start = msg_loc.start_offset();
+        let call_end = msg_loc.end_offset();
+        for site in self
+            .arg_check_sites
+            .iter_mut()
+            .filter(|site| site.call_start == call_start && site.call_end == call_end)
+        {
+            site.block_return_type = Some(block_return_type.clone());
+        }
     }
 
     fn record_unresolved_constant_receiver(
@@ -18480,6 +18526,9 @@ impl<'a> InferenceEngine<'a> {
                         &arg_types,
                         &kw_types,
                     );
+                    if let Some(block) = block.as_ref() {
+                        self.record_hover_block_return(&call_node, block.return_type.clone());
+                    }
                     let call_site_method_name: Arc<str> = method_name.clone().into();
                     self.record_inferred_call_site(class_name, {
                         let caller_context = Self::call_site_caller_context(
@@ -18532,6 +18581,7 @@ impl<'a> InferenceEngine<'a> {
                             target: HoverTarget::MethodCall {
                                 receiver_type,
                                 result_type,
+                                has_block: call_node.block().is_some(),
                             },
                             class_context: class_name.to_string(),
                             method_context: scope.method_name.clone(),
@@ -21158,6 +21208,21 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(block_result) = user_defined_block_call_result {
                             break 'no_recv block_result;
                         }
+                        let generic_block_call_result = if call_node.block().is_some() {
+                            self.resolve_block_call_generic(
+                                class_name,
+                                &call_node,
+                                &implicit_self_type,
+                                &method_name,
+                                parse_result,
+                                scope,
+                            )
+                        } else {
+                            None
+                        };
+                        if let Some(block_result) = generic_block_call_result {
+                            break 'no_recv block_result;
+                        }
                         if let Some(enum_result) = user_defined_no_block_enumerator_result {
                             break 'no_recv enum_result;
                         }
@@ -21304,6 +21369,7 @@ impl<'a> InferenceEngine<'a> {
                             HoverTarget::MethodCall {
                                 receiver_type: implicit_self_type.clone(),
                                 result_type: result.clone(),
+                                has_block: call_node.block().is_some(),
                             }
                         };
                         self.push_hover_snapshot(HoverSnapshot {
@@ -22388,6 +22454,12 @@ impl<'a> InferenceEngine<'a> {
                                     &mut block_scope,
                                 )
                             };
+                            if let Some(block) = block.as_ref() {
+                                self.record_hover_block_return(
+                                    &call_node,
+                                    block.return_type.clone(),
+                                );
+                            }
                             user_defined_block_call_result = block.as_ref().and_then(|block| {
                                 self.resolve_user_defined_block_call_return(
                                     &target_class,
@@ -23311,6 +23383,7 @@ impl<'a> InferenceEngine<'a> {
                             HoverTarget::MethodCall {
                                 receiver_type: receiver_type.clone(),
                                 result_type: result.clone(),
+                                has_block: call_node.block().is_some(),
                             }
                         };
                         self.push_hover_snapshot(HoverSnapshot {
@@ -31579,7 +31652,6 @@ impl<'a> InferenceEngine<'a> {
     ) -> Option<Type> {
         let block_node_raw = call_node.block()?;
         let block = block_node_raw.as_block_node()?;
-
         let normalized = Self::normalize_union_receiver(receiver_type);
         // Block-iterating methods (`map`/`select`/...) need the receiver's concrete element type to thread through the block.
         // A deferred instance-variable or method-return receiver (e.g.
@@ -31608,6 +31680,7 @@ impl<'a> InferenceEngine<'a> {
         let (call_arg_types, call_kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
         let call_arg_count = call_arg_types.len();
+        let block_shape = Self::hover_block_shape(&block);
 
         let receiver_type_args = Self::extract_type_args(receiver_type);
         let mut base_type_vars =
@@ -31629,7 +31702,8 @@ impl<'a> InferenceEngine<'a> {
         let rbs_mt = rbs_overloads
             .iter()
             .find(|mt| {
-                mt.method_type.block.is_some()
+                Self::hover_overload_accepts_block_shape(&mt.method_type, true, Some(&block_shape))
+                    && mt.method_type.block.is_some()
                     && self.rbs_method_type_accepts_call(
                         &mt.method_type,
                         &call_arg_types,
@@ -31644,6 +31718,7 @@ impl<'a> InferenceEngine<'a> {
             return self.resolve_block_call_from_enumerator_return(EnumeratorBlockFallback {
                 class_name,
                 block: &block,
+                call_node,
                 receiver_class: &receiver_class,
                 receiver_type,
                 rbs_overloads: &rbs_overloads,
@@ -31675,21 +31750,7 @@ impl<'a> InferenceEngine<'a> {
             );
         }
 
-        let ruby_param_count = if let Some(params_node) = block.parameters() {
-            if let Some(bp) = params_node.as_block_parameters_node()
-                && let Some(inner) = bp.parameters()
-            {
-                inner.requireds().iter().count()
-            } else if let Some(np) = params_node.as_numbered_parameters_node() {
-                np.maximum() as usize
-            } else if params_node.as_it_parameters_node().is_some() {
-                1
-            } else {
-                0
-            }
-        } else {
-            0
-        };
+        let ruby_param_count = Self::block_positional_param_count(&block);
 
         let block_param_types = Self::substitute_rbs_function_positional_param_types(
             &rbs_block.function_type,
@@ -31998,6 +32059,7 @@ impl<'a> InferenceEngine<'a> {
         } else {
             Type::Nil
         };
+        self.record_hover_block_return(call_node, block_return_type.clone());
         let block_break_type = if block_scope.break_types.is_empty() {
             None
         } else {
@@ -32071,7 +32133,6 @@ impl<'a> InferenceEngine<'a> {
             receiver_type,
             &mut type_vars,
         );
-
         let method_return = Self::substitute_rbs_return_type_vars(
             &rbs_mt.method_type.function_type.return_type,
             &type_vars,
@@ -32421,13 +32482,14 @@ impl<'a> InferenceEngine<'a> {
             } else {
                 vec![yield_type]
             };
-            let (_, control_type) = self.infer_block_return_with_param_types(
+            let (block_return_type, control_type) = self.infer_block_return_with_param_types(
                 ctx.class_name,
                 ctx.block,
                 &param_types,
                 ctx.parse_result,
                 ctx.scope,
             );
+            self.record_hover_block_return(ctx.call_node, block_return_type);
             return Some(Self::include_optional_control_type(
                 return_type,
                 &control_type,
@@ -32796,6 +32858,10 @@ impl<'a> InferenceEngine<'a> {
 
         let (call_arg_types, call_kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
+        let block_shape = call_node
+            .block()
+            .and_then(|block| block.as_block_node())
+            .map(|block| Self::hover_block_shape(&block));
         let receiver_type_args = Self::extract_type_args(receiver_type);
         let mut base_type_vars =
             self.class_type_vars_from_args(&receiver_class, &receiver_type_args);
@@ -32807,7 +32873,8 @@ impl<'a> InferenceEngine<'a> {
 
         let mut relation_cache = HashMap::new();
         if let Some(overload) = rbs_overloads.iter().find(|mt| {
-            mt.method_type.block.is_some()
+            Self::hover_overload_accepts_block_shape(&mt.method_type, true, block_shape.as_ref())
+                && mt.method_type.block.is_some()
                 && self.rbs_method_type_accepts_call(
                     &mt.method_type,
                     &call_arg_types,
@@ -33263,6 +33330,48 @@ impl<'a> InferenceEngine<'a> {
         None
     }
 
+    fn hover_block_shape(block: &ruby_prism::BlockNode<'_>) -> HoverBlockShape {
+        let Some(params_node) = block.parameters() else {
+            return HoverBlockShape::default();
+        };
+        if let Some(bp) = params_node.as_block_parameters_node()
+            && let Some(inner) = bp.parameters()
+        {
+            let mut shape = HoverBlockShape {
+                required_positionals: inner.requireds().iter().count(),
+                rest_positionals: inner.rest().is_some(),
+                trailing_positionals: inner.posts().iter().count(),
+                rest_keywords: inner.keyword_rest().is_some(),
+                ..HoverBlockShape::default()
+            };
+            for keyword in inner.keywords().iter() {
+                let Some((name, _, _, _)) = Self::extract_method_keyword_hover_target(&keyword)
+                else {
+                    continue;
+                };
+                if matches!(keyword, Node::RequiredKeywordParameterNode { .. }) {
+                    shape.required_keywords.push(name);
+                } else {
+                    shape.optional_keywords.push(name);
+                }
+            }
+            return shape;
+        }
+        if let Some(np) = params_node.as_numbered_parameters_node() {
+            return HoverBlockShape {
+                required_positionals: usize::from(np.maximum()),
+                ..HoverBlockShape::default()
+            };
+        }
+        if params_node.as_it_parameters_node().is_some() {
+            return HoverBlockShape {
+                required_positionals: 1,
+                ..HoverBlockShape::default()
+            };
+        }
+        HoverBlockShape::default()
+    }
+
     fn block_positional_param_count(block: &ruby_prism::BlockNode<'_>) -> usize {
         if let Some(params_node) = block.parameters() {
             if let Some(bp) = params_node.as_block_parameters_node()
@@ -33270,7 +33379,7 @@ impl<'a> InferenceEngine<'a> {
             {
                 inner.requireds().iter().count()
             } else if let Some(np) = params_node.as_numbered_parameters_node() {
-                np.maximum() as usize
+                usize::from(np.maximum())
             } else if params_node.as_it_parameters_node().is_some() {
                 1
             } else {
@@ -35362,9 +35471,7 @@ impl<'a> InferenceEngine<'a> {
             },
             rbs_ir::RbsType::ClassType => Self::rbs_class_type_for_receiver(receiver_type),
             rbs_ir::RbsType::SelfType => receiver_type.clone(),
-            rbs_ir::RbsType::Class(name, args) | rbs_ir::RbsType::Alias(name, args)
-                if !args.is_empty() =>
-            {
+            rbs_ir::RbsType::Class(name, args) if !args.is_empty() => {
                 let bare = name.strip_prefix("::").unwrap_or(name);
                 let resolved_args: Vec<Type> = args
                     .iter()
@@ -35383,6 +35490,19 @@ impl<'a> InferenceEngine<'a> {
                         args: resolved_args.into(),
                     },
                 }
+            }
+            rbs_ir::RbsType::Alias(name, args) if !args.is_empty() => {
+                let resolved_args: Vec<Type> = args
+                    .iter()
+                    .map(|arg| Self::substitute_rbs_return_type_vars(arg, vars, receiver_type))
+                    .collect();
+                crate::rbs::convert::convert_rbs_builtin_alias(name, args, |arg| {
+                    Self::substitute_rbs_return_type_vars(arg, vars, receiver_type)
+                })
+                .unwrap_or_else(|| Type::Generic {
+                    base: Sym::new(name.trim_scope_prefix()),
+                    args: resolved_args.into(),
+                })
             }
             rbs_ir::RbsType::Union(types) => Type::from_type_vec_preserve_untyped(
                 types
@@ -35708,26 +35828,25 @@ impl<'a> InferenceEngine<'a> {
             }
             rbs_ir::RbsType::Union(variants) => {
                 if let Type::Union(actual_parts) = actual_type {
-                    let non_var_variants: Vec<_> = variants
-                        .iter()
-                        .filter(|v| !matches!(v, rbs_ir::RbsType::Variable(_)))
-                        .collect();
-                    let mut matched = false;
                     for actual_part in actual_parts {
-                        for variant in &non_var_variants {
+                        let mut matched = false;
+                        for variant in variants
+                            .iter()
+                            .filter(|v| !matches!(v, rbs_ir::RbsType::Variable(_)))
+                        {
                             if Self::rbs_type_structurally_matches(variant, actual_part) {
                                 self.resolve_type_variable(variant, actual_part, vars);
                                 matched = true;
                                 break;
                             }
                         }
-                    }
-                    if !matched
-                        && let Some(first_var) = variants
-                            .iter()
-                            .find(|v| matches!(v, rbs_ir::RbsType::Variable(_)))
-                    {
-                        self.resolve_type_variable(first_var, actual_type, vars);
+                        if !matched
+                            && let Some(first_var) = variants
+                                .iter()
+                                .find(|v| matches!(v, rbs_ir::RbsType::Variable(_)))
+                        {
+                            self.resolve_type_variable(first_var, actual_part, vars);
+                        }
                     }
                 } else {
                     for variant in variants {
@@ -35741,6 +35860,30 @@ impl<'a> InferenceEngine<'a> {
                         .find(|v| matches!(v, rbs_ir::RbsType::Variable(_)))
                     {
                         self.resolve_type_variable(first_var, actual_type, vars);
+                    }
+                }
+            }
+            rbs_ir::RbsType::Intersection(parts) => {
+                if let Type::Intersection(actual_parts) = actual_type {
+                    for part in parts {
+                        let mut matched = false;
+                        for actual_part in actual_parts {
+                            if Self::rbs_type_structurally_matches(part, actual_part) {
+                                self.resolve_type_variable(part, actual_part, vars);
+                                matched = true;
+                            }
+                        }
+                        if !matched && let rbs_ir::RbsType::Variable(_) = part {
+                            self.resolve_type_variable(part, actual_type, vars);
+                        }
+                    }
+                } else {
+                    for part in parts {
+                        if matches!(part, rbs_ir::RbsType::Variable(_))
+                            || Self::rbs_type_structurally_matches(part, actual_type)
+                        {
+                            self.resolve_type_variable(part, actual_type, vars);
+                        }
                     }
                 }
             }
@@ -50027,9 +50170,7 @@ end
         assert_eq!(hover.ty.to_string(), "Array[Integer]");
         assert_eq!(
             hover.display_rbs.as_deref(),
-            Some(
-                "each: () { (Integer element) -> void } -> Array[Integer]\n    | () -> Enumerator[Integer, Array[Integer]]"
-            )
+            Some("each: () { (Integer element) -> void } -> Array[Integer]")
         );
     }
 

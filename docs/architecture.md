@@ -134,6 +134,18 @@ workspace context を分ける。
   ごとの generation を持ち、新しい change が来た時点で pending を捨てる）。`didOpen` と scan 完了
   後の再発行は即時。facts 更新（`start_document_cache_update_if_needed`）は非同期で即時に走る。
 
+method hover の signature は、scan で保存した receiver / result 型を起点に、呼び出し位置に対応する
+引数型（splat / forwarding / `**kwargs` は確定部分だけ）と block の有無・shape で RBS overload を
+絞り込む。method の generic は引数、block の戻り値、呼び出し結果を RBS 型構造に沿って再帰的に
+unify し、`Array` / `Hash` / tuple / record / union / intersection などのネストした型引数も具体化
+する。block の入力型は、receiver の型変数が結果にも残る場合は literal の精度を保ち、block の処理で
+結果が widening された場合は dispatch と同じ広い型を表示する。
+引数型と block の戻り値は既存の scan site を共有して hover snapshot に複製せず、scan で得た戻り値を
+再計算しないため、通常の hover は候補数と型構造に比例する bounded な query になる。候補を一意に
+確定できない場合は情報を捨てず、元の overload 群を表示する。Playground は Ruby / RBS の編集ごとに
+新しい registry を構築するため、ユーザーが入力した RBS の alias / generic / overload も次の hover に
+反映される。
+
 TypeProf VSCode 拡張との互換性は protocol boundary に限る。推論結果の parity 表は維持しない。
 
 ## 有界性と拡張点

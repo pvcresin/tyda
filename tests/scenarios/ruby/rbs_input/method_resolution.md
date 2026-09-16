@@ -82,6 +82,32 @@ class Object < BasicObject
 end
 ```
 
+## Resolve RBS method type parameter from block return
+
+### update
+
+```rbs
+class User
+  def consume: [U] () { (Integer) -> U } -> U
+end
+```
+
+```ruby
+class User
+  def generic_block_value
+    consume { "test" }
+  end
+end
+```
+
+### result
+
+```rbs
+class User
+  def generic_block_value: -> "test"
+end
+```
+
 ## Resolve RBS method type parameter from trailing argument
 
 ### update

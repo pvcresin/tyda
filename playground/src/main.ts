@@ -385,10 +385,13 @@ async function main(): Promise<void> {
   window.__editors = { ruby, rbs };
 
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let analysisGeneration = 0;
   const run = async () => {
     if (!wasmModule) return; // assets still loading — the first run fires after loadAssets()
+    const generation = analysisGeneration;
     try {
       const result = await analyze(ruby.getValue(), rbs.getValue());
+      if (generation !== analysisGeneration) return;
       currentHovers = result.hovers || [];
       currentCodeLens = result.code_lens || [];
       // Expose the latest analysis for E2E tests / debugging.
@@ -419,8 +422,14 @@ async function main(): Promise<void> {
   };
 
   const schedule = () => {
+    // Invalidate an in-flight wasm analysis immediately. Otherwise a slow
+    // analysis for the previous RBS could briefly replace the latest state.
+    analysisGeneration += 1;
     if (timer) clearTimeout(timer);
-    timer = setTimeout(run, 350);
+    timer = setTimeout(() => {
+      timer = null;
+      void run();
+    }, 350);
   };
   ruby.onDidChangeModelContent(schedule);
   rbs.onDidChangeModelContent(schedule);
@@ -428,10 +437,11 @@ async function main(): Promise<void> {
   // Load a (possibly null) decoded state into the editors and re-analyze now,
   // cancelling the debounced run that `setValue` would otherwise trigger.
   const applyState = (state: State | null) => {
+    analysisGeneration += 1;
     ruby.setValue(state?.ruby ?? SAMPLE_RUBY);
     rbs.setValue(state?.rbs ?? SAMPLE_RBS);
     if (timer) clearTimeout(timer);
-    run();
+    void run();
   };
 
   // Browser back / forward navigates between history entries (e.g. the clean

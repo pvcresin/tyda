@@ -5198,6 +5198,21 @@ end
     }
 
     #[test]
+    fn hover_at_infers_generic_block_types_for_map() {
+        let source = "class User\n  def ids = [1, 2, 3].map { |n| n * 2 }\nend\n";
+        let loader = stdlib_loader();
+        let column = source.lines().nth(1).unwrap().find("map").unwrap();
+        let hover = crate::analysis::hover_at(source, None, &loader, "app/sample.rb", 2, column)
+            .expect("hover for map");
+
+        assert_eq!(hover.name, "map");
+        let display = format_hover_body(&hover);
+        assert!(display.contains("(Integer item) -> Integer"));
+        assert!(display.contains("-> Array[Integer]"));
+        assert!(!display.contains("Enumerator"));
+    }
+
+    #[test]
     fn target_ruby_path_defaults_to_all_ruby_files() {
         assert!(is_target_ruby_path(None, "/tmp/sample.rb"));
         assert!(!is_target_ruby_path(None, "/tmp/sample.rbs"));
@@ -8031,8 +8046,46 @@ end
                 assert_eq!(language_string.language, "rbs");
                 assert_eq!(
                     language_string.value,
-                    "[Tyda] () { (Integer element) -> void } -> Array[Integer]\n    | () -> Enumerator[Integer, Array[Integer]]\n# type params: E = Integer"
+                    "[Tyda] () { (Integer element) -> void } -> Array[Integer]\n# type params: E = Integer"
                 );
+            }
+            other => panic!("unexpected hover contents: {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lsp_hover_infers_generic_block_types_for_map() {
+        let dir = tempdir().expect("tempdir");
+        let uri = Url::from_file_path(dir.path().join("sample.rb")).expect("file uri");
+        let source = "class Sample\n  def ids = [1, 2, 3].map { |n| n * 2 }\nend\n";
+
+        let (mut service, mut socket) = initialize_lsp(None).await;
+        let _ = open_document(&mut service, &mut socket, &uri, source).await;
+        let column = source.lines().nth(1).unwrap().find("map").unwrap();
+        let response = Service::call(
+            &mut service,
+            Request::build("textDocument/hover")
+                .id(2)
+                .params(serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 1, "character": column }
+                }))
+                .finish(),
+        )
+        .await
+        .expect("hover request")
+        .expect("hover response");
+        let hover: Hover =
+            serde_json::from_value(response.result().cloned().expect("hover result"))
+                .expect("hover decode");
+
+        match hover.contents {
+            HoverContents::Scalar(MarkedString::LanguageString(language_string)) => {
+                assert_eq!(language_string.language, "rbs");
+                assert!(language_string.value.contains("[Tyda] [Integer] () {"));
+                assert!(language_string.value.contains("(Integer item) -> Integer"));
+                assert!(language_string.value.contains("-> Array[Integer]"));
+                assert!(!language_string.value.contains("Enumerator"));
             }
             other => panic!("unexpected hover contents: {other:?}"),
         }
