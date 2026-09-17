@@ -22,8 +22,32 @@ A.new(1, "hello")
 ```rbs
 class A
   def initialize: (Integer x, String y) -> void
-  def x: -> 1
-  def y: -> "hello"
+  def x: -> Integer
+  def y: -> String
+end
+```
+
+## Initialize argument widening reaches ivar-derived methods
+
+### update
+
+```ruby
+class User
+  def initialize(name) = @name = name
+  def ids = [1, 2, 3].map { |id| id * 2 }
+  def summary = [@name, ids.first]
+end
+
+User.new("Alice")
+```
+
+### result
+
+```rbs
+class User
+  def initialize: (String name) -> void
+  def ids: -> Array[Integer]
+  def summary: -> [String, Integer?]
 end
 ```
 
@@ -47,7 +71,7 @@ A.new("Alice")
 
 ```rbs
 class A
-  def name=: (String name) -> "Alice"
+  def name=: (String name) -> String
   def initialize: (String name) -> void
 end
 ```
@@ -73,10 +97,10 @@ A.new(1, 2)
 
 ```rbs
 class A
-  def x: -> 1
-  def x=: (Integer x) -> 1
-  def y: -> 2
-  def y=: (Integer y) -> 2
+  def x: -> Integer
+  def x=: (Integer x) -> Integer
+  def y: -> Integer
+  def y=: (Integer y) -> Integer
   def initialize: (Integer x, Integer y) -> void
 end
 ```
@@ -148,11 +172,11 @@ Entry.new("entry", :token, 3).label
 ```rbs
 class Entry
   def initialize: (String name, Symbol token, Integer count) -> void
-  private def name: -> "entry"
-  private def token: -> :token
-  private def token=: (Symbol token) -> :token
-  def count=: (Integer count) -> 3
-  def label: -> "entry"
+  private def name: -> String
+  private def token: -> Symbol
+  private def token=: (Symbol token) -> Symbol
+  def count=: (Integer count) -> Integer
+  def label: -> String
 end
 ```
 
@@ -240,11 +264,11 @@ end
 
 ```rbs
 class A
-  def self.test: -> "hello"
+  def self.test: -> String
 end
 
 class Repo
-  def name: -> "hello"
+  def name: -> String
   def initialize: (String name) -> void
   def self.make: -> Repo
 end
@@ -474,10 +498,10 @@ class Holder
 end
 
 class Holder::Tuple
-  def spec: -> "hello"
-  def spec=: (String spec) -> "hello"
-  def source: -> 42
-  def source=: (Integer source) -> 42
+  def spec: -> String
+  def spec=: (String spec) -> String
+  def source: -> Integer
+  def source=: (Integer source) -> Integer
   def initialize: (String spec, Integer source) -> void
   def self.members: -> Array[:source | :spec]
 end

@@ -39,16 +39,16 @@ def entry_count = Entry.new(name: "a", count: 1).count
 FIELDS: { name: :name, count: :count }
 
 class Entry
-  def name: -> "a"
-  def count: -> 1
+  def name: -> String
+  def count: -> Integer
   def initialize: (name: String, count: Integer) -> void
   def self.members: -> Array[:count | :name]
   def with: (?name: String, ?count: Integer) -> Entry
 end
 
 class Object < BasicObject
-  def entry_name: -> "a"
-  def entry_count: -> 1
+  def entry_name: -> String
+  def entry_count: -> Integer
 end
 ```
 
@@ -73,7 +73,7 @@ def build_entry = Entry.build
 
 ```rbs
 class Entry
-  def value: -> "a" | "created"
+  def value: -> String
   def initialize: (value: String) -> void
   def self.members: -> Array[:value]
   def with: (?value: String) -> Entry
@@ -168,12 +168,12 @@ def entry_label = Store::Entry.new(name: :item).label
 
 ```rbs
 class Object < BasicObject
-  def entry_name: -> :item
+  def entry_name: -> Symbol
   def entry_label: -> String
 end
 
 class Store::Entry
-  def name: -> :item
+  def name: -> Symbol
   def initialize: (name: Symbol) -> void
   def self.members: -> Array[:name]
   def with: (?name: Symbol) -> Store::Entry
@@ -199,8 +199,8 @@ class Object < BasicObject
 end
 
 class Point
-  def x: -> 1
-  def y: -> 2
+  def x: -> Integer
+  def y: -> Integer
   def initialize: (x: Integer, y: Integer) -> void
   def self.members: -> Array[:x | :y]
   def with: (?x: Integer, ?y: Integer) -> Point

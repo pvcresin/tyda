@@ -3049,8 +3049,8 @@ end
                 .collect::<Vec<_>>(),
             vec![
                 (2, "(Integer, String) -> void"),
-                (7, "-> 1"),
-                (7, "-> \"hello\""),
+                (7, "-> Integer"),
+                (7, "-> String"),
             ]
         );
     }

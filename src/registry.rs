@@ -6158,7 +6158,8 @@ impl TypeRegistry {
                 }
 
                 if !types.is_empty() {
-                    return Some(Type::from_type_vec(types));
+                    let widened = types.into_iter().map(Type::widen_arg_for_param).collect();
+                    return Some(Type::from_type_vec(widened));
                 }
 
                 if let Some(param_info) = init_method.param_infos.get(param_index)
@@ -6486,7 +6487,11 @@ impl TypeRegistry {
                     }
                 })
                 .collect();
-            let widened_params: Vec<Type> = resolved_params.iter().map(|ty| ty.widen()).collect();
+            let widened_params: Vec<Type> = resolved_params
+                .iter()
+                .cloned()
+                .map(Type::widen_arg_for_param)
+                .collect();
 
             if !resolved_params
                 .iter()

@@ -21,7 +21,7 @@ end
 ```rbs
 class Container
   def initialize: ((Integer | String) value) -> void
-  def value: -> 1 | "x"
+  def value: -> Integer | String
 end
 
 class Probe

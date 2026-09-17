@@ -151,16 +151,16 @@ end
 
 ```rbs
 class Item
-  def name: -> "a" | "b"
-  def payload: -> 1?
+  def name: -> String
+  def payload: -> Integer?
   def initialize: (String name, Integer? payload) -> void
 end
 
 class Object < BasicObject
   def compact_values: -> Array[1 | 2]
-  def collect_payloads: -> Array[1]
+  def collect_payloads: -> Array[Integer]
   def total_bytes: -> Integer
-  def group_items: -> Hash["a" | "b", Array[Item]]
+  def group_items: -> Hash[String, Array[Item]]
   def unique_items: -> Array[Item]
 end
 ```
@@ -203,7 +203,7 @@ end
 
 ```rbs
 class Entry
-  def id: -> 1 | 2
+  def id: -> Integer
   def initialize: (Integer id) -> void
 end
 
@@ -212,6 +212,6 @@ class Object < BasicObject
   def pair_values: -> Array[1 | 2]
   def slice_heads: -> Array[1 | 3]
   def first_lists: -> { a: 1, b: 3 }
-  def first_entries: -> Hash[1 | 2, Entry?]
+  def first_entries: -> Hash[Integer, Entry?]
 end
 ```

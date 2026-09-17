@@ -45,8 +45,9 @@ error は `untyped` または抑制を許容する。後続の壊れた method �
 
 LSP の `lsp_hover_tracks_incremental_content_updates` は同じ入力列を `didChange` で差し替え、
 各状態の hover が古いキャッシュを返さないことを確認する。Playground と LSP の token hover は
-同じ精密な snapshot 型を表示する。未注釈 method の public callable signature は call-site 引数を
-基底型へ widen する一方、`#:` / `sig` / 外部 RBS・RBI で明示された parameter 型は保持する。
+同じ精密な snapshot 型を表示する。未注釈 method の call-site 引数は、public callable signature と
+メソッド本体の parameter、`initialize` から伝播する ivar で基底型へ widen する。一方、`#:` / `sig` /
+外部 RBS・RBI で明示された parameter 型は保持する。
 長い型の省略は hover 本文の表示だけに適用し、推論結果と RBS 出力は変更しない。
 全シナリオの mutation test は引き続き panic / hang のないことを確認する層であり、意味的な期待値は
 このような明示的な incremental contract で追加する。
