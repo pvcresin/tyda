@@ -77,11 +77,11 @@ def build_result = Result.new(id: 1, response: "ok").body
 
 ```rbs
 class Object < BasicObject
-  def build_result: -> { id: 1, response: "ok" }
+  def build_result: -> { id: Integer, response: String }
 end
 
 class Result
   def initialize: (id: Integer, response: String) -> void
-  def body: -> { id: 1, response: "ok" }
+  def body: -> { id: Integer, response: String }
 end
 ```

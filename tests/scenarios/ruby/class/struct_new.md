@@ -81,15 +81,15 @@ def option_value = Option.new(name: "level", value: 1).value
 
 ```rbs
 class Object < BasicObject
-  def option_name: -> "level"
-  def option_value: -> 1
+  def option_name: -> String
+  def option_value: -> Integer
 end
 
 class Option
-  def name: -> "level"
-  def name=: (String name) -> "level"
-  def value: -> 1
-  def value=: (Integer value) -> 1
+  def name: -> String
+  def name=: (String name) -> String
+  def value: -> Integer
+  def value=: (Integer value) -> Integer
   def initialize: (name: String, value: Integer) -> void
   def self.members: -> Array[:name | :value]
 end
@@ -114,17 +114,17 @@ def entry_count = Entry.new(name: "a", count: 1).count
 MEMBERS: [:name, :count]
 
 class Entry
-  def name: -> "a"
-  def name=: (String name) -> "a"
-  def count: -> 1
-  def count=: (Integer count) -> 1
+  def name: -> String
+  def name=: (String name) -> String
+  def count: -> Integer
+  def count=: (Integer count) -> Integer
   def initialize: (name: String, count: Integer) -> void
   def self.members: -> Array[:count | :name]
 end
 
 class Object < BasicObject
-  def entry_name: -> "a"
-  def entry_count: -> 1
+  def entry_name: -> String
+  def entry_count: -> Integer
 end
 ```
 
@@ -151,10 +151,10 @@ def read_reset = Item.new("b", 2).reset_value
 
 ```rbs
 class Item
-  def name: -> "a" | "b"
-  def name=: (String name) -> ("a" | "b")
-  def count: -> 1 | 2
-  def count=: (Integer count) -> (1 | 2)
+  def name: -> String
+  def name=: (String name) -> String
+  def count: -> Integer
+  def count=: (Integer count) -> Integer
   def initialize: (String name, Integer count) -> void
   def self.members: -> Array[:count | :name]
   def label: -> "item"
@@ -204,15 +204,15 @@ def pair_value = Store::Pair.new(key: :name, value: 1).value
 
 ```rbs
 class Object < BasicObject
-  def pair_key: -> :name
-  def pair_value: -> 1
+  def pair_key: -> Symbol
+  def pair_value: -> Integer
 end
 
 class Store::Pair
-  def key: -> :name
-  def key=: (Symbol key) -> :name
-  def value: -> 1
-  def value=: (Integer value) -> 1
+  def key: -> Symbol
+  def key=: (Symbol key) -> Symbol
+  def value: -> Integer
+  def value=: (Integer value) -> Integer
   def initialize: (key: Symbol, value: Integer) -> void
   def self.members: -> Array[:key | :value]
 end
@@ -233,14 +233,14 @@ def foo = Point.new(1, "hello").x
 
 ```rbs
 class Object < BasicObject
-  def foo: -> 1
+  def foo: -> Integer
 end
 
 class Point
-  def x: -> 1
-  def x=: (Integer x) -> 1
-  def y: -> "hello"
-  def y=: (String y) -> "hello"
+  def x: -> Integer
+  def x=: (Integer x) -> Integer
+  def y: -> String
+  def y=: (String y) -> String
   def initialize: (Integer x, String y) -> void
   def self.members: -> Array[:x | :y]
 end

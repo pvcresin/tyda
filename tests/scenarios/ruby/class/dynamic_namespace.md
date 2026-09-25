@@ -250,12 +250,12 @@ def read_name = Box::Entry.new("entry").name
 
 ```rbs
 class Box::Entry
-  def name: -> "entry"
+  def name: -> String
   def initialize: (String name) -> void
 end
 
 class Object < BasicObject
-  def read_name: -> "entry"
+  def read_name: -> String
 end
 ```
 

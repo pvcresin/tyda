@@ -39,7 +39,7 @@ class Version
   include Comparable
 
   def initialize: (Integer major) -> void
-  def major: -> 0 | 1 | 2
-  def <=>: (untyped other) -> untyped
+  def major: -> Integer
+  def <=>: (untyped other) -> Integer
 end
 ```

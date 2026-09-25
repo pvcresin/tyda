@@ -226,12 +226,12 @@ class Child < Parent
 end
 
 class Object < BasicObject
-  def child_values: -> ["entry", 1]
+  def child_values: -> [String, Integer]
 end
 
 class Parent
-  def name: -> "entry"
-  def count: -> 1
+  def name: -> String
+  def count: -> Integer
   def initialize: (name: String, count: Integer) -> void
 end
 ```

@@ -47326,15 +47326,11 @@ impl<'a> InferenceEngine<'a> {
                 has_keyword_sites,
             )
         };
-        let resolved_param_types: Vec<Type> = if method_name == "initialize" {
-            raw_param_types.clone()
-        } else {
-            raw_param_types
-                .iter()
-                .cloned()
-                .map(Type::widen_arg_for_param)
-                .collect()
-        };
+        let resolved_param_types: Vec<Type> = raw_param_types
+            .iter()
+            .cloned()
+            .map(Type::widen_arg_for_param)
+            .collect();
 
         // Positional resolution ignores keywords; keyword-only methods (and
         // `initialize`) still need a body pass once any call site exists.
@@ -47417,8 +47413,6 @@ impl<'a> InferenceEngine<'a> {
                             }
                             if types.is_empty() {
                                 Type::KeywordParamRef(Sym::new(&pi.name))
-                            } else if method_name == "initialize" {
-                                Type::from_type_vec(types)
                             } else {
                                 Type::from_type_vec(types).widen_arg_for_param()
                             }

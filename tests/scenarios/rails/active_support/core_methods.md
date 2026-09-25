@@ -384,15 +384,15 @@ end
 
 ```rbs
 class Item
-  def id: -> 1 | 2
-  def name: -> "book" | "pen"
+  def id: -> Integer
+  def name: -> String
   def initialize: (Integer id, String name) -> void
 end
 
 class Probe
   def entries: -> [Item, Item]
-  def index_by_block: -> Hash[1 | 2, Item]
-  def index_by_proc: -> Hash["book" | "pen", Item]
+  def index_by_block: -> Hash[Integer, Item]
+  def index_by_proc: -> Hash[String, Item]
   def index_with_block: -> Hash[:a | :b, String]
   def index_with_default: -> Hash[:a | :b, false]
 end

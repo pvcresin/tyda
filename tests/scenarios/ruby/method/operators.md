@@ -434,7 +434,7 @@ Vector.new(1, 2)
 ```rbs
 class Vector
   def initialize: (Integer x, Integer y) -> void
-  def []: (untyped index) -> (1 | 2)
+  def []: (untyped index) -> Integer
   def []=: (untyped index, untyped value) -> untyped
   def <<: (untyped item) -> Vector
   def >>: (untyped amount) -> Vector

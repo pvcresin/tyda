@@ -23,8 +23,8 @@ Point.new(1, 2)
 ```rbs
 class Point
   def initialize: (Integer x, Integer y) -> void
-  def x: -> 1
-  def y: -> 2
+  def x: -> Integer
+  def y: -> Integer
 end
 ```
 
@@ -81,6 +81,6 @@ end
 
 class Counter
   def initialize: (Integer start) -> void
-  def count: -> 10
+  def count: -> Integer
 end
 ```

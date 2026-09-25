@@ -219,14 +219,19 @@ impl<'a> InferenceEngine<'a> {
                 .iter()
                 .position(|method| method.name == "initialize" && !method.is_singleton)
                 .and_then(|init_idx| {
-                    let init_param_types = all_param_types.get(init_idx)?;
+                    let init_param_types: Vec<Type> = all_param_types
+                        .get(init_idx)?
+                        .iter()
+                        .cloned()
+                        .map(Type::widen_arg_for_param)
+                        .collect();
                     init_param_types
                         .iter()
                         .any(|ty| !matches!(ty, Type::Untyped))
                         .then(|| {
                             (
                                 data.ivars.keys().cloned().collect::<Vec<_>>(),
-                                init_param_types.clone(),
+                                init_param_types,
                             )
                         })
                 });

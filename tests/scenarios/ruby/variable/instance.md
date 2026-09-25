@@ -135,7 +135,7 @@ A.new(42)
 ```rbs
 class A
   def initialize: (Integer n) -> void
-  def value: -> 42
+  def value: -> Integer
 end
 ```
 
@@ -237,8 +237,8 @@ A.new("item", 1)
 ```rbs
 class A
   def initialize: (String name, Integer count) -> void
-  def name_value: -> "item"
-  def count_value: -> 1
+  def name_value: -> String
+  def count_value: -> Integer
   def missing_value: -> untyped
 end
 ```
@@ -352,7 +352,7 @@ Box.new(Item.new("item"))
 ```rbs
 class Box
   def initialize: (Item item) -> void
-  def item_name: -> "item"
+  def item_name: -> String
   def class_value: -> :entry
 end
 

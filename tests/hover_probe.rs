@@ -269,7 +269,7 @@ fn attr_reader_cross_class_access() {
         "Foo.new(42).x\n",
     );
     // hover over `x` method call (after Foo.new(42).)
-    assert_hover(source, 8, 12, "x", "42");
+    assert_hover(source, 8, 12, "x", "Integer");
 }
 
 #[test]
@@ -312,7 +312,7 @@ fn chained_method_call_inside_method_body() {
     // line 18 is `    o.inner.v`
     assert_hover(source, 18, 4, "o", "Outer");
     assert_hover(source, 18, 6, "inner", "Inner");
-    assert_hover(source, 18, 12, "v", "42");
+    assert_hover(source, 18, 12, "v", "Integer");
 }
 
 #[test]
@@ -327,7 +327,7 @@ fn struct_constant_field_access() {
         "end\n",
     );
     assert_hover(source, 5, 4, "t", "Holder::Tuple");
-    assert_hover(source, 5, 6, "a", "\"x\"");
+    assert_hover(source, 5, 6, "a", "String");
 }
 
 #[test]

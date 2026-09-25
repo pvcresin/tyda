@@ -1868,17 +1868,17 @@ end
 
 ```rbs
 class A
-  def store_record: -> ["a", "a", Hash[:item, Item]]
+  def store_record: -> [String, String, Hash[:item, Item]]
   def merge_bang: -> [{ name: "a", count: 1 }, { name: "a", count: 1 }]
   def merge_bang_block: -> [{ count: String }, String]
   def update_record: -> [{ name: "b", count: 1 }, "b"]
   def replace_record: -> [{ enabled: true }, true, nil]
-  def nested_store: -> "a"
+  def nested_store: -> String
 end
 
 class Item
   def initialize: (String name) -> void
-  def name: -> "a"
+  def name: -> String
 end
 ```
 
