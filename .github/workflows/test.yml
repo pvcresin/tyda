@@ -121,7 +121,7 @@ jobs:
           - shard: unit
             args: -p rbs-sys -p tyda --lib
           - shard: integration
-            args: -p tyda --test cli --test declaration_order_matrix --test hover_probe --test pathological_inputs --test scenario_headings --test scenario_runner
+            args: -p tyda --test cli --test declaration_order_matrix --test hover_probe --test mcp --test pathological_inputs --test scenario_headings --test scenario_runner
           - shard: robustness
             args: -p tyda --test mutation_robustness mutated_inputs_without_panic
           - shard: fuzz

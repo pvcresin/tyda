@@ -11,12 +11,14 @@ edition = "2024"
 license = "MIT"
 
 [features]
-# Default stays full CLI + LSP (keeps existing build/test unchanged).
-default = ["cli", "lsp"]
+# Default binary includes the CLI, LSP, and MCP server.
+default = ["cli", "lsp", "mcp"]
 # CLI binary (clap / mimalloc).
 cli = ["dep:clap", "dep:mimalloc"]
 # LSP server (tower-lsp / tokio / mimalloc).
 lsp = ["dep:tower-lsp", "dep:tokio", "dep:mimalloc"]
+# Local MCP server for AI agents.
+mcp = ["dep:rmcp", "dep:schemars", "dep:tokio"]
 # wasm32-wasip1 minimal core (no tokio/tower-lsp/clap/mimalloc).
 # `cargo build --target wasm32-wasip1 --no-default-features --features wasm`
 wasm = []
@@ -34,6 +36,8 @@ clap = { version = "4", features = ["derive"], optional = true }
 tower-lsp = { version = "0.20", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
 mimalloc = { version = "0.1", default-features = false, optional = true }
+rmcp = { version = "3.4.1", optional = true, default-features = false, features = ["macros", "schemars", "server", "transport-io"] }
+schemars = { version = "1", optional = true }
 
 [[bin]]
 name = "tyda"
@@ -47,6 +51,7 @@ required-features = ["wasm"]
 
 [dev-dependencies]
 futures = "0.3"
+rmcp = { version = "3.4.1", default-features = false, features = ["client", "transport-child-process"] }
 tempfile = "3.26.0"
 tower = "0.5"
 walkdir = "2"

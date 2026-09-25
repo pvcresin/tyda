@@ -166,6 +166,8 @@ enum Commands {
         #[arg(long, help = "Start LSP server")]
         lsp: bool,
     },
+    #[cfg(feature = "mcp")]
+    Mcp,
 }
 
 #[derive(Clone, Copy)]
@@ -269,6 +271,13 @@ fn main() {
             eprintln!("Usage: tyda lsp --version | tyda lsp --lsp");
             std::process::exit(1);
         }
+        #[cfg(feature = "mcp")]
+        Some(Commands::Mcp) => {
+            if let Err(error) = run_mcp_server() {
+                eprintln!("Failed to run Tyda MCP server: {error}");
+                std::process::exit(1);
+            }
+        }
         None => {
             if cli.coverage && (cli.debug || cli.diagnostics || cli.verbose) {
                 eprintln!(
@@ -278,7 +287,7 @@ fn main() {
             }
             if cli.paths.is_empty() {
                 eprintln!(
-                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda --capability-matrix | tyda --lsp | tyda --version"
+                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda --capability-matrix | tyda --lsp | tyda mcp | tyda --version"
                 );
                 std::process::exit(1);
             }
@@ -295,6 +304,14 @@ fn main() {
             );
         }
     }
+}
+
+#[cfg(feature = "mcp")]
+fn run_mcp_server() -> Result<(), String> {
+    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+    runtime
+        .block_on(tyda::mcp::serve())
+        .map_err(|error| error.to_string())
 }
 
 fn run_lsp_server() {

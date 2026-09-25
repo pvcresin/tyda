@@ -41,6 +41,7 @@ CLI、LSP、playground、scenario test は入力の与え方と解決 profile �
 | `rails/` | project 検出、schema / routes / inflector、Rails 共通情報 |
 | `diagnostics.rs` | missing method、unresolved constant、argument mismatch などの判定 |
 | `lsp.rs` | LSP protocol、document / file cache、CodeLens、Hover、refresh |
+| `mcp.rs` | stdio MCP transport と source-position inference tool |
 | `main.rs` | CLI 入力展開、batch projection、RBS / diagnostics の出力 |
 
 Sorbet `sig { ... }` のブロック本体は型 DSL として扱い、通常コードとして推論しない。ブロック内の
@@ -150,6 +151,13 @@ hover 専用の block shape 絞り込みと implicit-self の追加 generic bloc
 反映される。
 
 TypeProf VSCode 拡張との互換性は protocol boundary に限る。推論結果の parity 表は維持しない。
+
+## MCP
+
+`mcp.rs` は MCP stdio transport の境界を担当し、`analysis::hover_at_with_analysis_options` を呼んで
+LSP と同じ query backend から位置指定の型情報を返す。現在は tool caller が渡した Ruby source と
+同梱 stdlib RBS だけを使い、workspace のファイル走査や project 固有 RBS の読み込みはしない。
+詳細は [mcp.md](mcp.md) を参照する。
 
 ## 有界性と拡張点
 

@@ -29,6 +29,8 @@ pub mod inference;
 // The LSP server depends on tower-lsp / tokio; only enabled under the `lsp` feature.
 #[cfg(feature = "lsp")]
 pub mod lsp;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod parser;
 pub mod project;
 pub mod project_markers;

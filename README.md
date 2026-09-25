@@ -13,6 +13,7 @@ Tyda (pronounced “tie-duh”, /ˈtaɪdə/) is a type inference tool for Ruby a
 - 🧠 **Inference without annotations** — Infer useful types from Ruby and Rails code without annotating every method.
 - ⚡ **Fast type inference** — Get useful type information quickly while working with Ruby.
 - 🧑‍💻 **Editor integration** — Explore inferred signatures and types in VS Code with hover, CodeLens, and navigation.
+- 🤖 **AI agent integration** — Query inferred types at a Ruby source position through the local MCP server.
 - 📄 **RBS output and diagnostics** — Emit inferred RBS and supplementary JSON Lines diagnostics from the CLI.
 - 🎮 **Browser Playground** — Try Ruby and RBS in the browser without installing Tyda.
 
@@ -40,6 +41,18 @@ Set Tyda as the language server in your project's `.vscode/settings.json`:
 ```
 
 Open a Ruby file to see inferred signatures and types. If VS Code cannot find `tyda` on `PATH`, use the absolute path returned by `which tyda`. You do not need to install the `typeprof` gem separately.
+
+### Use Tyda with an AI agent
+
+The gem includes the `tyda mcp` command. It exposes `infer_type_at_position` over stdio so an agent can ask for the inferred type at a position in Ruby source. Install Tyda globally or add it to your project:
+
+```sh
+gem install tyda
+# or, in a project
+bundle add tyda --group development
+```
+
+Configure the server command as `tyda mcp`, or `bundle exec tyda mcp` when using Bundler. See the [MCP setup guide](docs/mcp.md) for VS Code, Codex, and Claude Code configuration.
 
 ## CLI
 
