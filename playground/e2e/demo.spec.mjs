@@ -153,6 +153,33 @@ test("keeps Ruby primary and adapts the pane layout to the viewport", async ({ p
   expect(mobileLayout.gridRows.split(" ")).toHaveLength(2);
 });
 
+test("loads and restores examples from the Playground menu", async ({ page }) => {
+  await page.goto(PLAYGROUND_PATH);
+  await waitForPlayground(page);
+
+  await page.getByText("Examples", { exact: true }).click();
+  const rbsLink = page.getByRole("link", { name: "RBS signature", exact: true });
+  await expect(rbsLink).toBeVisible();
+  await rbsLink.click();
+
+  await expect(page).toHaveURL(/example=rbs-signature/);
+  await expect
+    .poll(() => page.evaluate(() => window.__editors.ruby.getValue()))
+    .toContain("def bar = foo");
+  await expect
+    .poll(() => page.evaluate(() => window.__editors.rbs.getValue()))
+    .toContain("def foo: -> String");
+
+  await page.reload();
+  await waitForPlayground(page);
+  await expect
+    .poll(() => page.evaluate(() => window.__editors.ruby.getValue()))
+    .toContain("def bar = foo");
+  await expect
+    .poll(() => page.evaluate(() => window.__editors.rbs.getValue()))
+    .toContain("def foo: -> String");
+});
+
 test("infers RBS, emits CodeLens + diagnostics + hover", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(String(e)));

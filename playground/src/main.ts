@@ -75,6 +75,11 @@ interface State {
   ruby: string;
   rbs: string;
 }
+interface Example {
+  id: string;
+  label: string;
+  state: State;
+}
 
 declare global {
   interface Window {
@@ -129,6 +134,173 @@ const SAMPLE_RBS = `# Hand-written RBS here is passed as type context for the Ru
 # end
 `;
 
+const EXAMPLES: Example[] = [
+  { id: "overview", label: "Overview", state: { ruby: SAMPLE_RUBY, rbs: SAMPLE_RBS } },
+  {
+    id: "map",
+    label: "Array#map",
+    state: {
+      ruby: `class C
+  def foo = [1, 2, 3].map { |n| n }
+
+  def bar = [1, 2, 3].map { |n| n * 2 }
+
+  def baz = [1, 2, 3].map { |n| n.to_s }
+end
+
+`,
+      rbs: "",
+    },
+  },
+  {
+    id: "tuple",
+    label: "Tuple",
+    state: {
+      ruby: `class C
+  def foo = [1, "x", :ok]
+
+  def bar = foo
+
+  def baz = foo[0]
+end
+
+`,
+      rbs: "",
+    },
+  },
+  {
+    id: "initialize-arguments",
+    label: "initialize and arguments",
+    state: {
+      ruby: `class C
+  def initialize(value)
+    @value = value
+  end
+
+  def bar = @value
+
+  def baz(value) = value
+end
+
+C.new(1)
+C.new("x")
+C.new("x").baz(1)
+
+`,
+      rbs: "",
+    },
+  },
+  {
+    id: "literal-union",
+    label: "Literal String Union",
+    state: {
+      ruby: `class C
+  def foo(flag) = flag ? "a" : "b"
+
+  def bar(flag) = foo(flag)
+end
+
+C.new.bar(true)
+C.new.bar(false)
+
+`,
+      rbs: "",
+    },
+  },
+  {
+    id: "hash",
+    label: "Hash",
+    state: {
+      ruby: `class C
+  def foo = { a: 1, b: "x" }
+
+  def bar = foo[:a]
+end
+
+`,
+      rbs: "",
+    },
+  },
+  {
+    id: "define-method",
+    label: "define_method",
+    state: {
+      ruby: `class C
+  define_method(:foo) { :ok }
+
+  def baz = foo
+end
+
+`,
+      rbs: "",
+    },
+  },
+  {
+    id: "mixins",
+    label: "include / extend / included",
+    state: {
+      ruby: `module M
+  def foo = :foo
+
+  module ClassMethods
+    def bar = 1
+  end
+
+  def self.included(base)
+    base.extend(ClassMethods)
+  end
+end
+
+class C
+  include M
+end
+
+C.new.foo
+C.bar
+
+`,
+      rbs: "",
+    },
+  },
+  {
+    id: "rbs-signature",
+    label: "RBS signature",
+    state: {
+      ruby: `class C
+  def bar = foo
+end
+
+`,
+      rbs: `class C
+  def foo: -> String
+end
+
+`,
+    },
+  },
+  {
+    id: "rbs-comments",
+    label: "RBS comments and diagnostics",
+    state: {
+      ruby: `class C
+  #: (String) -> Integer
+  def foo(value) = value.to_i
+
+  # @rbs (Integer) -> String
+  def bar(value) = value.to_s
+end
+
+C.new.foo("1")
+C.new.foo(1)
+C.new.bar(1)
+C.new.missing
+
+`,
+      rbs: "",
+    },
+  },
+];
+
 // ── URL state (lz-string into location.hash) ────────────────────────────────
 function encodeState(state: State): string {
   return LZString.compressToEncodedURIComponent(JSON.stringify(state));
@@ -146,6 +318,13 @@ function decodeState(hash: string): State | null {
   } catch {
     return null;
   }
+}
+
+function stateFromLocation(): State | null {
+  const restored = decodeState(location.hash);
+  if (restored) return restored;
+  const exampleId = new URLSearchParams(location.search).get("example");
+  return EXAMPLES.find((example) => example.id === exampleId)?.state ?? null;
 }
 
 // Build the [[name, File|Directory]] entry tree browser_wasi_shim wants from
@@ -346,7 +525,7 @@ function setSyntaxBadge(titleId: string, label: string, hasError: boolean): void
 }
 
 async function main(): Promise<void> {
-  const restored = decodeState(location.hash);
+  const restored = stateFromLocation();
   const ruby = monaco.editor.create(document.getElementById("ruby")!, {
     value: restored?.ruby ?? SAMPLE_RUBY,
     language: "ruby",
@@ -409,12 +588,11 @@ async function main(): Promise<void> {
       const rubyValue = ruby.getValue();
       const rbsValue = rbs.getValue();
       const isInitial = rubyValue === SAMPLE_RUBY && rbsValue === SAMPLE_RBS;
+      const url = location.pathname + location.search;
       history.replaceState(
         null,
         "",
-        isInitial
-          ? location.pathname + location.search
-          : "#" + encodeState({ ruby: rubyValue, rbs: rbsValue }),
+        isInitial ? url : url + "#" + encodeState({ ruby: rubyValue, rbs: rbsValue }),
       );
     } catch (e) {
       console.error(e);
@@ -444,17 +622,33 @@ async function main(): Promise<void> {
     void run();
   };
 
-  // Browser back / forward navigates between history entries (e.g. the clean
-  // entry pushed by a title-click reset and the prior edited state). Restore
-  // the editors from whatever hash that entry carries.
-  window.addEventListener("popstate", () => applyState(decodeState(location.hash)));
+  const examplesMenu = document.getElementById("examples") as HTMLDetailsElement;
+  const examplesList = document.getElementById("examples-list")!;
+  for (const example of EXAMPLES) {
+    const link = document.createElement("a");
+    link.href = `?example=${encodeURIComponent(example.id)}`;
+    link.textContent = example.label;
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      const url = new URL(location.href);
+      url.searchParams.set("example", example.id);
+      history.pushState(null, "", url.pathname + url.search);
+      examplesMenu.open = false;
+      applyState(example.state);
+    });
+    examplesList.append(link);
+  }
+
+  // Browser back / forward navigates between history entries. Restore from the
+  // encoded editor state or the selected-example query parameter.
+  window.addEventListener("popstate", () => applyState(stateFromLocation()));
 
   // Clicking the title returns to the initial example with a clean URL. Push a
-  // new history entry (rather than replacing) so Back restores the pre-reset
-  // editor state from its hash.
+  // new history entry (rather than replacing) so Back restores the prior URL
+  // state.
   document.getElementById("reset")?.addEventListener("click", () => {
-    if (location.hash) {
-      history.pushState(null, "", location.pathname + location.search);
+    if (location.hash || location.search) {
+      history.pushState(null, "", location.pathname);
     }
     applyState(null);
   });
