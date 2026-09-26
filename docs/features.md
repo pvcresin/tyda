@@ -1,6 +1,6 @@
 # Features
 
-Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CLI と LSP を提供する。
+Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CLI、LSP、AI agent 向け MCP server を提供する。
 対応状況の正本は [capability-matrix.md](capability-matrix.md)、設計上の線引きは
 [design.md](design.md) に置く。
 
@@ -9,6 +9,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - Ruby source と `.rbs` を中心にした query 型推論 engine
 - CLI の RBS 出力、JSON Lines diagnostics、型カバレッジ JSON
 - TypeProf VSCode 拡張と接続できる LSP server
+- stdio MCP server による AI agent 向けの位置指定型推論
 - Rails / gem DSL plugin
 - Sorbet `sig` / `.rbi` の実験的な補助
 - wasm playground（[Playground](https://pvcresin.github.io/tyda/play/)）
@@ -134,9 +135,12 @@ cargo run -- <path>                         # RBS
 cargo run -- --diagnostics <path>           # JSON Lines diagnostics
 cargo run -- --coverage <path>              # JSON type coverage
 cargo run -- --lsp                          # LSP server
+cargo run -- mcp                            # MCP server for AI agents
 cargo run -- --include-synthetic-dsl-methods <path>
 mise run dev                                # playground
 ~~~
+
+MCP の client 設定と `infer_type_at_position` の入力・出力は [mcp.md](mcp.md) を参照する。
 
 開発・拡張の手順は [development.md](development.md)、テストの追加方法は
 [testing.md](testing.md) を参照する。

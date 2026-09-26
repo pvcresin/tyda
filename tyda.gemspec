@@ -25,7 +25,15 @@ Gem::Specification.new do |spec|
   # Ship the Ruby wrapper plus the precompiled binary and its stdlib RBS data,
   # staged into libexec/ by the release pipeline (libexec/<bin> +
   # libexec/vendor/rbs). Deliberately NOT the Rust sources.
-  spec.files = Dir["lib/**/*.rb", "exe/*", "libexec/**/*", "LICENSE", "THIRD-PARTY-NOTICES.md", "README.md"]
+  spec.files = Dir[
+    "lib/**/*.rb",
+    "exe/*",
+    "libexec/**/*",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
+    "README.md",
+    "docs/mcp.md",
+  ]
   spec.bindir = "exe"
   spec.executables = ["tyda"]
   spec.require_paths = ["lib"]
