@@ -1,0 +1,216 @@
+name: Pull request CI
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+# One run owns every PR check, so a new commit cancels the previous run and all
+# of its reusable jobs together.
+concurrency:
+  group: pull-request-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      run_full_ci: ${{ steps.paths.outputs.run_full_ci }}
+      run_pages: ${{ steps.paths.outputs.run_pages }}
+      run_analysis: ${{ steps.paths.outputs.run_analysis }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+        run: bash scripts/ci/classify-changed-paths.sh
+
+  test-suite:
+    needs: changes
+    if: needs.changes.outputs.run_full_ci == 'true'
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+
+  pages-suite:
+    needs: changes
+    if: needs.changes.outputs.run_pages == 'true'
+    uses: ./.github/workflows/pages-check.yml
+    permissions:
+      contents: read
+
+  workflow-lint:
+    if: github.event.action != 'labeled' && github.event.action != 'unlabeled'
+    uses: ./.github/workflows/workflow-lint.yml
+    permissions:
+      contents: read
+
+  analysis-build:
+    needs: changes
+    if: needs.changes.outputs.run_analysis == 'true'
+    uses: ./.github/workflows/analysis-compatibility.yml
+    with:
+      phase: build
+    permissions:
+      contents: read
+      pull-requests: read
+
+  performance-build:
+    needs: changes
+    if: needs.changes.outputs.run_full_ci == 'true'
+    uses: ./.github/workflows/performance.yml
+    with:
+      phase: build
+    permissions:
+      contents: read
+
+  test:
+    name: test
+    needs: [changes, test-suite]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Require test workflow
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_full_ci }}
+          REQUIRED_RESULTS: |
+            test-suite=${{ needs.test-suite.result }}
+        run: bash scripts/ci/require-ci-results.sh
+
+  pages:
+    name: pages
+    needs: [changes, pages-suite]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Require Pages workflow
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_pages }}
+          REQUIRED_RESULTS: |
+            pages-suite=${{ needs.pages-suite.result }}
+        run: bash scripts/ci/require-ci-results.sh
+
+  actionlint:
+    name: actionlint
+    needs: [changes, workflow-lint]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require workflow lint
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          WORKFLOW_RESULT: ${{ needs.workflow-lint.result }}
+        run: |
+          if [[ "$EVENT_ACTION" == labeled || "$EVENT_ACTION" == unlabeled ]]; then
+            [[ "$WORKFLOW_RESULT" == skipped ]]
+          else
+            [[ "$WORKFLOW_RESULT" == success ]]
+          fi
+
+  analysis-subjects:
+    needs: [changes, test, analysis-build]
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.run_analysis == 'true' &&
+      needs.test.result != 'cancelled' &&
+      needs.analysis-build.result == 'success'
+    uses: ./.github/workflows/analysis-compatibility.yml
+    with:
+      phase: subjects
+    permissions:
+      contents: read
+      pull-requests: read
+
+  performance-subjects:
+    needs: [changes, test, performance-build]
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.run_full_ci == 'true' &&
+      needs.test.result != 'cancelled' &&
+      needs.performance-build.result == 'success'
+    uses: ./.github/workflows/performance.yml
+    with:
+      phase: subjects
+      base_sha: ${{ needs.performance-build.outputs.base_sha }}
+      head_sha: ${{ needs.performance-build.outputs.head_sha }}
+    permissions:
+      contents: read
+
+  vscode-package:
+    needs: [changes, test]
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.run_full_ci == 'true' &&
+      needs.test.result != 'cancelled'
+    uses: ./.github/workflows/release-vscode.yml
+    permissions:
+      contents: read
+
+  analysis-compatibility:
+    name: analysis-compatibility
+    needs: [changes, analysis-build, analysis-subjects]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Require analysis workflows
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_analysis }}
+          REQUIRED_RESULTS: |
+            analysis-build=${{ needs.analysis-build.result }}
+            analysis-subjects=${{ needs.analysis-subjects.result }}
+        run: bash scripts/ci/require-ci-results.sh
+
+  performance:
+    name: performance
+    needs: [changes, performance-build, performance-subjects]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Require performance workflows
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_full_ci }}
+          REQUIRED_RESULTS: |
+            performance-build=${{ needs.performance-build.result }}
+            performance-subjects=${{ needs.performance-subjects.result }}
+        run: bash scripts/ci/require-ci-results.sh
+
+  release-vscode:
+    name: release-vscode
+    needs: [changes, vscode-package]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Require VS Code package workflow
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_full_ci }}
+          REQUIRED_RESULTS: |
+            vscode-package=${{ needs.vscode-package.result }}
+        run: bash scripts/ci/require-ci-results.sh
