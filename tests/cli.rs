@@ -497,6 +497,17 @@ fn diagnostics_flag_honors_line_ignore_comments() {
   end
 end
 
+class RecordC
+  def data = { a: 1 }
+end
+
+class ConstructorC
+  def initialize(value) = @value = value
+end
+
+RecordC.new.data[:c] # tyda: ignore[missing_record_key]
+ConstructorC.new # tyda: ignore[arity_mismatch]
+
 Widget.new.missing # tyda: ignore[missing_method]
 Widget.new.foo(1) # tyda: ignore[argument_type_mismatch]
 Widget.new.missing
@@ -525,8 +536,8 @@ Widget.new.foo(1)
     assert_eq!(
         diagnostics,
         vec![
-            ("missing_method".to_string(), 10),
-            ("argument_type_mismatch".to_string(), 11),
+            ("missing_method".to_string(), 21),
+            ("argument_type_mismatch".to_string(), 22),
         ],
         "only the unsuppressed lines should remain: {stdout}"
     );
@@ -1576,6 +1587,111 @@ fn experimental_arity_check_is_off_by_default_and_on_with_env() {
             .iter()
             .any(|m| m.contains("missing keyword: :name")),
         "missing keyword: {messages:?}"
+    );
+}
+
+#[test]
+fn diagnostics_warns_on_missing_literal_record_key() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("record_key.rb");
+    fs::write(
+        &rb_file,
+        "class C\n  def foo = { a: 1, b: \"x\" }\nend\n\nC.new.foo[:a]\nC.new.foo[:c]\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("diagnostic JSON"))
+        .filter(|diagnostic| diagnostic["code"] == "missing_record_key")
+        .collect();
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "expected only the absent key: {stdout}"
+    );
+    assert_eq!(diagnostics[0]["severity"], "warning");
+    assert_eq!(diagnostics[0]["line"], 6);
+    assert!(diagnostics[0]["message"].as_str().unwrap().contains(":c"));
+}
+
+#[test]
+fn diagnostics_reports_source_constructor_arity_errors() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("constructor_arity.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class C1\n",
+            "  def initialize(value)\n",
+            "    @value = value\n",
+            "  end\n",
+            "end\n",
+            "class C2\n",
+            "  def initialize(value = nil)\n",
+            "    @value = value\n",
+            "  end\n",
+            "end\n",
+            "class CustomNew\n",
+            "  def self.new = nil\n",
+            "  def initialize(value) = @value = value\n",
+            "end\n",
+            "C1.new(\"x\")\n",
+            "C1.new\n",
+            "C1.new(\"x\", \"y\")\n",
+            "C2.new\n",
+            "CustomNew.new\n",
+            "def forward(*args)\n",
+            "  C1.new(*args)\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("diagnostic JSON"))
+        .filter(|diagnostic| diagnostic["code"] == "arity_mismatch")
+        .collect();
+
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "expected C1 arity errors only: {stdout}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["severity"] == "error")
+    );
+    let messages: Vec<&str> = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("given 0, expected 1"))
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("given 2, expected 1"))
     );
 }
 

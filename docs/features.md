@@ -52,19 +52,20 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 | 種類 | 既定の severity | 方針 |
 | --- | --- | --- |
 | `argument_type_mismatch` | error | 宣言 param と actual が確実に不一致のときだけ |
+| `arity_mismatch` | error / experimental | ソース定義の `initialize` を標準の `Class#new` 経由で呼ぶ場合は必須引数の不一致を error にする。それ以外は `TYDA_EXPERIMENTAL_CHECKS=1` のときだけ |
+| `missing_record_key` | warning | 既知の record に対するリテラルキーが存在しないとき。`Hash#[]` は `nil` を返すため warning にする |
 | `missing_method` | warning | receiver と祖先の method surface が完全に既知のときだけ |
 | `unresolved_constant` | information | receiver 文脈で未定義と証明できるときだけ |
-| `arity_mismatch` | experimental | `TYDA_EXPERIMENTAL_CHECKS=1` のときだけ |
 
-Unknown、`untyped`、開いた `method_missing` 面、未解決の祖先は誤検知を避けて沈黙する。
+Unknown、`untyped`、動的な record key、開いた `method_missing` 面、未解決の祖先は誤検知を避けて沈黙する。
 詳細は [incomplete-code-policy.md](incomplete-code-policy.md) を参照する。
 
 診断を一行だけ抑制するには、対象式の行末に `# tyda: ignore` を置く。特定の種類だけを
 抑制する場合は `# tyda: ignore[missing_method]` のように診断 code を指定できる。現在の
-code は `missing_method`、`argument_type_mismatch`、`unresolved_constant` などで、CLI・LSP・
-Playground で同じ書式を使う。コメントは同じ行の末尾に置いた場合だけ有効で、単独行の
-コメントが次の行へ影響することはない。対応する診断がない ignore は `unused_ignore` warning
-になり、診断が解消したあとに不要な抑制を見つけられる。
+code は `missing_method`、`argument_type_mismatch`、`arity_mismatch`、`missing_record_key`、
+`unresolved_constant` などで、CLI・LSP・Playground で同じ書式を使う。コメントは同じ行の末尾に
+置いた場合だけ有効で、単独行のコメントが次の行へ影響することはない。対応する診断がない
+ignore は `unused_ignore` warning になり、診断が解消したあとに不要な抑制を見つけられる。
 
 `--diagnostics` の JSON Lines 出力は実行間で byte-identical になる。ファイルは
 辞書順の走査順（CLI に明示的に渡したパスはその順序を保つ）、ファイル内の各行は

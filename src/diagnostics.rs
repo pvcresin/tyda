@@ -295,12 +295,13 @@ pub fn method_call_diagnostics(
     lazy_rbi_loader: Option<&crate::sorbet::rbi::LazyRbiLoader>,
     workspace_registry: Option<&TypeRegistry>,
 ) -> Vec<TypeDiagnostic> {
-    let (unresolved, mismatches, unresolved_constants) =
+    let (unresolved, mismatches, unresolved_constants, static_sites) =
         analysis.method_call_diagnostics(stdlib_loader, lazy_rbi_loader, workspace_registry);
     let mut diagnostics = method_call_diagnostics_from_sites_without_experimental(
         unresolved,
         mismatches,
         unresolved_constants,
+        static_sites,
         source,
         file_path,
     );
@@ -326,12 +327,13 @@ pub fn method_call_diagnostics_owned(
     let experimental = experimental_checks_enabled().then(|| {
         analysis.experimental_check_diagnostics(stdlib_loader, lazy_rbi_loader, workspace_registry)
     });
-    let (unresolved, mismatches, unresolved_constants) =
+    let (unresolved, mismatches, unresolved_constants, static_sites) =
         analysis.method_call_diagnostics_into(stdlib_loader, lazy_rbi_loader, workspace_registry);
     let mut diagnostics = method_call_diagnostics_from_sites_without_experimental(
         unresolved,
         mismatches,
         unresolved_constants,
+        static_sites,
         source,
         file_path,
     );
@@ -345,6 +347,7 @@ fn method_call_diagnostics_from_sites_without_experimental(
     unresolved: Vec<crate::inference::UnresolvedMethodCall>,
     mismatches: Vec<crate::inference::ArgumentTypeMismatch>,
     unresolved_constants: Vec<crate::inference::UnresolvedConstant>,
+    static_sites: Vec<crate::inference::StaticSiteDiagnostic>,
     source: &str,
     file_path: &str,
 ) -> Vec<TypeDiagnostic> {
@@ -416,6 +419,27 @@ fn method_call_diagnostics_from_sites_without_experimental(
             code: "unresolved_constant",
             message: unresolved_constant_message(&constant.name),
             method_name: String::new(),
+            unresolved_method: String::new(),
+            expected_type: None,
+            actual_type: None,
+            param_name: None,
+        }
+    }));
+    diagnostics.extend(static_sites.into_iter().map(|site| {
+        let (line, column) = byte_offset_to_line_col(source, site.start);
+        let (end_line, end_column) = byte_offset_to_line_col(source, site.end);
+        TypeDiagnostic {
+            path: file_path.to_string(),
+            line,
+            column,
+            end_line,
+            end_column,
+            byte_start: site.start,
+            byte_end: site.end,
+            severity: site.severity,
+            code: site.code,
+            message: site.message,
+            method_name: site.method_name,
             unresolved_method: String::new(),
             expected_type: None,
             actual_type: None,

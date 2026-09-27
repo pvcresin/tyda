@@ -89,6 +89,13 @@ pub(crate) struct UnresolvedConstantSite {
     pub(crate) class_context: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct MissingRecordKeySite {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) key: String,
+}
+
 // Only reports `No`; `Unknown` stays silent to avoid false positives.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ArgCompat {
@@ -772,6 +779,151 @@ impl<'a> InferenceEngine<'a> {
         self.arity_mismatches_for_sites(&mut out);
         self.union_member_missing_methods_for_sites(&mut out);
         out
+    }
+
+    pub(super) fn static_site_diagnostics_for_sites(&mut self) -> Vec<StaticSiteDiagnostic> {
+        let mut out: Vec<StaticSiteDiagnostic> = self
+            .missing_record_key_sites
+            .iter()
+            .map(|site| StaticSiteDiagnostic {
+                start: site.start,
+                end: site.end,
+                code: "missing_record_key",
+                severity: "warning",
+                message: format!("Record has no key {}", site.key),
+                method_name: "[]".to_string(),
+            })
+            .collect();
+        self.source_constructor_arity_mismatches_for_sites(&mut out);
+        out.sort_by(|left, right| {
+            (left.start, left.end, left.code).cmp(&(right.start, right.end, right.code))
+        });
+        out.dedup_by(|left, right| {
+            left.start == right.start && left.end == right.end && left.code == right.code
+        });
+        out
+    }
+
+    fn source_constructor_arity_mismatches_for_sites(
+        &mut self,
+        out: &mut Vec<StaticSiteDiagnostic>,
+    ) {
+        let sites = self.arg_check_sites.clone();
+        let mut seen: BTreeSet<(usize, usize, String)> = BTreeSet::new();
+        for site in sites {
+            if site.method_name != "new" || site.has_pos_splat {
+                continue;
+            }
+            let receiver = self.resolve_type_for_hover(
+                &site.receiver_type,
+                &site.class_context,
+                site.method_context.as_deref(),
+            );
+            let Type::Singleton(class_name) = receiver else {
+                continue;
+            };
+            self.ensure_class_available_with_ancestors(&class_name, 0);
+            self.ensure_class_available_with_ancestors("Class", 0);
+            if self
+                .registry
+                .resolve_method_call_owners(&class_name, "new", true)
+                .first()
+                != Some(&("Class".to_string(), false))
+            {
+                continue;
+            }
+            let Some(initialize) = self.registry.lookup_method_sig_for_receiver_with_hint(
+                &class_name,
+                "initialize",
+                false,
+            ) else {
+                continue;
+            };
+            if initialize.loc.is_none()
+                || initialize.rbs_file_source
+                || initialize.synthetic_dsl_source
+                || !initialize.overloads.is_empty()
+            {
+                continue;
+            }
+
+            let positional: Vec<&Param> = initialize
+                .params
+                .iter()
+                .filter(|param| {
+                    matches!(
+                        param.kind,
+                        ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                    )
+                })
+                .collect();
+            let has_rest = positional.iter().any(|param| param.kind == ParamKind::Rest);
+            let required = positional
+                .iter()
+                .filter(|param| param.kind == ParamKind::Required)
+                .count();
+            let max_positional = positional
+                .iter()
+                .filter(|param| param.kind != ParamKind::Rest)
+                .count();
+            let method_has_keywords = initialize.params.iter().any(|param| {
+                matches!(
+                    param.kind,
+                    ParamKind::KeywordRequired | ParamKind::KeywordOptional | ParamKind::DoubleRest
+                )
+            });
+
+            let mut messages = Vec::new();
+            if site.keyword_names.is_empty() || method_has_keywords {
+                let given = site.positional_count;
+                if given < required || (!has_rest && given > max_positional) {
+                    let expected = if has_rest {
+                        format!("{required}+")
+                    } else if required == max_positional {
+                        required.to_string()
+                    } else {
+                        format!("{required}..{max_positional}")
+                    };
+                    messages.push(format!(
+                        "wrong number of arguments (given {given}, expected {expected})"
+                    ));
+                }
+            }
+            if !site.has_kwsplat {
+                let missing: Vec<String> = initialize
+                    .params
+                    .iter()
+                    .filter(|param| param.kind == ParamKind::KeywordRequired)
+                    .filter(|param| !site.keyword_names.iter().any(|name| name == &param.name))
+                    .map(|param| param.name.clone())
+                    .collect();
+                if !missing.is_empty() {
+                    let plural = if missing.len() > 1 { "s" } else { "" };
+                    let names = missing
+                        .iter()
+                        .map(|name| format!(":{name}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    messages.push(format!("missing keyword{plural}: {names}"));
+                }
+            }
+
+            if site.call_start >= site.call_end || messages.is_empty() {
+                continue;
+            }
+            let message = messages.join("; ");
+            if !seen.insert((site.call_start, site.call_end, message.clone())) {
+                continue;
+            }
+            out.push(StaticSiteDiagnostic {
+                start: site.call_start,
+                end: site.call_end,
+                code: "arity_mismatch",
+                severity: "error",
+                message,
+                method_name: "new".to_string(),
+            });
+        }
     }
 
     fn union_member_missing_methods_for_sites(&mut self, out: &mut Vec<ExperimentalDiagnostic>) {

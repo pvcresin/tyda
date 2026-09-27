@@ -46,7 +46,8 @@ mod rbs;
 mod ruby_dsl;
 
 use hover::{
-    ArgCheckArg, ArgCheckSite, HoverBlockShape, HoverSnapshot, HoverTarget, UnresolvedConstantSite,
+    ArgCheckArg, ArgCheckSite, HoverBlockShape, HoverSnapshot, HoverTarget, MissingRecordKeySite,
+    UnresolvedConstantSite,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -540,6 +541,7 @@ pub struct InferenceEngine<'a> {
     pending_constant_definition_snapshots: Vec<PendingConstantDefinitionSnapshot>,
     arg_check_sites: Vec<ArgCheckSite>,
     unresolved_constant_sites: Vec<UnresolvedConstantSite>,
+    missing_record_key_sites: Vec<MissingRecordKeySite>,
     file_deps: crate::dep_graph::FileDeps,
     rails_mode: bool,
     dsl_activation: DslActivation,
@@ -616,6 +618,7 @@ pub struct HoverIndex {
     pub(crate) definition_snapshots: Vec<DefinitionSnapshot>,
     pub(crate) arg_check_sites: Vec<ArgCheckSite>,
     pub(crate) unresolved_constant_sites: Vec<UnresolvedConstantSite>,
+    pub(crate) missing_record_key_sites: Vec<MissingRecordKeySite>,
 }
 
 impl HoverIndex {
@@ -644,6 +647,16 @@ pub(crate) struct ArgumentTypeMismatch {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExperimentalDiagnostic {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) code: &'static str,
+    pub(crate) severity: &'static str,
+    pub(crate) message: String,
+    pub(crate) method_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StaticSiteDiagnostic {
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) code: &'static str,
@@ -916,6 +929,7 @@ impl FileAnalysisSnapshot {
         Vec<UnresolvedMethodCall>,
         Vec<ArgumentTypeMismatch>,
         Vec<UnresolvedConstant>,
+        Vec<StaticSiteDiagnostic>,
     ) {
         let mut engine = InferenceEngine::from_file_analysis_snapshot(self, lazy_loader);
         Self::collect_method_call_diagnostics(&mut engine, lazy_rbi_loader, external_registry)
@@ -930,6 +944,7 @@ impl FileAnalysisSnapshot {
         Vec<UnresolvedMethodCall>,
         Vec<ArgumentTypeMismatch>,
         Vec<UnresolvedConstant>,
+        Vec<StaticSiteDiagnostic>,
     ) {
         let mut engine = InferenceEngine::from_owned_file_analysis_snapshot(self, lazy_loader);
         Self::collect_method_call_diagnostics(&mut engine, lazy_rbi_loader, external_registry)
@@ -943,6 +958,7 @@ impl FileAnalysisSnapshot {
         Vec<UnresolvedMethodCall>,
         Vec<ArgumentTypeMismatch>,
         Vec<UnresolvedConstant>,
+        Vec<StaticSiteDiagnostic>,
     ) {
         if let Some(registry) = external_registry {
             engine.set_external_rbs(registry);
@@ -951,9 +967,10 @@ impl FileAnalysisSnapshot {
             engine.set_lazy_rbi_loader(rbi);
         }
         let unresolved = engine.unresolved_method_calls_for_snapshots();
+        let static_sites = engine.static_site_diagnostics_for_sites();
         let mismatches = engine.argument_type_mismatches_for_sites();
         let unresolved_constants = engine.unresolved_constant_refs_for_sites();
-        (unresolved, mismatches, unresolved_constants)
+        (unresolved, mismatches, unresolved_constants, static_sites)
     }
 
     pub(crate) fn experimental_check_diagnostics(
@@ -1566,6 +1583,7 @@ impl<'a> InferenceEngine<'a> {
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: hover_index.arg_check_sites,
             unresolved_constant_sites: hover_index.unresolved_constant_sites,
+            missing_record_key_sites: hover_index.missing_record_key_sites,
             file_deps: crate::dep_graph::FileDeps::default(),
             rails_mode: meta.rails_mode,
             dsl_activation: meta.dsl_activation,
@@ -1624,6 +1642,7 @@ impl<'a> InferenceEngine<'a> {
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: Vec::new(),
             unresolved_constant_sites: Vec::new(),
+            missing_record_key_sites: Vec::new(),
             file_deps: crate::dep_graph::FileDeps::default(),
             rails_mode: false,
             dsl_activation: DslActivation::default(),
@@ -7868,6 +7887,7 @@ impl<'a> InferenceEngine<'a> {
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
+                missing_record_key_sites: self.missing_record_key_sites,
             },
             coverage: self
                 .coverage_recorder
@@ -7946,6 +7966,7 @@ impl<'a> InferenceEngine<'a> {
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
+                missing_record_key_sites: self.missing_record_key_sites,
             },
             coverage: self
                 .coverage_recorder
@@ -21821,6 +21842,17 @@ impl<'a> InferenceEngine<'a> {
                                     class_name,
                                     scope,
                                 );
+                                self.record_arg_check_site(
+                                    &call_node,
+                                    parse_result,
+                                    &safe_nav_receiver_type,
+                                    "new",
+                                    true,
+                                    class_name,
+                                    scope.method_name.as_deref(),
+                                    &arg_types,
+                                    &kw_types,
+                                );
                                 self.record_inferred_call_site(&target_class, {
                                     let caller_context = Self::call_site_caller_context(
                                         class_name, scope, &arg_types, &kw_types, &None,
@@ -21947,6 +21979,13 @@ impl<'a> InferenceEngine<'a> {
                                 &record_result,
                             )
                         {
+                            self.record_missing_record_key_site(
+                                &safe_nav_receiver_type,
+                                class_name,
+                                &call_node,
+                                parse_result,
+                                scope,
+                            );
                             break 'recv wrap(record_result);
                         }
 
@@ -27639,6 +27678,58 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => None,
         }
+    }
+
+    fn record_missing_record_key_site(
+        &mut self,
+        receiver_type: &Type,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) {
+        if !self.record_hover_snapshots {
+            return;
+        }
+        let Type::Record(fields) = receiver_type else {
+            return;
+        };
+        let Some(key_node) = call_node
+            .arguments()
+            .and_then(|args| args.arguments().iter().next())
+        else {
+            return;
+        };
+        let key_type = self.infer_node_type(class_name, &key_node, parse_result, scope);
+        let (key, display) = match key_type {
+            Type::LiteralSymbol(name) => {
+                let display = format!(":{name}");
+                (RecordKey::Symbol(name.to_string()), display)
+            }
+            Type::LiteralString(name) => {
+                let display = format!("{name:?}");
+                (RecordKey::String(name), display)
+            }
+            _ => return,
+        };
+        if fields.iter().any(|field| field.key == key) {
+            return;
+        }
+        let location = key_node.location();
+        let (start, end) = (location.start_offset(), location.end_offset());
+        if start >= end
+            || self
+                .missing_record_key_sites
+                .iter()
+                .any(|site| site.start == start && site.end == end && site.key == display)
+        {
+            return;
+        }
+        self.missing_record_key_sites.push(MissingRecordKeySite {
+            start,
+            end,
+            key: display,
+        });
     }
 
     fn resolve_hash_like_method(
