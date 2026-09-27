@@ -1,0 +1,158 @@
+# Build the documentation site and wasm playground, and E2E-test the site.
+#
+# Three jobs on purpose:
+#   changes  : classifies the changed paths without skipping the workflow.
+#   e2e-test : builds the wasm in the CI (Ubuntu) environment, bundles RBS,
+#              builds the combined Pages artifact, and runs the Playwright E2E
+#              against THAT freshly built wasm and site.
+#   pages-gate: always reports the Pages result and fails closed when the
+#               applicable Pages job does not succeed.
+#              Uses the same mise tasks as local dev, and is reproducible
+#              locally with `mise run ci` (= `act -j e2e-test`). We assert
+#              behavior via E2E, not binary identity, so local and CI builds
+#              can differ bit-for-bit.
+# Build artifacts (playground/public/{tyda.wasm,rbs-bundle.json}, the VitePress
+# output, and pages-dist) are produced in-job and never committed.
+name: pages-check
+
+on:
+  workflow_call:
+    outputs:
+      run_pages:
+        description: Whether changed files require a Pages build.
+        value: ${{ jobs.changes.outputs.run_pages }}
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  changes:
+    name: classify changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      run_pages: ${{ steps.paths.outputs.run_pages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+        run: bash scripts/ci/classify-changed-paths.sh
+
+  e2e-test:
+    needs: changes
+    if: needs.changes.outputs.run_pages == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # vendor/rbs is generated from the rbs gem by `mise run vendor-rbs`
+      # (below), so a plain checkout is enough.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # clang/libclang are needed by bindgen (ruby-rbs-sys / ruby-prism-sys),
+      # which runs even for the wasm target build (build-wasm.sh points it at
+      # the wasi sysroot). This is the only tool mise does not provide.
+      - name: Install system dependencies
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        with:
+          packages: clang libclang-dev
+
+      # mise installs the whole toolchain from mise.toml [tools]: rust (+rustup,
+      # so this works on GitHub runners and under act alike), node, ruby, and
+      # wasi-sdk. build/e2e then run via `mise run`, matching local dev. ruby is
+      # build-time only; the wasm/CLI output carries no Ruby dependency.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+
+      # The wasm build target lives in the rustup toolchain (~/.rustup), which
+      # the mise cache does not cover. On a mise cache hit, mise skips rust setup
+      # and the target can be missing, so add it explicitly (idempotent).
+      - name: Ensure wasm target
+        run: rustup target add wasm32-wasip1
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-targets: false
+          shared-key: pages-rust-v1
+
+      - name: Cache Rust compiler outputs
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: "v0.17.0"
+
+      # Cache the bundled rbs gem so vendor-rbs doesn't refetch every run.
+      # Keyed on Gemfile.lock so a version bump busts it.
+      - name: Cache bundled gems
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: vendor/bundle
+          key: ${{ runner.os }}-bundle-${{ hashFiles('Gemfile.lock') }}
+          restore-keys: ${{ runner.os }}-bundle-
+
+      # Generate vendor/rbs (stdlib RBS data) from the rbs gem. The C parser
+      # itself comes from the ruby-rbs-sys crate, so this is data only; it is
+      # required before the RBS bundle step and the tests that load core/stdlib.
+      - name: Vendor RBS (rbs gem → vendor/rbs)
+        run: mise run vendor-rbs
+
+      # wasi-sdk is installed by mise (mise.toml [tools]); build-wasm.sh resolves
+      # it via `mise where wasi-sdk`. The wasm output is host-arch-independent
+      # (fixed wasm32-wasip1 target).
+
+      # Install JS deps first: the Vite build (inside `mise run e2e`) and oxfmt
+      # both run from the local install.
+      # --with-deps installs the browser's OS libraries (CI containers need it).
+      - name: Install deps + Playwright Chromium
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Check playground formatting (oxfmt)
+        run: npm run format:check
+
+      - name: Check playground types
+        run: npm run typecheck
+
+      - name: Lint playground
+        run: npm run lint
+
+      # Builds docs + wasm + RBS + Vite, assembles pages-dist, and E2Es the
+      # project Pages site at /tyda/play/. Same mise task as local dev.
+      - name: Build + E2E (mise run e2e)
+        run: mise run e2e
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: pages-dist
+
+  pages-gate:
+    name: pages
+    needs:
+      - changes
+      - e2e-test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Require Pages jobs
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_pages }}
+          REQUIRED_RESULTS: |
+            e2e-test=${{ needs.e2e-test.result }}
+        run: bash scripts/ci/require-ci-results.sh

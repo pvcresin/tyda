@@ -1,12 +1,36 @@
 name: Performance
 
 on:
-  pull_request:
   push:
     branches:
       - main
       - master
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      phase:
+        description: Which part of the performance check to run.
+        required: false
+        type: string
+        default: all
+      base_sha:
+        description: Base revision for the subject matrix phase.
+        required: false
+        type: string
+      head_sha:
+        description: Head revision for the subject matrix phase.
+        required: false
+        type: string
+    outputs:
+      run_full_ci:
+        description: Whether the changed files require full CI.
+        value: ${{ jobs.changes.outputs.run_full_ci }}
+      base_sha:
+        description: Base revision built by the performance phase.
+        value: ${{ jobs.build.outputs.base_sha }}
+      head_sha:
+        description: Head revision built by the performance phase.
+        value: ${{ jobs.build.outputs.head_sha }}
 
 permissions:
   contents: read
@@ -43,7 +67,9 @@ jobs:
   build:
     name: performance-build
     needs: changes
-    if: needs.changes.outputs.run_full_ci == 'true'
+    if: >-
+      (inputs.phase == '' || inputs.phase == 'all' || inputs.phase == 'build') &&
+      needs.changes.outputs.run_full_ci == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -122,13 +148,22 @@ jobs:
     needs:
       - changes
       - build
-    if: needs.changes.outputs.run_full_ci == 'true'
+    if: >-
+      always() &&
+      needs.changes.outputs.run_full_ci == 'true' &&
+      (
+        inputs.phase == 'subjects' ||
+        (
+          (inputs.phase == '' || inputs.phase == 'all') &&
+          needs.build.result == 'success'
+        )
+      )
     name: performance (${{ matrix.subject }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
-      max-parallel: 10
+      max-parallel: 7
       matrix:
         include:
           # Ruby-only subjects: small → medium.
@@ -204,8 +239,8 @@ jobs:
 
       - name: Compare base and head performance (${{ matrix.subject }})
         env:
-          TYDA_PERF_BASE_SHA: ${{ needs.build.outputs.base_sha }}
-          TYDA_PERF_HEAD_SHA: ${{ needs.build.outputs.head_sha }}
+          TYDA_PERF_BASE_SHA: ${{ inputs.phase == 'subjects' && inputs.base_sha || needs.build.outputs.base_sha }}
+          TYDA_PERF_HEAD_SHA: ${{ inputs.phase == 'subjects' && inputs.head_sha || needs.build.outputs.head_sha }}
           TYDA_PERF_RUNS: ${{ github.event_name == 'pull_request' && '3' || '5' }}
           TYDA_PERF_THREADS: "2"
           TYDA_PERF_ALLOW_BASE_TIMEOUT: ${{ matrix.allow_base_timeout }}
@@ -219,8 +254,8 @@ jobs:
       - name: Compare base and head coverage (${{ matrix.subject }})
         if: always()
         env:
-          TYDA_COVERAGE_BASE_SHA: ${{ needs.build.outputs.base_sha }}
-          TYDA_COVERAGE_HEAD_SHA: ${{ needs.build.outputs.head_sha }}
+          TYDA_COVERAGE_BASE_SHA: ${{ inputs.phase == 'subjects' && inputs.base_sha || needs.build.outputs.base_sha }}
+          TYDA_COVERAGE_HEAD_SHA: ${{ inputs.phase == 'subjects' && inputs.head_sha || needs.build.outputs.head_sha }}
           TYDA_COVERAGE_THREADS: "2"
           TYDA_COVERAGE_ALLOW_BASE_TIMEOUT: ${{ matrix.allow_base_timeout }}
           TYDA_COVERAGE_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
@@ -262,7 +297,20 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           RUN_REQUIRED: ${{ needs.changes.outputs.run_full_ci }}
-          REQUIRED_RESULTS: |
-            performance-build=${{ needs.build.result }}
-            performance=${{ needs.performance.result }}
-        run: bash scripts/ci/require-ci-results.sh
+          PHASE: ${{ inputs.phase }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          PERFORMANCE_RESULT: ${{ needs.performance.result }}
+        run: |
+          case "$PHASE" in
+            build)
+              REQUIRED_RESULTS="performance-build=$BUILD_RESULT"
+              ;;
+            subjects)
+              REQUIRED_RESULTS="performance=$PERFORMANCE_RESULT"
+              ;;
+            *)
+              REQUIRED_RESULTS=$'performance-build='"$BUILD_RESULT"$'\nperformance='"$PERFORMANCE_RESULT"
+              ;;
+          esac
+          export REQUIRED_RESULTS
+          bash scripts/ci/require-ci-results.sh

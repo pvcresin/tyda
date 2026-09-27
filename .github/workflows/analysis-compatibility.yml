@@ -1,9 +1,18 @@
 name: Analysis compatibility
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      phase:
+        description: Which part of the compatibility check to run.
+        required: false
+        type: string
+        default: all
+    outputs:
+      run_analysis:
+        description: Whether the changed files require analysis compatibility checks.
+        value: ${{ jobs.changes.outputs.run_analysis }}
 
 permissions:
   contents: read
@@ -66,7 +75,9 @@ jobs:
   build:
     name: analysis-build
     needs: changes
-    if: needs.changes.outputs.run_analysis == 'true'
+    if: >-
+      (inputs.phase == '' || inputs.phase == 'all' || inputs.phase == 'build') &&
+      needs.changes.outputs.run_analysis == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -129,13 +140,22 @@ jobs:
     needs:
       - changes
       - build
-    if: needs.changes.outputs.run_analysis == 'true'
+    if: >-
+      always() &&
+      needs.changes.outputs.run_analysis == 'true' &&
+      (
+        inputs.phase == 'subjects' ||
+        (
+          (inputs.phase == '' || inputs.phase == 'all') &&
+          needs.build.result == 'success'
+        )
+      )
     name: analysis (${{ matrix.subject }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 11
+      max-parallel: 7
       matrix:
         include:
           - subject: sample
@@ -239,7 +259,20 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           RUN_REQUIRED: ${{ needs.changes.outputs.run_analysis }}
-          REQUIRED_RESULTS: |
-            analysis-build=${{ needs.build.result }}
-            analysis=${{ needs.analysis.result }}
-        run: bash scripts/ci/require-ci-results.sh
+          PHASE: ${{ inputs.phase }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          ANALYSIS_RESULT: ${{ needs.analysis.result }}
+        run: |
+          case "$PHASE" in
+            build)
+              REQUIRED_RESULTS="analysis-build=$BUILD_RESULT"
+              ;;
+            subjects)
+              REQUIRED_RESULTS="analysis=$ANALYSIS_RESULT"
+              ;;
+            *)
+              REQUIRED_RESULTS=$'analysis-build='"$BUILD_RESULT"$'\nanalysis='"$ANALYSIS_RESULT"
+              ;;
+          esac
+          export REQUIRED_RESULTS
+          bash scripts/ci/require-ci-results.sh

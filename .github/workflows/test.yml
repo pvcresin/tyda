@@ -1,12 +1,12 @@
 name: Test
 
 on:
-  pull_request:
   push:
     branches:
       - main
       - master
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -16,8 +16,8 @@ env:
   RUSTC_WRAPPER: sccache
   SCCACHE_GHA_ENABLED: "true"
 
-# Drop superseded runs on the same ref so a new push does not wait behind a
-# stale format+lint+test queue (pages.yml already does this).
+# Drop superseded direct runs on the same ref. PR runs are cancelled together
+# by pull-request-ci.yml.
 concurrency:
   group: test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
