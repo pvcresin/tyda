@@ -7,7 +7,7 @@ use crate::rbs::ir as rbs_ir;
 use crate::types::Sym;
 use crate::types::{HoverBlockSig, HoverOverloadSig, Param, ParamKind};
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone)]
 pub(crate) enum HoverTarget {
@@ -94,6 +94,8 @@ pub(crate) struct MissingRecordKeySite {
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) key: String,
+    pub(crate) record_key: RecordKey,
+    pub(crate) receiver_type: Option<Type>,
 }
 
 // Only reports `No`; `Unknown` stays silent to avoid false positives.
@@ -386,8 +388,81 @@ impl<'a> InferenceEngine<'a> {
             .is_some()
     }
 
+    fn merge_diagnostic_type_candidates(left: &Type, right: &Type) -> Type {
+        let stable = [left, right]
+            .into_iter()
+            .filter(|ty| **ty != Type::Bot && !Self::contains_unresolved_ref(ty))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !stable.is_empty() {
+            return Type::from_type_vec_preserve_untyped(stable);
+        }
+        if *left == Type::Bot || *right == Type::Bot {
+            return Type::Bot;
+        }
+        Type::from_type_vec_preserve_untyped(vec![left.clone(), right.clone()])
+    }
+
+    fn merge_arg_check_site(existing: &mut ArgCheckSite, incoming: ArgCheckSite) {
+        existing.receiver_type = Self::merge_diagnostic_type_candidates(
+            &existing.receiver_type,
+            &incoming.receiver_type,
+        );
+        for incoming_arg in &incoming.args {
+            if let Some(existing_arg) = existing.args.iter_mut().find(|existing_arg| {
+                existing_arg.start == incoming_arg.start
+                    && existing_arg.end == incoming_arg.end
+                    && existing_arg.keyword == incoming_arg.keyword
+                    && existing_arg.positional_index == incoming_arg.positional_index
+            }) {
+                existing_arg.ty =
+                    Self::merge_diagnostic_type_candidates(&existing_arg.ty, &incoming_arg.ty);
+            } else {
+                existing.args.push(incoming_arg.clone());
+            }
+        }
+        existing.block_return_type = match (
+            existing.block_return_type.take(),
+            incoming.block_return_type,
+        ) {
+            (Some(left), Some(right)) => {
+                Some(Self::merge_diagnostic_type_candidates(&left, &right))
+            }
+            (Some(ty), None) | (None, Some(ty)) => Some(ty),
+            (None, None) => None,
+        };
+        if existing.block_shape.is_none() {
+            existing.block_shape = incoming.block_shape;
+        }
+    }
+
+    fn coalesce_arg_check_sites(sites: Vec<ArgCheckSite>) -> Vec<ArgCheckSite> {
+        let mut merged = Vec::with_capacity(sites.len());
+        let mut indices = HashMap::new();
+        for site in sites {
+            let key = (
+                site.class_context.clone(),
+                site.method_context.clone(),
+                site.method_name.clone(),
+                site.is_singleton,
+                site.call_start,
+                site.call_end,
+            );
+            if let Some(index) = indices.get(&key).copied() {
+                if let Some(existing) = merged.get_mut(index) {
+                    Self::merge_arg_check_site(existing, site);
+                }
+            } else {
+                let index = merged.len();
+                merged.push(site);
+                indices.insert(key, index);
+            }
+        }
+        merged
+    }
+
     pub(super) fn argument_type_mismatches_for_sites(&mut self) -> Vec<ArgumentTypeMismatch> {
-        let sites = std::mem::take(&mut self.arg_check_sites);
+        let sites = Self::coalesce_arg_check_sites(std::mem::take(&mut self.arg_check_sites));
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
         for site in sites {
@@ -524,9 +599,20 @@ impl<'a> InferenceEngine<'a> {
                     &site.class_context,
                     site.method_context.as_deref(),
                 );
-                let compat = match structural_rbs {
-                    Some(rbs_ty) => self.rbs_param_compat(&actual, rbs_ty),
-                    None => self.arg_compat(&actual, &param.param_type),
+                // Pathname#expand_path delegates to File.expand_path, which accepts Pathname
+                // values even though this RBS parameter is declared as String.
+                let pathname_expand_path_dir = !prefer_singleton
+                    && Self::class_type_base_name(&class_name) == "Pathname"
+                    && site.method_name == "expand_path"
+                    && param.name == "dir"
+                    && matches!(&actual, Type::Class(name) if Self::class_type_base_name(name) == "Pathname");
+                let compat = if pathname_expand_path_dir {
+                    ArgCompat::Yes
+                } else {
+                    match structural_rbs {
+                        Some(rbs_ty) => self.rbs_param_compat(&actual, rbs_ty),
+                        None => self.arg_compat(&actual, &param.param_type),
+                    }
                 };
                 if compat != ArgCompat::No {
                     continue;
@@ -782,16 +868,31 @@ impl<'a> InferenceEngine<'a> {
     }
 
     pub(super) fn static_site_diagnostics_for_sites(&mut self) -> Vec<StaticSiteDiagnostic> {
-        let mut out: Vec<StaticSiteDiagnostic> = self
-            .missing_record_key_sites
-            .iter()
-            .map(|site| StaticSiteDiagnostic {
-                start: site.start,
-                end: site.end,
-                code: "missing_record_key",
-                severity: "warning",
-                message: format!("Record has no key {}", site.key),
-                method_name: "[]".to_string(),
+        let mut record_key_candidates = std::collections::BTreeMap::new();
+        for site in &self.missing_record_key_sites {
+            record_key_candidates
+                .entry((site.start, site.end, site.record_key.clone()))
+                .or_insert_with(Vec::new)
+                .push(site);
+        }
+        let mut out: Vec<StaticSiteDiagnostic> = record_key_candidates
+            .into_iter()
+            .filter_map(|((start, end, key), candidates)| {
+                candidates
+                    .iter()
+                    .all(|site| {
+                        site.receiver_type
+                            .as_ref()
+                            .is_some_and(|ty| Self::record_type_definitely_lacks_key(ty, &key))
+                    })
+                    .then(|| StaticSiteDiagnostic {
+                        start,
+                        end,
+                        code: "missing_record_key",
+                        severity: "warning",
+                        message: format!("Record has no key {}", candidates[0].key),
+                        method_name: "[]".to_string(),
+                    })
             })
             .collect();
         self.source_constructor_arity_mismatches_for_sites(&mut out);
@@ -802,6 +903,21 @@ impl<'a> InferenceEngine<'a> {
             left.start == right.start && left.end == right.end && left.code == right.code
         });
         out
+    }
+
+    fn record_type_definitely_lacks_key(ty: &Type, key: &RecordKey) -> bool {
+        match ty {
+            Type::Record(fields) => {
+                !fields.is_empty() && fields.iter().all(|field| field.key != *key)
+            }
+            Type::Union(types) => {
+                !types.is_empty()
+                    && types
+                        .iter()
+                        .all(|member| Self::record_type_definitely_lacks_key(member, key))
+            }
+            _ => false,
+        }
     }
 
     fn source_constructor_arity_mismatches_for_sites(

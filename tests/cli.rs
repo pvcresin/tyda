@@ -1531,6 +1531,43 @@ fn argument_type_mismatches(rb_file: &std::path::Path) -> Vec<serde_json::Value>
 }
 
 #[test]
+fn argument_type_mismatch_respects_truthy_ivar_guards() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("truthy_ivar_argument.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class IvarArgumentGuard\n",
+            "  #: (String) -> void\n",
+            "  def consume(value); end\n",
+            "  def initialize\n",
+            "    @value = nil\n",
+            "  end\n",
+            "  def guarded\n",
+            "    if @value\n",
+            "      consume(@value)\n",
+            "      :done\n",
+            "    end\n",
+            "  end\n",
+            "  def invalid\n",
+            "    consume(nil)\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let mismatches = argument_type_mismatches(&rb_file);
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "only an explicit nil argument should be reported: {mismatches:?}"
+    );
+    assert_eq!(mismatches[0]["line"], 14);
+    assert_eq!(mismatches[0]["actual_type"], "nil");
+}
+
+#[test]
 fn experimental_arity_check_is_off_by_default_and_on_with_env() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("arity.rb");
@@ -1633,6 +1670,55 @@ fn diagnostics_warns_on_missing_literal_record_key() {
     assert_eq!(diagnostics[0]["severity"], "warning");
     assert_eq!(diagnostics[0]["line"], 7);
     assert!(diagnostics[0]["message"].as_str().unwrap().contains(":c"));
+}
+
+#[test]
+fn missing_record_key_requires_all_receiver_shapes_to_lack_the_key() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("record_key_union.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class C\n",
+            "  def response(flag)\n",
+            "    if flag\n",
+            "      { issue: 1 }\n",
+            "    else\n",
+            "      { error: \"failed\" }\n",
+            "    end\n",
+            "  end\n",
+            "  def issue(flag) = response(flag)[:issue]\n",
+            "  def read(response) = response[:issue]\n",
+            "end\n",
+            "C.new.issue(true)\n",
+            "C.new.read({ issue: 1 })\n",
+            "C.new.read({ error: \"failed\" })\n",
+            "C.new.response(true)[:missing]\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("diagnostic JSON"))
+        .filter(|diagnostic| diagnostic["code"] == "missing_record_key")
+        .collect();
+
+    assert_eq!(diagnostics.len(), 1, "{stdout}");
+    assert_eq!(diagnostics[0]["line"], 15);
+    assert!(
+        diagnostics[0]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(":missing")
+    );
 }
 
 #[test]
@@ -2131,6 +2217,26 @@ fn diagnostics_flag_reports_rbs_file_argument_type_mismatch() {
         "external .rbs param mismatch should be flagged: {diags:?}"
     );
     assert_eq!(diags[0]["expected_type"], "String");
+}
+
+#[test]
+fn diagnostics_accept_pathname_as_expand_path_base() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("pathlike.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "require \"pathname\"\n",
+            "Pathname.new(\"child\").expand_path(Pathname.new(\"/tmp\"))\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let mismatches = argument_type_mismatches(&rb_file);
+    assert!(
+        mismatches.is_empty(),
+        "Pathname#expand_path accepts a Pathname base directory: {mismatches:?}"
+    );
 }
 
 // RBS's `path` (= `string | _ToPath`) is structural: any type with to_path / to_str

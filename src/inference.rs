@@ -17769,14 +17769,20 @@ impl<'a> InferenceEngine<'a> {
         scope: &mut Scope,
     ) {
         self.apply_sorbet_self_bind_for_statement(class_name, node, parse_result, scope);
-        if !scope.self_facts.is_empty()
+        let invalidates_self_facts = !scope.self_facts.is_empty()
             && self.statement_invalidates_self_facts(
                 class_name,
                 scope.singleton_dispatch,
                 node,
                 &scope.self_facts,
-            )
-        {
+            );
+        // A call reads its receiver and arguments before it can invalidate facts on self.
+        // Keep the facts while inferring the call, then discard them for later statements.
+        let defer_self_fact_invalidation = invalidates_self_facts
+            && node
+                .as_call_node()
+                .is_some_and(|call_node| call_node.block().is_none());
+        if invalidates_self_facts && !defer_self_fact_invalidation {
             scope.clear_self_facts();
         }
         match node {
@@ -18840,6 +18846,9 @@ impl<'a> InferenceEngine<'a> {
                 self.infer_node_type(class_name, node, parse_result, scope);
             }
         }
+        if defer_self_fact_invalidation {
+            scope.clear_self_facts();
+        }
     }
 
     fn infer_node_type_with_scope(
@@ -18991,7 +19000,6 @@ impl<'a> InferenceEngine<'a> {
                 } else {
                     Type::Nil
                 };
-
                 let mut else_scope = scope.fork_for_branch();
                 if let Some(n) = &narrowing
                     && let Some(ty) = &n.else_ty
@@ -19016,7 +19024,6 @@ impl<'a> InferenceEngine<'a> {
                 } else {
                     Type::Nil
                 };
-
                 let then_always_exits = if_node
                     .statements()
                     .is_some_and(|s| Self::statements_always_exit(&s))
@@ -27744,10 +27751,7 @@ impl<'a> InferenceEngine<'a> {
         if !self.record_hover_snapshots {
             return;
         }
-        let Type::Record(fields) = receiver_type else {
-            return;
-        };
-        if fields.is_empty() {
+        if !matches!(receiver_type, Type::Record(_) | Type::Union(_)) {
             return;
         }
         let Some(key_node) = call_node
@@ -27757,12 +27761,10 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         let key_type = self.infer_node_type(class_name, &key_node, parse_result, scope);
-        if call_node.receiver().is_some_and(|receiver| {
+        let receiver_has_initialized_key = call_node.receiver().is_some_and(|receiver| {
             Self::record_key_initialization_fact(&receiver, &key_type)
                 .is_some_and(|fact| scope.initialized_record_keys.contains(&fact))
-        }) {
-            return;
-        }
+        });
         let (key, display) = match key_type {
             Type::LiteralSymbol(name) => {
                 let display = format!(":{name}");
@@ -27774,23 +27776,26 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => return,
         };
-        if fields.iter().any(|field| field.key == key) {
-            return;
-        }
         let location = key_node.location();
         let (start, end) = (location.start_offset(), location.end_offset());
-        if start >= end
-            || self
-                .missing_record_key_sites
-                .iter()
-                .any(|site| site.start == start && site.end == end && site.key == display)
-        {
+        if start >= end {
+            return;
+        }
+        let receiver_type = (!receiver_has_initialized_key).then(|| receiver_type.clone());
+        if self.missing_record_key_sites.iter().any(|site| {
+            site.start == start
+                && site.end == end
+                && site.record_key == key
+                && site.receiver_type == receiver_type
+        }) {
             return;
         }
         self.missing_record_key_sites.push(MissingRecordKeySite {
             start,
             end,
             key: display,
+            record_key: key,
+            receiver_type,
         });
     }
 
@@ -45551,6 +45556,30 @@ impl<'a> InferenceEngine<'a> {
                             Type::Nil,
                         ))
                     }
+                    "exist?" => {
+                        let receiver_type =
+                            self.infer_node_type(class_name, &receiver, parse_result, scope);
+                        let receiver_class = self.type_to_class_name(&receiver_type)?;
+                        if Self::class_type_base_name(&receiver_class) != "File" {
+                            return None;
+                        }
+                        let args = call.arguments()?;
+                        let path_node = args.arguments().iter().next()?;
+                        let subject = Self::extract_narrow_subject_in_scope(&path_node, scope)?;
+                        let current =
+                            self.resolve_subject_input_type(class_name, scope, &subject)?;
+                        // File.exist? raises for nil, so a true result proves the path is non-nil.
+                        let path_type = if Self::contains_unresolved_ref(&current) {
+                            Type::Untyped
+                        } else {
+                            Self::remove_nil(&current)
+                        };
+                        Some(CondNarrowing {
+                            subject,
+                            then_ty: Some(path_type),
+                            else_ty: None,
+                        })
+                    }
                     "present?" | "presence" => {
                         let subject = Self::extract_narrow_subject_in_scope(&receiver, scope)?;
                         let current =
@@ -45635,6 +45664,21 @@ impl<'a> InferenceEngine<'a> {
                     subject: NarrowSubject::Local(name),
                     then_ty: Self::truthy_only(&current),
                     else_ty: Self::falsy_only(&current),
+                })
+            }
+            Node::InstanceVariableReadNode { .. } => {
+                let read = predicate.as_instance_variable_read_node()?;
+                let subject = NarrowSubject::Ivar(
+                    String::from_utf8_lossy(read.name().as_slice()).to_string(),
+                );
+                let current = self
+                    .resolve_subject_input_type(class_name, scope, &subject)
+                    .filter(|ty| !Self::contains_unresolved_ref(ty))
+                    .unwrap_or(Type::Untyped);
+                Some(CondNarrowing {
+                    subject,
+                    then_ty: Some(Self::truthy_only(&current).unwrap_or(Type::Bot)),
+                    else_ty: Some(Self::falsy_only(&current).unwrap_or(Type::Bot)),
                 })
             }
             Node::LocalVariableWriteNode { .. } => {
