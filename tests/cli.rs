@@ -1596,7 +1596,19 @@ fn diagnostics_warns_on_missing_literal_record_key() {
     let rb_file = dir.path().join("record_key.rb");
     fs::write(
         &rb_file,
-        "class C\n  def foo = { a: 1, b: \"x\" }\nend\n\nC.new.foo[:a]\nC.new.foo[:c]\n",
+        concat!(
+            "class C\n",
+            "  def foo = { a: 1, b: \"x\" }\n",
+            "  def empty = {}\n",
+            "end\n\n",
+            "C.new.foo[:a]\n",
+            "C.new.foo[:c]\n",
+            "C.new.empty[:c]\n",
+            "result = { status: :completed, count: 0 }\n",
+            "if result[:status] == :timeout\n",
+            "  result[:continue_from]\n",
+            "end\n",
+        ),
     )
     .expect("failed to write");
 
@@ -1616,11 +1628,113 @@ fn diagnostics_warns_on_missing_literal_record_key() {
     assert_eq!(
         diagnostics.len(),
         1,
-        "expected only the absent key: {stdout}"
+        "expected only the absent key on a non-empty reachable record: {stdout}"
     );
     assert_eq!(diagnostics[0]["severity"], "warning");
-    assert_eq!(diagnostics[0]["line"], 6);
+    assert_eq!(diagnostics[0]["line"], 7);
     assert!(diagnostics[0]["message"].as_str().unwrap().contains(":c"));
+}
+
+#[test]
+fn record_key_presence_guard_narrows_the_lookup_key() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("record_key_guard.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class C\n",
+            "  SETTINGS = { allowed: :allowed_method }\n",
+            "  def lookup(key)\n",
+            "    if SETTINGS.include?(key)\n",
+            "      public_send(SETTINGS[key])\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let codes: Vec<String> = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("diagnostic JSON"))
+        .map(|diagnostic| diagnostic["code"].as_str().unwrap_or_default().to_string())
+        .collect();
+
+    assert!(
+        !codes.contains(&"argument_type_mismatch".to_string()),
+        "guarded lookup should not pass nil to public_send: {stdout}"
+    );
+    assert!(
+        !codes.contains(&"missing_record_key".to_string()),
+        "guarded lookup should not report a possible absent key: {stdout}"
+    );
+}
+
+#[test]
+fn record_key_initialized_by_or_equals_is_present_afterward() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("record_key_write.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class C\n",
+            "  def data = { left: [] }\n",
+            "  def initialize_key\n",
+            "    data[\"top\"] ||= []\n",
+            "    data[\"top\"]\n",
+            "  end\n",
+            "  def missing_key\n",
+            "    data[\"other\"]\n",
+            "  end\n",
+            "  def conditional_key(flag)\n",
+            "    data[\"conditional\"] ||= [] if flag\n",
+            "    data[\"conditional\"]\n",
+            "  end\n",
+            "end\n",
+            "C.new.initialize_key\n",
+            "C.new.missing_key\n",
+            "C.new.conditional_key(true)\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("diagnostic JSON"))
+        .filter(|diagnostic| diagnostic["code"] == "missing_record_key")
+        .collect();
+
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "expected the uninitialized keys but not the key initialized by ||=: {stdout}"
+    );
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("other")
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("conditional")
+    }));
 }
 
 #[test]
@@ -1652,6 +1766,27 @@ fn diagnostics_reports_source_constructor_arity_errors() {
             "Position = Struct.new(:x, :y)\n",
             "Keywords = Struct.new(:x, :y, keyword_init: true)\n",
             "DataPoint = Data.define(:x, :y)\n",
+            "class Reaction\n",
+            "  Detail = Struct.new(:visible_users, :user_reaction) do\n",
+            "    def initialize(visible_users: [], user_reaction: nil)\n",
+            "      super\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+            "module Redmine\n",
+            "  module Reaction\n",
+            "    module Reactable\n",
+            "      class_methods do\n",
+            "        def call(objects)\n",
+            "          details = {}\n",
+            "          objects.each do |object|\n",
+            "            object.reaction_detail = details.fetch(object.id) { ::Reaction::Detail.new }\n",
+            "          end\n",
+            "        end\n",
+            "      end\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
             "def position_empty = Position.new\n",
             "def position_partial = Position.new(1)\n",
             "def position_full = Position.new(1, 2)\n",
@@ -1659,6 +1794,7 @@ fn diagnostics_reports_source_constructor_arity_errors() {
             "def keywords_empty = Keywords.new\n",
             "def keywords_partial = Keywords.new(x: 1)\n",
             "def data_partial = DataPoint.new(x: 1)\n",
+            "def reaction_detail = Reaction::Detail.new\n",
             "def forward(*args)\n",
             "  C1.new(*args)\n",
             "end\n",
@@ -1712,6 +1848,91 @@ fn diagnostics_reports_source_constructor_arity_errors() {
         messages
             .iter()
             .any(|message| message.contains("missing keyword: :y"))
+    );
+}
+
+#[test]
+fn diagnostics_resolve_struct_initializer_from_another_target_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let definition_file = dir.path().join("reaction_detail.rb");
+    let call_file = dir.path().join("reaction.rb");
+    fs::write(
+        &definition_file,
+        concat!(
+            "module Reaction\n",
+            "  Detail = Struct.new(:visible_users, :user_reaction) do\n",
+            "    def initialize(visible_users: [], user_reaction: nil)\n",
+            "      super\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write Struct definition");
+    fs::write(&call_file, "Reaction::Detail.new\n").expect("failed to write call");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(definition_file.to_str().unwrap())
+        .arg(call_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("arity_mismatch"),
+        "Struct keyword defaults should make the zero-argument call valid: {stdout}"
+    );
+}
+
+#[test]
+fn diagnostics_resolve_absolute_superclasses_for_constructor_arity() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("absolute_superclass.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class BaseService\n",
+            "  def initialize(project, user = nil, params = {}) = nil\n",
+            "end\n",
+            "module Import\n",
+            "  class BaseService\n",
+            "    def initialize(client, user, params) = nil\n",
+            "  end\n",
+            "  module Github\n",
+            "    class AbsoluteService < ::BaseService; end\n",
+            "    class RelativeService < BaseService; end\n",
+            "  end\n",
+            "end\n",
+            "Import::Github::AbsoluteService.new(Object.new, Object.new)\n",
+            "Import::Github::RelativeService.new(Object.new, Object.new)\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("diagnostic JSON"))
+        .filter(|diagnostic| diagnostic["code"] == "arity_mismatch")
+        .collect();
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "expected only relative lookup to fail: {stdout}"
+    );
+    assert!(
+        diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("given 2, expected 3")
     );
 }
 

@@ -260,6 +260,7 @@ impl TypeRegistry {
             && superclass_rule == MergeRule::AddIfAbsent
         {
             data.superclass = Some(sc);
+            data.superclass_is_absolute = rbs_data.superclass_is_absolute;
             // don't allocate the cold Box if both sides are empty, since the assignment would be a no-op.
             if !rbs_data.cold().superclass_type_args.is_empty()
                 || !data.cold().superclass_type_args.is_empty()

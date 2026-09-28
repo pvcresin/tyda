@@ -1045,6 +1045,7 @@ pub(crate) struct Scope {
     self_override: Option<Type>,
     self_facts: Arc<HashMap<String, Type>>,
     runtime_facts: Arc<HashMap<String, RuntimeFact>>,
+    initialized_record_keys: Arc<HashSet<(String, String)>>,
     local_singleton_methods: Arc<HashMap<String, HashMap<String, LocalSingletonMethod>>>,
     active_refinements: Arc<HashSet<String>>,
     dsl_bindings: Arc<HashMap<String, Type>>,
@@ -1200,6 +1201,7 @@ impl Scope {
             self_override: self.self_override.clone(),
             self_facts: self.self_facts.clone(),
             runtime_facts: self.runtime_facts.clone(),
+            initialized_record_keys: self.initialized_record_keys.clone(),
             local_singleton_methods: self.local_singleton_methods.clone(),
             active_refinements: self.active_refinements.clone(),
             dsl_bindings: self.dsl_bindings.clone(),
@@ -1830,11 +1832,15 @@ impl<'a> InferenceEngine<'a> {
         let Some(class_data) = self.registry.class_data_for(class_name) else {
             return;
         };
-        let superclass = class_data.superclass.clone();
         let mixins = class_data.mixins.clone();
+        let superclass_is_absolute = class_data.superclass_is_absolute;
 
-        if let Some(superclass) = superclass {
-            self.ensure_external_class_in_scope(class_name, &superclass);
+        if let Some(superclass) = self.registry.get_superclass(class_name).map(str::to_string) {
+            if superclass_is_absolute {
+                self.ensure_external_class(&superclass);
+            } else {
+                self.ensure_external_class_in_scope(class_name, &superclass);
+            }
         }
         for mixin in mixins {
             self.ensure_external_class_in_scope(class_name, &mixin.module_name);
@@ -2233,8 +2239,7 @@ impl<'a> InferenceEngine<'a> {
             }
         }
         if let Some(superclass) = &data.superclass {
-            let resolved =
-                self.resolve_scoped_class_ref_cross_registry(class_name, superclass.as_ref());
+            let resolved = self.resolve_superclass_ref_cross_registry(class_name, superclass);
             if let Some(found) =
                 self.resolve_nested_namespace_cross_registry_inner(&resolved, name, seen)
             {
@@ -2282,6 +2287,21 @@ impl<'a> InferenceEngine<'a> {
             return stripped.to_string();
         }
         raw_name.to_string()
+    }
+
+    fn resolve_superclass_ref_cross_registry(&self, scope_class: &str, raw_name: &str) -> String {
+        if self
+            .class_data_cross_registry(scope_class)
+            .is_some_and(|data| data.superclass_is_absolute)
+        {
+            if self.registry.class_data_for(scope_class).is_some() {
+                self.registry.resolve_superclass_ref(scope_class, raw_name)
+            } else {
+                raw_name.trim_scope_prefix().to_string()
+            }
+        } else {
+            self.resolve_scoped_class_ref_cross_registry(scope_class, raw_name)
+        }
     }
 
     fn set_constant_value(
@@ -3285,6 +3305,13 @@ impl<'a> InferenceEngine<'a> {
             merged.enumerator_yielded_types = yielded_types;
             merged.self_override = Self::merge_branch_self_override(base, then_scope, else_scope);
             merged.self_facts = Self::merge_branch_self_facts(then_scope, else_scope);
+            merged.initialized_record_keys = Arc::new(
+                then_scope
+                    .initialized_record_keys
+                    .intersection(&else_scope.initialized_record_keys)
+                    .cloned()
+                    .collect(),
+            );
             merged.runtime_facts =
                 merge_identical_scope_maps(&then_scope.runtime_facts, &else_scope.runtime_facts);
             merged.local_singleton_methods = merge_identical_scope_maps(
@@ -3343,6 +3370,13 @@ impl<'a> InferenceEngine<'a> {
                 || else_scope.regexp_match_captures
                 || base.regexp_match_captures,
             exclusive_local_alts: None,
+            initialized_record_keys: Arc::new(
+                then_scope
+                    .initialized_record_keys
+                    .intersection(&else_scope.initialized_record_keys)
+                    .cloned()
+                    .collect(),
+            ),
         };
 
         let mut then_alt = HashMap::new();
@@ -3498,6 +3532,7 @@ impl<'a> InferenceEngine<'a> {
             self_override: Self::merge_loop_self_override(base, loop_scope),
             self_facts: Arc::default(),
             runtime_facts: base.runtime_facts.clone(),
+            initialized_record_keys: base.initialized_record_keys.clone(),
             local_singleton_methods: base.local_singleton_methods.clone(),
             active_refinements: base.active_refinements.clone(),
             dsl_bindings: base.dsl_bindings.clone(),
@@ -7577,11 +7612,7 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         self.ensure_class_available(class_name);
-        let superclass = match self
-            .registry
-            .class_data_for(class_name)
-            .and_then(|data| data.superclass.as_ref().map(|s| s.as_ref().to_string()))
-        {
+        let superclass = match self.registry.get_superclass(class_name).map(str::to_string) {
             Some(sc) => sc,
             None => return,
         };
@@ -7626,11 +7657,7 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         self.ensure_class_available(class_name);
-        let Some(superclass) = self
-            .registry
-            .class_data_for(class_name)
-            .and_then(|data| data.superclass.as_ref().map(|s| s.as_ref().to_string()))
-        else {
+        let Some(superclass) = self.registry.get_superclass(class_name).map(str::to_string) else {
             return;
         };
         self.ensure_class_available(&superclass);
@@ -7695,10 +7722,7 @@ impl<'a> InferenceEngine<'a> {
             return Some(Type::Class(Sym::new(class_name)));
         }
         self.ensure_class_available(class_name);
-        let superclass = self
-            .registry
-            .class_data_for(class_name)
-            .and_then(|data| data.superclass.as_ref().map(|s| s.as_ref().to_string()))?;
+        let superclass = self.registry.get_superclass(class_name)?.to_string();
         self.ensure_class_available(&superclass);
         let method_def = self
             .registry
@@ -8210,11 +8234,16 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         let superclass_name = self.resolve_constant_path(&superclass, parse_result);
                         if superclass_name != "Unknown" {
+                            let superclass_is_absolute = superclass_name.starts_with("::");
                             let superclass_name = self
                                 .follow_namespace_alias(&superclass_name, "Object")
                                 .unwrap_or(superclass_name);
                             self.record_reference(&superclass_name);
-                            self.registry.set_superclass(&class_name, &superclass_name);
+                            self.registry.set_superclass_with_absolute(
+                                &class_name,
+                                &superclass_name,
+                                superclass_is_absolute,
+                            );
                             self.push_class_or_module_definition_hover(
                                 &superclass,
                                 &superclass_name,
@@ -9520,10 +9549,15 @@ impl<'a> InferenceEngine<'a> {
                                 let superclass_name =
                                     self.resolve_constant_path(&superclass, parse_result);
                                 if superclass_name != "Unknown" {
+                                    let superclass_is_absolute = superclass_name.starts_with("::");
                                     let superclass_name = self
                                         .follow_namespace_alias(&superclass_name, class_name)
                                         .unwrap_or(superclass_name);
-                                    self.registry.set_superclass(&full_name, &superclass_name);
+                                    self.registry.set_superclass_with_absolute(
+                                        &full_name,
+                                        &superclass_name,
+                                        superclass_is_absolute,
+                                    );
                                     self.push_class_or_module_definition_hover(
                                         &superclass,
                                         &superclass_name,
@@ -16239,7 +16273,7 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         let mixins = data.mixins.clone();
-        let superclass = data.superclass.clone();
+        let superclass = self.registry.get_superclass(owner).map(str::to_string);
         for mixin in mixins {
             if matches!(mixin.kind, MixinKind::Include | MixinKind::Prepend) {
                 self.collect_static_module_constant_names(&mixin.module_name, true, seen, names);
@@ -18312,6 +18346,18 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                if let (Some(receiver), Some(arguments)) =
+                    (write_node.receiver(), write_node.arguments())
+                    && let Some(key_node) = arguments.arguments().iter().next()
+                {
+                    self.mark_initialized_record_key(
+                        class_name,
+                        &Self::unwrap_index_write_receiver(receiver),
+                        &key_node,
+                        parse_result,
+                        scope,
+                    );
+                }
                 self.apply_index_write_side_effect(
                     class_name,
                     write_node.receiver(),
@@ -18680,6 +18726,13 @@ impl<'a> InferenceEngine<'a> {
                                 let value_ty = self.infer_node_type(
                                     class_name,
                                     arg_nodes.last().expect("[]=: value arg must exist"),
+                                    parse_result,
+                                    scope,
+                                );
+                                self.mark_initialized_record_key(
+                                    class_name,
+                                    &receiver,
+                                    &arg_nodes[0],
                                     parse_result,
                                     scope,
                                 );
@@ -27694,6 +27747,9 @@ impl<'a> InferenceEngine<'a> {
         let Type::Record(fields) = receiver_type else {
             return;
         };
+        if fields.is_empty() {
+            return;
+        }
         let Some(key_node) = call_node
             .arguments()
             .and_then(|args| args.arguments().iter().next())
@@ -27701,6 +27757,12 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         let key_type = self.infer_node_type(class_name, &key_node, parse_result, scope);
+        if call_node.receiver().is_some_and(|receiver| {
+            Self::record_key_initialization_fact(&receiver, &key_type)
+                .is_some_and(|fact| scope.initialized_record_keys.contains(&fact))
+        }) {
+            return;
+        }
         let (key, display) = match key_type {
             Type::LiteralSymbol(name) => {
                 let display = format!(":{name}");
@@ -27730,6 +27792,42 @@ impl<'a> InferenceEngine<'a> {
             end,
             key: display,
         });
+    }
+
+    fn record_key_initialization_fact(
+        receiver: &Node<'_>,
+        key_type: &Type,
+    ) -> Option<(String, String)> {
+        let receiver_source = String::from_utf8_lossy(receiver.location().as_slice())
+            .trim()
+            .to_string();
+        if receiver_source.is_empty() {
+            return None;
+        }
+        let key = match key_type {
+            Type::LiteralSymbol(name) => format!(":{name}"),
+            Type::LiteralString(name) => format!("{name:?}"),
+            _ => return None,
+        };
+        Some((receiver_source, key))
+    }
+
+    fn mark_initialized_record_key(
+        &mut self,
+        class_name: &str,
+        receiver: &Node<'_>,
+        key_node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        let receiver_type = self.infer_node_type(class_name, receiver, parse_result, scope);
+        if !matches!(receiver_type, Type::Record(_)) {
+            return;
+        }
+        let key_type = self.infer_node_type(class_name, key_node, parse_result, scope);
+        if let Some(fact) = Self::record_key_initialization_fact(receiver, &key_type) {
+            Arc::make_mut(&mut scope.initialized_record_keys).insert(fact);
+        }
     }
 
     fn resolve_hash_like_method(
@@ -35108,12 +35206,15 @@ impl<'a> InferenceEngine<'a> {
                 (ancestor.as_ref().to_string(), type_args)
             })
             .collect();
-        let superclass_edge = data.superclass.as_ref().map(|superclass| {
-            (
-                superclass.as_ref().to_string(),
-                data.cold().superclass_type_args.clone(),
-            )
-        });
+        let superclass_edge = self
+            .registry
+            .get_superclass(current_class)
+            .map(|superclass| {
+                (
+                    superclass.to_string(),
+                    data.cold().superclass_type_args.clone(),
+                )
+            });
 
         for (mixin_name, type_args) in mixin_edges {
             let edge_vars =
@@ -37835,10 +37936,7 @@ impl<'a> InferenceEngine<'a> {
             .filter(|mixin| mixin.kind != MixinKind::Extend)
             .map(|mixin| mixin.module_name.as_ref().to_string())
             .collect();
-        let superclass = data
-            .superclass
-            .as_ref()
-            .map(|name| name.as_ref().to_string());
+        let superclass = self.registry.get_superclass(class_name).map(str::to_string);
         for mixin in mixins {
             if mixin == target_module
                 || self.registry_module_includes_module_target(
@@ -44589,10 +44687,7 @@ impl<'a> InferenceEngine<'a> {
             {
                 return Some(current);
             }
-            let superclass = self
-                .registry
-                .class_data_for(&current)
-                .and_then(|data| data.superclass.as_ref().map(|s| s.as_ref().to_string()))?;
+            let superclass = self.registry.get_superclass(&current)?.to_string();
             if superclass == current {
                 return None;
             }
@@ -45144,7 +45239,7 @@ impl<'a> InferenceEngine<'a> {
         };
 
         let mixins = data.mixins.clone();
-        let superclass = data.superclass.clone();
+        let superclass = self.registry.get_superclass(class_name).map(str::to_string);
         for mixin in mixins {
             if mixin.kind == MixinKind::Extend {
                 continue;
@@ -45491,8 +45586,12 @@ impl<'a> InferenceEngine<'a> {
                         ))
                     }
                     "key?" | "has_key?" | "include?" | "member?" => {
-                        let (var, ty) =
-                            self.extract_record_key_condition_narrowing(class_name, &call, scope)?;
+                        let (var, ty) = self.extract_record_key_condition_narrowing(
+                            class_name,
+                            &call,
+                            parse_result,
+                            scope,
+                        )?;
                         Some(self.narrowing_with_default_negation(
                             class_name,
                             scope,
@@ -45790,15 +45889,30 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         class_name: &str,
         call: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<(String, Type)> {
-        let receiver = call.receiver()?;
-        let var_name = Self::extract_local_var_name_in_scope(&receiver, scope)?;
         let args = call.arguments()?;
         let key_node = args.arguments().iter().next()?;
-        let key = Self::record_key_from_node(&key_node)?;
-        let current = self.resolve_narrowing_input_type(class_name, scope, scope.get(&var_name)?);
-        Self::narrow_record_union_by_required_key(&current, &key)
+        if let Some(receiver) = call.receiver()
+            && let Some(var_name) = Self::extract_local_var_name_in_scope(&receiver, scope)
+            && let Some(key) = Self::record_key_from_node(&key_node)
+        {
+            let current =
+                self.resolve_narrowing_input_type(class_name, scope, scope.get(&var_name)?);
+            if let Some(narrowed) = Self::narrow_record_union_by_required_key(&current, &key) {
+                return Some((var_name, narrowed));
+            }
+        }
+
+        let var_name = Self::extract_local_var_name_in_scope(&key_node, scope)?;
+        let current_key =
+            self.resolve_narrowing_input_type(class_name, scope, scope.get(&var_name)?);
+        let receiver = call.receiver()?;
+        let receiver_type = self.infer_node_type(class_name, &receiver, parse_result, scope);
+        let receiver_type = self.resolve_receiver_method_refs(&receiver_type);
+        let keys = Self::record_keys_from_closed_type(&receiver_type)?;
+        Self::narrow_key_type_to_record_keys(&current_key, &keys)
             .map(|narrowed| (var_name, narrowed))
     }
 
@@ -45842,11 +45956,101 @@ impl<'a> InferenceEngine<'a> {
         Some(Type::from_type_vec_preserve_untyped(matching))
     }
 
+    fn record_keys_from_closed_type(ty: &Type) -> Option<Vec<RecordKey>> {
+        match ty {
+            Type::Record(fields) => Some(fields.iter().map(|field| field.key.clone()).collect()),
+            Type::Union(parts) => {
+                let mut keys = Vec::new();
+                for part in parts {
+                    for key in Self::record_keys_from_closed_type(part)? {
+                        if !keys.contains(&key) {
+                            keys.push(key);
+                        }
+                    }
+                }
+                Some(keys)
+            }
+            _ => None,
+        }
+    }
+
+    fn narrow_key_type_to_record_keys(current: &Type, keys: &[RecordKey]) -> Option<Type> {
+        match current {
+            Type::Union(parts) => {
+                let mut narrowed = Vec::new();
+                for part in parts {
+                    narrowed.push(Self::narrow_key_type_to_record_keys(part, keys)?);
+                }
+                if narrowed.iter().all(|part| *part == Type::Bot) {
+                    return Some(Type::Bot);
+                }
+                Some(Type::from_type_vec_preserve_untyped(narrowed))
+            }
+            Type::LiteralSymbol(name) => {
+                Some(if keys.contains(&RecordKey::Symbol(name.to_string())) {
+                    current.clone()
+                } else {
+                    Type::Bot
+                })
+            }
+            Type::LiteralString(name) => Some(if keys.contains(&RecordKey::String(name.clone())) {
+                current.clone()
+            } else {
+                Type::Bot
+            }),
+            Type::Symbol => {
+                let values: Vec<Type> = keys
+                    .iter()
+                    .filter_map(|key| match key {
+                        RecordKey::Symbol(name) => Some(Type::LiteralSymbol(Sym::new(name))),
+                        RecordKey::String(_) => None,
+                    })
+                    .collect();
+                Some(if values.is_empty() {
+                    Type::Bot
+                } else {
+                    Type::from_type_vec_preserve_untyped(values)
+                })
+            }
+            Type::String => {
+                let values: Vec<Type> = keys
+                    .iter()
+                    .filter_map(|key| match key {
+                        RecordKey::String(name) => Some(Type::LiteralString(name.clone())),
+                        RecordKey::Symbol(_) => None,
+                    })
+                    .collect();
+                Some(if values.is_empty() {
+                    Type::Bot
+                } else {
+                    Type::from_type_vec_preserve_untyped(values)
+                })
+            }
+            Type::Integer | Type::Float | Type::Bool | Type::True | Type::False | Type::Nil => {
+                Some(Type::Bot)
+            }
+            Type::LiteralInteger(_)
+            | Type::LiteralFloat(_)
+            | Type::Singleton(_)
+            | Type::Class(_)
+            | Type::Generic { .. } => Some(Type::Bot),
+            _ => None,
+        }
+    }
+
     fn narrow_record_union_by_discriminant_value(
         current: &Type,
         key: &RecordKey,
         value: &Type,
     ) -> Option<Type> {
+        if let Type::Record(fields) = current {
+            let field = fields.iter().find(|field| field.key == *key)?;
+            if field.optional || Self::record_discriminant_value_may_match(&field.value, value) {
+                return None;
+            }
+            return Some(Type::Bot);
+        }
+
         let Type::Union(parts) = current else {
             return None;
         };
@@ -45856,7 +46060,7 @@ impl<'a> InferenceEngine<'a> {
         for part in parts {
             match Self::record_discriminant_value(part, key) {
                 Some(field_value)
-                    if Self::record_discriminant_value_matches(&field_value, value) =>
+                    if Self::record_discriminant_value_may_match(&field_value, value) =>
                 {
                     matching.push(part.clone());
                 }
@@ -45883,12 +46087,44 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn record_discriminant_value_matches(field_value: &Type, expected: &Type) -> bool {
-        match expected {
-            Type::Union(parts) => parts
+    fn record_discriminant_value_may_match(actual: &Type, expected: &Type) -> bool {
+        if actual == expected {
+            return true;
+        }
+        match (actual, expected) {
+            (Type::Union(parts), expected) => parts
                 .iter()
-                .any(|part| Self::record_discriminant_value_matches(field_value, part)),
-            _ => field_value == expected,
+                .any(|part| Self::record_discriminant_value_may_match(part, expected)),
+            (actual, Type::Union(parts)) => parts
+                .iter()
+                .any(|part| Self::record_discriminant_value_may_match(actual, part)),
+            (Type::LiteralInteger(a), Type::LiteralInteger(b)) => a == b,
+            (Type::LiteralFloat(a), Type::LiteralFloat(b)) => a == b,
+            (Type::LiteralString(a), Type::LiteralString(b)) => a == b,
+            (Type::LiteralSymbol(a), Type::LiteralSymbol(b)) => a == b,
+            (Type::LiteralInteger(_), Type::LiteralFloat(_))
+            | (Type::LiteralFloat(_), Type::LiteralInteger(_)) => true,
+            (Type::True, Type::False) | (Type::False, Type::True) => false,
+            _ => match (
+                Self::record_discriminant_type_family(actual),
+                Self::record_discriminant_type_family(expected),
+            ) {
+                (Some(actual_family), Some(expected_family)) => actual_family == expected_family,
+                _ => true,
+            },
+        }
+    }
+
+    fn record_discriminant_type_family(ty: &Type) -> Option<u8> {
+        match ty {
+            Type::LiteralInteger(_) | Type::Integer | Type::LiteralFloat(_) | Type::Float => {
+                Some(0)
+            }
+            Type::LiteralString(_) | Type::String => Some(2),
+            Type::LiteralSymbol(_) | Type::Symbol => Some(3),
+            Type::True | Type::False | Type::Bool => Some(4),
+            Type::Nil => Some(5),
+            _ => None,
         }
     }
 

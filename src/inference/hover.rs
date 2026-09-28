@@ -822,12 +822,12 @@ impl<'a> InferenceEngine<'a> {
             let Type::Singleton(class_name) = receiver else {
                 continue;
             };
+            self.ensure_class_available_with_ancestors(&class_name, 0);
+            self.ensure_class_available_with_ancestors("Class", 0);
             let struct_constructor_allows_missing_members = self
                 .registry
                 .class_data_for(&class_name)
                 .is_some_and(|data| data.cold().struct_constructor_allows_missing_members);
-            self.ensure_class_available_with_ancestors(&class_name, 0);
-            self.ensure_class_available_with_ancestors("Class", 0);
             if self
                 .registry
                 .resolve_method_call_owners(&class_name, "new", true)
@@ -1628,12 +1628,26 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn arg_compat_nominal(&mut self, actual: &Type, declared_class: &str) -> ArgCompat {
+        let declared_class = declared_class.trim_scope_prefix();
+        if matches!(declared_class, "Class" | "Module")
+            && let Type::Singleton(actual_class) = actual
+        {
+            let actual_class = actual_class.trim_scope_prefix();
+            self.ensure_external_class(actual_class);
+            if !self.class_is_known(actual_class) {
+                return ArgCompat::Unknown;
+            }
+            return if declared_class == "Module" || !self.class_is_module(actual_class) {
+                ArgCompat::Yes
+            } else {
+                ArgCompat::No
+            };
+        }
         let Some(actual_class) = self.type_to_class_name(actual) else {
             return ArgCompat::Unknown;
         };
         // Normalize absolute references (leading `::`) before comparing nominal names. Registry class names are registered without `::`, so if only one side is absolute (`::Billing::Invoice`) the same class would otherwise fail to match.
         let actual_class = actual_class.trim_scope_prefix().to_string();
-        let declared_class = declared_class.trim_scope_prefix();
         if actual_class == declared_class {
             return ArgCompat::Yes;
         }
@@ -2124,12 +2138,12 @@ impl<'a> InferenceEngine<'a> {
                 return true;
             }
             if let Some(data) = self.registry.class_data_for(&current) {
-                if let Some(superclass) = data.superclass.as_ref() {
-                    stack.push(superclass.trim_scope_prefix().to_string());
-                }
                 for mixin in &data.mixins {
                     stack.push(mixin.module_name.trim_scope_prefix().to_string());
                 }
+            }
+            if let Some(superclass) = self.registry.get_superclass(&current) {
+                stack.push(superclass.to_string());
             }
         }
         false
@@ -4000,9 +4014,8 @@ impl<'a> InferenceEngine<'a> {
         let Some(data) = self.registry.class_data_for(class_name).cloned() else {
             return;
         };
-        if let Some(superclass) = data.superclass {
-            let resolved = self.resolve_scoped_name_with_external(class_name, superclass.as_ref());
-            self.preload_hover_lookup_hierarchy_inner(&resolved, seen);
+        if let Some(superclass) = self.registry.get_superclass(class_name).map(str::to_string) {
+            self.preload_hover_lookup_hierarchy_inner(&superclass, seen);
         }
         for mixin in data.mixins {
             let resolved =
@@ -4186,6 +4199,32 @@ mod arg_compat_tests {
         let relative = Type::Class(crate::types::Sym::new("Foo::Bar"));
         assert_eq!(e.arg_compat(&absolute, &relative), ArgCompat::Yes);
         assert_eq!(e.arg_compat(&relative, &absolute), ArgCompat::Yes);
+    }
+
+    #[test]
+    fn class_objects_match_class_and_module_params() {
+        let mut e = engine();
+        e.registry.set_is_module("Date", false);
+        e.registry.set_is_module("Helpers", true);
+        let date = Type::Singleton(crate::types::Sym::new("Date"));
+        let helpers = Type::Singleton(crate::types::Sym::new("Helpers"));
+
+        assert_eq!(
+            e.arg_compat(&date, &Type::Class(crate::types::Sym::new("Class"))),
+            ArgCompat::Yes
+        );
+        assert_eq!(
+            e.arg_compat(&date, &Type::Class(crate::types::Sym::new("Module"))),
+            ArgCompat::Yes
+        );
+        assert_eq!(
+            e.arg_compat(&helpers, &Type::Class(crate::types::Sym::new("Module"))),
+            ArgCompat::Yes
+        );
+        assert_eq!(
+            e.arg_compat(&helpers, &Type::Class(crate::types::Sym::new("Class"))),
+            ArgCompat::No
+        );
     }
 
     fn method_def(name: &str) -> crate::registry::MethodDef {
