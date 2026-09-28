@@ -822,6 +822,10 @@ impl<'a> InferenceEngine<'a> {
             let Type::Singleton(class_name) = receiver else {
                 continue;
             };
+            let struct_constructor_allows_missing_members = self
+                .registry
+                .class_data_for(&class_name)
+                .is_some_and(|data| data.cold().struct_constructor_allows_missing_members);
             self.ensure_class_available_with_ancestors(&class_name, 0);
             self.ensure_class_available_with_ancestors("Class", 0);
             if self
@@ -858,10 +862,14 @@ impl<'a> InferenceEngine<'a> {
                 })
                 .collect();
             let has_rest = positional.iter().any(|param| param.kind == ParamKind::Rest);
-            let required = positional
-                .iter()
-                .filter(|param| param.kind == ParamKind::Required)
-                .count();
+            let required = if struct_constructor_allows_missing_members {
+                0
+            } else {
+                positional
+                    .iter()
+                    .filter(|param| param.kind == ParamKind::Required)
+                    .count()
+            };
             let max_positional = positional
                 .iter()
                 .filter(|param| param.kind != ParamKind::Rest)
@@ -889,7 +897,7 @@ impl<'a> InferenceEngine<'a> {
                     ));
                 }
             }
-            if !site.has_kwsplat {
+            if !site.has_kwsplat && !struct_constructor_allows_missing_members {
                 let missing: Vec<String> = initialize
                     .params
                     .iter()

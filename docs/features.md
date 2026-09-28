@@ -52,7 +52,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 | 種類 | 既定の severity | 方針 |
 | --- | --- | --- |
 | `argument_type_mismatch` | error | 宣言 param と actual が確実に不一致のときだけ |
-| `arity_mismatch` | error / experimental | ソース定義の `initialize` を標準の `Class#new` 経由で呼ぶ場合は必須引数の不一致を error にする。それ以外は `TYDA_EXPERIMENTAL_CHECKS=1` のときだけ |
+| `arity_mismatch` | error / experimental | ソース定義の `initialize` を標準の `Class#new` 経由で呼ぶ場合は必須引数の不一致を error にする。`Struct.new` 由来の constructor は member の省略を許し、上限超過だけを報告する。それ以外は `TYDA_EXPERIMENTAL_CHECKS=1` のときだけ |
 | `missing_record_key` | warning | 既知の record に対するリテラルキーが存在しないとき。`Hash#[]` は `nil` を返すため warning にする |
 | `missing_method` | warning | receiver と祖先の method surface が完全に既知のときだけ |
 | `unresolved_constant` | information | receiver 文脈で未定義と証明できるときだけ |

@@ -1932,6 +1932,9 @@ impl<'a> InferenceEngine<'a> {
     ) {
         let member_names =
             self.static_struct_member_names(class_name, call_node, parse_result, generate_writer);
+        if generate_writer {
+            self.registry.mark_struct_constructor(class_name);
+        }
         if member_names.is_empty() {
             return;
         }

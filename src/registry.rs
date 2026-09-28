@@ -1845,6 +1845,7 @@ pub struct ClassDataCold {
     pub class_type_param_defaults: Vec<(String, Type)>,
     // dirty-family skeleton pattern (`ClassDataCold`).
     pub dirty_method_pattern: Option<DirtyPattern>,
+    pub struct_constructor_allows_missing_members: bool,
     // set of bare ivar readers (used only for self-fact narrowing).
     pub bare_ivar_readers: FxHashSet<(Sym, bool)>,
     /// DSL recorded in a concern `included do` that must run against each includer
@@ -3381,6 +3382,12 @@ impl TypeRegistry {
     pub fn mark_user_defined(&mut self, class_name: &str) {
         let data = self.class_data_mut(class_name);
         data.user_defined = true;
+    }
+
+    pub fn mark_struct_constructor(&mut self, class_name: &str) {
+        self.class_data_mut(class_name)
+            .cold_mut()
+            .struct_constructor_allows_missing_members = true;
     }
     pub fn method_defs_len(&self, class_name: &str) -> usize {
         self.class_data

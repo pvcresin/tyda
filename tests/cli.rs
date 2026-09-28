@@ -1649,6 +1649,16 @@ fn diagnostics_reports_source_constructor_arity_errors() {
             "C1.new(\"x\", \"y\")\n",
             "C2.new\n",
             "CustomNew.new\n",
+            "Position = Struct.new(:x, :y)\n",
+            "Keywords = Struct.new(:x, :y, keyword_init: true)\n",
+            "DataPoint = Data.define(:x, :y)\n",
+            "def position_empty = Position.new\n",
+            "def position_partial = Position.new(1)\n",
+            "def position_full = Position.new(1, 2)\n",
+            "def position_excessive = Position.new(1, 2, 3)\n",
+            "def keywords_empty = Keywords.new\n",
+            "def keywords_partial = Keywords.new(x: 1)\n",
+            "def data_partial = DataPoint.new(x: 1)\n",
             "def forward(*args)\n",
             "  C1.new(*args)\n",
             "end\n",
@@ -1671,8 +1681,8 @@ fn diagnostics_reports_source_constructor_arity_errors() {
 
     assert_eq!(
         diagnostics.len(),
-        2,
-        "expected C1 arity errors only: {stdout}"
+        4,
+        "expected C1 errors, one excessive Struct argument, and a missing Data keyword: {stdout}"
     );
     assert!(
         diagnostics
@@ -1692,6 +1702,16 @@ fn diagnostics_reports_source_constructor_arity_errors() {
         messages
             .iter()
             .any(|message| message.contains("given 2, expected 1"))
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("given 3, expected 0..2"))
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("missing keyword: :y"))
     );
 }
 

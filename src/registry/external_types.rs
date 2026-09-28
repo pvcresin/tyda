@@ -296,6 +296,9 @@ impl TypeRegistry {
             data.cold_mut().class_type_param_defaults =
                 rbs_data.cold().class_type_param_defaults.clone();
         }
+        if rbs_data.cold().struct_constructor_allows_missing_members {
+            data.cold_mut().struct_constructor_allows_missing_members = true;
+        }
         debug_assert_eq!(
             merge_rule(source, DeclKind::Mixin, is_user_defined),
             MergeRule::AppendDedup
