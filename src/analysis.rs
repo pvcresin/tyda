@@ -2577,6 +2577,30 @@ end
     }
 
     #[test]
+    fn playground_suppresses_missing_method_for_active_record_without_schema() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class ApplicationRecord\n",
+            "end\n",
+            "\n",
+            "class User < ApplicationRecord\n",
+            "end\n",
+            "\n",
+            "User.new.missing\n",
+        );
+        let result = playground_analyze(source, "", &loader, "schema_less_model.rb");
+
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|diag| diag.code == "missing_method"),
+            "ActiveRecord may provide schema-backed attribute methods: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
     fn playground_reports_unused_line_ignore_comments() {
         let loader = playground_loader();
         let source = concat!(

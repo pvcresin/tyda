@@ -611,6 +611,12 @@ fn diagnostics_flag_suppresses_class_body_dsl_noise() {
   scope :enabled, -> { nil }
 
   def run
+    project_missing_runtime
+  end
+end
+
+class Plain
+  def run
     missing_runtime
     optional
   end
@@ -652,7 +658,11 @@ end
     assert_eq!(
         method_names,
         vec!["missing_runtime".to_string(), "optional".to_string()],
-        "class-body DSL calls should be suppressed without hiding method-body calls: {stdout}"
+        "schema-less ActiveRecord calls and class-body DSL calls should be suppressed while plain Ruby method-body calls remain visible: {stdout}"
+    );
+    assert!(
+        !stdout.contains("project_missing_runtime"),
+        "unknown ActiveRecord schema must keep possible column readers open: {stdout}"
     );
 }
 

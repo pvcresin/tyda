@@ -10393,10 +10393,46 @@ impl TypeRegistry {
         if self.walked_closure_defines_method_missing(&visited) {
             return false;
         }
+        // ActiveRecord synthesizes attribute methods from the database schema.
+        // Without schema metadata, a source-defined model's method surface is
+        // still open even when its superclass chain is known.
+        let generated_surface_known = generated_artifacts_present
+            && self.walked_closure_has_declaration_backed_methods(&visited);
+        if self.class_inherits_from_active_record(class_name)
+            && self.schema_column_names(class_name).is_none()
+            && !generated_surface_known
+        {
+            return false;
+        }
         if !touched_framework_base {
             return true;
         }
-        !generated_artifacts_present || self.walked_closure_has_declaration_backed_methods(&visited)
+        !generated_artifacts_present || generated_surface_known
+    }
+
+    fn class_inherits_from_active_record(&self, class_name: &str) -> bool {
+        let mut current = class_name.trim_scope_prefix().to_string();
+        let mut visited = Vec::new();
+        for _ in 0..MAX_RESOLVE_DEPTH {
+            if matches!(current.as_str(), "ActiveRecord::Base" | "ApplicationRecord") {
+                return true;
+            }
+            if visited.iter().any(|seen| seen == &current) {
+                return false;
+            }
+            visited.push(current.clone());
+            let Some(data) = self.class_data.get(current.as_str()) else {
+                return false;
+            };
+            let Some(superclass) = &data.superclass else {
+                return false;
+            };
+            current = self
+                .resolve_superclass_ref_borrow(&current, superclass.as_ref())
+                .trim_scope_prefix()
+                .to_string();
+        }
+        false
     }
 
     fn walked_closure_defines_method_missing(&self, classes: &[String]) -> bool {
@@ -11516,11 +11552,23 @@ mod tests {
     #[test]
     fn ancestor_knowledge_complete_for_modeled_framework_base() {
         let mut registry = TypeRegistry::new();
-        // modeled framework base subclass: the constant chain is known; the method surface is complete after generated-artifact merge.
+        // The superclass is a modeled framework base, so the constant chain is complete.
         declare_class(&mut registry, "Item");
         registry.set_superclass("Item", "ApplicationRecord");
 
         assert!(registry.ancestor_knowledge_complete("Item"));
+    }
+
+    #[test]
+    fn active_record_method_surface_requires_schema_or_generated_declarations() {
+        let mut registry = TypeRegistry::new();
+        declare_class(&mut registry, "Item");
+        registry.set_superclass("Item", "ApplicationRecord");
+
+        assert!(!registry.method_surface_knowledge_complete("Item", false));
+        assert!(!registry.method_surface_knowledge_complete("Item", true));
+
+        registry.register_dirty_pattern_columns("Item", vec![(Sym::new("id"), Type::Integer)]);
         assert!(registry.method_surface_knowledge_complete("Item", false));
         assert!(!registry.method_surface_knowledge_complete("Item", true));
 
@@ -11531,6 +11579,15 @@ mod tests {
             .method_file_paths
             .insert((Sym::new("person_id"), false), Arc::from("dsl/item.rbi"));
         assert!(registry.method_surface_knowledge_complete("Item", true));
+
+        let mut rbi_only = TypeRegistry::new();
+        declare_class(&mut rbi_only, "RbiItem");
+        rbi_only.set_superclass("RbiItem", "ApplicationRecord");
+        rbi_only
+            .class_data_mut("RbiItem")
+            .method_file_paths
+            .insert((Sym::new("name"), false), Arc::from("dsl/item.rbi"));
+        assert!(rbi_only.method_surface_knowledge_complete("RbiItem", true));
     }
 
     #[test]
