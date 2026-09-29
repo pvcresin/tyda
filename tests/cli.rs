@@ -1683,6 +1683,44 @@ fn diagnostics_warns_on_missing_literal_record_key() {
 }
 
 #[test]
+fn missing_record_key_is_unknown_inside_callback_for_passed_record() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("record_key_callback.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class Wrapper\n",
+            "  def call(record) = yield\n",
+            "  def call_keyword(record:) = yield\n",
+            "end\n",
+            "\n",
+            "record = { error: \"failed\" }\n",
+            "other = { error: \"failed\" }\n",
+            "Wrapper.new.call(record) { record[:issue] }\n",
+            "Wrapper.new.call(record) { other[:issue] }\n",
+            "Wrapper.new.call_keyword(record: record) { record[:issue] }\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("diagnostic JSON"))
+        .filter(|diagnostic| diagnostic["code"] == "missing_record_key")
+        .collect();
+
+    assert_eq!(diagnostics.len(), 1, "{stdout}");
+    assert_eq!(diagnostics[0]["line"], 9);
+}
+
+#[test]
 fn missing_record_key_requires_all_receiver_shapes_to_lack_the_key() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("record_key_union.rb");

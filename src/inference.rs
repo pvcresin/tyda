@@ -1046,6 +1046,7 @@ pub(crate) struct Scope {
     self_facts: Arc<HashMap<String, Type>>,
     runtime_facts: Arc<HashMap<String, RuntimeFact>>,
     initialized_record_keys: Arc<HashSet<(String, String)>>,
+    callback_mutated_record_locals: Arc<HashSet<String>>,
     local_singleton_methods: Arc<HashMap<String, HashMap<String, LocalSingletonMethod>>>,
     active_refinements: Arc<HashSet<String>>,
     dsl_bindings: Arc<HashMap<String, Type>>,
@@ -1202,6 +1203,7 @@ impl Scope {
             self_facts: self.self_facts.clone(),
             runtime_facts: self.runtime_facts.clone(),
             initialized_record_keys: self.initialized_record_keys.clone(),
+            callback_mutated_record_locals: self.callback_mutated_record_locals.clone(),
             local_singleton_methods: self.local_singleton_methods.clone(),
             active_refinements: self.active_refinements.clone(),
             dsl_bindings: self.dsl_bindings.clone(),
@@ -1281,6 +1283,7 @@ impl Scope {
         Arc::make_mut(&mut self.enumerator_yielder_names).remove(name);
         Arc::make_mut(&mut self.runtime_facts).remove(name);
         Arc::make_mut(&mut self.local_singleton_methods).remove(name);
+        Arc::make_mut(&mut self.callback_mutated_record_locals).remove(name);
         self.invalidate_exclusive_local_alts(name);
     }
 
@@ -1430,6 +1433,8 @@ impl Scope {
         for name in names {
             yielder_names.remove(name);
         }
+        Arc::make_mut(&mut self.callback_mutated_record_locals)
+            .retain(|name| !names.contains(name));
         let runtime_facts = Arc::make_mut(&mut self.runtime_facts);
         for name in names {
             runtime_facts.remove(name);
@@ -3312,6 +3317,8 @@ impl<'a> InferenceEngine<'a> {
                     .cloned()
                     .collect(),
             );
+            merged.callback_mutated_record_locals =
+                Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
             merged.runtime_facts =
                 merge_identical_scope_maps(&then_scope.runtime_facts, &else_scope.runtime_facts);
             merged.local_singleton_methods = merge_identical_scope_maps(
@@ -3376,6 +3383,9 @@ impl<'a> InferenceEngine<'a> {
                     .intersection(&else_scope.initialized_record_keys)
                     .cloned()
                     .collect(),
+            ),
+            callback_mutated_record_locals: Self::merge_callback_mutated_record_locals(
+                base, then_scope, else_scope,
             ),
         };
 
@@ -3451,8 +3461,21 @@ impl<'a> InferenceEngine<'a> {
         );
         merged.dsl_bindings =
             merge_identical_scope_maps(&then_scope.dsl_bindings, &else_scope.dsl_bindings);
+        merged.callback_mutated_record_locals =
+            Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
         Self::assign_exclusive_local_alts(&mut merged, base, then_alt, else_alt);
         merged
+    }
+
+    fn merge_callback_mutated_record_locals(
+        base: &Scope,
+        then_scope: &Scope,
+        else_scope: &Scope,
+    ) -> Arc<HashSet<String>> {
+        let mut names = base.callback_mutated_record_locals.as_ref().clone();
+        names.extend(then_scope.callback_mutated_record_locals.iter().cloned());
+        names.extend(else_scope.callback_mutated_record_locals.iter().cloned());
+        Arc::new(names)
     }
 
     fn assign_exclusive_local_alts(
@@ -3533,6 +3556,12 @@ impl<'a> InferenceEngine<'a> {
             self_facts: Arc::default(),
             runtime_facts: base.runtime_facts.clone(),
             initialized_record_keys: base.initialized_record_keys.clone(),
+            callback_mutated_record_locals: Arc::new(
+                base.callback_mutated_record_locals
+                    .union(&loop_scope.callback_mutated_record_locals)
+                    .cloned()
+                    .collect(),
+            ),
             local_singleton_methods: base.local_singleton_methods.clone(),
             active_refinements: base.active_refinements.clone(),
             dsl_bindings: base.dsl_bindings.clone(),
@@ -3581,6 +3610,11 @@ impl<'a> InferenceEngine<'a> {
         );
         merged.dsl_bindings =
             merge_identical_scope_maps(&base.dsl_bindings, &loop_scope.dsl_bindings);
+        let mut callback_mutated_record_locals =
+            base.callback_mutated_record_locals.as_ref().clone();
+        callback_mutated_record_locals
+            .extend(loop_scope.callback_mutated_record_locals.iter().cloned());
+        merged.callback_mutated_record_locals = Arc::new(callback_mutated_record_locals);
         merged
     }
 
@@ -15114,6 +15148,7 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let mut block_scope = scope.clone();
+        self.mark_callback_record_arguments_may_mutate(call_node, scope, &mut block_scope);
         let block_local_names = Self::block_scoped_local_names(&block, parse_result);
         let method_name = String::from_utf8_lossy(call_node.name().as_slice());
         let mut block_self_type = None;
@@ -17117,6 +17152,7 @@ impl<'a> InferenceEngine<'a> {
 
         let block = block_raw.as_block_node()?;
         let mut block_scope = scope.clone();
+        self.mark_callback_record_arguments_may_mutate(call_node, scope, &mut block_scope);
         if let Some(block_self_type) = self.resolve_user_defined_block_self_type(
             owner_class,
             method_name,
@@ -27771,6 +27807,13 @@ impl<'a> InferenceEngine<'a> {
             Self::record_key_initialization_fact(&receiver, &key_type)
                 .is_some_and(|fact| scope.initialized_record_keys.contains(&fact))
         });
+        let receiver_may_be_mutated_by_callback = call_node
+            .receiver()
+            .and_then(|receiver| receiver.as_local_variable_read_node())
+            .is_some_and(|receiver| {
+                let name = String::from_utf8_lossy(receiver.name().as_slice());
+                scope.callback_mutated_record_locals.contains(name.as_ref())
+            });
         let (key, display) = match key_type {
             Type::LiteralSymbol(name) => {
                 let display = format!(":{name}");
@@ -27787,7 +27830,8 @@ impl<'a> InferenceEngine<'a> {
         if start >= end {
             return;
         }
-        let receiver_type = (!receiver_has_initialized_key).then(|| receiver_type.clone());
+        let receiver_type = (!receiver_has_initialized_key && !receiver_may_be_mutated_by_callback)
+            .then(|| receiver_type.clone());
         if self.missing_record_key_sites.iter().any(|site| {
             site.start == start
                 && site.end == end
@@ -27803,6 +27847,61 @@ impl<'a> InferenceEngine<'a> {
             record_key: key,
             receiver_type,
         });
+    }
+
+    fn type_may_be_record(ty: &Type) -> bool {
+        match ty {
+            Type::Record(_) => true,
+            Type::Union(members) => members.iter().any(Self::type_may_be_record),
+            _ => false,
+        }
+    }
+
+    fn mark_callback_record_arguments_may_mutate(
+        &self,
+        call_node: &ruby_prism::CallNode<'_>,
+        scope: &Scope,
+        block_scope: &mut Scope,
+    ) {
+        let Some(arguments) = call_node.arguments() else {
+            return;
+        };
+        let mut passed_local_names = HashSet::new();
+        for argument in arguments.arguments().iter() {
+            if let Some(name) = Self::extract_local_var_name_in_scope(&argument, scope) {
+                passed_local_names.insert(name);
+                continue;
+            }
+            let Some(keyword_hash) = argument.as_keyword_hash_node() else {
+                continue;
+            };
+            for element in keyword_hash.elements().iter() {
+                let Some(association) = element.as_assoc_node() else {
+                    continue;
+                };
+                if let Some(name) =
+                    Self::extract_local_var_name_in_scope(&association.value(), scope)
+                {
+                    passed_local_names.insert(name);
+                }
+            }
+        }
+
+        for name in passed_local_names {
+            let Some(ty) = scope.get(&name) else {
+                continue;
+            };
+            if Self::type_may_be_record(ty) {
+                let target = scope.resolve_alias_target(&name);
+                let alias_names = scope
+                    .locals
+                    .keys()
+                    .filter(|alias| scope.resolve_alias_target(alias) == target)
+                    .cloned()
+                    .chain(std::iter::once(name));
+                Arc::make_mut(&mut block_scope.callback_mutated_record_locals).extend(alias_names);
+            }
+        }
     }
 
     fn record_key_initialization_fact(
