@@ -2219,26 +2219,6 @@ fn diagnostics_flag_reports_rbs_file_argument_type_mismatch() {
     assert_eq!(diags[0]["expected_type"], "String");
 }
 
-#[test]
-fn diagnostics_accept_pathname_as_expand_path_base() {
-    let dir = tempfile::tempdir().expect("failed to create tempdir");
-    let rb_file = dir.path().join("pathlike.rb");
-    fs::write(
-        &rb_file,
-        concat!(
-            "require \"pathname\"\n",
-            "Pathname.new(\"child\").expand_path(Pathname.new(\"/tmp\"))\n",
-        ),
-    )
-    .expect("failed to write");
-
-    let mismatches = argument_type_mismatches(&rb_file);
-    assert!(
-        mismatches.is_empty(),
-        "Pathname#expand_path accepts a Pathname base directory: {mismatches:?}"
-    );
-}
-
 // RBS's `path` (= `string | _ToPath`) is structural: any type with to_path / to_str
 // conforms. Pathname / String are accepted, and only a surface-complete user class
 // without to_path is flagged as a genuine new true positive.

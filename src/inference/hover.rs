@@ -599,20 +599,9 @@ impl<'a> InferenceEngine<'a> {
                     &site.class_context,
                     site.method_context.as_deref(),
                 );
-                // Pathname#expand_path delegates to File.expand_path, which accepts Pathname
-                // values even though this RBS parameter is declared as String.
-                let pathname_expand_path_dir = !prefer_singleton
-                    && Self::class_type_base_name(&class_name) == "Pathname"
-                    && site.method_name == "expand_path"
-                    && param.name == "dir"
-                    && matches!(&actual, Type::Class(name) if Self::class_type_base_name(name) == "Pathname");
-                let compat = if pathname_expand_path_dir {
-                    ArgCompat::Yes
-                } else {
-                    match structural_rbs {
-                        Some(rbs_ty) => self.rbs_param_compat(&actual, rbs_ty),
-                        None => self.arg_compat(&actual, &param.param_type),
-                    }
+                let compat = match structural_rbs {
+                    Some(rbs_ty) => self.rbs_param_compat(&actual, rbs_ty),
+                    None => self.arg_compat(&actual, &param.param_type),
                 };
                 if compat != ArgCompat::No {
                     continue;
