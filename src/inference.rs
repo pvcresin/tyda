@@ -19072,6 +19072,12 @@ impl<'a> InferenceEngine<'a> {
             Node::UnlessNode { .. } => {
                 let unless_node = node.as_unless_node().expect("must be UnlessNode");
                 self.infer_node_type(class_name, &unless_node.predicate(), parse_result, scope);
+                self.bind_condition_assignment_target(
+                    class_name,
+                    &unless_node.predicate(),
+                    parse_result,
+                    scope,
+                );
                 let narrowing = self.extract_condition_narrowing(
                     class_name,
                     &unless_node.predicate(),
