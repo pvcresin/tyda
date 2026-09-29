@@ -933,6 +933,10 @@ impl<'a> InferenceEngine<'a> {
                 .registry
                 .class_data_for(&class_name)
                 .is_some_and(|data| data.cold().struct_constructor_allows_missing_members);
+            let data_constructor = self
+                .registry
+                .class_data_for(&class_name)
+                .and_then(|data| data.cold().data_constructor.clone());
             if self
                 .registry
                 .resolve_method_call_owners(&class_name, "new", true)
@@ -941,6 +945,68 @@ impl<'a> InferenceEngine<'a> {
             {
                 continue;
             }
+            if let Some(data_constructor) = data_constructor {
+                let members = match data_constructor {
+                    crate::registry::DataConstructor::Known(members) => members,
+                    crate::registry::DataConstructor::Unknown => continue,
+                };
+                let given = site.positional_count;
+                let mut messages = Vec::new();
+                if given > members.len() {
+                    messages.push(format!(
+                        "wrong number of arguments (given {given}, expected {})",
+                        members.len()
+                    ));
+                } else if site.keyword_names.is_empty() && !site.has_kwsplat {
+                    if given < members.len() {
+                        messages.push(format!(
+                            "wrong number of arguments (given {given}, expected {})",
+                            members.len()
+                        ));
+                    }
+                } else if given == 0 {
+                    let missing: Vec<String> = members
+                        .iter()
+                        .filter(|member| !site.keyword_names.iter().any(|name| name == *member))
+                        .cloned()
+                        .collect();
+                    if !site.has_kwsplat && !missing.is_empty() {
+                        let plural = if missing.len() > 1 { "s" } else { "" };
+                        let names = missing
+                            .iter()
+                            .map(|name| format!(":{name}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        messages.push(format!("missing keyword{plural}: {names}"));
+                    }
+                    let unknown: Vec<String> = site
+                        .keyword_names
+                        .iter()
+                        .filter(|name| !members.contains(name))
+                        .map(|name| format!(":{name}"))
+                        .collect();
+                    if !unknown.is_empty() {
+                        let plural = if unknown.len() > 1 { "s" } else { "" };
+                        messages.push(format!("unknown keyword{plural}: {}", unknown.join(", ")));
+                    }
+                }
+
+                if site.call_start < site.call_end && !messages.is_empty() {
+                    let message = messages.join("; ");
+                    if seen.insert((site.call_start, site.call_end, message.clone())) {
+                        out.push(StaticSiteDiagnostic {
+                            start: site.call_start,
+                            end: site.call_end,
+                            code: "arity_mismatch",
+                            severity: "error",
+                            message,
+                            method_name: "new".to_string(),
+                        });
+                    }
+                }
+                continue;
+            }
+
             let Some(initialize) = self.registry.lookup_method_sig_for_receiver_with_hint(
                 &class_name,
                 "initialize",

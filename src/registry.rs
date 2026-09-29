@@ -1819,6 +1819,12 @@ impl MethodFilePaths {
 }
 
 /// box out cold fields that are usually empty (reduces LSP footprint across tens of thousands of `ClassData`).
+#[derive(Debug, Clone)]
+pub enum DataConstructor {
+    Unknown,
+    Known(Vec<String>),
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct ClassDataCold {
     pub undefined_methods: Vec<(SharedName, bool)>,
@@ -1846,6 +1852,7 @@ pub struct ClassDataCold {
     // dirty-family skeleton pattern (`ClassDataCold`).
     pub dirty_method_pattern: Option<DirtyPattern>,
     pub struct_constructor_allows_missing_members: bool,
+    pub data_constructor: Option<DataConstructor>,
     // set of bare ivar readers (used only for self-fact narrowing).
     pub bare_ivar_readers: FxHashSet<(Sym, bool)>,
     /// DSL recorded in a concern `included do` that must run against each includer
@@ -3390,6 +3397,14 @@ impl TypeRegistry {
             .cold_mut()
             .struct_constructor_allows_missing_members = true;
     }
+
+    pub fn mark_data_constructor(&mut self, class_name: &str, members: Option<Vec<String>>) {
+        self.class_data_mut(class_name).cold_mut().data_constructor = Some(match members {
+            Some(members) => DataConstructor::Known(members),
+            None => DataConstructor::Unknown,
+        });
+    }
+
     pub fn method_defs_len(&self, class_name: &str) -> usize {
         self.class_data
             .get(class_name)

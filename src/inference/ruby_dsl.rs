@@ -307,6 +307,46 @@ impl<'a> InferenceEngine<'a> {
         names
     }
 
+    fn static_data_member_names(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+    ) -> Option<Vec<String>> {
+        if call_node
+            .block()
+            .and_then(|block| block.as_block_node())
+            .and_then(|block| block.body())
+            .is_some_and(|body| {
+                let defines_initialize = |node: &Node<'_>| {
+                    node.as_def_node().is_some_and(|def| {
+                        def.receiver().is_none() && def.name().as_slice() == b"initialize"
+                    })
+                };
+                defines_initialize(&body)
+                    || body.as_statements_node().is_some_and(|statements| {
+                        statements
+                            .body()
+                            .iter()
+                            .any(|node| defines_initialize(&node))
+                    })
+            })
+        {
+            return None;
+        }
+        let mut names = Vec::new();
+        let Some(args) = call_node.arguments() else {
+            return Some(names);
+        };
+        for arg in args.arguments().iter() {
+            if matches!(arg, Node::KeywordHashNode { .. }) {
+                continue;
+            }
+            names.extend(self.static_name_sequence_from_node(class_name, &arg, parse_result)?);
+        }
+        Some(names)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn collect_attr_methods(
         &mut self,
@@ -1930,10 +1970,18 @@ impl<'a> InferenceEngine<'a> {
         comments: &[RbsComment],
         generate_writer: bool,
     ) {
+        let data_constructor_members = if generate_writer {
+            None
+        } else {
+            self.static_data_member_names(class_name, call_node, parse_result)
+        };
         let member_names =
             self.static_struct_member_names(class_name, call_node, parse_result, generate_writer);
         if generate_writer {
             self.registry.mark_struct_constructor(class_name);
+        } else {
+            self.registry
+                .mark_data_constructor(class_name, data_constructor_members);
         }
         if member_names.is_empty() {
             return;
