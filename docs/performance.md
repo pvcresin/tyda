@@ -137,7 +137,7 @@ warning が継続する場合や runner 環境が変わった場合は、まず�
 | Ruby-only | `rack` | 小 | `subject/rack` | `ca8a404704ed043797c4f9d482c97d722c0dc719` |
 | Ruby-only | `rake` | 小 | `subject/rake` | `353f51da83616397b50b01ccc5c39607811ad691` |
 | Ruby-only | `optcarrot` | 小 | `subject/optcarrot` | `c215378a27b2dce8d8e5d98a3ed75e0354c5a840` |
-| Ruby-only | `typeprof` | 中 | `subject/typeprof` | `e20d7783c85911c601c8b535cd174f2951f4c430`（v0.32.0） |
+| Ruby-only | `typeprof` | 中 | `subject/typeprof/lib` | `e20d7783c85911c601c8b535cd174f2951f4c430`（v0.32.0） |
 | Ruby-only | `rubygems` | 中 | `subject/rubygems` | `f72d9d9f9e42a246e5301f8f6492e8258134baee` |
 | Rails | `conference-app` | 小 | `subject/conference-app` | `12e49b9d8d35b2fbbec419e756cffca8bed2a800` |
 | Rails | `redmine` | 中 | `subject/redmine` | `890812e49cc60e96c7c252b7dedbd881a4edba55` |

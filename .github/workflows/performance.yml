@@ -180,7 +180,7 @@ jobs:
             timeout_seconds: 30
             allow_base_timeout: "1"
           - subject: typeprof
-            subject_path: subject/typeprof
+            subject_path: subject/typeprof/lib
             timeout_seconds: 120
             allow_base_timeout: "0"
           - subject: rubygems
