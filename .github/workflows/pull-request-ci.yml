@@ -21,6 +21,10 @@ jobs:
       run_full_ci: ${{ steps.paths.outputs.run_full_ci }}
       run_pages: ${{ steps.paths.outputs.run_pages }}
       run_analysis: ${{ steps.paths.outputs.run_analysis }}
+      analysis_approved: ${{ steps.approval.outputs.analysis_approved }}
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -34,6 +38,30 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
         run: bash scripts/ci/classify-changed-paths.sh
+
+      - name: Resolve analysis-change approval
+        id: approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+        run: |
+          approved=0
+          if [[ "$EVENT_ACTION" == labeled && "$EVENT_LABEL" == approved-analysis-change ]]; then
+            permission="$(gh api \
+              "repos/$GITHUB_REPOSITORY/collaborators/$SENDER_LOGIN/permission" \
+              --jq .permission 2>/dev/null || true)"
+            case "$permission" in
+              admin|maintain)
+                approved=1
+                ;;
+              *)
+                echo "Ignoring approved-analysis-change from $SENDER_LOGIN (permission=$permission)."
+                ;;
+            esac
+          fi
+          echo "analysis_approved=$approved" >> "$GITHUB_OUTPUT"
 
   test-suite:
     needs: changes
@@ -63,7 +91,6 @@ jobs:
       phase: build
     permissions:
       contents: read
-      pull-requests: read
 
   performance-build:
     needs: changes
@@ -134,9 +161,9 @@ jobs:
     uses: ./.github/workflows/analysis-compatibility.yml
     with:
       phase: subjects
+      analysis_approved: ${{ needs.changes.outputs.analysis_approved == '1' }}
     permissions:
       contents: read
-      pull-requests: read
 
   performance-subjects:
     needs: [changes, test, performance-build]
@@ -151,6 +178,7 @@ jobs:
       phase: subjects
       base_sha: ${{ needs.performance-build.outputs.base_sha }}
       head_sha: ${{ needs.performance-build.outputs.head_sha }}
+      analysis_approved: ${{ needs.changes.outputs.analysis_approved == '1' }}
     permissions:
       contents: read
 

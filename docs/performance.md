@@ -116,6 +116,7 @@ successを要求し、対象外scopeでは分類成功と依存jobの全skipを�
 出力またはcoverageに差分があれば通常は失敗する。意図した改善や仕様変更の場合だけ、差分を確認した
 Maintainer/AdminがPRに `approved-analysis-change` を付ける。このラベルは現在のcommitにだけ有効で、
 `synchronize` 時に自動削除される。比較の実行自体が失敗した場合は、ラベルがあっても許可しない。
+同じラベルはPerformance matrix内のcoverage比較にも適用するが、実行時間やメモリの回帰は許可しない。
 
 結果は subject ごとに `target/performance/<subject>/result.json` と
 `target/coverage/<subject>/result.json` として artifact に保存する。coverage の base/head

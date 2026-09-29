@@ -21,6 +21,11 @@ on:
         description: Head revision for the subject matrix phase.
         required: false
         type: string
+      analysis_approved:
+        description: Whether a maintainer approved the analysis output and coverage changes.
+        required: false
+        type: boolean
+        default: false
     outputs:
       run_full_ci:
         description: Whether the changed files require full CI.
@@ -262,6 +267,7 @@ jobs:
           TYDA_COVERAGE_SUBJECT: ${{ github.workspace }}/${{ matrix.subject_path }}
           TYDA_COVERAGE_BINARY_DIR: ${{ github.workspace }}/target/performance-runtime/bin
           TYDA_COVERAGE_OUTPUT_DIR: ${{ github.workspace }}/target/coverage/${{ matrix.subject }}
+          TYDA_COVERAGE_ALLOW_REGRESSIONS: ${{ inputs.analysis_approved && '1' || '0' }}
           TYDA_RBS_DIR: ${{ github.workspace }}/target/performance-runtime/vendor/rbs
         run: ./scripts/coverage_ci.sh
 
