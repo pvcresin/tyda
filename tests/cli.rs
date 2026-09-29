@@ -1695,10 +1695,11 @@ fn missing_record_key_is_unknown_inside_callback_for_passed_record() {
             "end\n",
             "\n",
             "record = { error: \"failed\" }\n",
+            "keyword_record = { error: \"failed\" }\n",
             "other = { error: \"failed\" }\n",
+            "Wrapper.new.call_keyword(record: keyword_record) { keyword_record[:issue] }\n",
             "Wrapper.new.call(record) { record[:issue] }\n",
             "Wrapper.new.call(record) { other[:issue] }\n",
-            "Wrapper.new.call_keyword(record: record) { record[:issue] }\n",
         ),
     )
     .expect("failed to write");
@@ -1717,7 +1718,7 @@ fn missing_record_key_is_unknown_inside_callback_for_passed_record() {
         .collect();
 
     assert_eq!(diagnostics.len(), 1, "{stdout}");
-    assert_eq!(diagnostics[0]["line"], 9);
+    assert_eq!(diagnostics[0]["line"], 11);
 }
 
 #[test]
