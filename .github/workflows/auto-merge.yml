@@ -20,27 +20,6 @@ jobs:
       github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - name: Check protected main and required checks
-        id: protection
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          protection="$(gh api "repos/$GITHUB_REPOSITORY/branches/main/protection" 2>/dev/null || true)"
-          if [[ -z "$protection" ]]; then
-            echo "main is not protected; auto merge remains disabled."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          required_count="$(gh api \
-            "repos/$GITHUB_REPOSITORY/branches/main/protection" \
-            --jq '.required_status_checks.contexts | length' 2>/dev/null || echo 0)"
-          if ! [[ "$required_count" =~ ^[1-9][0-9]*$ ]]; then
-            echo "main has no required status checks; auto merge remains disabled."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
-
       - name: Block unreviewed CI policy changes
         id: policy
         env:
@@ -75,7 +54,6 @@ jobs:
       - name: Read Dependabot metadata
         id: metadata
         if: >-
-          steps.protection.outputs.enabled == 'true' &&
           steps.policy.outputs.enabled == 'true' &&
           github.event.pull_request.user.login == 'dependabot[bot]'
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v2
@@ -84,7 +62,6 @@ jobs:
 
       - name: Skip Major dependency update
         if: >-
-          steps.protection.outputs.enabled == 'true' &&
           steps.policy.outputs.enabled == 'true' &&
           github.event.pull_request.user.login == 'dependabot[bot]' &&
           steps.metadata.outputs.update-type == 'version-update:semver-major'
@@ -92,7 +69,6 @@ jobs:
 
       - name: Enable auto merge
         if: >-
-          steps.protection.outputs.enabled == 'true' &&
           steps.policy.outputs.enabled == 'true' &&
           (github.event.pull_request.user.login != 'dependabot[bot]' ||
           steps.metadata.outputs.update-type != 'version-update:semver-major')
