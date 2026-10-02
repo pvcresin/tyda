@@ -394,6 +394,33 @@ class Journal
 end
 ```
 
+## A known nil ivar makes its truthy branch unreachable
+
+### update
+
+```ruby
+class NilIvarGuard
+  def initialize
+    @value = nil
+  end
+
+  def guarded
+    if @value
+      @value
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class NilIvarGuard
+  def initialize: -> void
+  def guarded: -> nil
+end
+```
+
 ## Diverging helper on or RHS narrows the LHS
 
 ### update

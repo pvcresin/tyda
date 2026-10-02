@@ -260,6 +260,7 @@ impl TypeRegistry {
             && superclass_rule == MergeRule::AddIfAbsent
         {
             data.superclass = Some(sc);
+            data.superclass_is_absolute = rbs_data.superclass_is_absolute;
             // don't allocate the cold Box if both sides are empty, since the assignment would be a no-op.
             if !rbs_data.cold().superclass_type_args.is_empty()
                 || !data.cold().superclass_type_args.is_empty()
@@ -295,6 +296,9 @@ impl TypeRegistry {
         {
             data.cold_mut().class_type_param_defaults =
                 rbs_data.cold().class_type_param_defaults.clone();
+        }
+        if rbs_data.cold().struct_constructor_allows_missing_members {
+            data.cold_mut().struct_constructor_allows_missing_members = true;
         }
         debug_assert_eq!(
             merge_rule(source, DeclKind::Mixin, is_user_defined),

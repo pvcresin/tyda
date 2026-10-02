@@ -46,7 +46,8 @@ mod rbs;
 mod ruby_dsl;
 
 use hover::{
-    ArgCheckArg, ArgCheckSite, HoverBlockShape, HoverSnapshot, HoverTarget, UnresolvedConstantSite,
+    ArgCheckArg, ArgCheckSite, HoverBlockShape, HoverSnapshot, HoverTarget, MissingRecordKeySite,
+    UnresolvedConstantSite,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -540,6 +541,7 @@ pub struct InferenceEngine<'a> {
     pending_constant_definition_snapshots: Vec<PendingConstantDefinitionSnapshot>,
     arg_check_sites: Vec<ArgCheckSite>,
     unresolved_constant_sites: Vec<UnresolvedConstantSite>,
+    missing_record_key_sites: Vec<MissingRecordKeySite>,
     file_deps: crate::dep_graph::FileDeps,
     rails_mode: bool,
     dsl_activation: DslActivation,
@@ -616,6 +618,7 @@ pub struct HoverIndex {
     pub(crate) definition_snapshots: Vec<DefinitionSnapshot>,
     pub(crate) arg_check_sites: Vec<ArgCheckSite>,
     pub(crate) unresolved_constant_sites: Vec<UnresolvedConstantSite>,
+    pub(crate) missing_record_key_sites: Vec<MissingRecordKeySite>,
 }
 
 impl HoverIndex {
@@ -644,6 +647,16 @@ pub(crate) struct ArgumentTypeMismatch {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExperimentalDiagnostic {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) code: &'static str,
+    pub(crate) severity: &'static str,
+    pub(crate) message: String,
+    pub(crate) method_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StaticSiteDiagnostic {
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) code: &'static str,
@@ -916,6 +929,7 @@ impl FileAnalysisSnapshot {
         Vec<UnresolvedMethodCall>,
         Vec<ArgumentTypeMismatch>,
         Vec<UnresolvedConstant>,
+        Vec<StaticSiteDiagnostic>,
     ) {
         let mut engine = InferenceEngine::from_file_analysis_snapshot(self, lazy_loader);
         Self::collect_method_call_diagnostics(&mut engine, lazy_rbi_loader, external_registry)
@@ -930,6 +944,7 @@ impl FileAnalysisSnapshot {
         Vec<UnresolvedMethodCall>,
         Vec<ArgumentTypeMismatch>,
         Vec<UnresolvedConstant>,
+        Vec<StaticSiteDiagnostic>,
     ) {
         let mut engine = InferenceEngine::from_owned_file_analysis_snapshot(self, lazy_loader);
         Self::collect_method_call_diagnostics(&mut engine, lazy_rbi_loader, external_registry)
@@ -943,6 +958,7 @@ impl FileAnalysisSnapshot {
         Vec<UnresolvedMethodCall>,
         Vec<ArgumentTypeMismatch>,
         Vec<UnresolvedConstant>,
+        Vec<StaticSiteDiagnostic>,
     ) {
         if let Some(registry) = external_registry {
             engine.set_external_rbs(registry);
@@ -951,9 +967,10 @@ impl FileAnalysisSnapshot {
             engine.set_lazy_rbi_loader(rbi);
         }
         let unresolved = engine.unresolved_method_calls_for_snapshots();
+        let static_sites = engine.static_site_diagnostics_for_sites();
         let mismatches = engine.argument_type_mismatches_for_sites();
         let unresolved_constants = engine.unresolved_constant_refs_for_sites();
-        (unresolved, mismatches, unresolved_constants)
+        (unresolved, mismatches, unresolved_constants, static_sites)
     }
 
     pub(crate) fn experimental_check_diagnostics(
@@ -1028,6 +1045,8 @@ pub(crate) struct Scope {
     self_override: Option<Type>,
     self_facts: Arc<HashMap<String, Type>>,
     runtime_facts: Arc<HashMap<String, RuntimeFact>>,
+    initialized_record_keys: Arc<HashSet<(String, String)>>,
+    callback_mutated_record_locals: Arc<HashSet<String>>,
     local_singleton_methods: Arc<HashMap<String, HashMap<String, LocalSingletonMethod>>>,
     active_refinements: Arc<HashSet<String>>,
     dsl_bindings: Arc<HashMap<String, Type>>,
@@ -1183,6 +1202,8 @@ impl Scope {
             self_override: self.self_override.clone(),
             self_facts: self.self_facts.clone(),
             runtime_facts: self.runtime_facts.clone(),
+            initialized_record_keys: self.initialized_record_keys.clone(),
+            callback_mutated_record_locals: self.callback_mutated_record_locals.clone(),
             local_singleton_methods: self.local_singleton_methods.clone(),
             active_refinements: self.active_refinements.clone(),
             dsl_bindings: self.dsl_bindings.clone(),
@@ -1262,6 +1283,7 @@ impl Scope {
         Arc::make_mut(&mut self.enumerator_yielder_names).remove(name);
         Arc::make_mut(&mut self.runtime_facts).remove(name);
         Arc::make_mut(&mut self.local_singleton_methods).remove(name);
+        Arc::make_mut(&mut self.callback_mutated_record_locals).remove(name);
         self.invalidate_exclusive_local_alts(name);
     }
 
@@ -1411,6 +1433,8 @@ impl Scope {
         for name in names {
             yielder_names.remove(name);
         }
+        Arc::make_mut(&mut self.callback_mutated_record_locals)
+            .retain(|name| !names.contains(name));
         let runtime_facts = Arc::make_mut(&mut self.runtime_facts);
         for name in names {
             runtime_facts.remove(name);
@@ -1566,6 +1590,7 @@ impl<'a> InferenceEngine<'a> {
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: hover_index.arg_check_sites,
             unresolved_constant_sites: hover_index.unresolved_constant_sites,
+            missing_record_key_sites: hover_index.missing_record_key_sites,
             file_deps: crate::dep_graph::FileDeps::default(),
             rails_mode: meta.rails_mode,
             dsl_activation: meta.dsl_activation,
@@ -1624,6 +1649,7 @@ impl<'a> InferenceEngine<'a> {
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: Vec::new(),
             unresolved_constant_sites: Vec::new(),
+            missing_record_key_sites: Vec::new(),
             file_deps: crate::dep_graph::FileDeps::default(),
             rails_mode: false,
             dsl_activation: DslActivation::default(),
@@ -1811,11 +1837,15 @@ impl<'a> InferenceEngine<'a> {
         let Some(class_data) = self.registry.class_data_for(class_name) else {
             return;
         };
-        let superclass = class_data.superclass.clone();
         let mixins = class_data.mixins.clone();
+        let superclass_is_absolute = class_data.superclass_is_absolute;
 
-        if let Some(superclass) = superclass {
-            self.ensure_external_class_in_scope(class_name, &superclass);
+        if let Some(superclass) = self.registry.get_superclass(class_name).map(str::to_string) {
+            if superclass_is_absolute {
+                self.ensure_external_class(&superclass);
+            } else {
+                self.ensure_external_class_in_scope(class_name, &superclass);
+            }
         }
         for mixin in mixins {
             self.ensure_external_class_in_scope(class_name, &mixin.module_name);
@@ -2214,8 +2244,7 @@ impl<'a> InferenceEngine<'a> {
             }
         }
         if let Some(superclass) = &data.superclass {
-            let resolved =
-                self.resolve_scoped_class_ref_cross_registry(class_name, superclass.as_ref());
+            let resolved = self.resolve_superclass_ref_cross_registry(class_name, superclass);
             if let Some(found) =
                 self.resolve_nested_namespace_cross_registry_inner(&resolved, name, seen)
             {
@@ -2263,6 +2292,21 @@ impl<'a> InferenceEngine<'a> {
             return stripped.to_string();
         }
         raw_name.to_string()
+    }
+
+    fn resolve_superclass_ref_cross_registry(&self, scope_class: &str, raw_name: &str) -> String {
+        if self
+            .class_data_cross_registry(scope_class)
+            .is_some_and(|data| data.superclass_is_absolute)
+        {
+            if self.registry.class_data_for(scope_class).is_some() {
+                self.registry.resolve_superclass_ref(scope_class, raw_name)
+            } else {
+                raw_name.trim_scope_prefix().to_string()
+            }
+        } else {
+            self.resolve_scoped_class_ref_cross_registry(scope_class, raw_name)
+        }
     }
 
     fn set_constant_value(
@@ -3266,6 +3310,15 @@ impl<'a> InferenceEngine<'a> {
             merged.enumerator_yielded_types = yielded_types;
             merged.self_override = Self::merge_branch_self_override(base, then_scope, else_scope);
             merged.self_facts = Self::merge_branch_self_facts(then_scope, else_scope);
+            merged.initialized_record_keys = Arc::new(
+                then_scope
+                    .initialized_record_keys
+                    .intersection(&else_scope.initialized_record_keys)
+                    .cloned()
+                    .collect(),
+            );
+            merged.callback_mutated_record_locals =
+                Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
             merged.runtime_facts =
                 merge_identical_scope_maps(&then_scope.runtime_facts, &else_scope.runtime_facts);
             merged.local_singleton_methods = merge_identical_scope_maps(
@@ -3324,6 +3377,16 @@ impl<'a> InferenceEngine<'a> {
                 || else_scope.regexp_match_captures
                 || base.regexp_match_captures,
             exclusive_local_alts: None,
+            initialized_record_keys: Arc::new(
+                then_scope
+                    .initialized_record_keys
+                    .intersection(&else_scope.initialized_record_keys)
+                    .cloned()
+                    .collect(),
+            ),
+            callback_mutated_record_locals: Self::merge_callback_mutated_record_locals(
+                base, then_scope, else_scope,
+            ),
         };
 
         let mut then_alt = HashMap::new();
@@ -3398,8 +3461,21 @@ impl<'a> InferenceEngine<'a> {
         );
         merged.dsl_bindings =
             merge_identical_scope_maps(&then_scope.dsl_bindings, &else_scope.dsl_bindings);
+        merged.callback_mutated_record_locals =
+            Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
         Self::assign_exclusive_local_alts(&mut merged, base, then_alt, else_alt);
         merged
+    }
+
+    fn merge_callback_mutated_record_locals(
+        base: &Scope,
+        then_scope: &Scope,
+        else_scope: &Scope,
+    ) -> Arc<HashSet<String>> {
+        let mut names = base.callback_mutated_record_locals.as_ref().clone();
+        names.extend(then_scope.callback_mutated_record_locals.iter().cloned());
+        names.extend(else_scope.callback_mutated_record_locals.iter().cloned());
+        Arc::new(names)
     }
 
     fn assign_exclusive_local_alts(
@@ -3479,6 +3555,13 @@ impl<'a> InferenceEngine<'a> {
             self_override: Self::merge_loop_self_override(base, loop_scope),
             self_facts: Arc::default(),
             runtime_facts: base.runtime_facts.clone(),
+            initialized_record_keys: base.initialized_record_keys.clone(),
+            callback_mutated_record_locals: Arc::new(
+                base.callback_mutated_record_locals
+                    .union(&loop_scope.callback_mutated_record_locals)
+                    .cloned()
+                    .collect(),
+            ),
             local_singleton_methods: base.local_singleton_methods.clone(),
             active_refinements: base.active_refinements.clone(),
             dsl_bindings: base.dsl_bindings.clone(),
@@ -3527,6 +3610,11 @@ impl<'a> InferenceEngine<'a> {
         );
         merged.dsl_bindings =
             merge_identical_scope_maps(&base.dsl_bindings, &loop_scope.dsl_bindings);
+        let mut callback_mutated_record_locals =
+            base.callback_mutated_record_locals.as_ref().clone();
+        callback_mutated_record_locals
+            .extend(loop_scope.callback_mutated_record_locals.iter().cloned());
+        merged.callback_mutated_record_locals = Arc::new(callback_mutated_record_locals);
         merged
     }
 
@@ -7558,11 +7646,7 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         self.ensure_class_available(class_name);
-        let superclass = match self
-            .registry
-            .class_data_for(class_name)
-            .and_then(|data| data.superclass.as_ref().map(|s| s.as_ref().to_string()))
-        {
+        let superclass = match self.registry.get_superclass(class_name).map(str::to_string) {
             Some(sc) => sc,
             None => return,
         };
@@ -7607,11 +7691,7 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         self.ensure_class_available(class_name);
-        let Some(superclass) = self
-            .registry
-            .class_data_for(class_name)
-            .and_then(|data| data.superclass.as_ref().map(|s| s.as_ref().to_string()))
-        else {
+        let Some(superclass) = self.registry.get_superclass(class_name).map(str::to_string) else {
             return;
         };
         self.ensure_class_available(&superclass);
@@ -7676,10 +7756,7 @@ impl<'a> InferenceEngine<'a> {
             return Some(Type::Class(Sym::new(class_name)));
         }
         self.ensure_class_available(class_name);
-        let superclass = self
-            .registry
-            .class_data_for(class_name)
-            .and_then(|data| data.superclass.as_ref().map(|s| s.as_ref().to_string()))?;
+        let superclass = self.registry.get_superclass(class_name)?.to_string();
         self.ensure_class_available(&superclass);
         let method_def = self
             .registry
@@ -7868,6 +7945,7 @@ impl<'a> InferenceEngine<'a> {
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
+                missing_record_key_sites: self.missing_record_key_sites,
             },
             coverage: self
                 .coverage_recorder
@@ -7946,6 +8024,7 @@ impl<'a> InferenceEngine<'a> {
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
+                missing_record_key_sites: self.missing_record_key_sites,
             },
             coverage: self
                 .coverage_recorder
@@ -8189,11 +8268,16 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         let superclass_name = self.resolve_constant_path(&superclass, parse_result);
                         if superclass_name != "Unknown" {
+                            let superclass_is_absolute = superclass_name.starts_with("::");
                             let superclass_name = self
                                 .follow_namespace_alias(&superclass_name, "Object")
                                 .unwrap_or(superclass_name);
                             self.record_reference(&superclass_name);
-                            self.registry.set_superclass(&class_name, &superclass_name);
+                            self.registry.set_superclass_with_absolute(
+                                &class_name,
+                                &superclass_name,
+                                superclass_is_absolute,
+                            );
                             self.push_class_or_module_definition_hover(
                                 &superclass,
                                 &superclass_name,
@@ -9499,10 +9583,15 @@ impl<'a> InferenceEngine<'a> {
                                 let superclass_name =
                                     self.resolve_constant_path(&superclass, parse_result);
                                 if superclass_name != "Unknown" {
+                                    let superclass_is_absolute = superclass_name.starts_with("::");
                                     let superclass_name = self
                                         .follow_namespace_alias(&superclass_name, class_name)
                                         .unwrap_or(superclass_name);
-                                    self.registry.set_superclass(&full_name, &superclass_name);
+                                    self.registry.set_superclass_with_absolute(
+                                        &full_name,
+                                        &superclass_name,
+                                        superclass_is_absolute,
+                                    );
                                     self.push_class_or_module_definition_hover(
                                         &superclass,
                                         &superclass_name,
@@ -15059,6 +15148,7 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let mut block_scope = scope.clone();
+        self.mark_callback_record_arguments_may_mutate(call_node, scope, &mut block_scope);
         let block_local_names = Self::block_scoped_local_names(&block, parse_result);
         let method_name = String::from_utf8_lossy(call_node.name().as_slice());
         let mut block_self_type = None;
@@ -16218,7 +16308,7 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         let mixins = data.mixins.clone();
-        let superclass = data.superclass.clone();
+        let superclass = self.registry.get_superclass(owner).map(str::to_string);
         for mixin in mixins {
             if matches!(mixin.kind, MixinKind::Include | MixinKind::Prepend) {
                 self.collect_static_module_constant_names(&mixin.module_name, true, seen, names);
@@ -17062,6 +17152,7 @@ impl<'a> InferenceEngine<'a> {
 
         let block = block_raw.as_block_node()?;
         let mut block_scope = scope.clone();
+        self.mark_callback_record_arguments_may_mutate(call_node, scope, &mut block_scope);
         if let Some(block_self_type) = self.resolve_user_defined_block_self_type(
             owner_class,
             method_name,
@@ -17714,14 +17805,20 @@ impl<'a> InferenceEngine<'a> {
         scope: &mut Scope,
     ) {
         self.apply_sorbet_self_bind_for_statement(class_name, node, parse_result, scope);
-        if !scope.self_facts.is_empty()
+        let invalidates_self_facts = !scope.self_facts.is_empty()
             && self.statement_invalidates_self_facts(
                 class_name,
                 scope.singleton_dispatch,
                 node,
                 &scope.self_facts,
-            )
-        {
+            );
+        // A call reads its receiver and arguments before it can invalidate facts on self.
+        // Keep the facts while inferring the call, then discard them for later statements.
+        let defer_self_fact_invalidation = invalidates_self_facts
+            && node
+                .as_call_node()
+                .is_some_and(|call_node| call_node.block().is_none());
+        if invalidates_self_facts && !defer_self_fact_invalidation {
             scope.clear_self_facts();
         }
         match node {
@@ -18291,6 +18388,18 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                if let (Some(receiver), Some(arguments)) =
+                    (write_node.receiver(), write_node.arguments())
+                    && let Some(key_node) = arguments.arguments().iter().next()
+                {
+                    self.mark_initialized_record_key(
+                        class_name,
+                        &Self::unwrap_index_write_receiver(receiver),
+                        &key_node,
+                        parse_result,
+                        scope,
+                    );
+                }
                 self.apply_index_write_side_effect(
                     class_name,
                     write_node.receiver(),
@@ -18662,6 +18771,13 @@ impl<'a> InferenceEngine<'a> {
                                     parse_result,
                                     scope,
                                 );
+                                self.mark_initialized_record_key(
+                                    class_name,
+                                    &receiver,
+                                    &arg_nodes[0],
+                                    parse_result,
+                                    scope,
+                                );
                                 self.apply_index_write_side_effect(
                                     class_name,
                                     Some(receiver),
@@ -18765,6 +18881,9 @@ impl<'a> InferenceEngine<'a> {
             _ => {
                 self.infer_node_type(class_name, node, parse_result, scope);
             }
+        }
+        if defer_self_fact_invalidation {
+            scope.clear_self_facts();
         }
     }
 
@@ -18917,7 +19036,6 @@ impl<'a> InferenceEngine<'a> {
                 } else {
                     Type::Nil
                 };
-
                 let mut else_scope = scope.fork_for_branch();
                 if let Some(n) = &narrowing
                     && let Some(ty) = &n.else_ty
@@ -18942,7 +19060,6 @@ impl<'a> InferenceEngine<'a> {
                 } else {
                     Type::Nil
                 };
-
                 let then_always_exits = if_node
                     .statements()
                     .is_some_and(|s| Self::statements_always_exit(&s))
@@ -18991,6 +19108,12 @@ impl<'a> InferenceEngine<'a> {
             Node::UnlessNode { .. } => {
                 let unless_node = node.as_unless_node().expect("must be UnlessNode");
                 self.infer_node_type(class_name, &unless_node.predicate(), parse_result, scope);
+                self.bind_condition_assignment_target(
+                    class_name,
+                    &unless_node.predicate(),
+                    parse_result,
+                    scope,
+                );
                 let narrowing = self.extract_condition_narrowing(
                     class_name,
                     &unless_node.predicate(),
@@ -21821,6 +21944,17 @@ impl<'a> InferenceEngine<'a> {
                                     class_name,
                                     scope,
                                 );
+                                self.record_arg_check_site(
+                                    &call_node,
+                                    parse_result,
+                                    &safe_nav_receiver_type,
+                                    "new",
+                                    true,
+                                    class_name,
+                                    scope.method_name.as_deref(),
+                                    &arg_types,
+                                    &kw_types,
+                                );
                                 self.record_inferred_call_site(&target_class, {
                                     let caller_context = Self::call_site_caller_context(
                                         class_name, scope, &arg_types, &kw_types, &None,
@@ -21947,6 +22081,13 @@ impl<'a> InferenceEngine<'a> {
                                 &record_result,
                             )
                         {
+                            self.record_missing_record_key_site(
+                                &safe_nav_receiver_type,
+                                class_name,
+                                &call_node,
+                                parse_result,
+                                scope,
+                            );
                             break 'recv wrap(record_result);
                         }
 
@@ -27593,6 +27734,7 @@ impl<'a> InferenceEngine<'a> {
         let key_node = args.arguments().iter().next()?;
         let key_type = self.infer_node_type(class_name, &key_node, parse_result, scope);
         match receiver_type {
+            Type::Untyped | Type::ParamRef(_) | Type::KeywordParamRef(_) => Some(Type::Untyped),
             Type::Record(fields) => {
                 let matched_values: Vec<Type> = fields
                     .iter()
@@ -27638,6 +27780,164 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             _ => None,
+        }
+    }
+
+    fn record_missing_record_key_site(
+        &mut self,
+        receiver_type: &Type,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) {
+        if !self.record_hover_snapshots {
+            return;
+        }
+        if !matches!(receiver_type, Type::Record(_) | Type::Union(_)) {
+            return;
+        }
+        let Some(key_node) = call_node
+            .arguments()
+            .and_then(|args| args.arguments().iter().next())
+        else {
+            return;
+        };
+        let key_type = self.infer_node_type(class_name, &key_node, parse_result, scope);
+        let receiver_has_initialized_key = call_node.receiver().is_some_and(|receiver| {
+            Self::record_key_initialization_fact(&receiver, &key_type)
+                .is_some_and(|fact| scope.initialized_record_keys.contains(&fact))
+        });
+        let receiver_may_be_mutated_by_callback = call_node
+            .receiver()
+            .and_then(|receiver| receiver.as_local_variable_read_node())
+            .is_some_and(|receiver| {
+                let name = String::from_utf8_lossy(receiver.name().as_slice());
+                scope.callback_mutated_record_locals.contains(name.as_ref())
+            });
+        let (key, display) = match key_type {
+            Type::LiteralSymbol(name) => {
+                let display = format!(":{name}");
+                (RecordKey::Symbol(name.to_string()), display)
+            }
+            Type::LiteralString(name) => {
+                let display = format!("{name:?}");
+                (RecordKey::String(name), display)
+            }
+            _ => return,
+        };
+        let location = key_node.location();
+        let (start, end) = (location.start_offset(), location.end_offset());
+        if start >= end {
+            return;
+        }
+        let receiver_type = (!receiver_has_initialized_key && !receiver_may_be_mutated_by_callback)
+            .then(|| receiver_type.clone());
+        if self.missing_record_key_sites.iter().any(|site| {
+            site.start == start
+                && site.end == end
+                && site.record_key == key
+                && site.receiver_type == receiver_type
+        }) {
+            return;
+        }
+        self.missing_record_key_sites.push(MissingRecordKeySite {
+            start,
+            end,
+            key: display,
+            record_key: key,
+            receiver_type,
+        });
+    }
+
+    fn type_may_be_record(ty: &Type) -> bool {
+        match ty {
+            Type::Record(_) => true,
+            Type::Union(members) => members.iter().any(Self::type_may_be_record),
+            _ => false,
+        }
+    }
+
+    fn mark_callback_record_arguments_may_mutate(
+        &self,
+        call_node: &ruby_prism::CallNode<'_>,
+        scope: &Scope,
+        block_scope: &mut Scope,
+    ) {
+        let Some(arguments) = call_node.arguments() else {
+            return;
+        };
+        let mut passed_local_names = HashSet::new();
+        for argument in arguments.arguments().iter() {
+            if let Some(name) = Self::extract_local_var_name_in_scope(&argument, scope) {
+                passed_local_names.insert(name);
+                continue;
+            }
+            let Some(keyword_hash) = argument.as_keyword_hash_node() else {
+                continue;
+            };
+            for element in keyword_hash.elements().iter() {
+                let Some(association) = element.as_assoc_node() else {
+                    continue;
+                };
+                if let Some(name) =
+                    Self::extract_local_var_name_in_scope(&association.value(), scope)
+                {
+                    passed_local_names.insert(name);
+                }
+            }
+        }
+
+        for name in passed_local_names {
+            let Some(ty) = scope.get(&name) else {
+                continue;
+            };
+            if Self::type_may_be_record(ty) {
+                let target = scope.resolve_alias_target(&name);
+                let alias_names = scope
+                    .locals
+                    .keys()
+                    .filter(|alias| scope.resolve_alias_target(alias) == target)
+                    .cloned()
+                    .chain(std::iter::once(name));
+                Arc::make_mut(&mut block_scope.callback_mutated_record_locals).extend(alias_names);
+            }
+        }
+    }
+
+    fn record_key_initialization_fact(
+        receiver: &Node<'_>,
+        key_type: &Type,
+    ) -> Option<(String, String)> {
+        let receiver_source = String::from_utf8_lossy(receiver.location().as_slice())
+            .trim()
+            .to_string();
+        if receiver_source.is_empty() {
+            return None;
+        }
+        let key = match key_type {
+            Type::LiteralSymbol(name) => format!(":{name}"),
+            Type::LiteralString(name) => format!("{name:?}"),
+            _ => return None,
+        };
+        Some((receiver_source, key))
+    }
+
+    fn mark_initialized_record_key(
+        &mut self,
+        class_name: &str,
+        receiver: &Node<'_>,
+        key_node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        let receiver_type = self.infer_node_type(class_name, receiver, parse_result, scope);
+        if !matches!(receiver_type, Type::Record(_)) {
+            return;
+        }
+        let key_type = self.infer_node_type(class_name, key_node, parse_result, scope);
+        if let Some(fact) = Self::record_key_initialization_fact(receiver, &key_type) {
+            Arc::make_mut(&mut scope.initialized_record_keys).insert(fact);
         }
     }
 
@@ -29942,6 +30242,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<Type> {
+        let right_unknown = Self::is_unknown_hash_merge_candidate(&right);
         match (left, right) {
             (Type::Record(fields), Type::Record(other_fields)) => Some(self.merge_record_fields(
                 class_name,
@@ -29981,18 +30282,28 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                 ))
             }
+            (left, _) if right_unknown && Self::type_is_hash_like(&left) => {
+                Some(Type::Hash(None, None))
+            }
             (Type::Union(parts), other) => {
                 let resolved: Vec<Type> = parts
                     .into_iter()
-                    .filter_map(|part| {
-                        self.apply_hash_merge_type(
+                    .flat_map(|part| {
+                        let unresolved = Self::is_unknown_hash_merge_candidate(&part);
+                        let merged = self.apply_hash_merge_type(
                             class_name,
-                            part,
+                            part.clone(),
                             other.clone(),
                             call_node,
                             parse_result,
                             scope,
-                        )
+                        );
+                        match (merged, unresolved) {
+                            (Some(merged), true) => vec![merged, part],
+                            (Some(merged), false) => vec![merged],
+                            (None, true) => vec![part],
+                            (None, false) => Vec::new(),
+                        }
                     })
                     .collect();
                 (!resolved.is_empty()).then(|| Type::from_type_vec_preserve_untyped(resolved))
@@ -30000,21 +30311,32 @@ impl<'a> InferenceEngine<'a> {
             (left, Type::Union(parts)) => {
                 let resolved: Vec<Type> = parts
                     .into_iter()
-                    .filter_map(|part| {
-                        self.apply_hash_merge_type(
+                    .flat_map(|part| {
+                        let unresolved = Self::is_unknown_hash_merge_candidate(&part);
+                        let merged = self.apply_hash_merge_type(
                             class_name,
                             left.clone(),
-                            part,
+                            part.clone(),
                             call_node,
                             parse_result,
                             scope,
-                        )
+                        );
+                        match (merged, unresolved) {
+                            (Some(merged), true) => vec![merged, part],
+                            (Some(merged), false) => vec![merged],
+                            (None, true) => vec![part],
+                            (None, false) => Vec::new(),
+                        }
                     })
                     .collect();
                 (!resolved.is_empty()).then(|| Type::from_type_vec_preserve_untyped(resolved))
             }
             _ => None,
         }
+    }
+
+    fn is_unknown_hash_merge_candidate(ty: &Type) -> bool {
+        matches!(ty, Type::Untyped) || Self::contains_unresolved_ref(ty)
     }
 
     fn merge_record_fields(
@@ -35017,12 +35339,15 @@ impl<'a> InferenceEngine<'a> {
                 (ancestor.as_ref().to_string(), type_args)
             })
             .collect();
-        let superclass_edge = data.superclass.as_ref().map(|superclass| {
-            (
-                superclass.as_ref().to_string(),
-                data.cold().superclass_type_args.clone(),
-            )
-        });
+        let superclass_edge = self
+            .registry
+            .get_superclass(current_class)
+            .map(|superclass| {
+                (
+                    superclass.to_string(),
+                    data.cold().superclass_type_args.clone(),
+                )
+            });
 
         for (mixin_name, type_args) in mixin_edges {
             let edge_vars =
@@ -37744,10 +38069,7 @@ impl<'a> InferenceEngine<'a> {
             .filter(|mixin| mixin.kind != MixinKind::Extend)
             .map(|mixin| mixin.module_name.as_ref().to_string())
             .collect();
-        let superclass = data
-            .superclass
-            .as_ref()
-            .map(|name| name.as_ref().to_string());
+        let superclass = self.registry.get_superclass(class_name).map(str::to_string);
         for mixin in mixins {
             if mixin == target_module
                 || self.registry_module_includes_module_target(
@@ -44498,10 +44820,7 @@ impl<'a> InferenceEngine<'a> {
             {
                 return Some(current);
             }
-            let superclass = self
-                .registry
-                .class_data_for(&current)
-                .and_then(|data| data.superclass.as_ref().map(|s| s.as_ref().to_string()))?;
+            let superclass = self.registry.get_superclass(&current)?.to_string();
             if superclass == current {
                 return None;
             }
@@ -45053,7 +45372,7 @@ impl<'a> InferenceEngine<'a> {
         };
 
         let mixins = data.mixins.clone();
-        let superclass = data.superclass.clone();
+        let superclass = self.registry.get_superclass(class_name).map(str::to_string);
         for mixin in mixins {
             if mixin.kind == MixinKind::Extend {
                 continue;
@@ -45365,6 +45684,30 @@ impl<'a> InferenceEngine<'a> {
                             Type::Nil,
                         ))
                     }
+                    "exist?" => {
+                        let receiver_type =
+                            self.infer_node_type(class_name, &receiver, parse_result, scope);
+                        let receiver_class = self.type_to_class_name(&receiver_type)?;
+                        if Self::class_type_base_name(&receiver_class) != "File" {
+                            return None;
+                        }
+                        let args = call.arguments()?;
+                        let path_node = args.arguments().iter().next()?;
+                        let subject = Self::extract_narrow_subject_in_scope(&path_node, scope)?;
+                        let current =
+                            self.resolve_subject_input_type(class_name, scope, &subject)?;
+                        // File.exist? raises for nil, so a true result proves the path is non-nil.
+                        let path_type = if Self::contains_unresolved_ref(&current) {
+                            Type::Untyped
+                        } else {
+                            Self::remove_nil(&current)
+                        };
+                        Some(CondNarrowing {
+                            subject,
+                            then_ty: Some(path_type),
+                            else_ty: None,
+                        })
+                    }
                     "present?" | "presence" => {
                         let subject = Self::extract_narrow_subject_in_scope(&receiver, scope)?;
                         let current =
@@ -45400,8 +45743,12 @@ impl<'a> InferenceEngine<'a> {
                         ))
                     }
                     "key?" | "has_key?" | "include?" | "member?" => {
-                        let (var, ty) =
-                            self.extract_record_key_condition_narrowing(class_name, &call, scope)?;
+                        let (var, ty) = self.extract_record_key_condition_narrowing(
+                            class_name,
+                            &call,
+                            parse_result,
+                            scope,
+                        )?;
                         Some(self.narrowing_with_default_negation(
                             class_name,
                             scope,
@@ -45445,6 +45792,21 @@ impl<'a> InferenceEngine<'a> {
                     subject: NarrowSubject::Local(name),
                     then_ty: Self::truthy_only(&current),
                     else_ty: Self::falsy_only(&current),
+                })
+            }
+            Node::InstanceVariableReadNode { .. } => {
+                let read = predicate.as_instance_variable_read_node()?;
+                let subject = NarrowSubject::Ivar(
+                    String::from_utf8_lossy(read.name().as_slice()).to_string(),
+                );
+                let current = self
+                    .resolve_subject_input_type(class_name, scope, &subject)
+                    .filter(|ty| !Self::contains_unresolved_ref(ty))
+                    .unwrap_or(Type::Untyped);
+                Some(CondNarrowing {
+                    subject,
+                    then_ty: Some(Self::truthy_only(&current).unwrap_or(Type::Bot)),
+                    else_ty: Some(Self::falsy_only(&current).unwrap_or(Type::Bot)),
                 })
             }
             Node::LocalVariableWriteNode { .. } => {
@@ -45699,15 +46061,30 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         class_name: &str,
         call: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<(String, Type)> {
-        let receiver = call.receiver()?;
-        let var_name = Self::extract_local_var_name_in_scope(&receiver, scope)?;
         let args = call.arguments()?;
         let key_node = args.arguments().iter().next()?;
-        let key = Self::record_key_from_node(&key_node)?;
-        let current = self.resolve_narrowing_input_type(class_name, scope, scope.get(&var_name)?);
-        Self::narrow_record_union_by_required_key(&current, &key)
+        if let Some(receiver) = call.receiver()
+            && let Some(var_name) = Self::extract_local_var_name_in_scope(&receiver, scope)
+            && let Some(key) = Self::record_key_from_node(&key_node)
+        {
+            let current =
+                self.resolve_narrowing_input_type(class_name, scope, scope.get(&var_name)?);
+            if let Some(narrowed) = Self::narrow_record_union_by_required_key(&current, &key) {
+                return Some((var_name, narrowed));
+            }
+        }
+
+        let var_name = Self::extract_local_var_name_in_scope(&key_node, scope)?;
+        let current_key =
+            self.resolve_narrowing_input_type(class_name, scope, scope.get(&var_name)?);
+        let receiver = call.receiver()?;
+        let receiver_type = self.infer_node_type(class_name, &receiver, parse_result, scope);
+        let receiver_type = self.resolve_receiver_method_refs(&receiver_type);
+        let keys = Self::record_keys_from_closed_type(&receiver_type)?;
+        Self::narrow_key_type_to_record_keys(&current_key, &keys)
             .map(|narrowed| (var_name, narrowed))
     }
 
@@ -45751,11 +46128,101 @@ impl<'a> InferenceEngine<'a> {
         Some(Type::from_type_vec_preserve_untyped(matching))
     }
 
+    fn record_keys_from_closed_type(ty: &Type) -> Option<Vec<RecordKey>> {
+        match ty {
+            Type::Record(fields) => Some(fields.iter().map(|field| field.key.clone()).collect()),
+            Type::Union(parts) => {
+                let mut keys = Vec::new();
+                for part in parts {
+                    for key in Self::record_keys_from_closed_type(part)? {
+                        if !keys.contains(&key) {
+                            keys.push(key);
+                        }
+                    }
+                }
+                Some(keys)
+            }
+            _ => None,
+        }
+    }
+
+    fn narrow_key_type_to_record_keys(current: &Type, keys: &[RecordKey]) -> Option<Type> {
+        match current {
+            Type::Union(parts) => {
+                let mut narrowed = Vec::new();
+                for part in parts {
+                    narrowed.push(Self::narrow_key_type_to_record_keys(part, keys)?);
+                }
+                if narrowed.iter().all(|part| *part == Type::Bot) {
+                    return Some(Type::Bot);
+                }
+                Some(Type::from_type_vec_preserve_untyped(narrowed))
+            }
+            Type::LiteralSymbol(name) => {
+                Some(if keys.contains(&RecordKey::Symbol(name.to_string())) {
+                    current.clone()
+                } else {
+                    Type::Bot
+                })
+            }
+            Type::LiteralString(name) => Some(if keys.contains(&RecordKey::String(name.clone())) {
+                current.clone()
+            } else {
+                Type::Bot
+            }),
+            Type::Symbol => {
+                let values: Vec<Type> = keys
+                    .iter()
+                    .filter_map(|key| match key {
+                        RecordKey::Symbol(name) => Some(Type::LiteralSymbol(Sym::new(name))),
+                        RecordKey::String(_) => None,
+                    })
+                    .collect();
+                Some(if values.is_empty() {
+                    Type::Bot
+                } else {
+                    Type::from_type_vec_preserve_untyped(values)
+                })
+            }
+            Type::String => {
+                let values: Vec<Type> = keys
+                    .iter()
+                    .filter_map(|key| match key {
+                        RecordKey::String(name) => Some(Type::LiteralString(name.clone())),
+                        RecordKey::Symbol(_) => None,
+                    })
+                    .collect();
+                Some(if values.is_empty() {
+                    Type::Bot
+                } else {
+                    Type::from_type_vec_preserve_untyped(values)
+                })
+            }
+            Type::Integer | Type::Float | Type::Bool | Type::True | Type::False | Type::Nil => {
+                Some(Type::Bot)
+            }
+            Type::LiteralInteger(_)
+            | Type::LiteralFloat(_)
+            | Type::Singleton(_)
+            | Type::Class(_)
+            | Type::Generic { .. } => Some(Type::Bot),
+            _ => None,
+        }
+    }
+
     fn narrow_record_union_by_discriminant_value(
         current: &Type,
         key: &RecordKey,
         value: &Type,
     ) -> Option<Type> {
+        if let Type::Record(fields) = current {
+            let field = fields.iter().find(|field| field.key == *key)?;
+            if field.optional || Self::record_discriminant_value_may_match(&field.value, value) {
+                return None;
+            }
+            return Some(Type::Bot);
+        }
+
         let Type::Union(parts) = current else {
             return None;
         };
@@ -45765,7 +46232,7 @@ impl<'a> InferenceEngine<'a> {
         for part in parts {
             match Self::record_discriminant_value(part, key) {
                 Some(field_value)
-                    if Self::record_discriminant_value_matches(&field_value, value) =>
+                    if Self::record_discriminant_value_may_match(&field_value, value) =>
                 {
                     matching.push(part.clone());
                 }
@@ -45792,12 +46259,44 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn record_discriminant_value_matches(field_value: &Type, expected: &Type) -> bool {
-        match expected {
-            Type::Union(parts) => parts
+    fn record_discriminant_value_may_match(actual: &Type, expected: &Type) -> bool {
+        if actual == expected {
+            return true;
+        }
+        match (actual, expected) {
+            (Type::Union(parts), expected) => parts
                 .iter()
-                .any(|part| Self::record_discriminant_value_matches(field_value, part)),
-            _ => field_value == expected,
+                .any(|part| Self::record_discriminant_value_may_match(part, expected)),
+            (actual, Type::Union(parts)) => parts
+                .iter()
+                .any(|part| Self::record_discriminant_value_may_match(actual, part)),
+            (Type::LiteralInteger(a), Type::LiteralInteger(b)) => a == b,
+            (Type::LiteralFloat(a), Type::LiteralFloat(b)) => a == b,
+            (Type::LiteralString(a), Type::LiteralString(b)) => a == b,
+            (Type::LiteralSymbol(a), Type::LiteralSymbol(b)) => a == b,
+            (Type::LiteralInteger(_), Type::LiteralFloat(_))
+            | (Type::LiteralFloat(_), Type::LiteralInteger(_)) => true,
+            (Type::True, Type::False) | (Type::False, Type::True) => false,
+            _ => match (
+                Self::record_discriminant_type_family(actual),
+                Self::record_discriminant_type_family(expected),
+            ) {
+                (Some(actual_family), Some(expected_family)) => actual_family == expected_family,
+                _ => true,
+            },
+        }
+    }
+
+    fn record_discriminant_type_family(ty: &Type) -> Option<u8> {
+        match ty {
+            Type::LiteralInteger(_) | Type::Integer | Type::LiteralFloat(_) | Type::Float => {
+                Some(0)
+            }
+            Type::LiteralString(_) | Type::String => Some(2),
+            Type::LiteralSymbol(_) | Type::Symbol => Some(3),
+            Type::True | Type::False | Type::Bool => Some(4),
+            Type::Nil => Some(5),
+            _ => None,
         }
     }
 

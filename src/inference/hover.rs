@@ -7,7 +7,7 @@ use crate::rbs::ir as rbs_ir;
 use crate::types::Sym;
 use crate::types::{HoverBlockSig, HoverOverloadSig, Param, ParamKind};
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone)]
 pub(crate) enum HoverTarget {
@@ -87,6 +87,15 @@ pub(crate) struct UnresolvedConstantSite {
     pub(crate) end: usize,
     pub(crate) name: String,
     pub(crate) class_context: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct MissingRecordKeySite {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) key: String,
+    pub(crate) record_key: RecordKey,
+    pub(crate) receiver_type: Option<Type>,
 }
 
 // Only reports `No`; `Unknown` stays silent to avoid false positives.
@@ -379,8 +388,81 @@ impl<'a> InferenceEngine<'a> {
             .is_some()
     }
 
+    fn merge_diagnostic_type_candidates(left: &Type, right: &Type) -> Type {
+        let stable = [left, right]
+            .into_iter()
+            .filter(|ty| **ty != Type::Bot && !Self::contains_unresolved_ref(ty))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !stable.is_empty() {
+            return Type::from_type_vec_preserve_untyped(stable);
+        }
+        if *left == Type::Bot || *right == Type::Bot {
+            return Type::Bot;
+        }
+        Type::from_type_vec_preserve_untyped(vec![left.clone(), right.clone()])
+    }
+
+    fn merge_arg_check_site(existing: &mut ArgCheckSite, incoming: ArgCheckSite) {
+        existing.receiver_type = Self::merge_diagnostic_type_candidates(
+            &existing.receiver_type,
+            &incoming.receiver_type,
+        );
+        for incoming_arg in &incoming.args {
+            if let Some(existing_arg) = existing.args.iter_mut().find(|existing_arg| {
+                existing_arg.start == incoming_arg.start
+                    && existing_arg.end == incoming_arg.end
+                    && existing_arg.keyword == incoming_arg.keyword
+                    && existing_arg.positional_index == incoming_arg.positional_index
+            }) {
+                existing_arg.ty =
+                    Self::merge_diagnostic_type_candidates(&existing_arg.ty, &incoming_arg.ty);
+            } else {
+                existing.args.push(incoming_arg.clone());
+            }
+        }
+        existing.block_return_type = match (
+            existing.block_return_type.take(),
+            incoming.block_return_type,
+        ) {
+            (Some(left), Some(right)) => {
+                Some(Self::merge_diagnostic_type_candidates(&left, &right))
+            }
+            (Some(ty), None) | (None, Some(ty)) => Some(ty),
+            (None, None) => None,
+        };
+        if existing.block_shape.is_none() {
+            existing.block_shape = incoming.block_shape;
+        }
+    }
+
+    fn coalesce_arg_check_sites(sites: Vec<ArgCheckSite>) -> Vec<ArgCheckSite> {
+        let mut merged = Vec::with_capacity(sites.len());
+        let mut indices = HashMap::new();
+        for site in sites {
+            let key = (
+                site.class_context.clone(),
+                site.method_context.clone(),
+                site.method_name.clone(),
+                site.is_singleton,
+                site.call_start,
+                site.call_end,
+            );
+            if let Some(index) = indices.get(&key).copied() {
+                if let Some(existing) = merged.get_mut(index) {
+                    Self::merge_arg_check_site(existing, site);
+                }
+            } else {
+                let index = merged.len();
+                merged.push(site);
+                indices.insert(key, index);
+            }
+        }
+        merged
+    }
+
     pub(super) fn argument_type_mismatches_for_sites(&mut self) -> Vec<ArgumentTypeMismatch> {
-        let sites = std::mem::take(&mut self.arg_check_sites);
+        let sites = Self::coalesce_arg_check_sites(std::mem::take(&mut self.arg_check_sites));
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
         for site in sites {
@@ -772,6 +854,255 @@ impl<'a> InferenceEngine<'a> {
         self.arity_mismatches_for_sites(&mut out);
         self.union_member_missing_methods_for_sites(&mut out);
         out
+    }
+
+    pub(super) fn static_site_diagnostics_for_sites(&mut self) -> Vec<StaticSiteDiagnostic> {
+        let mut record_key_candidates = std::collections::BTreeMap::new();
+        for site in &self.missing_record_key_sites {
+            record_key_candidates
+                .entry((site.start, site.end, site.record_key.clone()))
+                .or_insert_with(Vec::new)
+                .push(site);
+        }
+        let mut out: Vec<StaticSiteDiagnostic> = record_key_candidates
+            .into_iter()
+            .filter_map(|((start, end, key), candidates)| {
+                candidates
+                    .iter()
+                    .all(|site| {
+                        site.receiver_type
+                            .as_ref()
+                            .is_some_and(|ty| Self::record_type_definitely_lacks_key(ty, &key))
+                    })
+                    .then(|| StaticSiteDiagnostic {
+                        start,
+                        end,
+                        code: "missing_record_key",
+                        severity: "warning",
+                        message: format!("Record has no key {}", candidates[0].key),
+                        method_name: "[]".to_string(),
+                    })
+            })
+            .collect();
+        self.source_constructor_arity_mismatches_for_sites(&mut out);
+        out.sort_by(|left, right| {
+            (left.start, left.end, left.code).cmp(&(right.start, right.end, right.code))
+        });
+        out.dedup_by(|left, right| {
+            left.start == right.start && left.end == right.end && left.code == right.code
+        });
+        out
+    }
+
+    fn record_type_definitely_lacks_key(ty: &Type, key: &RecordKey) -> bool {
+        match ty {
+            Type::Record(fields) => {
+                !fields.is_empty() && fields.iter().all(|field| field.key != *key)
+            }
+            Type::Union(types) => {
+                !types.is_empty()
+                    && types
+                        .iter()
+                        .all(|member| Self::record_type_definitely_lacks_key(member, key))
+            }
+            _ => false,
+        }
+    }
+
+    fn source_constructor_arity_mismatches_for_sites(
+        &mut self,
+        out: &mut Vec<StaticSiteDiagnostic>,
+    ) {
+        let sites = self.arg_check_sites.clone();
+        let mut seen: BTreeSet<(usize, usize, String)> = BTreeSet::new();
+        for site in sites {
+            if site.method_name != "new" || site.has_pos_splat {
+                continue;
+            }
+            let receiver = self.resolve_type_for_hover(
+                &site.receiver_type,
+                &site.class_context,
+                site.method_context.as_deref(),
+            );
+            let Type::Singleton(class_name) = receiver else {
+                continue;
+            };
+            self.ensure_class_available_with_ancestors(&class_name, 0);
+            self.ensure_class_available_with_ancestors("Class", 0);
+            let struct_constructor_allows_missing_members = self
+                .registry
+                .class_data_for(&class_name)
+                .is_some_and(|data| data.cold().struct_constructor_allows_missing_members);
+            let data_constructor = self
+                .registry
+                .class_data_for(&class_name)
+                .and_then(|data| data.cold().data_constructor.clone());
+            if self
+                .registry
+                .resolve_method_call_owners(&class_name, "new", true)
+                .first()
+                != Some(&("Class".to_string(), false))
+            {
+                continue;
+            }
+            if let Some(data_constructor) = data_constructor {
+                let members = match data_constructor {
+                    crate::registry::DataConstructor::Known(members) => members,
+                    crate::registry::DataConstructor::Unknown => continue,
+                };
+                let given = site.positional_count;
+                let mut messages = Vec::new();
+                if given > members.len() {
+                    messages.push(format!(
+                        "wrong number of arguments (given {given}, expected {})",
+                        members.len()
+                    ));
+                } else if site.keyword_names.is_empty() && !site.has_kwsplat {
+                    if given < members.len() {
+                        messages.push(format!(
+                            "wrong number of arguments (given {given}, expected {})",
+                            members.len()
+                        ));
+                    }
+                } else if given == 0 {
+                    let missing: Vec<String> = members
+                        .iter()
+                        .filter(|member| !site.keyword_names.iter().any(|name| name == *member))
+                        .cloned()
+                        .collect();
+                    if !site.has_kwsplat && !missing.is_empty() {
+                        let plural = if missing.len() > 1 { "s" } else { "" };
+                        let names = missing
+                            .iter()
+                            .map(|name| format!(":{name}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        messages.push(format!("missing keyword{plural}: {names}"));
+                    }
+                    let unknown: Vec<String> = site
+                        .keyword_names
+                        .iter()
+                        .filter(|name| !members.contains(name))
+                        .map(|name| format!(":{name}"))
+                        .collect();
+                    if !unknown.is_empty() {
+                        let plural = if unknown.len() > 1 { "s" } else { "" };
+                        messages.push(format!("unknown keyword{plural}: {}", unknown.join(", ")));
+                    }
+                }
+
+                if site.call_start < site.call_end && !messages.is_empty() {
+                    let message = messages.join("; ");
+                    if seen.insert((site.call_start, site.call_end, message.clone())) {
+                        out.push(StaticSiteDiagnostic {
+                            start: site.call_start,
+                            end: site.call_end,
+                            code: "arity_mismatch",
+                            severity: "error",
+                            message,
+                            method_name: "new".to_string(),
+                        });
+                    }
+                }
+                continue;
+            }
+
+            let Some(initialize) = self.registry.lookup_method_sig_for_receiver_with_hint(
+                &class_name,
+                "initialize",
+                false,
+            ) else {
+                continue;
+            };
+            if initialize.loc.is_none()
+                || initialize.rbs_file_source
+                || initialize.synthetic_dsl_source
+                || !initialize.overloads.is_empty()
+            {
+                continue;
+            }
+
+            let positional: Vec<&Param> = initialize
+                .params
+                .iter()
+                .filter(|param| {
+                    matches!(
+                        param.kind,
+                        ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                    )
+                })
+                .collect();
+            let has_rest = positional.iter().any(|param| param.kind == ParamKind::Rest);
+            let required = if struct_constructor_allows_missing_members {
+                0
+            } else {
+                positional
+                    .iter()
+                    .filter(|param| param.kind == ParamKind::Required)
+                    .count()
+            };
+            let max_positional = positional
+                .iter()
+                .filter(|param| param.kind != ParamKind::Rest)
+                .count();
+            let method_has_keywords = initialize.params.iter().any(|param| {
+                matches!(
+                    param.kind,
+                    ParamKind::KeywordRequired | ParamKind::KeywordOptional | ParamKind::DoubleRest
+                )
+            });
+
+            let mut messages = Vec::new();
+            if site.keyword_names.is_empty() || method_has_keywords {
+                let given = site.positional_count;
+                if given < required || (!has_rest && given > max_positional) {
+                    let expected = if has_rest {
+                        format!("{required}+")
+                    } else if required == max_positional {
+                        required.to_string()
+                    } else {
+                        format!("{required}..{max_positional}")
+                    };
+                    messages.push(format!(
+                        "wrong number of arguments (given {given}, expected {expected})"
+                    ));
+                }
+            }
+            if !site.has_kwsplat && !struct_constructor_allows_missing_members {
+                let missing: Vec<String> = initialize
+                    .params
+                    .iter()
+                    .filter(|param| param.kind == ParamKind::KeywordRequired)
+                    .filter(|param| !site.keyword_names.iter().any(|name| name == &param.name))
+                    .map(|param| param.name.clone())
+                    .collect();
+                if !missing.is_empty() {
+                    let plural = if missing.len() > 1 { "s" } else { "" };
+                    let names = missing
+                        .iter()
+                        .map(|name| format!(":{name}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    messages.push(format!("missing keyword{plural}: {names}"));
+                }
+            }
+
+            if site.call_start >= site.call_end || messages.is_empty() {
+                continue;
+            }
+            let message = messages.join("; ");
+            if !seen.insert((site.call_start, site.call_end, message.clone())) {
+                continue;
+            }
+            out.push(StaticSiteDiagnostic {
+                start: site.call_start,
+                end: site.call_end,
+                code: "arity_mismatch",
+                severity: "error",
+                message,
+                method_name: "new".to_string(),
+            });
+        }
     }
 
     fn union_member_missing_methods_for_sites(&mut self, out: &mut Vec<ExperimentalDiagnostic>) {
@@ -1468,12 +1799,26 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn arg_compat_nominal(&mut self, actual: &Type, declared_class: &str) -> ArgCompat {
+        let declared_class = declared_class.trim_scope_prefix();
+        if matches!(declared_class, "Class" | "Module")
+            && let Type::Singleton(actual_class) = actual
+        {
+            let actual_class = actual_class.trim_scope_prefix();
+            self.ensure_external_class(actual_class);
+            if !self.class_is_known(actual_class) {
+                return ArgCompat::Unknown;
+            }
+            return if declared_class == "Module" || !self.class_is_module(actual_class) {
+                ArgCompat::Yes
+            } else {
+                ArgCompat::No
+            };
+        }
         let Some(actual_class) = self.type_to_class_name(actual) else {
             return ArgCompat::Unknown;
         };
         // Normalize absolute references (leading `::`) before comparing nominal names. Registry class names are registered without `::`, so if only one side is absolute (`::Billing::Invoice`) the same class would otherwise fail to match.
         let actual_class = actual_class.trim_scope_prefix().to_string();
-        let declared_class = declared_class.trim_scope_prefix();
         if actual_class == declared_class {
             return ArgCompat::Yes;
         }
@@ -1964,12 +2309,12 @@ impl<'a> InferenceEngine<'a> {
                 return true;
             }
             if let Some(data) = self.registry.class_data_for(&current) {
-                if let Some(superclass) = data.superclass.as_ref() {
-                    stack.push(superclass.trim_scope_prefix().to_string());
-                }
                 for mixin in &data.mixins {
                     stack.push(mixin.module_name.trim_scope_prefix().to_string());
                 }
+            }
+            if let Some(superclass) = self.registry.get_superclass(&current) {
+                stack.push(superclass.to_string());
             }
         }
         false
@@ -3840,9 +4185,8 @@ impl<'a> InferenceEngine<'a> {
         let Some(data) = self.registry.class_data_for(class_name).cloned() else {
             return;
         };
-        if let Some(superclass) = data.superclass {
-            let resolved = self.resolve_scoped_name_with_external(class_name, superclass.as_ref());
-            self.preload_hover_lookup_hierarchy_inner(&resolved, seen);
+        if let Some(superclass) = self.registry.get_superclass(class_name).map(str::to_string) {
+            self.preload_hover_lookup_hierarchy_inner(&superclass, seen);
         }
         for mixin in data.mixins {
             let resolved =
@@ -4026,6 +4370,32 @@ mod arg_compat_tests {
         let relative = Type::Class(crate::types::Sym::new("Foo::Bar"));
         assert_eq!(e.arg_compat(&absolute, &relative), ArgCompat::Yes);
         assert_eq!(e.arg_compat(&relative, &absolute), ArgCompat::Yes);
+    }
+
+    #[test]
+    fn class_objects_match_class_and_module_params() {
+        let mut e = engine();
+        e.registry.set_is_module("Date", false);
+        e.registry.set_is_module("Helpers", true);
+        let date = Type::Singleton(crate::types::Sym::new("Date"));
+        let helpers = Type::Singleton(crate::types::Sym::new("Helpers"));
+
+        assert_eq!(
+            e.arg_compat(&date, &Type::Class(crate::types::Sym::new("Class"))),
+            ArgCompat::Yes
+        );
+        assert_eq!(
+            e.arg_compat(&date, &Type::Class(crate::types::Sym::new("Module"))),
+            ArgCompat::Yes
+        );
+        assert_eq!(
+            e.arg_compat(&helpers, &Type::Class(crate::types::Sym::new("Module"))),
+            ArgCompat::Yes
+        );
+        assert_eq!(
+            e.arg_compat(&helpers, &Type::Class(crate::types::Sym::new("Class"))),
+            ArgCompat::No
+        );
     }
 
     fn method_def(name: &str) -> crate::registry::MethodDef {

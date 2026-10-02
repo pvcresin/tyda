@@ -21,6 +21,7 @@
 
 - [ ] Concern の includer 依存 DSL を拡張する（schema fallback、Devise、AMS など）
 - [ ] 大規模 Rails での `--diagnostics` context scan を高速化する
+- [ ] block callback の副作用解析を一般化し、外側で nil check 済みのivarがcallback内で誤って `nil` と診断されるケースを見直す（Redmine `Attachment#files_to_final_location` の `sha.update(@temp_file)`）。実際のmutationは引き続きnarrowingを無効化し、クラス・メソッド固有の例外は追加しない
 - [ ] Ruby / Rails version、framework DSL、scenario coverage を継続する
 
 ## 低

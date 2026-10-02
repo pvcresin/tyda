@@ -68,6 +68,8 @@ fn diagnostics_change_debounce_ms() -> u64 {
 const MISSING_METHOD_DIAGNOSTIC_CODE: &str = "tyda.missingMethod";
 const ARGUMENT_TYPE_MISMATCH_DIAGNOSTIC_CODE: &str = "tyda.argumentTypeMismatch";
 const UNRESOLVED_CONSTANT_DIAGNOSTIC_CODE: &str = "tyda.unresolvedConstant";
+const MISSING_RECORD_KEY_DIAGNOSTIC_CODE: &str = "tyda.missingRecordKey";
+const ARITY_MISMATCH_DIAGNOSTIC_CODE: &str = "tyda.arityMismatch";
 const UNUSED_IGNORE_DIAGNOSTIC_CODE: &str = "tyda.unusedIgnore";
 
 #[allow(clippy::large_enum_variant)]
@@ -1987,7 +1989,7 @@ fn method_call_lsp_diagnostics(
     lazy_rbi_loader: Option<&LazyRbiLoader>,
     workspace_registry: Option<&TypeRegistry>,
 ) -> Vec<Diagnostic> {
-    let (unresolved, mismatches, unresolved_constants) =
+    let (unresolved, mismatches, unresolved_constants, static_sites) =
         analysis.method_call_diagnostics(stdlib_loader, lazy_rbi_loader, workspace_registry);
     let mut diagnostics: Vec<Diagnostic> = unresolved
         .into_iter()
@@ -2044,6 +2046,30 @@ fn method_call_lsp_diagnostics(
             )),
             source: Some("Tyda".to_string()),
             message: crate::diagnostics::unresolved_constant_message(&constant.name),
+            ..Default::default()
+        }
+    }));
+    diagnostics.extend(static_sites.into_iter().map(|site| {
+        let range = Range::new(
+            byte_offset_to_lsp_position(source, site.start),
+            byte_offset_to_lsp_position(source, site.end),
+        );
+        let code = match site.code {
+            "missing_record_key" => MISSING_RECORD_KEY_DIAGNOSTIC_CODE,
+            "arity_mismatch" => ARITY_MISMATCH_DIAGNOSTIC_CODE,
+            _ => site.code,
+        };
+        let severity = match site.severity {
+            "error" => DiagnosticSeverity::ERROR,
+            "information" => DiagnosticSeverity::INFORMATION,
+            _ => DiagnosticSeverity::WARNING,
+        };
+        Diagnostic {
+            range,
+            severity: Some(severity),
+            code: Some(NumberOrString::String(code.to_string())),
+            source: Some("Tyda".to_string()),
+            message: site.message,
             ..Default::default()
         }
     }));
@@ -10266,6 +10292,60 @@ end
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn lsp_publishes_record_key_warning_and_constructor_arity_error() {
+        let dir = tempdir().expect("tempdir");
+        let uri = Url::from_file_path(dir.path().join("sample.rb")).expect("file uri");
+        let source = concat!(
+            "class C\n",
+            "  def foo = { a: 1 }\n",
+            "end\n",
+            "\n",
+            "class C1\n",
+            "  def initialize(value)\n",
+            "    @value = value\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "C.new.foo[:c]\n",
+            "C1.new\n",
+        );
+
+        let (mut service, mut socket) = initialize_lsp(None).await;
+        let requests = open_document(&mut service, &mut socket, &uri, source).await;
+        let diagnostics = diagnostics_notifications(&requests, &uri);
+        let published = diagnostics.last().expect("publish diagnostics");
+
+        assert_eq!(published.diagnostics.len(), 2, "{published:?}");
+        let record_key = published
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code
+                    == Some(NumberOrString::String(
+                        MISSING_RECORD_KEY_DIAGNOSTIC_CODE.to_string(),
+                    ))
+            })
+            .expect("missing record key warning");
+        assert_eq!(record_key.severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(record_key.range.start, Position::new(10, 10));
+        assert_eq!(record_key.range.end, Position::new(10, 12));
+        assert!(record_key.message.contains(":c"));
+
+        let constructor_arity = published
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code
+                    == Some(NumberOrString::String(
+                        ARITY_MISMATCH_DIAGNOSTIC_CODE.to_string(),
+                    ))
+            })
+            .expect("constructor arity error");
+        assert_eq!(constructor_arity.severity, Some(DiagnosticSeverity::ERROR));
+        assert!(constructor_arity.message.contains("given 0, expected 1"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn lsp_suppresses_diagnostics_with_line_ignore_comments() {
         let dir = tempdir().expect("tempdir");
         let uri = Url::from_file_path(dir.path().join("ignored.rb")).expect("file uri");
@@ -10277,6 +10357,15 @@ end
             "  end\n",
             "end\n",
             "\n",
+            "class RecordC\n",
+            "  def data = { a: 1 }\n",
+            "end\n",
+            "class ConstructorC\n",
+            "  def initialize(value) = @value = value\n",
+            "end\n",
+            "\n",
+            "RecordC.new.data[:c] # tyda: ignore[missing_record_key]\n",
+            "ConstructorC.new # tyda: ignore[arity_mismatch]\n",
             "Widget.new.missing # tyda: ignore[missing_method]\n",
             "Widget.new.foo(1) # tyda: ignore[argument_type_mismatch]\n",
             "Widget.new.missing\n",
@@ -10294,14 +10383,14 @@ end
                 == Some(NumberOrString::String(
                     MISSING_METHOD_DIAGNOSTIC_CODE.to_string(),
                 ))
-                && diagnostic.range.start.line == 9
+                && diagnostic.range.start.line == 18
         }));
         assert!(published.diagnostics.iter().any(|diagnostic| {
             diagnostic.code
                 == Some(NumberOrString::String(
                     ARGUMENT_TYPE_MISMATCH_DIAGNOSTIC_CODE.to_string(),
                 ))
-                && diagnostic.range.start.line == 10
+                && diagnostic.range.start.line == 19
         }));
     }
 

@@ -9,6 +9,11 @@ on:
         required: false
         type: string
         default: all
+      analysis_approved:
+        description: Whether a maintainer approved the analysis output and coverage changes.
+        required: false
+        type: boolean
+        default: false
     outputs:
       run_analysis:
         description: Whether the changed files require analysis compatibility checks.
@@ -16,7 +21,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -33,7 +37,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run_analysis: ${{ steps.paths.outputs.run_analysis }}
-      analysis_approved: ${{ steps.approval.outputs.analysis_approved }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -47,30 +50,6 @@ jobs:
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
         run: bash scripts/ci/classify-changed-paths.sh
-
-      - name: Resolve analysis-change approval
-        id: approval
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_ACTION: ${{ github.event.action }}
-          EVENT_LABEL: ${{ github.event.label.name }}
-          SENDER_LOGIN: ${{ github.event.sender.login }}
-        run: |
-          approved=0
-          if [[ "$EVENT_ACTION" == labeled && "$EVENT_LABEL" == approved-analysis-change ]]; then
-            permission="$(gh api \
-              "repos/$GITHUB_REPOSITORY/collaborators/$SENDER_LOGIN/permission" \
-              --jq .permission 2>/dev/null || true)"
-            case "$permission" in
-              admin|maintain)
-                approved=1
-                ;;
-              *)
-                echo "Ignoring approved-analysis-change from $SENDER_LOGIN (permission=$permission)."
-                ;;
-            esac
-          fi
-          echo "analysis_approved=$approved" >> "$GITHUB_OUTPUT"
 
   build:
     name: analysis-build
@@ -171,7 +150,7 @@ jobs:
             subject_path: subject/optcarrot
             timeout_seconds: 60
           - subject: typeprof
-            subject_path: subject/typeprof
+            subject_path: subject/typeprof/lib
             timeout_seconds: 180
           - subject: rubygems
             subject_path: subject/rubygems
@@ -219,7 +198,7 @@ jobs:
 
       - name: Compare analysis output and coverage
         env:
-          TYDA_ANALYSIS_APPROVED: ${{ needs.changes.outputs.analysis_approved }}
+          TYDA_ANALYSIS_APPROVED: ${{ inputs.analysis_approved && '1' || '0' }}
           TYDA_ANALYSIS_BINARY_DIR: ${{ github.workspace }}/target/analysis-runtime/bin
           TYDA_ANALYSIS_BASE_RBS_DIR: ${{ github.workspace }}/target/analysis-runtime/rbs/base
           TYDA_ANALYSIS_HEAD_RBS_DIR: ${{ github.workspace }}/target/analysis-runtime/rbs/head
@@ -232,7 +211,7 @@ jobs:
           TYDA_COVERAGE_THREADS: "2"
           TYDA_COVERAGE_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
           TYDA_COVERAGE_ALLOW_BASE_TIMEOUT: "0"
-          TYDA_COVERAGE_ALLOW_REGRESSIONS: ${{ needs.changes.outputs.analysis_approved }}
+          TYDA_COVERAGE_ALLOW_REGRESSIONS: ${{ inputs.analysis_approved && '1' || '0' }}
         run: ./scripts/run_analysis_compatibility.sh
 
       - name: Upload analysis comparison

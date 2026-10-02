@@ -1819,6 +1819,12 @@ impl MethodFilePaths {
 }
 
 /// box out cold fields that are usually empty (reduces LSP footprint across tens of thousands of `ClassData`).
+#[derive(Debug, Clone)]
+pub enum DataConstructor {
+    Unknown,
+    Known(Vec<String>),
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct ClassDataCold {
     pub undefined_methods: Vec<(SharedName, bool)>,
@@ -1845,6 +1851,8 @@ pub struct ClassDataCold {
     pub class_type_param_defaults: Vec<(String, Type)>,
     // dirty-family skeleton pattern (`ClassDataCold`).
     pub dirty_method_pattern: Option<DirtyPattern>,
+    pub struct_constructor_allows_missing_members: bool,
+    pub data_constructor: Option<DataConstructor>,
     // set of bare ivar readers (used only for self-fact narrowing).
     pub bare_ivar_readers: FxHashSet<(Sym, bool)>,
     /// DSL recorded in a concern `included do` that must run against each includer
@@ -1926,6 +1934,7 @@ pub struct ClassData {
     pub(crate) call_site_fingerprints: Option<Box<std::collections::HashSet<u64>>>,
     pub has_pending_call_site_summary: bool,
     pub superclass: Option<SharedName>,
+    pub superclass_is_absolute: bool,
     pub mixins: Vec<Mixin>,
     // boxed: `included do` / `extended do` / `prepended do` are rare, and three inline
     // vectors would cost 72B in every `ClassData`.
@@ -3283,9 +3292,9 @@ impl TypeRegistry {
     }
 
     pub fn get_superclass(&self, class_name: &str) -> Option<&str> {
-        self.class_data
-            .get(class_name)
-            .and_then(|d| d.superclass.as_deref())
+        let data = self.class_data.get(class_name)?;
+        let superclass = data.superclass.as_deref()?;
+        Some(self.resolve_superclass_ref_borrow(class_name, superclass))
     }
 
     /// Return the statically known runtime ancestor chain in Ruby's lookup order.
@@ -3354,7 +3363,7 @@ impl TypeRegistry {
         }
 
         let complete = if let Some(superclass) = superclass.as_deref() {
-            let superclass_name = self.resolve_scoped_class_ref_borrow(class_name, superclass);
+            let superclass_name = self.resolve_superclass_ref_borrow(class_name, superclass);
             self.collect_ordered_ancestor_names(superclass_name, seen, active, names)
         } else if is_module {
             true
@@ -3382,6 +3391,20 @@ impl TypeRegistry {
         let data = self.class_data_mut(class_name);
         data.user_defined = true;
     }
+
+    pub fn mark_struct_constructor(&mut self, class_name: &str) {
+        self.class_data_mut(class_name)
+            .cold_mut()
+            .struct_constructor_allows_missing_members = true;
+    }
+
+    pub fn mark_data_constructor(&mut self, class_name: &str, members: Option<Vec<String>>) {
+        self.class_data_mut(class_name).cold_mut().data_constructor = Some(match members {
+            Some(members) => DataConstructor::Known(members),
+            None => DataConstructor::Unknown,
+        });
+    }
+
     pub fn method_defs_len(&self, class_name: &str) -> usize {
         self.class_data
             .get(class_name)
@@ -3485,7 +3508,7 @@ impl TypeRegistry {
                 );
             }
             current = data.superclass.as_ref().map(|sc| {
-                self.resolve_scoped_class_ref_borrow(&cls, sc.as_ref())
+                self.resolve_superclass_ref_borrow(&cls, sc.as_ref())
                     .to_string()
             });
         }
@@ -3517,7 +3540,7 @@ impl TypeRegistry {
                 return Some(crate::rails::nullable_column_accessor_type(base, true));
             }
             current = data.superclass.as_ref().map(|sc| {
-                self.resolve_scoped_class_ref_borrow(&cls, sc.as_ref())
+                self.resolve_superclass_ref_borrow(&cls, sc.as_ref())
                     .to_string()
             });
         }
@@ -3853,7 +3876,7 @@ impl TypeRegistry {
         if let Some(superclass) = &data.superclass
             && let Some(location) = self
                 .lookup_constant_definition_location_through_ancestors_inner(
-                    superclass.as_ref(),
+                    self.resolve_superclass_ref_borrow(class_name, superclass.as_ref()),
                     constant_name,
                     seen,
                 )
@@ -4173,7 +4196,7 @@ impl TypeRegistry {
             }
         }
         if let Some(superclass) = &data.superclass {
-            let resolved = self.resolve_scoped_class_ref_borrow(class_name, superclass.as_ref());
+            let resolved = self.resolve_superclass_ref_borrow(class_name, superclass.as_ref());
             if let Some(found) =
                 self.resolve_nested_namespace_through_ancestors_inner(resolved, name, seen)
             {
@@ -4210,7 +4233,7 @@ impl TypeRegistry {
             }
         }
         if let Some(superclass) = &data.superclass {
-            let resolved = self.resolve_scoped_class_ref_borrow(class_name, superclass.as_ref());
+            let resolved = self.resolve_superclass_ref_borrow(class_name, superclass.as_ref());
             if let Some(ty) =
                 self.lookup_constant_through_ancestors_inner(resolved, constant_name, seen)
             {
@@ -4412,7 +4435,7 @@ impl TypeRegistry {
         }
         if let Some(superclass) = &data.superclass
             && let Some(result) = self.is_pure_ivar_reader_through_ancestors(
-                self.resolve_scoped_class_ref_borrow(class_name, superclass.as_ref()),
+                self.resolve_superclass_ref_borrow(class_name, superclass.as_ref()),
                 method_name,
                 is_singleton,
                 seen,
@@ -4862,7 +4885,10 @@ impl TypeRegistry {
             {
                 return Some(Type::from_type_vec(types.clone()));
             }
-            current = data.superclass.as_deref();
+            current = data
+                .superclass
+                .as_deref()
+                .map(|superclass| self.resolve_superclass_ref_borrow(name, superclass));
         }
         None
     }
@@ -5152,6 +5178,30 @@ impl TypeRegistry {
         raw_name
     }
 
+    pub fn resolve_superclass_ref(&self, scope_class: &str, raw_name: &str) -> String {
+        self.resolve_superclass_ref_borrow(scope_class, raw_name)
+            .to_string()
+    }
+
+    fn resolve_superclass_ref_borrow<'a>(
+        &'a self,
+        scope_class: &str,
+        raw_name: &'a str,
+    ) -> &'a str {
+        let is_absolute = self
+            .class_data
+            .get(scope_class)
+            .is_some_and(|data| data.superclass_is_absolute);
+        if !is_absolute {
+            return self.resolve_scoped_class_ref_borrow(scope_class, raw_name);
+        }
+
+        let name = raw_name.trim_scope_prefix();
+        self.class_data
+            .get_key_value(name)
+            .map_or(name, |(key, _)| key.as_str())
+    }
+
     /// self-call fallback within a module: goes through the including class (resolves methods via sibling mixins).
     pub fn lookup_method_return_type_via_including_classes(
         &self,
@@ -5405,7 +5455,7 @@ impl TypeRegistry {
                 return Some((cls, method));
             }
             current = data.superclass.as_ref().map(|sc| {
-                self.resolve_scoped_class_ref_borrow(&cls, sc.as_ref())
+                self.resolve_superclass_ref_borrow(&cls, sc.as_ref())
                     .to_string()
             });
         }
@@ -5653,7 +5703,7 @@ impl TypeRegistry {
             }
             if let Some(superclass) = &data.superclass {
                 let super_ref =
-                    self.resolve_scoped_class_ref_borrow(owner_class, superclass.as_ref());
+                    self.resolve_superclass_ref_borrow(owner_class, superclass.as_ref());
                 self.collect_method_completion_candidates(
                     receiver_class,
                     super_ref,
@@ -5695,7 +5745,7 @@ impl TypeRegistry {
 
             if let Some(superclass) = &data.superclass {
                 let super_ref =
-                    self.resolve_scoped_class_ref_borrow(owner_class, superclass.as_ref());
+                    self.resolve_superclass_ref_borrow(owner_class, superclass.as_ref());
                 self.collect_method_completion_candidates(
                     receiver_class,
                     super_ref,
@@ -5970,8 +6020,10 @@ impl TypeRegistry {
         // pre-resolve shortened mixin names to FQN (turns includer lookup into an O(1) hash hit).
         for (class_name, data) in &self.class_data {
             if let Some(ref superclass) = data.superclass {
+                let superclass =
+                    self.resolve_superclass_ref_borrow(class_name, superclass.as_ref());
                 subclass_index
-                    .entry(superclass.clone())
+                    .entry(self.shared_name(superclass))
                     .or_default()
                     .push(self.shared_name(class_name));
             }
@@ -6072,8 +6124,8 @@ impl TypeRegistry {
             current = self
                 .class_data
                 .get(cls)
-                .and_then(|data| data.superclass.as_ref())
-                .map(SharedName::as_ref);
+                .and_then(|data| data.superclass.as_deref())
+                .map(|superclass| self.resolve_superclass_ref_borrow(cls, superclass));
         }
         None
     }
@@ -9755,9 +9807,19 @@ impl TypeRegistry {
     }
 
     pub fn set_superclass(&mut self, class_name: &str, superclass: &str) {
-        let superclass = self.intern_name(superclass.strip_prefix("::").unwrap_or(superclass));
+        self.set_superclass_with_absolute(class_name, superclass, superclass.starts_with("::"));
+    }
+
+    pub fn set_superclass_with_absolute(
+        &mut self,
+        class_name: &str,
+        superclass: &str,
+        is_absolute: bool,
+    ) {
+        let superclass = self.intern_name(superclass.trim_scope_prefix());
         let data = self.class_data_mut(class_name);
         data.superclass = Some(superclass);
+        data.superclass_is_absolute = is_absolute;
         data.user_defined = true;
     }
 
@@ -10231,8 +10293,7 @@ impl TypeRegistry {
                 }
             }
             if let Some(superclass) = &data.superclass {
-                let super_ref =
-                    self.resolve_scoped_class_ref_borrow(class_name, superclass.as_ref());
+                let super_ref = self.resolve_superclass_ref_borrow(class_name, superclass.as_ref());
                 if let Some(owners) =
                     self.resolve_method_call_owners_inner_refs(super_ref, method_name, true, seen)
                 {
@@ -10267,8 +10328,7 @@ impl TypeRegistry {
             }
 
             if let Some(superclass) = &data.superclass {
-                let super_ref =
-                    self.resolve_scoped_class_ref_borrow(class_name, superclass.as_ref());
+                let super_ref = self.resolve_superclass_ref_borrow(class_name, superclass.as_ref());
                 if let Some(owners) =
                     self.resolve_method_call_owners_inner_refs(super_ref, method_name, false, seen)
                 {
@@ -10333,10 +10393,46 @@ impl TypeRegistry {
         if self.walked_closure_defines_method_missing(&visited) {
             return false;
         }
+        // ActiveRecord synthesizes attribute methods from the database schema.
+        // Without schema metadata, a source-defined model's method surface is
+        // still open even when its superclass chain is known.
+        let generated_surface_known = generated_artifacts_present
+            && self.walked_closure_has_declaration_backed_methods(&visited);
+        if self.class_inherits_from_active_record(class_name)
+            && self.schema_column_names(class_name).is_none()
+            && !generated_surface_known
+        {
+            return false;
+        }
         if !touched_framework_base {
             return true;
         }
-        !generated_artifacts_present || self.walked_closure_has_declaration_backed_methods(&visited)
+        !generated_artifacts_present || generated_surface_known
+    }
+
+    fn class_inherits_from_active_record(&self, class_name: &str) -> bool {
+        let mut current = class_name.trim_scope_prefix().to_string();
+        let mut visited = Vec::new();
+        for _ in 0..MAX_RESOLVE_DEPTH {
+            if matches!(current.as_str(), "ActiveRecord::Base" | "ApplicationRecord") {
+                return true;
+            }
+            if visited.iter().any(|seen| seen == &current) {
+                return false;
+            }
+            visited.push(current.clone());
+            let Some(data) = self.class_data.get(current.as_str()) else {
+                return false;
+            };
+            let Some(superclass) = &data.superclass else {
+                return false;
+            };
+            current = self
+                .resolve_superclass_ref_borrow(&current, superclass.as_ref())
+                .trim_scope_prefix()
+                .to_string();
+        }
+        false
     }
 
     fn walked_closure_defines_method_missing(&self, classes: &[String]) -> bool {
@@ -10393,7 +10489,7 @@ impl TypeRegistry {
         }
 
         if let Some(superclass) = &data.superclass {
-            let super_ref = self.resolve_scoped_class_ref_borrow(class_name, superclass.as_ref());
+            let super_ref = self.resolve_superclass_ref_borrow(class_name, superclass.as_ref());
             let super_ref = super_ref.trim_scope_prefix().to_string();
             if !self.ancestor_knowledge_complete_inner(&super_ref, visited, touched_framework_base)
             {
@@ -11456,11 +11552,23 @@ mod tests {
     #[test]
     fn ancestor_knowledge_complete_for_modeled_framework_base() {
         let mut registry = TypeRegistry::new();
-        // modeled framework base subclass: the constant chain is known; the method surface is complete after generated-artifact merge.
+        // The superclass is a modeled framework base, so the constant chain is complete.
         declare_class(&mut registry, "Item");
         registry.set_superclass("Item", "ApplicationRecord");
 
         assert!(registry.ancestor_knowledge_complete("Item"));
+    }
+
+    #[test]
+    fn active_record_method_surface_requires_schema_or_generated_declarations() {
+        let mut registry = TypeRegistry::new();
+        declare_class(&mut registry, "Item");
+        registry.set_superclass("Item", "ApplicationRecord");
+
+        assert!(!registry.method_surface_knowledge_complete("Item", false));
+        assert!(!registry.method_surface_knowledge_complete("Item", true));
+
+        registry.register_dirty_pattern_columns("Item", vec![(Sym::new("id"), Type::Integer)]);
         assert!(registry.method_surface_knowledge_complete("Item", false));
         assert!(!registry.method_surface_knowledge_complete("Item", true));
 
@@ -11471,6 +11579,15 @@ mod tests {
             .method_file_paths
             .insert((Sym::new("person_id"), false), Arc::from("dsl/item.rbi"));
         assert!(registry.method_surface_knowledge_complete("Item", true));
+
+        let mut rbi_only = TypeRegistry::new();
+        declare_class(&mut rbi_only, "RbiItem");
+        rbi_only.set_superclass("RbiItem", "ApplicationRecord");
+        rbi_only
+            .class_data_mut("RbiItem")
+            .method_file_paths
+            .insert((Sym::new("name"), false), Arc::from("dsl/item.rbi"));
+        assert!(rbi_only.method_surface_knowledge_complete("RbiItem", true));
     }
 
     #[test]
@@ -11668,6 +11785,19 @@ mod tests {
             .lookup_method_block_meta("Foo", "call", false)
             .expect("merged method block meta should be available");
         assert_eq!(meta.yield_param_types, vec![Type::Integer]);
+    }
+
+    #[test]
+    fn merge_rbs_registry_keeps_absolute_superclass_resolution() {
+        let mut rbs = TypeRegistry::new();
+        rbs.set_superclass("Import::Child", "::Base");
+
+        let mut registry = TypeRegistry::new();
+        registry.mark_user_defined("Base");
+        registry.mark_user_defined("Import::Base");
+        registry.merge_rbs_registry(&rbs);
+
+        assert_eq!(registry.get_superclass("Import::Child"), Some("Base"));
     }
 
     #[test]
