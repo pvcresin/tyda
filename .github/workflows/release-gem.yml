@@ -57,7 +57,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # clang/libclang are needed by bindgen (ruby-rbs-sys). Linux installs them
       # via apt; macOS and Windows runners provide LLVM in the base image.
@@ -188,7 +188,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Keep the GitHub Release tag identical to the version published to RubyGems.
       - name: Compute release version

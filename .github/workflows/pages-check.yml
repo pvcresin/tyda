@@ -37,7 +37,7 @@ jobs:
       run_pages: ${{ steps.paths.outputs.run_pages }}
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -58,7 +58,7 @@ jobs:
     steps:
       # vendor/rbs is generated from the rbs gem by `mise run vendor-rbs`
       # (below), so a plain checkout is enough.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # clang/libclang are needed by bindgen (ruby-rbs-sys / ruby-prism-sys),
       # which runs even for the wasm target build (build-wasm.sh points it at
@@ -147,7 +147,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Require Pages jobs
         env:
