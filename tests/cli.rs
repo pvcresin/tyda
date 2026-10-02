@@ -1771,6 +1771,44 @@ fn missing_record_key_requires_all_receiver_shapes_to_lack_the_key() {
 }
 
 #[test]
+fn missing_record_key_stays_silent_for_unknown_hash_merge_candidates() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("record_key_open_merge.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class PluginBlockMap\n",
+            "  def find_block(name)\n",
+            "    definitions = { \"core\" => { label: :core } }.merge(MissingPluginRegistry.definitions)\n",
+            "    if definitions.has_key?(name)\n",
+            "      definitions[name].merge(name: name)\n",
+            "    end\n",
+            "  end\n",
+            "  def partial(name)\n",
+            "    if definition = find_block(name)\n",
+            "      definition[:partial]\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+            "PluginBlockMap.new.partial(\"plugin\")\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("missing_record_key"),
+        "an unknown hash-merge candidate may provide the key: {stdout}"
+    );
+}
+
+#[test]
 fn record_key_presence_guard_narrows_the_lookup_key() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("record_key_guard.rb");

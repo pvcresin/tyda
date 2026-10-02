@@ -2288,3 +2288,38 @@ class Object < BasicObject
   def bar: -> { a: 1 }
 end
 ```
+
+## Hash#merge with an unknown argument opens the result
+
+### update
+
+```ruby
+class PluginBlockMap
+  def definitions
+    { "core" => { label: :core } }.merge(MissingPluginRegistry.definitions)
+  end
+
+  def find_block(name)
+    definitions = definitions()
+    if definitions.has_key?(name)
+      definitions[name].merge(name: name)
+    end
+  end
+
+  def partial(name)
+    if definition = find_block(name)
+      definition[:partial]
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class PluginBlockMap
+  def definitions: -> Hash
+  def find_block: (untyped name) -> (nil | untyped)
+  def partial: (untyped name) -> (nil | untyped)
+end
+```

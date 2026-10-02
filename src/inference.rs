@@ -27734,6 +27734,7 @@ impl<'a> InferenceEngine<'a> {
         let key_node = args.arguments().iter().next()?;
         let key_type = self.infer_node_type(class_name, &key_node, parse_result, scope);
         match receiver_type {
+            Type::Untyped | Type::ParamRef(_) | Type::KeywordParamRef(_) => Some(Type::Untyped),
             Type::Record(fields) => {
                 let matched_values: Vec<Type> = fields
                     .iter()
@@ -30241,6 +30242,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<Type> {
+        let right_unknown = Self::is_unknown_hash_merge_candidate(&right);
         match (left, right) {
             (Type::Record(fields), Type::Record(other_fields)) => Some(self.merge_record_fields(
                 class_name,
@@ -30280,18 +30282,28 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                 ))
             }
+            (left, _) if right_unknown && Self::type_is_hash_like(&left) => {
+                Some(Type::Hash(None, None))
+            }
             (Type::Union(parts), other) => {
                 let resolved: Vec<Type> = parts
                     .into_iter()
-                    .filter_map(|part| {
-                        self.apply_hash_merge_type(
+                    .flat_map(|part| {
+                        let unresolved = Self::is_unknown_hash_merge_candidate(&part);
+                        let merged = self.apply_hash_merge_type(
                             class_name,
-                            part,
+                            part.clone(),
                             other.clone(),
                             call_node,
                             parse_result,
                             scope,
-                        )
+                        );
+                        match (merged, unresolved) {
+                            (Some(merged), true) => vec![merged, part],
+                            (Some(merged), false) => vec![merged],
+                            (None, true) => vec![part],
+                            (None, false) => Vec::new(),
+                        }
                     })
                     .collect();
                 (!resolved.is_empty()).then(|| Type::from_type_vec_preserve_untyped(resolved))
@@ -30299,21 +30311,32 @@ impl<'a> InferenceEngine<'a> {
             (left, Type::Union(parts)) => {
                 let resolved: Vec<Type> = parts
                     .into_iter()
-                    .filter_map(|part| {
-                        self.apply_hash_merge_type(
+                    .flat_map(|part| {
+                        let unresolved = Self::is_unknown_hash_merge_candidate(&part);
+                        let merged = self.apply_hash_merge_type(
                             class_name,
                             left.clone(),
-                            part,
+                            part.clone(),
                             call_node,
                             parse_result,
                             scope,
-                        )
+                        );
+                        match (merged, unresolved) {
+                            (Some(merged), true) => vec![merged, part],
+                            (Some(merged), false) => vec![merged],
+                            (None, true) => vec![part],
+                            (None, false) => Vec::new(),
+                        }
                     })
                     .collect();
                 (!resolved.is_empty()).then(|| Type::from_type_vec_preserve_untyped(resolved))
             }
             _ => None,
         }
+    }
+
+    fn is_unknown_hash_merge_candidate(ty: &Type) -> bool {
+        matches!(ty, Type::Untyped) || Self::contains_unresolved_ref(ty)
     }
 
     fn merge_record_fields(

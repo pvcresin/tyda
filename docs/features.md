@@ -53,7 +53,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 | --- | --- | --- |
 | `argument_type_mismatch` | error | 宣言 param と actual が確実に不一致のときだけ。分岐内のインスタンス変数や `File.exist?` で確認したパスも、その分岐で絞られた型で判定する |
 | `arity_mismatch` | error / experimental | ソース定義の `initialize` を標準の `Class#new` 経由で呼ぶ場合は必須引数の不一致を error にする。祖先解決では `::` による絶対指定を保つ。`Struct.new` 由来の constructor は member の省略を許し、上限超過だけを報告する。`Data.define` 由来は、member 名が静的に分かり独自 `initialize` がない場合に限り、必須 member 数と位置・キーワード引数の規則で判定する。それ以外は `TYDA_EXPERIMENTAL_CHECKS=1` のときだけ |
-| `missing_record_key` | warning | 形状が分かる非空 record のすべての候補にリテラルキーが存在しないとき。空 record は動的な `to_h` の推論結果と区別できないため対象外。record のキー存在確認後は既知のキーへ絞り、`[] ||= ...` 後の同一 receiver・key も既知として扱う。同じrecordを位置引数またはキーワード引数でblock付き呼び出しに渡した場合、calleeがyield前に変更できるため、そのblock内のチェックは対象外。`Hash#[]` は `nil` を返すため warning にする |
+| `missing_record_key` | warning | 形状が分かる非空 record のすべての候補にリテラルキーが存在しないとき。空 record は動的な `to_h` の推論結果と区別できないため対象外。`Hash#merge` の引数が `untyped` や未解決型なら、結果を動的な Hash として扱い対象外。record のキー存在確認後は既知のキーへ絞り、`[] ||= ...` 後の同一 receiver・key も既知として扱う。同じrecordを位置引数またはキーワード引数でblock付き呼び出しに渡した場合、calleeがyield前に変更できるため、そのblock内のチェックは対象外。`Hash#[]` は `nil` を返すため warning にする |
 | `missing_method` | warning | receiver と祖先の method surface が完全に既知のときだけ。ActiveRecord 系ではDBスキーマや宣言RBIから動的なカラム属性を確認できない場合、対象外 |
 | `unresolved_constant` | information | receiver 文脈で未定義と証明できるときだけ |
 
