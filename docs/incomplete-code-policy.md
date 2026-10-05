@@ -22,6 +22,7 @@ Tyda はコンパイラではなく型推論器である。壊れた入力でも
 | 未定義 constant | receiver 文脈で確実な場合だけ information |
 | 既知 class の確実な missing method | warning |
 | 権威ある param との確実な型不一致 | error |
+| 権威ある戻り値型との確実な不一致 | error |
 | `untyped`、未解決 ref、開いた `method_missing` 面 | Unknown として沈黙 |
 | complexity / fuel / union 上限超過 | `untyped` へ縮退 |
 
@@ -31,6 +32,7 @@ module の bare call も host が静的に分からなければ診断しない�
 ## severity
 
 - **error**: `argument_type_mismatch` の確実な不一致
+- **error**: `return_type_mismatch` の確実な不一致。メソッド本体の到達可能な返却値を宣言型と比較し、未知型を含む結果は沈黙する。`bot` の返却は到達不能なので不一致にしない
 - **warning**: 完全に既知の class 上の `missing_method`
 - **information**: receiver 文脈で確実な `unresolved_constant`
 - **バッジ**: syntax error。壊れた入力を波線で過剰に埋めない

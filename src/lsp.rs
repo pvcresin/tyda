@@ -67,6 +67,7 @@ fn diagnostics_change_debounce_ms() -> u64 {
 }
 const MISSING_METHOD_DIAGNOSTIC_CODE: &str = "tyda.missingMethod";
 const ARGUMENT_TYPE_MISMATCH_DIAGNOSTIC_CODE: &str = "tyda.argumentTypeMismatch";
+const RETURN_TYPE_MISMATCH_DIAGNOSTIC_CODE: &str = "tyda.returnTypeMismatch";
 const UNRESOLVED_CONSTANT_DIAGNOSTIC_CODE: &str = "tyda.unresolvedConstant";
 const MISSING_RECORD_KEY_DIAGNOSTIC_CODE: &str = "tyda.missingRecordKey";
 const ARITY_MISMATCH_DIAGNOSTIC_CODE: &str = "tyda.arityMismatch";
@@ -1005,10 +1006,20 @@ impl TydaLsp {
             let options = Self::build_analysis_options(&state);
             let (analysis, workspace_registry) =
                 Self::analyze_current_file_for_display(&mut state, &file_path, source);
-            let mut methods = dedupe_code_lens_methods(
-                analysis.methods_for_file(&file_path),
-                output_parameter_names,
-            );
+            let methods_with_external_signatures: Vec<(String, MethodSig)> = analysis
+                .methods_for_file(&file_path)
+                .into_iter()
+                .map(|(class_name, sig)| {
+                    let sig = crate::analysis::code_lens_method_sig(
+                        &class_name,
+                        &sig,
+                        Some(state.user_rbs.as_ref()),
+                    );
+                    (class_name, sig)
+                })
+                .collect();
+            let mut methods =
+                dedupe_code_lens_methods(methods_with_external_signatures, output_parameter_names);
             let semantic_def_lines: Vec<u32> = methods
                 .iter()
                 .filter_map(|(_, sig)| sig.loc.map(|loc| loc.line))
@@ -1989,9 +2000,14 @@ fn method_call_lsp_diagnostics(
     lazy_rbi_loader: Option<&LazyRbiLoader>,
     workspace_registry: Option<&TypeRegistry>,
 ) -> Vec<Diagnostic> {
-    let (unresolved, mismatches, unresolved_constants, static_sites) =
-        analysis.method_call_diagnostics(stdlib_loader, lazy_rbi_loader, workspace_registry);
-    let mut diagnostics: Vec<Diagnostic> = unresolved
+    let crate::inference::MethodCallDiagnosticSites {
+        unresolved_methods,
+        argument_type_mismatches,
+        unresolved_constants,
+        static_sites,
+        return_type_mismatches,
+    } = analysis.method_call_diagnostics(stdlib_loader, lazy_rbi_loader, workspace_registry);
+    let mut diagnostics: Vec<Diagnostic> = unresolved_methods
         .into_iter()
         .map(|call| {
             let range = Range::new(
@@ -2013,7 +2029,7 @@ fn method_call_lsp_diagnostics(
             }
         })
         .collect();
-    diagnostics.extend(mismatches.into_iter().map(|mismatch| {
+    diagnostics.extend(argument_type_mismatches.into_iter().map(|mismatch| {
         let range = Range::new(
             byte_offset_to_lsp_position(source, mismatch.start),
             byte_offset_to_lsp_position(source, mismatch.end),
@@ -2029,6 +2045,25 @@ fn method_call_lsp_diagnostics(
                 &mismatch.param_name,
                 &mismatch.expected,
                 &mismatch.actual,
+            ),
+            ..Default::default()
+        }
+    }));
+    diagnostics.extend(return_type_mismatches.into_iter().map(|mismatch| {
+        let range = Range::new(
+            byte_offset_to_lsp_position(source, mismatch.start),
+            byte_offset_to_lsp_position(source, mismatch.end),
+        );
+        Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String(
+                RETURN_TYPE_MISMATCH_DIAGNOSTIC_CODE.to_string(),
+            )),
+            source: Some("Tyda".to_string()),
+            message: format!(
+                "Expected `{}` as the return type of `{}`, but got `{}`",
+                mismatch.expected, mismatch.method_name, mismatch.actual
             ),
             ..Default::default()
         }
@@ -4868,6 +4903,32 @@ end
             is_private: false,
         };
         assert!(!should_show_code_lens(&sig));
+    }
+
+    #[test]
+    fn external_rbs_return_signature_is_used_by_code_lens() {
+        let source = "class RbsLens\n  def foo(value) = 1\nend\n";
+        let loader = stdlib_loader();
+        let source_registry =
+            crate::parser::analyze_source_with_file_path(source, None, &loader, "app.rb");
+        let (_, source_sig) = source_registry
+            .methods_for_file("app.rb")
+            .into_iter()
+            .find(|(_, sig)| sig.name == "foo")
+            .expect("source method");
+        let mut rbs_registry = TypeRegistry::new();
+        crate::rbs::import::load_rbs_string(
+            "class RbsLens\n  def foo: (Integer value) -> String\nend\n",
+            &mut rbs_registry,
+        );
+
+        let lens_sig =
+            crate::analysis::code_lens_method_sig("RbsLens", &source_sig, Some(&rbs_registry));
+        assert!(should_show_code_lens(&lens_sig));
+        assert_eq!(
+            format_method_sig_for_lens_with_names(&lens_sig, false),
+            "(Integer) -> String"
+        );
     }
 
     #[test]
@@ -10292,6 +10353,39 @@ end
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn lsp_publishes_error_diagnostic_for_method_return_type_mismatch() {
+        let dir = tempdir().expect("tempdir");
+        let uri = Url::from_file_path(dir.path().join("sample.rb")).expect("file uri");
+        let source = "class A\n  #: (Integer) -> String\n  def foo(x) = 1\nend\n";
+
+        let (mut service, mut socket) = initialize_lsp(None).await;
+        let requests = open_document(&mut service, &mut socket, &uri, source).await;
+        let diagnostics = diagnostics_notifications(&requests, &uri);
+        let published = diagnostics.last().expect("publish diagnostics");
+
+        assert_eq!(published.diagnostics.len(), 1, "{published:?}");
+        let diagnostic = &published.diagnostics[0];
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(
+            diagnostic.code,
+            Some(NumberOrString::String(
+                RETURN_TYPE_MISMATCH_DIAGNOSTIC_CODE.to_string()
+            ))
+        );
+        assert_eq!(diagnostic.source.as_deref(), Some("Tyda"));
+        assert!(diagnostic.message.contains("String"));
+        assert_eq!(diagnostic.range.start, Position::new(2, 15));
+        assert_eq!(diagnostic.range.end, Position::new(2, 16));
+
+        let close_requests = close_document(&mut service, &mut socket, &uri).await;
+        let close_diagnostics = diagnostics_notifications(&close_requests, &uri);
+        let cleared = close_diagnostics
+            .last()
+            .expect("diagnostics clear on close");
+        assert!(cleared.diagnostics.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn lsp_publishes_record_key_warning_and_constructor_arity_error() {
         let dir = tempdir().expect("tempdir");
         let uri = Url::from_file_path(dir.path().join("sample.rb")).expect("file uri");
@@ -10759,6 +10853,47 @@ end
                 .expect("decode deleted codeLens");
         assert_eq!(deleted_lenses.len(), 1);
         assert_eq!(deleted_lenses[0].range.start, Position::new(1, 6));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lsp_codelens_uses_external_rbs_return_signature() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("sig")).expect("sig dir");
+        std::fs::write(
+            dir.path().join("sig").join("lens.rbs"),
+            "class RbsLens\n  def foo: (Integer value) -> String\nend\n",
+        )
+        .expect("write RBS");
+        let root_uri = Url::from_directory_path(dir.path()).expect("root uri");
+        let source = "class RbsLens\n  def foo(value) = 1\nend\n";
+        let uri = Url::from_file_path(dir.path().join("app.rb")).expect("file uri");
+
+        let (mut service, mut socket) = initialize_lsp(Some(root_uri)).await;
+        let _ = open_document(&mut service, &mut socket, &uri, source).await;
+        let response = Service::call(
+            &mut service,
+            Request::build("textDocument/codeLens")
+                .id(122)
+                .params(serde_json::json!({
+                    "textDocument": { "uri": uri }
+                }))
+                .finish(),
+        )
+        .await
+        .expect("codeLens request")
+        .expect("codeLens response");
+        let lenses: Vec<CodeLens> =
+            serde_json::from_value(response.result().cloned().expect("codeLens result"))
+                .expect("decode codeLens");
+
+        assert_eq!(lenses.len(), 1, "{lenses:?}");
+        assert_eq!(
+            lenses[0]
+                .command
+                .as_ref()
+                .map(|command| command.title.as_str()),
+            Some("#: (Integer) -> String")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
