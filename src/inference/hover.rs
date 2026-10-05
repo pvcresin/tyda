@@ -1482,15 +1482,18 @@ impl<'a> InferenceEngine<'a> {
         }
         if let Type::Union(parts) = actual {
             let mut any_unknown = false;
+            let mut any_no = false;
             for part in parts {
                 match self.return_type_compat(part, declared) {
-                    ArgCompat::No => return ArgCompat::No,
+                    ArgCompat::No => any_no = true,
                     ArgCompat::Unknown => any_unknown = true,
                     ArgCompat::Yes => {}
                 }
             }
             return if any_unknown {
                 ArgCompat::Unknown
+            } else if any_no {
+                ArgCompat::No
             } else {
                 ArgCompat::Yes
             };
@@ -4450,6 +4453,25 @@ mod arg_compat_tests {
         assert_eq!(e.arg_compat(&all_bad, &Type::String), ArgCompat::No);
         let all_good = Type::from_type_vec(vec![Type::String, Type::LiteralString("x".into())]);
         assert_eq!(e.arg_compat(&all_good, &Type::String), ArgCompat::Yes);
+    }
+
+    #[test]
+    fn return_union_with_untyped_member_stays_unknown() {
+        let mut e = engine();
+        let actual = Type::from_type_vec_preserve_untyped(vec![Type::String, Type::Untyped]);
+
+        assert_eq!(
+            e.return_type_compat(&actual, &Type::Array(Some(Box::new(Type::Untyped)))),
+            ArgCompat::Unknown
+        );
+    }
+
+    #[test]
+    fn return_union_reports_when_a_known_branch_violates_the_contract() {
+        let mut e = engine();
+        let actual = Type::from_type_vec(vec![Type::String, Type::Integer]);
+
+        assert_eq!(e.return_type_compat(&actual, &Type::String), ArgCompat::No);
     }
 
     #[test]
