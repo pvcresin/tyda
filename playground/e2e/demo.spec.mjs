@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 const PAGES_BASE_PATH = "/tyda";
 const LANDING_PATH = `${PAGES_BASE_PATH}/`;
 const DOCS_PATH = `${PAGES_BASE_PATH}/docs/`;
-const PLAYGROUND_PATH = `${PAGES_BASE_PATH}/play/`;
+const PLAYGROUND_PATH = `${PAGES_BASE_PATH}/playground`;
 
 async function waitForPlayground(page) {
   await expect(page).toHaveTitle(/Tyda Playground/);
@@ -39,7 +39,7 @@ test("serves the landing page and documentation routes", async ({ page }) => {
   );
   await page.getByRole("link", { name: "Try the Playground", exact: true }).click();
   await waitForPlayground(page);
-  await expect(page).toHaveURL(new RegExp(`${PAGES_BASE_PATH}/play/$`));
+  await expect(page).toHaveURL(new RegExp(`${PAGES_BASE_PATH}/playground/$`));
 
   await page.goto(DOCS_PATH);
   await expect(page.locator("h1")).toHaveText("Documentation Index");
@@ -63,7 +63,7 @@ test("round-trips landing and Playground state through browser history", async (
 
   await page.goForward();
   await waitForPlayground(page);
-  await expect(page).toHaveURL(new RegExp(`${PAGES_BASE_PATH}/play/#.+`));
+  await expect(page).toHaveURL(new RegExp(`${PAGES_BASE_PATH}/playground/#.+`));
   await expect
     .poll(() => page.evaluate(() => window.__editors.ruby.getValue()), { timeout: 45_000 })
     .toBe(source);
@@ -153,12 +153,41 @@ test("keeps Ruby primary and adapts the pane layout to the viewport", async ({ p
   expect(mobileLayout.gridRows.split(" ")).toHaveLength(2);
 });
 
-test("loads and restores examples from the Playground menu", async ({ page }) => {
+test("loads and restores the curated examples with one trailing blank line", async ({ page }) => {
   await page.goto(PLAYGROUND_PATH);
   await waitForPlayground(page);
 
+  const examples = [
+    { label: "Overview", ruby: "class User", rbs: "# Hand-written RBS" },
+    { label: "Array", ruby: "[1, 2, 3].map", rbs: "" },
+    { label: "Tuple", ruby: '[1, "x", :ok]', rbs: "" },
+    { label: "Record", ruby: '{ a: 1, b: "x" }', rbs: "" },
+    { label: "initialize and arguments", ruby: "C.new(1)", rbs: "" },
+    { label: "Literal and Union", ruby: "C.new.bar(true)", rbs: "" },
+    { label: "Dynamic", ruby: "alias_method :bar, :foo", rbs: "" },
+    { label: "include and extend", ruby: "#: -> 1", rbs: "" },
+    { label: "RBS", ruby: "def bar = foo", rbs: "def foo: -> String" },
+    { label: "RBS comments", ruby: "# @rbs value: Symbol", rbs: "" },
+  ];
+  await expect(page.locator("#examples-list a")).toHaveText(examples.map(({ label }) => label));
+
+  for (const example of examples) {
+    await page.getByText("Examples", { exact: true }).click();
+    await page.getByRole("link", { name: example.label, exact: true }).click();
+    const source = await page.evaluate(() => ({
+      ruby: window.__editors.ruby.getValue(),
+      rbs: window.__editors.rbs.getValue(),
+    }));
+    expect(source.ruby).toContain(example.ruby);
+    expect(source.ruby.match(/\n*$/)?.[0].length).toBe(2);
+    if (example.rbs) {
+      expect(source.rbs).toContain(example.rbs);
+      expect(source.rbs.match(/\n*$/)?.[0].length).toBe(2);
+    }
+  }
+
   await page.getByText("Examples", { exact: true }).click();
-  const rbsLink = page.getByRole("link", { name: "RBS signature", exact: true });
+  const rbsLink = page.getByRole("link", { name: "RBS", exact: true });
   await expect(rbsLink).toBeVisible();
   await rbsLink.click();
 

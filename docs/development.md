@@ -86,9 +86,9 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
   Rust compile jobは
   `CARGO_INCREMENTAL=0` とsccacheのGitHub Actions backendを使い、`rust-cache`はCargoの
   registry/gitだけを保存する（target directoryとの二重キャッシュを避ける）。
-- Pagesの再利用可能な `pages-check` workflowはPlaygroundの `format:check`、typecheck、oxlintを明示的に通した後、VitePressのドキュメント、wasm、RBS bundle、Playgroundをbuildして `pages-dist/` に組み立て、`/play/` のPlaygroundに対してE2Eを実行する。PR側の `pages` gateが結果を集約し、Pages deploy権限はmain push用の `pages.yml` に分ける。
-- GitHub Pagesは `main` へのpush時だけ `pages-dist/` を公開する。トップの紹介ページは `docs/index.md` から生成し、ドキュメントは `/docs/`、Playgroundは `/play/` で提供する。`docs/README.md` は `/docs/` の索引として表示する。
-- `/play/` はVitePressのSPAルートではなく同じPages artifact内の静的アプリなので、トップとナビゲーションのリンクには `target: "_self"` を指定してフルページ遷移させる。
+- Pagesの再利用可能な `pages-check` workflowはPlaygroundの `format:check`、typecheck、oxlintを明示的に通した後、VitePressのドキュメント、wasm、RBS bundle、Playgroundをbuildして `pages-dist/` に組み立て、`/playground` のPlaygroundに対してE2Eを実行する。PR側の `pages` gateが結果を集約し、Pages deploy権限はmain push用の `pages.yml` に分ける。
+- GitHub Pagesは `main` へのpush時だけ `pages-dist/` を公開する。トップの紹介ページは `docs/index.md` から生成し、ドキュメントは `/docs/`、Playgroundは `/playground` で提供する。`docs/README.md` は `/docs/` の索引として表示する。
+- `/playground` はVitePressのSPAルートではなく同じPages artifact内の静的アプリなので、トップとナビゲーションのリンクには `target: "_self"` を指定してフルページ遷移させる。
 - Pages のE2Eは `pages-dist/` を `/tyda/` 配下でも解決できるローカル静的サーバーで配信し、project siteの実URLに合わせてTop・Docs・Playgroundの遷移、reload、Back/Forward、hash復元を確認する。
 - Dependabot は Bundler、root / `vscode/` の npm、Cargo、GitHub Actionsを週次で更新する。Major更新はPRを作るが自動mergeせず、Major以外と手動PRはGitHubのauto-mergeへ登録する。mergeはbranch protectionが要求する6つのCI gateの成功を待つが、PR branchを最新の `main` にする条件は設けないため、CI成功後に `main` が進んでもそのPRのCIを再実行せずmergeできる。手動PRでworkflowや `scripts/**` などCIポリシーを変更した場合はauto-mergeを登録せず、Maintainer/Adminのレビューと手動mergeを要求する。
 - 依存更新で脆弱性が見つかった場合は、direct / transitive、runtime / development-only、実際の到達経路と生成物へのバンドル有無を確認する。まず直接依存または親依存の正規の更新で修正版を取り込めるか検証し、解決できる場合だけ対応する。`overrides` や `resolutions` は使用しない。正規の更新で解決できない場合はライブラリ側の対応を待ち、脆弱性は無理に解消扱いにせずDependabot alertをopenのまま保持する。上流修正版がリリースされたら、通常の依存更新として再評価する。

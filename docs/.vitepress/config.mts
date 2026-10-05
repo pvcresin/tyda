@@ -13,7 +13,7 @@ export default defineConfig({
   themeConfig: {
     nav: [
       { text: "Home", link: "/" },
-      { text: "Playground", link: "/play/", target: "_self" },
+      { text: "Playground", link: "/playground", target: "_self" },
       { text: "Documentation", link: "/docs/" },
     ],
     sidebar: {
