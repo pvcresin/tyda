@@ -246,6 +246,7 @@ pub fn argument_type_diagnostics(
                 &mismatch.param_name,
                 &mismatch.expected,
                 &mismatch.actual,
+                mismatch.receiver_type.as_deref(),
             );
             TypeDiagnostic {
                 path: file_path.to_string(),
@@ -272,8 +273,12 @@ pub(crate) fn argument_type_mismatch_message(
     param_name: &str,
     expected: &str,
     actual: &str,
+    receiver_type: Option<&str>,
 ) -> String {
-    format!("Expected `{expected}` for parameter `{param_name}`, but got `{actual}`")
+    let message = format!("Expected `{expected}` for parameter `{param_name}`, but got `{actual}`");
+    receiver_type.map_or(message.clone(), |receiver| {
+        format!("{message} for union member `{receiver}`")
+    })
 }
 
 /// Unresolved+arg-mismatch diagnostics run in a single replay-engine build. Experimental checks are opt-in via `TYDA_EXPERIMENTAL_CHECKS`.
@@ -377,6 +382,7 @@ fn method_call_diagnostics_from_sites_without_experimental(
             &mismatch.param_name,
             &mismatch.expected,
             &mismatch.actual,
+            mismatch.receiver_type.as_deref(),
         );
         TypeDiagnostic {
             path: file_path.to_string(),
@@ -910,7 +916,7 @@ mod tests {
         );
     }
 
-    fn union_member_diag_codes(source: &str) -> Vec<String> {
+    fn union_member_missing_methods(source: &str) -> Vec<String> {
         use crate::analysis::{AnalysisOptions, analyze_cached_file_with_deps};
         let core_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs/core");
         let loader = LazyRbsLoader::new(core_dir);
@@ -921,12 +927,11 @@ mod tests {
             Some("union_member.rb"),
             AnalysisOptions::default(),
         );
-        // Computes the diagnostic directly, bypassing the env gate (equivalent to the flag being ON).
         analysis
-            .experimental_check_diagnostics(&loader, None, None)
+            .method_call_diagnostics(&loader, None, None)
+            .unresolved_methods
             .into_iter()
-            .filter(|d| d.code == "union_member_missing_method")
-            .map(|d| d.message)
+            .map(|call| call.unresolved_method)
             .collect()
     }
 
@@ -946,12 +951,11 @@ mod tests {
             "  corp.name\n",
             "end\n",
         );
-        let messages = union_member_diag_codes(source);
+        let messages = union_member_missing_methods(source);
         assert_eq!(messages.len(), 1, "expected one diagnostic: {messages:?}");
         assert!(
-            messages[0].contains("Method `name` not found for union member `nil`")
-                && messages[0].contains("receiver `Corporation | nil`"),
-            "message shape: {messages:?}"
+            messages[0].contains("NilClass#name"),
+            "missing nil member: {messages:?}"
         );
     }
 
@@ -965,14 +969,13 @@ mod tests {
             "end\n",
         );
         assert!(
-            union_member_diag_codes(source).is_empty(),
+            union_member_missing_methods(source).is_empty(),
             "no member lacks the method"
         );
     }
 
     #[test]
-    fn union_member_missing_method_silent_when_all_members_lack_it() {
-        // The case where no member has `bogus` is a total union miss, handled by the existing missing_method check.
+    fn union_member_missing_method_reports_all_members_that_lack_it() {
         let source = concat!(
             "class Alpha\n",
             "end\n",
@@ -984,10 +987,14 @@ mod tests {
             "  x.bogus\n",
             "end\n",
         );
-        assert!(
-            union_member_diag_codes(source).is_empty(),
-            "union total miss is handled by missing_method, not this check"
+        let methods = union_member_missing_methods(source);
+        assert_eq!(
+            methods.len(),
+            2,
+            "both members lack the method: {methods:?}"
         );
+        assert!(methods[0].contains("Alpha#bogus"));
+        assert!(methods[1].contains("Beta#bogus"));
     }
 
     #[test]
@@ -1007,7 +1014,7 @@ mod tests {
             "end\n",
         );
         assert!(
-            union_member_diag_codes(source).is_empty(),
+            union_member_missing_methods(source).is_empty(),
             "untyped member suppresses the union diagnostic"
         );
     }

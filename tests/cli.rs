@@ -1540,6 +1540,160 @@ fn argument_type_mismatches(rb_file: &std::path::Path) -> Vec<serde_json::Value>
         .collect()
 }
 
+#[test]
+fn union_receiver_diagnostics_check_methods_arguments_and_arity() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("union_receiver.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "def foo\n",
+            "  if rand > 0.5\n",
+            "    1\n",
+            "  else\n",
+            "    \"string\"\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "x = foo\n",
+            "x + 42\n",
+            "x + \"str\"\n",
+            "x == 1\n",
+            "if x.is_a?(Integer)\n",
+            "  x + 42\n",
+            "else\n",
+            "  x + \"str\"\n",
+            "end\n",
+            "#: (Integer | String) -> void\n",
+            "def check_union_argument(value)\n",
+            "  value + 42\n",
+            "end\n",
+            "\n",
+            "class HasName\n",
+            "  #: () -> String\n",
+            "  def name = \"ok\"\n",
+            "end\n",
+            "class NoName; end\n",
+            "def maybe_name\n",
+            "  if rand > 0.5\n",
+            "    HasName.new\n",
+            "  else\n",
+            "    NoName.new\n",
+            "  end\n",
+            "end\n",
+            "maybe_name.name\n",
+            "\n",
+            "def maybe_nullable_name\n",
+            "  if rand > 0.5\n",
+            "    HasName.new\n",
+            "  else\n",
+            "    nil\n",
+            "  end\n",
+            "end\n",
+            "maybe_nullable_name&.name\n",
+            "\n",
+            "class OneArgument\n",
+            "  #: (Integer) -> void\n",
+            "  def run(value); end\n",
+            "end\n",
+            "class TwoArguments\n",
+            "  #: (Integer, Integer) -> void\n",
+            "  def run(first, second); end\n",
+            "end\n",
+            "def choose_runner\n",
+            "  if rand > 0.5\n",
+            "    OneArgument.new\n",
+            "  else\n",
+            "    TwoArguments.new\n",
+            "  end\n",
+            "end\n",
+            "choose_runner.run(1)\n",
+            "#: (OneArgument | TwoArguments) -> void\n",
+            "def check_union_arity(runner)\n",
+            "  runner.run(1)\n",
+            "end\n",
+        ),
+    )
+    .expect("write union receiver source");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    let argument_mismatches: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic["code"] == "argument_type_mismatch")
+        .collect();
+    assert_eq!(
+        argument_mismatches.len(),
+        3,
+        "only unguarded operator calls with an incompatible union member should be reported: {diagnostics:?}"
+    );
+    assert!(
+        argument_mismatches
+            .iter()
+            .all(|diagnostic| diagnostic["severity"] == "error")
+    );
+    let argument_messages: Vec<&str> = argument_mismatches
+        .iter()
+        .map(|diagnostic| diagnostic["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        argument_messages.iter().any(|message| {
+            message.contains("union member `String`") && message.contains("got `42`")
+        }),
+        "String branch mismatch: {argument_messages:?}"
+    );
+    assert!(
+        argument_messages.iter().any(|message| {
+            message.contains("union member `Integer`") && message.contains("got `\"str\"`")
+        }),
+        "Integer branch mismatch: {argument_messages:?}"
+    );
+
+    let missing_methods: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic["code"] == "missing_method")
+        .collect();
+    assert_eq!(
+        missing_methods.len(),
+        1,
+        "unexpected missing methods: {diagnostics:?}"
+    );
+    assert_eq!(missing_methods[0]["severity"], "warning");
+    assert!(
+        missing_methods[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("NoName")
+    );
+
+    let arity_mismatches: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic["code"] == "arity_mismatch")
+        .collect();
+    assert_eq!(
+        arity_mismatches.len(),
+        2,
+        "unexpected arity mismatches: {diagnostics:?}"
+    );
+    assert_eq!(arity_mismatches[0]["severity"], "error");
+    assert!(arity_mismatches.iter().all(|diagnostic| {
+        diagnostic["message"]
+            .as_str()
+            .unwrap()
+            .contains("TwoArguments")
+    }));
+}
+
 fn return_type_mismatches(rb_file: &std::path::Path) -> Vec<serde_json::Value> {
     let output = tyda_bin()
         .arg("--diagnostics")
@@ -2249,7 +2403,7 @@ fn diagnostics_resolve_absolute_superclasses_for_constructor_arity() {
 }
 
 #[test]
-fn experimental_union_member_missing_method_is_off_by_default_and_on_with_env() {
+fn union_member_missing_method_is_reported_by_standard_diagnostics() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("union_member.rb");
     fs::write(
@@ -2258,7 +2412,6 @@ fn experimental_union_member_missing_method_is_off_by_default_and_on_with_env() 
     )
     .expect("failed to write");
 
-    // The experimental check is off by default (no env var set).
     let off = tyda_bin()
         .arg("--diagnostics")
         .arg(rb_file.to_str().unwrap())
@@ -2266,37 +2419,19 @@ fn experimental_union_member_missing_method_is_off_by_default_and_on_with_env() 
         .expect("failed to run");
     assert!(off.status.success());
     let off_stdout = String::from_utf8_lossy(&off.stdout);
-    assert!(
-        !off_stdout.contains("union_member_missing_method"),
-        "union member check must be off by default: {off_stdout}"
-    );
-
-    // Setting the env var reports the missing nil member at information severity.
-    let on = tyda_bin()
-        .env("TYDA_EXPERIMENTAL_CHECKS", "1")
-        .arg("--diagnostics")
-        .arg(rb_file.to_str().unwrap())
-        .output()
-        .expect("failed to run");
-    assert!(on.status.success());
-    let on_stdout = String::from_utf8_lossy(&on.stdout);
-    let diags: Vec<serde_json::Value> = on_stdout
+    let diagnostics: Vec<serde_json::Value> = off_stdout
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|d| d["code"] == "union_member_missing_method")
+        .filter(|diagnostic| diagnostic["code"] == "missing_method")
         .collect();
     assert_eq!(
-        diags.len(),
+        diagnostics.len(),
         1,
-        "expected 1 union member diagnostic: {diags:?}"
+        "expected a missing-method diagnostic for the nil member: {off_stdout}"
     );
-    assert_eq!(diags[0]["severity"], "information");
-    let message = diags[0]["message"].as_str().unwrap_or_default();
-    assert!(
-        message.contains("Method `name` not found for union member `nil`")
-            && message.contains("receiver `Corporation | nil`"),
-        "message shape: {message}"
-    );
+    assert_eq!(diagnostics[0]["severity"], "warning");
+    let message = diagnostics[0]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("NilClass"), "message shape: {message}");
 }
 
 // Plain resolution misinfers `Oj.load` as `Kernel#load -> bool` via the universal

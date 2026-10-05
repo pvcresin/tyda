@@ -2045,6 +2045,7 @@ fn method_call_lsp_diagnostics(
                 &mismatch.param_name,
                 &mismatch.expected,
                 &mismatch.actual,
+                mismatch.receiver_type.as_deref(),
             ),
             ..Default::default()
         }

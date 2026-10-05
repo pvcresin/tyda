@@ -51,14 +51,14 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 | 種類 | 既定の severity | 方針 |
 | --- | --- | --- |
-| `argument_type_mismatch` | error | 宣言 param と actual が確実に不一致のときだけ。分岐内のインスタンス変数や `File.exist?` で確認したパスも、その分岐で絞られた型で判定する |
+| `argument_type_mismatch` | error | 宣言 param と actual が確実に不一致のときだけ。分岐内のインスタンス変数や `File.exist?` で確認したパスも、その分岐で絞られた型で判定する。Union receiver は各候補型の権威ある署名で調べ、不一致の候補型を message に含める |
 | `return_type_mismatch` | error | inline RBS、`@rbs`、Sorbet `sig`、外部RBS/RBIの戻り値型と、メソッド本体の到達可能な返却型が確実に不一致のとき。`untyped` や未解決型を含む不確かな結果は報告しない |
-| `arity_mismatch` | error / experimental | ソース定義の `initialize` を標準の `Class#new` 経由で呼ぶ場合は必須引数の不一致を error にする。祖先解決では `::` による絶対指定を保つ。`Struct.new` 由来の constructor は member の省略を許し、上限超過だけを報告する。`Data.define` 由来は、member 名が静的に分かり独自 `initialize` がない場合に限り、必須 member 数と位置・キーワード引数の規則で判定する。それ以外は `TYDA_EXPERIMENTAL_CHECKS=1` のときだけ |
+| `arity_mismatch` | error / experimental | Union receiver は候補型と権威ある署名が分かる場合に、引数個数・必須キーワードの不一致を候補型ごとに報告する。ソース定義の `initialize` を標準の `Class#new` 経由で呼ぶ場合は必須引数の不一致を error にする。祖先解決では `::` による絶対指定を保つ。`Struct.new` 由来の constructor は member の省略を許し、上限超過だけを報告する。`Data.define` 由来は、member 名が静的に分かり独自 `initialize` がない場合に限り、必須 member 数と位置・キーワード引数の規則で判定する。それ以外は `TYDA_EXPERIMENTAL_CHECKS=1` のときだけ |
 | `missing_record_key` | warning | 形状が分かる非空 record のすべての候補にリテラルキーが存在しないとき。空 record は動的な `to_h` の推論結果と区別できないため対象外。`Hash#merge` の引数が `untyped` や未解決型なら、結果を動的な Hash として扱い対象外。record のキー存在確認後は既知のキーへ絞り、`[] ||= ...` 後の同一 receiver・key も既知として扱う。同じrecordを位置引数またはキーワード引数でblock付き呼び出しに渡した場合、calleeがyield前に変更できるため、そのblock内のチェックは対象外。`Hash#[]` は `nil` を返すため warning にする |
-| `missing_method` | warning | receiver と祖先の method surface が完全に既知のときだけ。ActiveRecord 系ではDBスキーマや宣言RBIから動的なカラム属性を確認できない場合、対象外 |
+| `missing_method` | warning | receiver と祖先の method surface が完全に既知のときだけ。Union receiver は各候補型で欠けている method を報告する。安全 navigation の `nil` は候補から除く。ActiveRecord 系ではDBスキーマや宣言RBIから動的なカラム属性を確認できない場合、対象外 |
 | `unresolved_constant` | information | receiver 文脈で未定義と証明できるときだけ |
 
-Unknown、`untyped`、動的な record key、開いた `method_missing` 面、未解決の祖先は誤検知を避けて沈黙する。戻り値の判定では `return` / 末尾式 / 分岐 / loop の到達可能な返却型を使い、到達不能な末尾や `bot` は不一致に含めない。
+Unknown、`untyped`、動的な record key、開いた `method_missing` 面、未解決の祖先は誤検知を避けて沈黙する。Union の候補型を名前付き class に解決できない場合、引数型チェックはその呼び出し全体を Unknown として扱う。戻り値の判定では `return` / 末尾式 / 分岐 / loop の到達可能な返却型を使い、到達不能な末尾や `bot` は不一致に含めない。
 詳細は [incomplete-code-policy.md](incomplete-code-policy.md) を参照する。
 
 診断を一行だけ抑制するには、対象式の行末に `# tyda: ignore` を置く。特定の種類だけを

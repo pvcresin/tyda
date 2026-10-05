@@ -645,6 +645,7 @@ pub(crate) struct ArgumentTypeMismatch {
     pub(crate) param_name: String,
     pub(crate) expected: String,
     pub(crate) actual: String,
+    pub(crate) receiver_type: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -984,8 +985,9 @@ impl FileAnalysisSnapshot {
             engine.set_lazy_rbi_loader(rbi);
         }
         let unresolved = engine.unresolved_method_calls_for_snapshots();
-        let static_sites = engine.static_site_diagnostics_for_sites();
-        let mismatches = engine.argument_type_mismatches_for_sites();
+        let call_sites = engine.take_coalesced_arg_check_sites();
+        let static_sites = engine.static_site_diagnostics_for_sites(&call_sites);
+        let mismatches = engine.argument_type_mismatches_for_call_sites(&call_sites);
         let unresolved_constants = engine.unresolved_constant_refs_for_sites();
         let return_mismatches = engine.method_return_type_mismatches_for_sites();
         MethodCallDiagnosticSites {
@@ -5613,6 +5615,7 @@ impl<'a> InferenceEngine<'a> {
                     Sym::new(method_name),
                 ),
                 has_block: false,
+                safe_navigation: false,
             },
             class_context: String::new(),
             method_context: None,
@@ -14668,11 +14671,44 @@ impl<'a> InferenceEngine<'a> {
         if !self.record_hover_snapshots {
             return;
         }
-        if method_name.ends_with('=')
-            || !method_name
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_alphabetic() || c == '_')
+        let is_operator = matches!(
+            method_name,
+            "+" | "-"
+                | "*"
+                | "/"
+                | "%"
+                | "**"
+                | "<<"
+                | ">>"
+                | "&"
+                | "|"
+                | "^"
+                | "~"
+                | "!"
+                | "+@"
+                | "-@"
+                | "=="
+                | "==="
+                | "!="
+                | "=~"
+                | "!~"
+                | "<=>"
+                | "<"
+                | ">"
+                | "<="
+                | ">="
+                | "[]"
+                | "`"
+        );
+        let is_identifier = method_name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_');
+        let is_assignment = method_name.ends_with('=')
+            && !matches!(method_name, "==" | "===" | "!=" | "=~" | "<=" | ">=");
+        if is_assignment
+            || !(is_identifier || is_operator)
+            || (is_operator && !Self::receiver_may_resolve_to_union(receiver_type))
         {
             return;
         }
@@ -14741,6 +14777,7 @@ impl<'a> InferenceEngine<'a> {
             receiver_type: receiver_type.clone(),
             method_name: method_name.to_string(),
             is_singleton,
+            safe_navigation: call_node.is_safe_navigation(),
             class_context: class_name.to_string(),
             method_context: method_context.map(str::to_string),
             args,
@@ -18837,6 +18874,7 @@ impl<'a> InferenceEngine<'a> {
                                 receiver_type,
                                 result_type,
                                 has_block: call_node.block().is_some(),
+                                safe_navigation: call_node.is_safe_navigation(),
                             },
                             class_context: class_name.to_string(),
                             method_context: scope.method_name.clone(),
@@ -21636,7 +21674,14 @@ impl<'a> InferenceEngine<'a> {
                     let is_assignment_write =
                         method_name.ends_with('=') && call_node.is_attribute_write();
                     if let Some(msg_loc) = call_node.message_loc() {
-                        let snapshot_name = method_name.trim_end_matches('=').to_string();
+                        let snapshot_name = if is_assignment_write {
+                            method_name
+                                .strip_suffix('=')
+                                .unwrap_or(&method_name)
+                                .to_string()
+                        } else {
+                            method_name.clone()
+                        };
                         let snapshot_target = if is_assignment_write {
                             HoverTarget::Value(hover_result)
                         } else {
@@ -21644,6 +21689,7 @@ impl<'a> InferenceEngine<'a> {
                                 receiver_type: implicit_self_type.clone(),
                                 result_type: result.clone(),
                                 has_block: call_node.block().is_some(),
+                                safe_navigation: call_node.is_safe_navigation(),
                             }
                         };
                         self.push_hover_snapshot(HoverSnapshot {
@@ -22693,6 +22739,30 @@ impl<'a> InferenceEngine<'a> {
                             HashMap::new();
                         let mut user_defined_block_call_result: Option<Type> = None;
                         let mut user_defined_no_block_enumerator_result: Option<Type> = None;
+                        if self.record_hover_snapshots
+                            && matches!(safe_nav_receiver_type, Type::Union(_))
+                        {
+                            let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
+                                node,
+                                parse_result,
+                                class_name,
+                                scope,
+                            );
+                            self.record_arg_check_site(
+                                &call_node,
+                                parse_result,
+                                &safe_nav_receiver_type,
+                                &method_name,
+                                Self::receiver_is_singleton_dispatch(
+                                    &receiver,
+                                    scope.singleton_dispatch,
+                                ),
+                                class_name,
+                                scope.method_name.as_deref(),
+                                &arg_types,
+                                &kw_types,
+                            );
+                        }
                         if let Some(target_class) = self.type_to_class_name(&safe_nav_receiver_type)
                         {
                             let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
@@ -23668,7 +23738,14 @@ impl<'a> InferenceEngine<'a> {
                     let is_assignment_write =
                         method_name.ends_with('=') && call_node.is_attribute_write();
                     if let Some(msg_loc) = call_node.message_loc() {
-                        let snapshot_name = method_name.trim_end_matches('=').to_string();
+                        let snapshot_name = if is_assignment_write {
+                            method_name
+                                .strip_suffix('=')
+                                .unwrap_or(&method_name)
+                                .to_string()
+                        } else {
+                            method_name.clone()
+                        };
                         let snapshot_target = if is_assignment_write {
                             HoverTarget::Value(hover_result)
                         } else {
@@ -23676,6 +23753,7 @@ impl<'a> InferenceEngine<'a> {
                                 receiver_type: receiver_type.clone(),
                                 result_type: result.clone(),
                                 has_block: call_node.block().is_some(),
+                                safe_navigation: call_node.is_safe_navigation(),
                             }
                         };
                         self.push_hover_snapshot(HoverSnapshot {
