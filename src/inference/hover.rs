@@ -1353,6 +1353,151 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    pub(super) fn method_return_type_mismatches_for_sites(
+        &mut self,
+    ) -> Vec<MethodReturnTypeMismatch> {
+        let sites = std::mem::take(&mut self.method_return_sites);
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+
+        for site in sites {
+            let signature = self
+                .external_rbs
+                .and_then(|registry| {
+                    registry.lookup_method_sig_with_hint(
+                        &site.class_name,
+                        &site.method_name,
+                        site.is_singleton,
+                    )
+                })
+                .filter(|sig| sig.is_external_rbs_source())
+                .or_else(|| {
+                    self.ensure_external_class(&site.class_name);
+                    self.ensure_stdlib_class(&site.class_name);
+                    self.registry
+                        .lookup_method_sig_exact(
+                            &site.class_name,
+                            &site.method_name,
+                            site.is_singleton,
+                        )
+                        .filter(|sig| sig.has_explicit_signature() && !sig.synthetic_dsl_source)
+                });
+
+            let declared = site.declared.clone().or_else(|| {
+                signature.as_ref().map(|sig| {
+                    let mut returns = Vec::with_capacity(sig.overloads.len() + 1);
+                    returns.push(sig.return_type.clone());
+                    returns.extend(
+                        sig.overloads
+                            .iter()
+                            .map(|overload| overload.return_type.clone()),
+                    );
+                    returns
+                })
+            });
+            let Some(declared) = declared.filter(|types| !types.is_empty()) else {
+                continue;
+            };
+            if declared.iter().any(Self::type_is_unconstrained_for_check) {
+                continue;
+            }
+
+            let receiver = if site.is_singleton {
+                Type::Singleton(Sym::new(&site.class_name))
+            } else {
+                Type::Class(Sym::new(&site.class_name))
+            };
+            let declared: Vec<Type> = declared
+                .into_iter()
+                .map(|ty| ty.replace_self_type(&receiver))
+                .collect();
+            let declared_union = Type::from_type_vec(declared);
+            let actual = signature
+                .as_ref()
+                .map(|sig| Self::substitute_method_return_params(&site.actual, sig))
+                .unwrap_or_else(|| site.actual.clone());
+            let actual = actual.replace_self_type(&receiver);
+            let actual =
+                self.resolve_type_for_hover(&actual, &site.class_name, Some(&site.method_name));
+
+            if Self::type_is_unconstrained_for_check(&actual)
+                || self.return_type_compat(&actual, &declared_union) != ArgCompat::No
+            {
+                continue;
+            }
+
+            let expected = declared_union.to_string();
+            let actual = actual.to_string();
+            if !seen.insert((site.start, site.end, expected.clone(), actual.clone())) {
+                continue;
+            }
+            out.push(MethodReturnTypeMismatch {
+                start: site.start,
+                end: site.end,
+                method_name: site.method_name,
+                expected,
+                actual,
+            });
+        }
+
+        out
+    }
+
+    fn substitute_method_return_params(actual: &Type, sig: &MethodSig) -> Type {
+        let positional: Vec<Type> = sig
+            .params
+            .iter()
+            .filter(|param| {
+                matches!(
+                    param.kind,
+                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                )
+            })
+            .map(|param| param.param_type.clone())
+            .collect();
+        let keywords: HashMap<String, Type> = sig
+            .params
+            .iter()
+            .filter(|param| {
+                matches!(
+                    param.kind,
+                    ParamKind::KeywordRequired | ParamKind::KeywordOptional
+                )
+            })
+            .map(|param| (param.name.clone(), param.param_type.clone()))
+            .collect();
+        Self::substitute_param_refs_with_keywords(actual, &positional, &keywords)
+    }
+
+    fn return_type_compat(&mut self, actual: &Type, declared: &Type) -> ArgCompat {
+        if matches!(actual, Type::Bot) {
+            return ArgCompat::Yes;
+        }
+        if matches!(declared, Type::Bot) {
+            return if Self::type_is_unconstrained_for_check(actual) {
+                ArgCompat::Unknown
+            } else {
+                ArgCompat::No
+            };
+        }
+        if let Type::Union(parts) = actual {
+            let mut any_unknown = false;
+            for part in parts {
+                match self.return_type_compat(part, declared) {
+                    ArgCompat::No => return ArgCompat::No,
+                    ArgCompat::Unknown => any_unknown = true,
+                    ArgCompat::Yes => {}
+                }
+            }
+            return if any_unknown {
+                ArgCompat::Unknown
+            } else {
+                ArgCompat::Yes
+            };
+        }
+        self.arg_compat(actual, declared)
+    }
+
     fn rbs_positional_param_type(
         ft: &rbs_ir::FunctionType,
         idx: usize,

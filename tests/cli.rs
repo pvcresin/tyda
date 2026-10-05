@@ -1540,6 +1540,145 @@ fn argument_type_mismatches(rb_file: &std::path::Path) -> Vec<serde_json::Value>
         .collect()
 }
 
+fn return_type_mismatches(rb_file: &std::path::Path) -> Vec<serde_json::Value> {
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|diagnostic| diagnostic["code"] == "return_type_mismatch")
+        .collect()
+}
+
+#[test]
+fn diagnostics_flag_checks_declared_method_return_types() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("returns.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class ReturnContracts\n",
+            "  #: (Integer) -> String\n",
+            "  def inline(x) = 1\n",
+            "  #: (untyped) -> (String | Integer)\n",
+            "  def union(x) = 1\n",
+            "  # @rbs () -> String\n",
+            "  def rbs_comment = 1\n",
+            "  #: (untyped) -> String\n",
+            "  def branch(x)\n",
+            "    if x\n",
+            "      'ok'\n",
+            "    else\n",
+            "      1\n",
+            "    end\n",
+            "  end\n",
+            "  #: () -> String\n",
+            "  def break_value\n",
+            "    while true\n",
+            "      break 1\n",
+            "    end\n",
+            "  end\n",
+            "  #: (untyped) -> String\n",
+            "  def early_return(x)\n",
+            "    return 'ok' if x\n",
+            "    1\n",
+            "  end\n",
+            "  #: () -> String\n",
+            "  def unreachable\n",
+            "    return 'ok'\n",
+            "    1\n",
+            "  end\n",
+            "  #: () -> String\n",
+            "  def dynamic = Object.new.not_a_known_method\n",
+            "  #: () -> String\n",
+            "  def never = raise 'stop'\n",
+            "  #: () -> bot\n",
+            "  def bot_contract = 1\n",
+            "end\n",
+        ),
+    )
+    .expect("write source");
+
+    let mismatches = return_type_mismatches(&rb_file);
+    let methods: Vec<&str> = mismatches
+        .iter()
+        .map(|diagnostic| diagnostic["method_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        methods,
+        [
+            "inline",
+            "rbs_comment",
+            "branch",
+            "break_value",
+            "early_return",
+            "bot_contract"
+        ]
+    );
+    for diagnostic in &mismatches[..5] {
+        assert_eq!(diagnostic["severity"], "error");
+        assert_eq!(diagnostic["expected_type"], "String");
+    }
+    assert_eq!(mismatches[5]["severity"], "error");
+    assert_eq!(mismatches[0]["actual_type"], "1");
+    assert!(mismatches[2]["actual_type"].as_str().unwrap().contains('1'));
+    assert!(mismatches[3]["actual_type"].as_str().unwrap().contains('1'));
+    assert!(mismatches[4]["actual_type"].as_str().unwrap().contains('1'));
+    assert_eq!(mismatches[5]["expected_type"], "bot");
+    assert_eq!(mismatches[5]["actual_type"], "1");
+}
+
+#[test]
+fn diagnostics_flag_checks_sorbet_sig_return_type() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::create_dir_all(dir.path().join("sorbet")).expect("failed to create sorbet dir");
+    fs::write(dir.path().join("sorbet").join("config"), ".\n").expect("write config");
+    let rb_file = dir.path().join("sig_returns.rb");
+    fs::write(
+        &rb_file,
+        "class ReturnContracts\n  extend T::Sig\n  sig { returns(String) }\n  def sorbet = 1\nend\n",
+    )
+    .expect("write source");
+
+    let mismatches = return_type_mismatches(&rb_file);
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "sig mismatch should be reported: {mismatches:?}"
+    );
+    assert_eq!(mismatches[0]["method_name"], "sorbet");
+    assert_eq!(mismatches[0]["expected_type"], "String");
+    assert_eq!(mismatches[0]["actual_type"], "1");
+}
+
+#[test]
+fn diagnostics_flag_checks_rbs_file_method_return_types() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::create_dir_all(dir.path().join("sig")).expect("failed to create sig dir");
+    fs::write(
+        dir.path().join("sig").join("return_contract.rbs"),
+        "class ExternalReturn\n  def foo: (Integer) -> String\nend\n",
+    )
+    .expect("write RBS");
+    let rb_file = dir.path().join("app.rb");
+    fs::write(&rb_file, "class ExternalReturn\n  def foo(x) = 1\nend\n").expect("write source");
+
+    let mismatches = return_type_mismatches(&rb_file);
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "RBS mismatch should be reported: {mismatches:?}"
+    );
+    assert_eq!(mismatches[0]["method_name"], "foo");
+    assert_eq!(mismatches[0]["expected_type"], "String");
+    assert_eq!(mismatches[0]["actual_type"], "1");
+}
+
 #[test]
 fn argument_type_mismatch_respects_truthy_ivar_guards() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");

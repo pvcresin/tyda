@@ -31,7 +31,7 @@
 | `.rbs` / stdlib RBS | supported | lazy load、generic、overload、interface |
 | inline RBS | supported | `#:`、`# @rbs`、block signature、type alias |
 | Sorbet `sig` / `.rbi` | experimental | `T::Struct`、`T::Enum`、assertion、lazy merge |
-| 型診断 | supported | 確実な mismatch / 既知の missing method / constant |
+| 型診断 | supported | 確実な argument / return mismatch、既知の missing method / constant |
 | experimental diagnostics | experimental | arity、union member missing method |
 
 RBS scenario は [tests/scenarios/ruby/rbs_input/](https://github.com/pvcresin/tyda/tree/main/tests/scenarios/ruby/rbs_input)、

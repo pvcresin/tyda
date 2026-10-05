@@ -540,6 +540,7 @@ pub struct InferenceEngine<'a> {
     definition_snapshots: Vec<DefinitionSnapshot>,
     pending_constant_definition_snapshots: Vec<PendingConstantDefinitionSnapshot>,
     arg_check_sites: Vec<ArgCheckSite>,
+    method_return_sites: Vec<MethodReturnSite>,
     unresolved_constant_sites: Vec<UnresolvedConstantSite>,
     missing_record_key_sites: Vec<MissingRecordKeySite>,
     file_deps: crate::dep_graph::FileDeps,
@@ -617,6 +618,7 @@ pub struct HoverIndex {
     pub(crate) snapshots: Vec<HoverSnapshot>,
     pub(crate) definition_snapshots: Vec<DefinitionSnapshot>,
     pub(crate) arg_check_sites: Vec<ArgCheckSite>,
+    pub(crate) method_return_sites: Vec<MethodReturnSite>,
     pub(crate) unresolved_constant_sites: Vec<UnresolvedConstantSite>,
     pub(crate) missing_record_key_sites: Vec<MissingRecordKeySite>,
 }
@@ -643,6 +645,37 @@ pub(crate) struct ArgumentTypeMismatch {
     pub(crate) param_name: String,
     pub(crate) expected: String,
     pub(crate) actual: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MethodReturnSite {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) class_name: String,
+    pub(crate) method_name: String,
+    pub(crate) is_singleton: bool,
+    pub(crate) actual: Type,
+    /// Return types declared directly on this Ruby definition, when present.
+    /// `None` leaves an external RBS/RBI declaration to be resolved later.
+    pub(crate) declared: Option<Vec<Type>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MethodReturnTypeMismatch {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) method_name: String,
+    pub(crate) expected: String,
+    pub(crate) actual: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MethodCallDiagnosticSites {
+    pub(crate) unresolved_methods: Vec<UnresolvedMethodCall>,
+    pub(crate) argument_type_mismatches: Vec<ArgumentTypeMismatch>,
+    pub(crate) unresolved_constants: Vec<UnresolvedConstant>,
+    pub(crate) static_sites: Vec<StaticSiteDiagnostic>,
+    pub(crate) return_type_mismatches: Vec<MethodReturnTypeMismatch>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -919,18 +952,12 @@ impl FileAnalysisSnapshot {
         engine.argument_type_mismatches_for_sites()
     }
 
-    #[allow(clippy::type_complexity)]
     pub(crate) fn method_call_diagnostics(
         &self,
         lazy_loader: &LazyRbsLoader,
         lazy_rbi_loader: Option<&LazyRbiLoader>,
         external_registry: Option<&TypeRegistry>,
-    ) -> (
-        Vec<UnresolvedMethodCall>,
-        Vec<ArgumentTypeMismatch>,
-        Vec<UnresolvedConstant>,
-        Vec<StaticSiteDiagnostic>,
-    ) {
+    ) -> MethodCallDiagnosticSites {
         let mut engine = InferenceEngine::from_file_analysis_snapshot(self, lazy_loader);
         Self::collect_method_call_diagnostics(&mut engine, lazy_rbi_loader, external_registry)
     }
@@ -940,12 +967,7 @@ impl FileAnalysisSnapshot {
         lazy_loader: &LazyRbsLoader,
         lazy_rbi_loader: Option<&LazyRbiLoader>,
         external_registry: Option<&TypeRegistry>,
-    ) -> (
-        Vec<UnresolvedMethodCall>,
-        Vec<ArgumentTypeMismatch>,
-        Vec<UnresolvedConstant>,
-        Vec<StaticSiteDiagnostic>,
-    ) {
+    ) -> MethodCallDiagnosticSites {
         let mut engine = InferenceEngine::from_owned_file_analysis_snapshot(self, lazy_loader);
         Self::collect_method_call_diagnostics(&mut engine, lazy_rbi_loader, external_registry)
     }
@@ -954,12 +976,7 @@ impl FileAnalysisSnapshot {
         engine: &mut InferenceEngine<'a>,
         lazy_rbi_loader: Option<&'a LazyRbiLoader>,
         external_registry: Option<&'a TypeRegistry>,
-    ) -> (
-        Vec<UnresolvedMethodCall>,
-        Vec<ArgumentTypeMismatch>,
-        Vec<UnresolvedConstant>,
-        Vec<StaticSiteDiagnostic>,
-    ) {
+    ) -> MethodCallDiagnosticSites {
         if let Some(registry) = external_registry {
             engine.set_external_rbs(registry);
         }
@@ -970,7 +987,14 @@ impl FileAnalysisSnapshot {
         let static_sites = engine.static_site_diagnostics_for_sites();
         let mismatches = engine.argument_type_mismatches_for_sites();
         let unresolved_constants = engine.unresolved_constant_refs_for_sites();
-        (unresolved, mismatches, unresolved_constants, static_sites)
+        let return_mismatches = engine.method_return_type_mismatches_for_sites();
+        MethodCallDiagnosticSites {
+            unresolved_methods: unresolved,
+            argument_type_mismatches: mismatches,
+            unresolved_constants,
+            static_sites,
+            return_type_mismatches: return_mismatches,
+        }
     }
 
     pub(crate) fn experimental_check_diagnostics(
@@ -1589,6 +1613,7 @@ impl<'a> InferenceEngine<'a> {
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: hover_index.arg_check_sites,
+            method_return_sites: hover_index.method_return_sites,
             unresolved_constant_sites: hover_index.unresolved_constant_sites,
             missing_record_key_sites: hover_index.missing_record_key_sites,
             file_deps: crate::dep_graph::FileDeps::default(),
@@ -1648,6 +1673,7 @@ impl<'a> InferenceEngine<'a> {
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: Vec::new(),
+            method_return_sites: Vec::new(),
             unresolved_constant_sites: Vec::new(),
             missing_record_key_sites: Vec::new(),
             file_deps: crate::dep_graph::FileDeps::default(),
@@ -7944,6 +7970,7 @@ impl<'a> InferenceEngine<'a> {
                 snapshots: Self::dedup_hover_snapshots(self.var_snapshots),
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
+                method_return_sites: self.method_return_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
                 missing_record_key_sites: self.missing_record_key_sites,
             },
@@ -8023,6 +8050,7 @@ impl<'a> InferenceEngine<'a> {
                 snapshots: Self::dedup_hover_snapshots(self.var_snapshots),
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
+                method_return_sites: self.method_return_sites,
                 unresolved_constant_sites: self.unresolved_constant_sites,
                 missing_record_key_sites: self.missing_record_key_sites,
             },
@@ -11991,6 +12019,10 @@ impl<'a> InferenceEngine<'a> {
             Self::rbs_param_annotation_indices(&param_infos, &rbs_param_annotation_lines);
         let rbs_block_meta = Self::rbs_block_meta_from_param_annotations(&rbs_param_annotations);
         let has_rbs_param_annotations = !rbs_param_annotations.is_empty();
+        let explicit_return_contract = first_shorthand
+            .as_ref()
+            .map(|shorthand| shorthand.return_type.clone())
+            .or_else(|| return_annotation.clone());
 
         if !rbs_lines.is_empty() || return_annotation.is_some() || has_rbs_param_annotations {
             if let Some(shorthand) = first_shorthand {
@@ -12061,6 +12093,14 @@ impl<'a> InferenceEngine<'a> {
                     &method_def.param_infos,
                 );
                 self.registry.add_method_def(class_name, method_def);
+                let declared_returns = explicit_return_contract.as_ref().map(|fallback| {
+                    self.declared_method_return_types(
+                        class_name,
+                        &method_name,
+                        is_singleton,
+                        fallback,
+                    )
+                });
                 self.record_annotated_method_param_hover_snapshots(
                     class_name,
                     &method_name,
@@ -12076,13 +12116,21 @@ impl<'a> InferenceEngine<'a> {
                     is_singleton,
                 );
                 if let Some(body) = def_node.body() {
-                    self.record_annotated_method_body_hover_snapshots(
+                    let actual = self.record_annotated_method_body_hover_snapshots(
                         class_name,
                         &method_name,
                         is_singleton,
                         &proxy_param_infos,
                         &body,
                         parse_result,
+                    );
+                    self.record_method_return_site(
+                        class_name,
+                        &method_name,
+                        is_singleton,
+                        &body,
+                        actual,
+                        declared_returns,
                     );
                 }
                 if !is_singleton {
@@ -12139,6 +12187,14 @@ impl<'a> InferenceEngine<'a> {
                     &method_def.param_infos,
                 );
                 self.registry.add_method_def(class_name, method_def);
+                let declared_returns = explicit_return_contract.as_ref().map(|fallback| {
+                    self.declared_method_return_types(
+                        class_name,
+                        &method_name,
+                        is_singleton,
+                        fallback,
+                    )
+                });
                 self.record_annotated_method_param_hover_snapshots(
                     class_name,
                     &method_name,
@@ -12154,13 +12210,21 @@ impl<'a> InferenceEngine<'a> {
                     is_singleton,
                 );
                 if let Some(body) = def_node.body() {
-                    self.record_annotated_method_body_hover_snapshots(
+                    let actual = self.record_annotated_method_body_hover_snapshots(
                         class_name,
                         &method_name,
                         is_singleton,
                         &proxy_param_infos,
                         &body,
                         parse_result,
+                    );
+                    self.record_method_return_site(
+                        class_name,
+                        &method_name,
+                        is_singleton,
+                        &body,
+                        actual,
+                        declared_returns,
                     );
                 }
                 if !is_singleton {
@@ -12295,6 +12359,18 @@ impl<'a> InferenceEngine<'a> {
             Type::Nil
         };
         self.suppress_body_call_sites = saved_suppress_call_sites;
+        if method_name != "initialize"
+            && let Some(body) = def_node.body()
+        {
+            self.record_method_return_site(
+                class_name,
+                &method_name,
+                is_singleton,
+                &body,
+                return_type.clone(),
+                None,
+            );
+        }
 
         let body_scan_summary = def_node.body().and_then(|body| {
             let start = body.location().start_offset();
@@ -13244,9 +13320,9 @@ impl<'a> InferenceEngine<'a> {
         param_infos: &[ParamInfo],
         body: &Node<'_>,
         parse_result: &ParseResult<'_>,
-    ) {
+    ) -> Type {
         if !self.record_hover_snapshots {
-            return;
+            return Type::Untyped;
         }
 
         let mut scope = Scope {
@@ -13280,7 +13356,15 @@ impl<'a> InferenceEngine<'a> {
         let deferred_method_bodies_backup = self.deferred_method_bodies.clone();
         let with_options_stack_backup = self.with_options_stack.clone();
 
-        let _ = self.infer_body_return_type(class_name, body, parse_result, &mut scope);
+        let implicit_return =
+            self.infer_body_return_type(class_name, body, parse_result, &mut scope);
+        let actual_return = if scope.return_types.is_empty() {
+            implicit_return
+        } else {
+            let mut all_types = scope.return_types.clone();
+            all_types.push(implicit_return);
+            Self::merge_reachable_types(all_types)
+        };
 
         self.registry = registry_backup;
         self.constants = constants_backup;
@@ -13290,6 +13374,61 @@ impl<'a> InferenceEngine<'a> {
         self.file_deps = file_deps_backup;
         self.deferred_method_bodies = deferred_method_bodies_backup;
         self.with_options_stack = with_options_stack_backup;
+        actual_return
+    }
+
+    fn declared_method_return_types(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        fallback: &Type,
+    ) -> Vec<Type> {
+        let Some(sig) =
+            self.registry
+                .lookup_method_sig_exact(class_name, method_name, is_singleton)
+        else {
+            return vec![fallback.clone()];
+        };
+        let mut returns = Vec::with_capacity(sig.overloads.len() + 1);
+        returns.push(sig.return_type);
+        returns.extend(
+            sig.overloads
+                .into_iter()
+                .map(|overload| overload.return_type),
+        );
+        if returns.is_empty() {
+            returns.push(fallback.clone());
+        }
+        returns
+    }
+
+    fn record_method_return_site(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        body: &Node<'_>,
+        actual: Type,
+        declared: Option<Vec<Type>>,
+    ) {
+        if !self.record_hover_snapshots || method_name == "initialize" {
+            return;
+        }
+        let start = body.location().start_offset();
+        let end = body.location().end_offset();
+        if start >= end {
+            return;
+        }
+        self.method_return_sites.push(MethodReturnSite {
+            start,
+            end,
+            class_name: class_name.to_string(),
+            method_name: method_name.to_string(),
+            is_singleton,
+            actual,
+            declared,
+        });
     }
 
     fn find_method_name_span_in_definition(

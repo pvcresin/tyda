@@ -39,7 +39,7 @@ CLI、LSP、playground、scenario test は入力の与え方と解決 profile �
 | `rbs/` | inline RBS、`.rbs`、stdlib の import / lazy load / render |
 | `sorbet/` | `sig`、`.rbi`、Sorbet comment の実験的な import |
 | `rails/` | project 検出、schema / routes / inflector、Rails 共通情報 |
-| `diagnostics.rs` | missing method、unresolved constant、argument mismatch などの判定 |
+| `diagnostics.rs` | missing method、unresolved constant、argument / return type mismatch などの判定 |
 | `lsp.rs` | LSP protocol、document / file cache、CodeLens、Hover、refresh |
 | `mcp.rs` | stdio MCP transport と source-position inference tool |
 | `main.rs` | CLI 入力展開、batch projection、RBS / diagnostics の出力 |

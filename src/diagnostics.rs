@@ -295,16 +295,10 @@ pub fn method_call_diagnostics(
     lazy_rbi_loader: Option<&crate::sorbet::rbi::LazyRbiLoader>,
     workspace_registry: Option<&TypeRegistry>,
 ) -> Vec<TypeDiagnostic> {
-    let (unresolved, mismatches, unresolved_constants, static_sites) =
+    let sites =
         analysis.method_call_diagnostics(stdlib_loader, lazy_rbi_loader, workspace_registry);
-    let mut diagnostics = method_call_diagnostics_from_sites_without_experimental(
-        unresolved,
-        mismatches,
-        unresolved_constants,
-        static_sites,
-        source,
-        file_path,
-    );
+    let mut diagnostics =
+        method_call_diagnostics_from_sites_without_experimental(sites, source, file_path);
     if experimental_checks_enabled() {
         let experimental = analysis.experimental_check_diagnostics(
             stdlib_loader,
@@ -327,16 +321,10 @@ pub fn method_call_diagnostics_owned(
     let experimental = experimental_checks_enabled().then(|| {
         analysis.experimental_check_diagnostics(stdlib_loader, lazy_rbi_loader, workspace_registry)
     });
-    let (unresolved, mismatches, unresolved_constants, static_sites) =
+    let sites =
         analysis.method_call_diagnostics_into(stdlib_loader, lazy_rbi_loader, workspace_registry);
-    let mut diagnostics = method_call_diagnostics_from_sites_without_experimental(
-        unresolved,
-        mismatches,
-        unresolved_constants,
-        static_sites,
-        source,
-        file_path,
-    );
+    let mut diagnostics =
+        method_call_diagnostics_from_sites_without_experimental(sites, source, file_path);
     if let Some(experimental) = experimental {
         diagnostics.extend(experimental_diagnostics(experimental, source, file_path));
     }
@@ -344,14 +332,18 @@ pub fn method_call_diagnostics_owned(
 }
 
 fn method_call_diagnostics_from_sites_without_experimental(
-    unresolved: Vec<crate::inference::UnresolvedMethodCall>,
-    mismatches: Vec<crate::inference::ArgumentTypeMismatch>,
-    unresolved_constants: Vec<crate::inference::UnresolvedConstant>,
-    static_sites: Vec<crate::inference::StaticSiteDiagnostic>,
+    sites: crate::inference::MethodCallDiagnosticSites,
     source: &str,
     file_path: &str,
 ) -> Vec<TypeDiagnostic> {
-    let mut diagnostics: Vec<TypeDiagnostic> = unresolved
+    let crate::inference::MethodCallDiagnosticSites {
+        unresolved_methods,
+        argument_type_mismatches,
+        unresolved_constants,
+        static_sites,
+        return_type_mismatches,
+    } = sites;
+    let mut diagnostics: Vec<TypeDiagnostic> = unresolved_methods
         .into_iter()
         .map(|call| {
             let (line, column) = byte_offset_to_line_col(source, call.start);
@@ -378,7 +370,7 @@ fn method_call_diagnostics_from_sites_without_experimental(
             }
         })
         .collect();
-    diagnostics.extend(mismatches.into_iter().map(|mismatch| {
+    diagnostics.extend(argument_type_mismatches.into_iter().map(|mismatch| {
         let (line, column) = byte_offset_to_line_col(source, mismatch.start);
         let (end_line, end_column) = byte_offset_to_line_col(source, mismatch.end);
         let message = argument_type_mismatch_message(
@@ -402,6 +394,30 @@ fn method_call_diagnostics_from_sites_without_experimental(
             expected_type: Some(mismatch.expected),
             actual_type: Some(mismatch.actual),
             param_name: Some(mismatch.param_name),
+        }
+    }));
+    diagnostics.extend(return_type_mismatches.into_iter().map(|mismatch| {
+        let (line, column) = byte_offset_to_line_col(source, mismatch.start);
+        let (end_line, end_column) = byte_offset_to_line_col(source, mismatch.end);
+        TypeDiagnostic {
+            path: file_path.to_string(),
+            line,
+            column,
+            end_line,
+            end_column,
+            byte_start: mismatch.start,
+            byte_end: mismatch.end,
+            severity: "error",
+            code: "return_type_mismatch",
+            message: format!(
+                "Expected `{}` as the return type of `{}`, but got `{}`",
+                mismatch.expected, mismatch.method_name, mismatch.actual
+            ),
+            method_name: mismatch.method_name,
+            unresolved_method: String::new(),
+            expected_type: Some(mismatch.expected),
+            actual_type: Some(mismatch.actual),
+            param_name: None,
         }
     }));
     diagnostics.extend(unresolved_constants.into_iter().map(|constant| {

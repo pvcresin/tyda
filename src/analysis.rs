@@ -15,7 +15,7 @@ use crate::sorbet::annotations::{
 };
 use crate::sorbet::comments::extract_sorbet_self_bind_comments;
 use crate::sorbet::rbi::LazyRbiLoader;
-use crate::types::Type;
+use crate::types::{MethodSig, Type};
 
 /// 64MiB because a deep AST can exhaust the default worker stack (~2MiB); this is just a virtual reservation, so it's RSS-neutral.
 pub const ANALYSIS_WORKER_STACK_SIZE: usize = 64 * 1024 * 1024;
@@ -710,6 +710,32 @@ struct PlaygroundDisplayProjection {
     suppressor: SyntaxErrorSuppressor,
 }
 
+pub(crate) fn code_lens_method_sig(
+    owner: &str,
+    source_sig: &MethodSig,
+    rbs_registry: Option<&TypeRegistry>,
+) -> MethodSig {
+    let Some(external_sig) = rbs_registry
+        .and_then(|registry| {
+            registry.lookup_method_sig_with_hint(owner, &source_sig.name, source_sig.is_singleton)
+        })
+        .filter(MethodSig::is_external_rbs_source)
+    else {
+        return source_sig.clone();
+    };
+
+    let mut resolved = external_sig;
+    resolved.is_singleton = source_sig.is_singleton;
+    resolved.rbs_annotated = source_sig.rbs_annotated;
+    resolved.rbs_inline_annotated = source_sig.rbs_inline_annotated;
+    resolved.sig_annotated = source_sig.sig_annotated;
+    resolved.rbs_file_source = source_sig.rbs_file_source;
+    resolved.synthetic_dsl_source = source_sig.synthetic_dsl_source;
+    resolved.loc = source_sig.loc;
+    resolved.is_private = source_sig.is_private;
+    resolved
+}
+
 fn playground_display_projection(
     source: &str,
     user_rbs: Option<&TypeRegistry>,
@@ -718,7 +744,14 @@ fn playground_display_projection(
     snapshot: &FileAnalysisSnapshot,
 ) -> PlaygroundDisplayProjection {
     let rbs = crate::rbs::render::render_rbs_for_file(snapshot.registry(), file_path);
-    let methods = snapshot.methods_for_file(file_path);
+    let methods: Vec<(String, MethodSig)> = snapshot
+        .methods_for_file(file_path)
+        .into_iter()
+        .map(|(class_name, sig)| {
+            let sig = code_lens_method_sig(&class_name, &sig, user_rbs);
+            (class_name, sig)
+        })
+        .collect();
     let method_def_lines: Vec<u32> = methods
         .iter()
         .filter_map(|(_class, sig)| sig.loc.map(|loc| loc.line))
