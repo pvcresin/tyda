@@ -626,3 +626,31 @@ class Object < BasicObject
   def check: ((Integer | String) a) -> (Integer | String)?
 end
 ```
+
+## Infer values used by a pattern guard
+
+### update
+
+```ruby
+def valid_capacity?(capacity) = capacity < 100
+
+def classify_capacity(value)
+  case value
+  in [amount] if valid_capacity?(amount)
+    :available
+  else
+    :full
+  end
+end
+
+classify_capacity([20])
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def valid_capacity?: (Integer capacity) -> bool
+  def classify_capacity: (Array[Integer] value) -> (:available | :full)
+end
+```

@@ -18274,6 +18274,7 @@ impl<'a> InferenceEngine<'a> {
                     class_name,
                     &match_node.pattern(),
                     parse_result,
+                    Some(&subject_type),
                     scope,
                 );
                 let mut binding_type =
@@ -18291,6 +18292,7 @@ impl<'a> InferenceEngine<'a> {
                     class_name,
                     &match_node.pattern(),
                     parse_result,
+                    Some(&subject_type),
                     scope,
                 );
                 let binding_type =
@@ -19320,6 +19322,9 @@ impl<'a> InferenceEngine<'a> {
                         None
                     }
                 });
+                let subject_type = case_node.predicate().map(|predicate| {
+                    self.infer_node_type(class_name, &predicate, parse_result, scope)
+                });
 
                 let mut branch_types: Vec<Type> = Vec::new();
                 let mut has_irrefutable_branch = false;
@@ -19332,6 +19337,7 @@ impl<'a> InferenceEngine<'a> {
                             class_name,
                             &in_node.pattern(),
                             parse_result,
+                            subject_type.as_ref(),
                             scope,
                         );
                         let mut branch_scope = scope.fork_for_branch();
@@ -23820,6 +23826,9 @@ impl<'a> InferenceEngine<'a> {
                             None
                         }
                     });
+                    let subject_type = case_node.predicate().map(|predicate| {
+                        self.infer_node_type(class_name, &predicate, parse_result, scope)
+                    });
 
                     for condition in case_node.conditions().iter() {
                         if let Node::InNode { .. } = &condition {
@@ -23830,6 +23839,7 @@ impl<'a> InferenceEngine<'a> {
                                 class_name,
                                 &in_node.pattern(),
                                 parse_result,
+                                subject_type.as_ref(),
                                 scope,
                             );
                             let mut branch_scope = scope.fork_for_branch();
@@ -45826,10 +45836,12 @@ impl<'a> InferenceEngine<'a> {
                 }
                 let match_node = predicate.as_match_predicate_node()?;
                 let var_name = Self::extract_local_var_name_in_scope(&match_node.value(), scope)?;
+                let subject_type = scope.get(&var_name);
                 let narrow_ty = self.extract_pattern_narrowing(
                     class_name,
                     &match_node.pattern(),
                     parse_result,
+                    subject_type,
                     scope,
                 )?;
                 Some(self.narrowing_with_default_negation(
@@ -46484,16 +46496,30 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         class_name: &str,
         pattern: &Node<'_>,
-        _parse_result: &ParseResult<'_>,
+        parse_result: &ParseResult<'_>,
+        subject_type: Option<&Type>,
         scope: &Scope,
     ) -> Option<Type> {
         match pattern {
             Node::IfNode { .. } => {
                 let if_node = pattern.as_if_node()?;
-                self.infer_node_type(class_name, &if_node.predicate(), _parse_result, scope);
                 let statements = if_node.statements()?;
                 let inner = statements.body().iter().last()?;
-                self.extract_pattern_narrowing(class_name, &inner, _parse_result, scope)
+                let narrowed = self.extract_pattern_narrowing(
+                    class_name,
+                    &inner,
+                    parse_result,
+                    subject_type,
+                    scope,
+                );
+                let mut guard_scope = scope.fork_for_branch();
+                if let Some(subject_type) = subject_type {
+                    let binding_type =
+                        Self::pattern_binding_type(Some(subject_type), narrowed.as_ref());
+                    self.bind_pattern_locals(&inner, &binding_type, &mut guard_scope);
+                }
+                self.infer_node_type(class_name, &if_node.predicate(), parse_result, &guard_scope);
+                narrowed
             }
             Node::ConstantReadNode { .. } => {
                 let c = pattern.as_constant_read_node()?;
@@ -46513,7 +46539,13 @@ impl<'a> InferenceEngine<'a> {
             )),
             Node::CapturePatternNode { .. } => {
                 let capture = pattern.as_capture_pattern_node()?;
-                self.extract_pattern_narrowing(class_name, &capture.value(), _parse_result, scope)
+                self.extract_pattern_narrowing(
+                    class_name,
+                    &capture.value(),
+                    parse_result,
+                    subject_type,
+                    scope,
+                )
             }
             Node::PinnedVariableNode { .. } => {
                 if !self.supports_pin_pattern() {
@@ -46528,7 +46560,7 @@ impl<'a> InferenceEngine<'a> {
                     return None;
                 }
                 let pinned = pattern.as_pinned_expression_node()?;
-                Some(self.infer_node_type(class_name, &pinned.expression(), _parse_result, scope))
+                Some(self.infer_node_type(class_name, &pinned.expression(), parse_result, scope))
             }
             _ => None,
         }
@@ -46638,14 +46670,15 @@ impl<'a> InferenceEngine<'a> {
             let match_node = predicate
                 .as_match_predicate_node()
                 .expect("must be MatchPredicateNode");
+            let subject_type =
+                self.infer_node_type(class_name, &match_node.value(), parse_result, scope);
             let narrowed = self.extract_pattern_narrowing(
                 class_name,
                 &match_node.pattern(),
                 parse_result,
+                Some(&subject_type),
                 scope,
             );
-            let subject_type =
-                self.infer_node_type(class_name, &match_node.value(), parse_result, scope);
             let binding_type = Self::pattern_binding_type(Some(&subject_type), narrowed.as_ref());
             self.bind_pattern_locals(&match_node.pattern(), &binding_type, scope);
         }
