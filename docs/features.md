@@ -12,7 +12,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - stdio MCP server による AI agent 向けの位置指定型推論
 - Rails / gem DSL plugin
 - Sorbet `sig` / `.rbi` の実験的な補助
-- wasm playground（[Playground](https://pvcresin.github.io/tyda/playground)）
+- wasm playground（[Playground](https://pvcresin.github.io/tyda/playground/)）
 
 ## Ruby 推論
 

@@ -8,7 +8,7 @@ hero:
   actions:
     - theme: brand
       text: Try the Playground
-      link: /playground
+      link: /playground/
       target: _self
     - theme: alt
       text: Read the Documentation

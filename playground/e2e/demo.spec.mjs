@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 const PAGES_BASE_PATH = "/tyda";
 const LANDING_PATH = `${PAGES_BASE_PATH}/`;
 const DOCS_PATH = `${PAGES_BASE_PATH}/docs/`;
-const PLAYGROUND_PATH = `${PAGES_BASE_PATH}/playground`;
+const PLAYGROUND_PATH = `${PAGES_BASE_PATH}/playground/`;
 
 async function waitForPlayground(page) {
   await expect(page).toHaveTitle(/Tyda Playground/);
@@ -31,6 +31,10 @@ async function expectLanding(page) {
 // builds can differ bit-for-bit.
 
 test("serves the landing page and documentation routes", async ({ page }) => {
+  const cleanPathResponse = await page.request.get(`${PAGES_BASE_PATH}/playground`);
+  expect(cleanPathResponse.status()).toBe(200);
+  expect(new URL(cleanPathResponse.url()).pathname).toBe(`${PAGES_BASE_PATH}/playground/`);
+
   await page.goto(LANDING_PATH);
   await expectLanding(page);
   await expect(page.getByRole("link", { name: "Try the Playground", exact: true })).toHaveAttribute(
