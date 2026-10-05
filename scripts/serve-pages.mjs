@@ -61,7 +61,16 @@ const server = createServer(async (request, response) => {
   }
 
   try {
-    const requested = requestedPath(request.url || "/");
+    const url = new URL(request.url || "/", "http://localhost");
+    const requested = requestedPath(url.href);
+    if (requested && !url.pathname.endsWith("/")) {
+      const info = await stat(requested).catch(() => null);
+      if (info?.isDirectory()) {
+        response.writeHead(301, { Location: url.pathname + "/" + url.search });
+        response.end();
+        return;
+      }
+    }
     const filePath = requested && (await findFile(requested));
     if (!filePath) {
       response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });

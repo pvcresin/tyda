@@ -2,7 +2,7 @@
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/pvcresin/tyda)
 
-[Website](https://pvcresin.github.io/tyda/) · [Playground](https://pvcresin.github.io/tyda/play/) · [Documentation](https://pvcresin.github.io/tyda/docs/)
+[Website](https://pvcresin.github.io/tyda/) · [Playground](https://pvcresin.github.io/tyda/playground/) · [Documentation](https://pvcresin.github.io/tyda/docs/)
 
 Tyda (pronounced “tie-duh”, /ˈtaɪdə/) is a type inference tool for Ruby and Rails. It infers useful types without requiring type annotations; its name comes from 怠惰, the Japanese word for “laziness”.
 
@@ -21,7 +21,7 @@ Tyda (pronounced “tie-duh”, /ˈtaɪdə/) is a type inference tool for Ruby a
 
 ### Try the Playground
 
-The [Playground](https://pvcresin.github.io/tyda/play/) is the quickest way to try Tyda. No installation is required.
+The [Playground](https://pvcresin.github.io/tyda/playground/) is the quickest way to try Tyda. No installation is required.
 
 ### Use Tyda in VS Code
 

@@ -125,6 +125,7 @@ const SAMPLE_RUBY = `class User
   # Unresolved method calls show up as diagnostics (squiggles)
   def oops = totally_undefined_helper(@name)
 end
+
 `;
 
 const SAMPLE_RBS = `# Hand-written RBS here is passed as type context for the Ruby pane on the left.
@@ -132,13 +133,14 @@ const SAMPLE_RBS = `# Hand-written RBS here is passed as type context for the Ru
 # class User
 #   def name: () -> String
 # end
+
 `;
 
 const EXAMPLES: Example[] = [
   { id: "overview", label: "Overview", state: { ruby: SAMPLE_RUBY, rbs: SAMPLE_RBS } },
   {
     id: "map",
-    label: "Array#map",
+    label: "Array",
     state: {
       ruby: `class C
   def foo = [1, 2, 3].map { |n| n }
@@ -169,47 +171,8 @@ end
     },
   },
   {
-    id: "initialize-arguments",
-    label: "initialize and arguments",
-    state: {
-      ruby: `class C
-  def initialize(value)
-    @value = value
-  end
-
-  def bar = @value
-
-  def baz(value) = value
-end
-
-C.new(1)
-C.new("x")
-C.new("x").baz(1)
-
-`,
-      rbs: "",
-    },
-  },
-  {
-    id: "literal-union",
-    label: "Literal String Union",
-    state: {
-      ruby: `class C
-  def foo(flag) = flag ? "a" : "b"
-
-  def bar(flag) = foo(flag)
-end
-
-C.new.bar(true)
-C.new.bar(false)
-
-`,
-      rbs: "",
-    },
-  },
-  {
-    id: "hash",
-    label: "Hash",
+    id: "record",
+    label: "Record",
     state: {
       ruby: `class C
   def foo = { a: 1, b: "x" }
@@ -222,14 +185,50 @@ end
     },
   },
   {
+    id: "initialize-arguments",
+    label: "initialize and arguments",
+    state: {
+      ruby: `class C
+  def initialize(value)
+    @value = value
+  end
+
+  def bar = @value
+end
+
+C.new(1)
+
+`,
+      rbs: "",
+    },
+  },
+  {
+    id: "literal-union",
+    label: "Literal and Union",
+    state: {
+      ruby: `class C
+  def foo(flag) = flag ? "a" : "b"
+
+  def bar(flag) = foo(flag)
+end
+
+C.new.bar(true)
+
+`,
+      rbs: "",
+    },
+  },
+  {
     id: "define-method",
-    label: "define_method",
+    label: "Dynamic",
     state: {
       ruby: `class C
   define_method(:foo) { :ok }
 
-  def baz = foo
+  alias_method :bar, :foo
 end
+
+C.new.bar
 
 `,
       rbs: "",
@@ -237,12 +236,13 @@ end
   },
   {
     id: "mixins",
-    label: "include / extend / included",
+    label: "include and extend",
     state: {
       ruby: `module M
   def foo = :foo
 
   module ClassMethods
+    #: -> 1
     def bar = 1
   end
 
@@ -264,7 +264,7 @@ C.bar
   },
   {
     id: "rbs-signature",
-    label: "RBS signature",
+    label: "RBS",
     state: {
       ruby: `class C
   def bar = foo
@@ -280,20 +280,22 @@ end
   },
   {
     id: "rbs-comments",
-    label: "RBS comments and diagnostics",
+    label: "RBS comments",
     state: {
       ruby: `class C
-  #: (String) -> Integer
-  def foo(value) = value.to_i
+  #: (Integer) -> String
+  def foo(value) = value.to_s
 
-  # @rbs (Integer) -> String
+  # @rbs value: Symbol
+  # @rbs return: String
   def bar(value) = value.to_s
 end
 
-C.new.foo("1")
 C.new.foo(1)
-C.new.bar(1)
-C.new.missing
+C.new.foo("1")
+
+C.new.bar(:a)
+C.new.bar("a")
 
 `,
       rbs: "",
