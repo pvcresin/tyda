@@ -1331,7 +1331,13 @@ impl<'a> InferenceEngine<'a> {
                 Type::ReceiverMethodRef(receiver, method)
                     if receiver.as_ref() == member && method.as_str() == snap.name
             );
-            if !member_lacks_method
+            if !member_lacks_method {
+                continue;
+            }
+            let unresolved_method = format!("{class}#{}", snap.name);
+            if Self::is_known_class_body_dsl_unresolved_call(snap, &unresolved_method)
+                || self.module_call_resolvable_via_includers(&unresolved_method, &snap.name)
+                || self.dsl_plugin_method_return(member, &snap.name).is_some()
                 || !self.member_surface_provably_complete_cached(&class, surface_cache)
             {
                 continue;
@@ -1340,7 +1346,7 @@ impl<'a> InferenceEngine<'a> {
                 start: snap.start,
                 end: snap.end,
                 method_name: snap.name.clone(),
-                unresolved_method: format!("{class}#{}", snap.name),
+                unresolved_method,
             });
         }
         (!calls.is_empty()).then_some(calls)
@@ -1348,8 +1354,8 @@ impl<'a> InferenceEngine<'a> {
 
     fn member_surface_provably_complete(&mut self, class: &str) -> bool {
         let owner = class.trim_scope_prefix();
-        // If the receiver has degraded to a bare `Object`, self is unknown = Unknown.
-        if owner == "Object" {
+        // These broad built-in types can stand in for dynamically extended receivers.
+        if matches!(owner, "Object" | "Class" | "Module") {
             return false;
         }
         // There's no way to know the surface of something from an undefined class (e.g. a phantom singleton).

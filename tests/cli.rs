@@ -3556,6 +3556,46 @@ fn diagnostics_flag_suppresses_missing_method_on_bare_class_or_module_receiver()
     );
 }
 
+#[test]
+fn union_missing_method_treats_bare_class_surface_as_unknown() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("union_class_recv.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "#: (Class | String) -> void\n",
+            "def check(receiver)\n",
+            "  receiver.reflect_on_association(:foo)\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let messages: Vec<String> = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|diagnostic| diagnostic["code"] == "missing_method")
+        .filter_map(|diagnostic| diagnostic["message"].as_str().map(str::to_string))
+        .collect();
+
+    assert_eq!(
+        messages.len(),
+        1,
+        "only the String member is closed: {stdout}"
+    );
+    assert!(
+        messages[0].contains("String"),
+        "wrong union member: {messages:?}"
+    );
+}
+
 // A qualified constant path's head goes through the same 3-phase resolution as a
 // bare constant (lexical -> ancestor -> top-level). Confirms that a qualified path
 // whose head names a nested namespace in an included module resolves, and doesn't
