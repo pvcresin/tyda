@@ -16,6 +16,7 @@ pub(crate) enum HoverTarget {
         receiver_type: Type,
         result_type: Type,
         has_block: bool,
+        safe_navigation: bool,
     },
     MethodDefinition {
         owner_type: Type,
@@ -47,6 +48,7 @@ pub(crate) struct ArgCheckSite {
     pub(crate) receiver_type: Type,
     pub(crate) method_name: String,
     pub(crate) is_singleton: bool,
+    pub(crate) safe_navigation: bool,
     pub(crate) class_context: String,
     pub(crate) method_context: Option<String>,
     pub(crate) args: Vec<ArgCheckArg>,
@@ -107,6 +109,18 @@ pub(crate) enum ArgCompat {
 }
 
 impl<'a> InferenceEngine<'a> {
+    pub(super) fn receiver_may_resolve_to_union(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Union(_)
+                | Type::ParamRef(_)
+                | Type::KeywordParamRef(_)
+                | Type::IvarRef(_)
+                | Type::MethodReturnRef(_, _)
+                | Type::ReceiverMethodRef(_, _)
+        )
+    }
+
     pub(super) fn unresolved_method_calls_for_snapshots(&mut self) -> Vec<UnresolvedMethodCall> {
         let snapshots = std::mem::take(&mut self.var_snapshots);
         let mut seen = BTreeSet::new();
@@ -116,8 +130,26 @@ impl<'a> InferenceEngine<'a> {
             std::collections::HashMap::new();
         let mut ancestor_complete_cache: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
+        let mut union_surface_cache: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
         for snap in snapshots {
             if snap.start >= snap.end {
+                continue;
+            }
+            if let Some(unresolved_members) =
+                self.union_member_missing_method_calls_for_snapshot(&snap, &mut union_surface_cache)
+            {
+                for call in unresolved_members {
+                    let key = (
+                        call.start,
+                        call.end,
+                        call.method_name.clone(),
+                        call.unresolved_method.clone(),
+                    );
+                    if seen.insert(key) {
+                        calls.push(call);
+                    }
+                }
                 continue;
             }
             let HoverTarget::MethodCall {
@@ -434,6 +466,7 @@ impl<'a> InferenceEngine<'a> {
         if existing.block_shape.is_none() {
             existing.block_shape = incoming.block_shape;
         }
+        existing.safe_navigation |= incoming.safe_navigation;
     }
 
     fn coalesce_arg_check_sites(sites: Vec<ArgCheckSite>) -> Vec<ArgCheckSite> {
@@ -461,9 +494,20 @@ impl<'a> InferenceEngine<'a> {
         merged
     }
 
+    pub(super) fn take_coalesced_arg_check_sites(&mut self) -> Vec<ArgCheckSite> {
+        Self::coalesce_arg_check_sites(std::mem::take(&mut self.arg_check_sites))
+    }
+
     pub(super) fn argument_type_mismatches_for_sites(&mut self) -> Vec<ArgumentTypeMismatch> {
-        let sites = Self::coalesce_arg_check_sites(std::mem::take(&mut self.arg_check_sites));
-        let mut seen = BTreeSet::new();
+        let sites = self.take_coalesced_arg_check_sites();
+        self.argument_type_mismatches_for_call_sites(&sites)
+    }
+
+    pub(super) fn argument_type_mismatches_for_call_sites(
+        &mut self,
+        sites: &[ArgCheckSite],
+    ) -> Vec<ArgumentTypeMismatch> {
+        let mut seen: BTreeSet<(usize, usize, Option<String>)> = BTreeSet::new();
         let mut out = Vec::new();
         for site in sites {
             let receiver = self.resolve_type_for_hover(
@@ -476,163 +520,246 @@ impl<'a> InferenceEngine<'a> {
             } else {
                 receiver
             };
-            let Some(class_name) = self.type_to_class_name(&lookup_receiver) else {
-                continue;
-            };
-            self.ensure_external_class(&class_name);
-            let prefer_singleton =
-                site.is_singleton || matches!(lookup_receiver, Type::Singleton(_));
-            let Some(sig) = self.registry.lookup_method_sig_for_receiver_with_hint(
-                &class_name,
-                &site.method_name,
-                prefer_singleton,
-            ) else {
-                continue;
-            };
-            // Only annotated declarations qualify; `rbs_file_source` alone (call-site inference from an empty RBI def) is not treated as authoritative.
-            if !(sig.rbs_annotated || sig.rbs_inline_annotated || sig.sig_annotated) {
-                continue;
-            }
-            // For overloads, report only when every candidate is incompatible; stay silent if even one could match.
-            if !sig.overloads.is_empty() {
-                self.overloaded_arg_mismatches_for_site(
-                    &site,
-                    &class_name,
-                    prefer_singleton,
-                    &sig,
-                    &mut seen,
-                    &mut out,
-                );
-                continue;
-            }
-
-            let positional: Vec<&Param> = sig
-                .params
-                .iter()
-                .filter(|p| {
-                    matches!(
-                        p.kind,
-                        ParamKind::Required | ParamKind::Optional | ParamKind::Rest
-                    )
-                })
-                .collect();
-            let rest_pos = positional.iter().position(|p| p.kind == ParamKind::Rest);
-            // Skip when a required param follows `*rest`, since positional mapping is then ambiguous.
-            let positional_ambiguous = matches!(rest_pos, Some(ri) if ri != positional.len() - 1);
-            let fixed_count = rest_pos.unwrap_or(positional.len());
-            let rest_param = rest_pos.map(|ri| positional[ri]);
-            let kwrest = sig.params.iter().find(|p| p.kind == ParamKind::DoubleRest);
-
-            // Judge duck alias / interface params structurally against raw RBS, since collapsing them to nominal would cause false positives.
-            let rbs_function_type: Option<rbs_ir::FunctionType> = {
-                let types = self.registry.lookup_rbs_method_types_with_hint(
-                    &class_name,
-                    &site.method_name,
-                    prefer_singleton,
-                );
-                (types.len() == 1).then(|| types[0].function_type.clone())
-            };
-
-            let mut pos_i = 0usize;
-            for arg in &site.args {
-                // Structural slots are evaluated against raw RBS via `rbs_param_compat` (an already-collapsed nominal type would miss them).
-                let mut structural_rbs: Option<&rbs_ir::RbsType> = None;
-                let param = match &arg.keyword {
-                    None => {
-                        let idx = arg.positional_index.unwrap_or(pos_i);
-                        pos_i = pos_i.max(idx.saturating_add(1));
-                        if positional_ambiguous {
-                            continue;
-                        }
-                        let rbs_ty = rbs_function_type
-                            .as_ref()
-                            .and_then(|ft| Self::rbs_positional_param_type(ft, idx));
-                        if rbs_ty.is_some_and(Self::rbs_type_is_structural_liberal) {
-                            structural_rbs = rbs_ty;
-                        }
-                        if idx < fixed_count {
-                            positional[idx]
-                        } else if let Some(rest) = rest_param {
-                            rest
-                        } else {
-                            // Arity overflow — not a type error.
-                            continue;
-                        }
-                    }
-                    Some(name) => {
-                        let rbs_ty = rbs_function_type
-                            .as_ref()
-                            .and_then(|ft| Self::rbs_keyword_param_type(ft, name));
-                        if rbs_ty.is_some_and(Self::rbs_type_is_structural_liberal) {
-                            structural_rbs = rbs_ty;
-                        }
-                        if let Some(p) = sig.params.iter().find(|p| {
-                            matches!(
-                                p.kind,
-                                ParamKind::KeywordRequired | ParamKind::KeywordOptional
-                            ) && p.name == *name
-                        }) {
-                            p
-                        } else if let Some(kr) = kwrest {
-                            kr
-                        } else {
-                            continue;
-                        }
-                    }
-                };
-
-                // A param whose type is only a literal/`nil` derived from its default value is not treated as a constraint (avoids false positives).
-                if structural_rbs.is_none()
-                    && matches!(
-                        param.param_type,
-                        Type::Nil
-                            | Type::LiteralSymbol(_)
-                            | Type::LiteralString(_)
-                            | Type::LiteralInteger(_)
-                            | Type::LiteralFloat(_)
-                    )
+            if let Type::Union(parts) = &lookup_receiver {
+                // As with missing-method checks, an unknown receiver member keeps the whole call unknown.
+                if parts
+                    .iter()
+                    .any(|member| self.type_to_class_name(member).is_none())
                 {
                     continue;
                 }
-                let actual = self.resolve_type_for_hover(
-                    &arg.ty,
-                    &site.class_context,
-                    site.method_context.as_deref(),
+                for member in parts {
+                    let member_display = if matches!(
+                        member,
+                        Type::LiteralInteger(_)
+                            | Type::LiteralFloat(_)
+                            | Type::LiteralString(_)
+                            | Type::LiteralSymbol(_)
+                    ) {
+                        self.type_to_class_name(member)
+                            .unwrap_or_else(|| member.to_string())
+                    } else {
+                        member.to_string()
+                    };
+                    self.argument_type_mismatches_for_site_receiver(
+                        site,
+                        member,
+                        Some(&member_display),
+                        &mut seen,
+                        &mut out,
+                    );
+                }
+            } else {
+                self.argument_type_mismatches_for_site_receiver(
+                    site,
+                    &lookup_receiver,
+                    None,
+                    &mut seen,
+                    &mut out,
                 );
-                let compat = match structural_rbs {
-                    Some(rbs_ty) => self.rbs_param_compat(&actual, rbs_ty),
-                    None => self.arg_compat(&actual, &param.param_type),
-                };
-                if compat != ArgCompat::No {
-                    continue;
-                }
-                if arg.start >= arg.end || !seen.insert((arg.start, arg.end)) {
-                    continue;
-                }
-                let expected = match structural_rbs {
-                    Some(rbs_ty) => Self::rbs_param_type_display(rbs_ty),
-                    None => param.param_type.to_string(),
-                };
-                out.push(ArgumentTypeMismatch {
-                    start: arg.start,
-                    end: arg.end,
-                    method_name: site.method_name.clone(),
-                    param_name: param.name.clone(),
-                    expected,
-                    actual: actual.to_string(),
-                });
             }
         }
         out
     }
 
+    fn argument_type_mismatches_for_site_receiver(
+        &mut self,
+        site: &ArgCheckSite,
+        lookup_receiver: &Type,
+        receiver_type: Option<&str>,
+        seen: &mut BTreeSet<(usize, usize, Option<String>)>,
+        out: &mut Vec<ArgumentTypeMismatch>,
+    ) {
+        let Some(class_name) = self.type_to_class_name(lookup_receiver) else {
+            return;
+        };
+        self.ensure_external_class(&class_name);
+        let prefer_singleton = site.is_singleton || matches!(lookup_receiver, Type::Singleton(_));
+        if receiver_type.is_some() {
+            let stdlib_classes = self
+                .registry
+                .lookup_method_sig_for_receiver_with_hint(
+                    &class_name,
+                    &site.method_name,
+                    prefer_singleton,
+                )
+                .filter(|sig| sig.rbs_annotated || sig.rbs_inline_annotated || sig.sig_annotated)
+                .map(|sig| {
+                    let mut classes = BTreeSet::new();
+                    for param in &sig.params {
+                        Self::collect_diagnostic_type_classes(&param.param_type, &mut classes);
+                    }
+                    for overload in &sig.overloads {
+                        for param in &overload.params {
+                            Self::collect_diagnostic_type_classes(&param.param_type, &mut classes);
+                        }
+                    }
+                    for arg in &site.args {
+                        Self::collect_diagnostic_type_classes(&arg.ty, &mut classes);
+                    }
+                    classes
+                })
+                .unwrap_or_default();
+            for class in stdlib_classes {
+                if Self::is_core_rbs_class(&class) {
+                    self.ensure_stdlib_class(&class);
+                }
+            }
+        }
+        let Some(sig) = self.registry.lookup_method_sig_for_receiver_with_hint(
+            &class_name,
+            &site.method_name,
+            prefer_singleton,
+        ) else {
+            return;
+        };
+        // Only annotated declarations qualify; `rbs_file_source` alone (call-site inference from an empty RBI def) is not treated as authoritative.
+        if !(sig.rbs_annotated || sig.rbs_inline_annotated || sig.sig_annotated) {
+            return;
+        }
+        // For overloads, report only when every candidate is incompatible; stay silent if even one could match.
+        if !sig.overloads.is_empty() {
+            self.overloaded_arg_mismatches_for_site(
+                site,
+                &class_name,
+                prefer_singleton,
+                &sig,
+                receiver_type,
+                seen,
+                out,
+            );
+            return;
+        }
+
+        let positional: Vec<&Param> = sig
+            .params
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.kind,
+                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                )
+            })
+            .collect();
+        let rest_pos = positional.iter().position(|p| p.kind == ParamKind::Rest);
+        // Skip when a required param follows `*rest`, since positional mapping is then ambiguous.
+        let positional_ambiguous = matches!(rest_pos, Some(ri) if ri != positional.len() - 1);
+        let fixed_count = rest_pos.unwrap_or(positional.len());
+        let rest_param = rest_pos.map(|ri| positional[ri]);
+        let kwrest = sig.params.iter().find(|p| p.kind == ParamKind::DoubleRest);
+
+        // Judge duck alias / interface params structurally against raw RBS, since collapsing them to nominal would cause false positives.
+        let rbs_function_type: Option<rbs_ir::FunctionType> = {
+            let types = self.registry.lookup_rbs_method_types_with_hint(
+                &class_name,
+                &site.method_name,
+                prefer_singleton,
+            );
+            (types.len() == 1).then(|| types[0].function_type.clone())
+        };
+
+        let mut pos_i = 0usize;
+        for arg in &site.args {
+            // Structural slots are evaluated against raw RBS via `rbs_param_compat` (an already-collapsed nominal type would miss them).
+            let mut structural_rbs: Option<&rbs_ir::RbsType> = None;
+            let param = match &arg.keyword {
+                None => {
+                    let idx = arg.positional_index.unwrap_or(pos_i);
+                    pos_i = pos_i.max(idx.saturating_add(1));
+                    if positional_ambiguous {
+                        continue;
+                    }
+                    let rbs_ty = rbs_function_type
+                        .as_ref()
+                        .and_then(|ft| Self::rbs_positional_param_type(ft, idx));
+                    if rbs_ty.is_some_and(Self::rbs_type_is_structural_liberal) {
+                        structural_rbs = rbs_ty;
+                    }
+                    if idx < fixed_count {
+                        positional[idx]
+                    } else if let Some(rest) = rest_param {
+                        rest
+                    } else {
+                        // Arity overflow — not a type error.
+                        continue;
+                    }
+                }
+                Some(name) => {
+                    let rbs_ty = rbs_function_type
+                        .as_ref()
+                        .and_then(|ft| Self::rbs_keyword_param_type(ft, name));
+                    if rbs_ty.is_some_and(Self::rbs_type_is_structural_liberal) {
+                        structural_rbs = rbs_ty;
+                    }
+                    if let Some(p) = sig.params.iter().find(|p| {
+                        matches!(
+                            p.kind,
+                            ParamKind::KeywordRequired | ParamKind::KeywordOptional
+                        ) && p.name == *name
+                    }) {
+                        p
+                    } else if let Some(kr) = kwrest {
+                        kr
+                    } else {
+                        continue;
+                    }
+                }
+            };
+
+            // A param whose type is only a literal/`nil` derived from its default value is not treated as a constraint (avoids false positives).
+            if structural_rbs.is_none()
+                && matches!(
+                    param.param_type,
+                    Type::Nil
+                        | Type::LiteralSymbol(_)
+                        | Type::LiteralString(_)
+                        | Type::LiteralInteger(_)
+                        | Type::LiteralFloat(_)
+                )
+            {
+                continue;
+            }
+            let actual = self.resolve_type_for_hover(
+                &arg.ty,
+                &site.class_context,
+                site.method_context.as_deref(),
+            );
+            let compat = match structural_rbs {
+                Some(rbs_ty) => self.rbs_param_compat(&actual, rbs_ty),
+                None => self.arg_compat(&actual, &param.param_type),
+            };
+            if compat != ArgCompat::No {
+                continue;
+            }
+            let receiver_key = receiver_type.map(str::to_string);
+            if arg.start >= arg.end || !seen.insert((arg.start, arg.end, receiver_key.clone())) {
+                continue;
+            }
+            let expected = match structural_rbs {
+                Some(rbs_ty) => Self::rbs_param_type_display(rbs_ty),
+                None => param.param_type.to_string(),
+            };
+            out.push(ArgumentTypeMismatch {
+                start: arg.start,
+                end: arg.end,
+                method_name: site.method_name.clone(),
+                param_name: param.name.clone(),
+                expected,
+                actual: actual.to_string(),
+                receiver_type: receiver_key,
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn overloaded_arg_mismatches_for_site(
         &mut self,
         site: &ArgCheckSite,
         class_name: &str,
         prefer_singleton: bool,
         sig: &MethodSig,
-        seen: &mut BTreeSet<(usize, usize)>,
+        receiver_type: Option<&str>,
+        seen: &mut BTreeSet<(usize, usize, Option<String>)>,
         out: &mut Vec<ArgumentTypeMismatch>,
     ) {
         // Resolve actual argument types just once, since they're reused across all overloads.
@@ -687,11 +814,15 @@ impl<'a> InferenceEngine<'a> {
             return;
         }
         if let Some(findings) = best {
-            for f in findings {
-                if f.start >= f.end || !seen.insert((f.start, f.end)) {
+            let receiver_key = receiver_type.map(str::to_string);
+            for mut finding in findings {
+                if finding.start >= finding.end
+                    || !seen.insert((finding.start, finding.end, receiver_key.clone()))
+                {
                     continue;
                 }
-                out.push(f);
+                finding.receiver_type = receiver_key.clone();
+                out.push(finding);
             }
         }
     }
@@ -827,6 +958,7 @@ impl<'a> InferenceEngine<'a> {
                 param_name: param.name.clone(),
                 expected: param.param_type.to_string(),
                 actual: actual.to_string(),
+                receiver_type: None,
             });
         }
         Some(findings)
@@ -849,14 +981,52 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn collect_diagnostic_type_classes(ty: &Type, out: &mut BTreeSet<String>) {
+        if let Some(class_name) = TypeRegistry::type_to_class_name_pub(ty) {
+            out.insert(class_name);
+        }
+        match ty {
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+                for part in parts {
+                    Self::collect_diagnostic_type_classes(part, out);
+                }
+            }
+            Type::Array(Some(element)) => Self::collect_diagnostic_type_classes(element, out),
+            Type::Hash(key, value) => {
+                if let Some(key) = key {
+                    Self::collect_diagnostic_type_classes(key, out);
+                }
+                if let Some(value) = value {
+                    Self::collect_diagnostic_type_classes(value, out);
+                }
+            }
+            Type::Record(fields) => {
+                for field in fields {
+                    Self::collect_diagnostic_type_classes(&field.value, out);
+                }
+            }
+            Type::Generic { args, .. } => {
+                for arg in args.iter() {
+                    Self::collect_diagnostic_type_classes(arg, out);
+                }
+            }
+            Type::Proc { return_type, .. } => {
+                Self::collect_diagnostic_type_classes(return_type, out)
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn experimental_checks_for_sites(&mut self) -> Vec<ExperimentalDiagnostic> {
         let mut out = Vec::new();
         self.arity_mismatches_for_sites(&mut out);
-        self.union_member_missing_methods_for_sites(&mut out);
         out
     }
 
-    pub(super) fn static_site_diagnostics_for_sites(&mut self) -> Vec<StaticSiteDiagnostic> {
+    pub(super) fn static_site_diagnostics_for_sites(
+        &mut self,
+        call_sites: &[ArgCheckSite],
+    ) -> Vec<StaticSiteDiagnostic> {
         let mut record_key_candidates = std::collections::BTreeMap::new();
         for site in &self.missing_record_key_sites {
             record_key_candidates
@@ -884,12 +1054,21 @@ impl<'a> InferenceEngine<'a> {
                     })
             })
             .collect();
-        self.source_constructor_arity_mismatches_for_sites(&mut out);
+        self.source_constructor_arity_mismatches_for_sites(call_sites, &mut out);
+        self.union_member_arity_mismatches_for_sites(call_sites, &mut out);
         out.sort_by(|left, right| {
-            (left.start, left.end, left.code).cmp(&(right.start, right.end, right.code))
+            (left.start, left.end, left.code, &left.message).cmp(&(
+                right.start,
+                right.end,
+                right.code,
+                &right.message,
+            ))
         });
         out.dedup_by(|left, right| {
-            left.start == right.start && left.end == right.end && left.code == right.code
+            left.start == right.start
+                && left.end == right.end
+                && left.code == right.code
+                && left.message == right.message
         });
         out
     }
@@ -911,9 +1090,9 @@ impl<'a> InferenceEngine<'a> {
 
     fn source_constructor_arity_mismatches_for_sites(
         &mut self,
+        sites: &[ArgCheckSite],
         out: &mut Vec<StaticSiteDiagnostic>,
     ) {
-        let sites = self.arg_check_sites.clone();
         let mut seen: BTreeSet<(usize, usize, String)> = BTreeSet::new();
         for site in sites {
             if site.method_name != "new" || site.has_pos_splat {
@@ -1105,101 +1284,78 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn union_member_missing_methods_for_sites(&mut self, out: &mut Vec<ExperimentalDiagnostic>) {
-        let snapshots = self.var_snapshots.clone();
-        let mut seen: BTreeSet<(usize, usize, String, String)> = BTreeSet::new();
-        for snap in snapshots {
-            if snap.start >= snap.end {
-                continue;
-            }
-            let HoverTarget::MethodCall {
-                ref receiver_type, ..
-            } = snap.target
-            else {
-                continue;
-            };
-            let method_name = snap.name.clone();
-            if Self::is_universal_object_method_for_diagnostics(&method_name) {
-                continue;
-            }
-            let receiver = self.resolve_type_for_hover(
-                receiver_type,
-                &snap.class_context,
-                snap.method_context.as_deref(),
-            );
-            let Type::Union(parts) = &receiver else {
-                continue;
-            };
-            // If any union member is untyped/a ref, its surface is unknown, so silence the whole union.
-            let mut member_classes: Vec<(Type, String)> = Vec::with_capacity(parts.len());
-            let mut all_judgeable = true;
-            for member in parts {
-                match self.type_to_class_name(member) {
-                    Some(class) => member_classes.push((member.clone(), class)),
-                    None => {
-                        all_judgeable = false;
-                        break;
-                    }
-                }
-            }
-            if !all_judgeable {
-                continue;
-            }
-            let mut resolved_count = 0usize;
-            let mut lacking: Vec<(Type, String)> = Vec::new();
-            for (member, class) in &member_classes {
-                let r = self.resolve_method_on_type(member, &method_name);
-                let member_lacks_method = matches!(
-                    &r,
-                    Type::ReceiverMethodRef(recv, m)
-                        if recv.as_ref() == member && m.as_str() == method_name
-                );
-                if member_lacks_method {
-                    lacking.push((member.clone(), class.clone()));
-                } else {
-                    resolved_count += 1;
-                }
-            }
-            if resolved_count == 0 || lacking.is_empty() {
-                continue;
-            }
-            let mut display_parts: Vec<String> = parts
-                .iter()
-                .filter(|part| !matches!(part, Type::Nil))
-                .map(|part| part.to_string())
-                .collect();
-            if parts.iter().any(|part| matches!(part, Type::Nil)) {
-                display_parts.push("nil".to_string());
-            }
-            let receiver_display = display_parts.join(" | ");
-            for (member, class) in lacking {
-                // Report only when the member's surface is provably complete (same conservative gate as missing).
-                if !self.member_surface_provably_complete(&class) {
-                    continue;
-                }
-                let key = (snap.start, snap.end, class.clone(), method_name.clone());
-                if !seen.insert(key) {
-                    continue;
-                }
-                let member_display = member.to_string();
-                out.push(ExperimentalDiagnostic {
-                    start: snap.start,
-                    end: snap.end,
-                    code: "union_member_missing_method",
-                    severity: "information",
-                    message: format!(
-                        "Method `{method_name}` not found for union member `{member_display}` of receiver `{receiver_display}`"
-                    ),
-                    method_name: method_name.clone(),
-                });
-            }
+    fn union_member_missing_method_calls_for_snapshot(
+        &mut self,
+        snap: &HoverSnapshot,
+        surface_cache: &mut HashMap<String, bool>,
+    ) -> Option<Vec<UnresolvedMethodCall>> {
+        let HoverTarget::MethodCall {
+            receiver_type,
+            safe_navigation,
+            ..
+        } = &snap.target
+        else {
+            return None;
+        };
+        if Self::is_universal_object_method_for_diagnostics(&snap.name)
+            || !Self::receiver_may_resolve_to_union(receiver_type)
+        {
+            return None;
         }
+        let receiver = self.resolve_type_for_hover(
+            receiver_type,
+            &snap.class_context,
+            snap.method_context.as_deref(),
+        );
+        let Type::Union(parts) = &receiver else {
+            return None;
+        };
+
+        // A partially unknown receiver keeps the existing Unknown behavior.
+        for member in parts {
+            if *safe_navigation && matches!(member, Type::Nil) {
+                continue;
+            }
+            self.type_to_class_name(member)?;
+        }
+
+        let mut calls = Vec::new();
+        for member in parts {
+            if *safe_navigation && matches!(member, Type::Nil) {
+                continue;
+            }
+            let class = self.type_to_class_name(member)?;
+            let resolved = self.resolve_method_on_type(member, &snap.name);
+            let member_lacks_method = matches!(
+                &resolved,
+                Type::ReceiverMethodRef(receiver, method)
+                    if receiver.as_ref() == member && method.as_str() == snap.name
+            );
+            if !member_lacks_method {
+                continue;
+            }
+            let unresolved_method = format!("{class}#{}", snap.name);
+            if Self::is_known_class_body_dsl_unresolved_call(snap, &unresolved_method)
+                || self.module_call_resolvable_via_includers(&unresolved_method, &snap.name)
+                || self.dsl_plugin_method_return(member, &snap.name).is_some()
+                || !self.member_surface_provably_complete_cached(&class, surface_cache)
+            {
+                continue;
+            }
+            calls.push(UnresolvedMethodCall {
+                start: snap.start,
+                end: snap.end,
+                method_name: snap.name.clone(),
+                unresolved_method,
+            });
+        }
+        (!calls.is_empty()).then_some(calls)
     }
 
     fn member_surface_provably_complete(&mut self, class: &str) -> bool {
         let owner = class.trim_scope_prefix();
-        // If the receiver has degraded to a bare `Object`, self is unknown = Unknown.
-        if owner == "Object" {
+        // These broad built-in types can stand in for dynamically extended receivers.
+        if matches!(owner, "Object" | "Class" | "Module") {
             return false;
         }
         // There's no way to know the surface of something from an undefined class (e.g. a phantom singleton).
@@ -1224,6 +1380,19 @@ impl<'a> InferenceEngine<'a> {
             .method_surface_knowledge_complete(owner, self.lazy_rbi_loader.is_some())
     }
 
+    fn member_surface_provably_complete_cached(
+        &mut self,
+        class: &str,
+        cache: &mut HashMap<String, bool>,
+    ) -> bool {
+        if let Some(complete) = cache.get(class) {
+            return *complete;
+        }
+        let complete = self.member_surface_provably_complete(class);
+        cache.insert(class.to_string(), complete);
+        complete
+    }
+
     fn arity_mismatches_for_sites(&mut self, out: &mut Vec<ExperimentalDiagnostic>) {
         let sites = self.arg_check_sites.clone();
         let mut seen: BTreeSet<(usize, usize, String)> = BTreeSet::new();
@@ -1241,101 +1410,11 @@ impl<'a> InferenceEngine<'a> {
             } else {
                 receiver
             };
-            let Some(class_name) = self.type_to_class_name(&lookup_receiver) else {
+            if matches!(lookup_receiver, Type::Union(_)) {
                 continue;
-            };
-            self.ensure_external_class(&class_name);
-            let prefer_singleton =
-                site.is_singleton || matches!(lookup_receiver, Type::Singleton(_));
-            let Some(sig) = self.registry.lookup_method_sig_for_receiver_with_hint(
-                &class_name,
-                &site.method_name,
-                prefer_singleton,
-            ) else {
-                continue;
-            };
-            // Only judge against authoritative declarations (RBS/sig); against an inferred
-            // signature, gaps on Tyda's side could cause false positives.
-            if !(sig.rbs_annotated
-                || sig.rbs_inline_annotated
-                || sig.sig_annotated
-                || sig.rbs_file_source)
+            }
+            for message in self.arity_mismatch_messages_for_receiver(&site, &lookup_receiver, false)
             {
-                continue;
-            }
-            // Skip overloads since the resolution target isn't unique (same policy as type checking).
-            if !sig.overloads.is_empty() {
-                continue;
-            }
-
-            let positional: Vec<&Param> = sig
-                .params
-                .iter()
-                .filter(|p| {
-                    matches!(
-                        p.kind,
-                        ParamKind::Required | ParamKind::Optional | ParamKind::Rest
-                    )
-                })
-                .collect();
-            let has_rest = positional.iter().any(|p| p.kind == ParamKind::Rest);
-            let required = positional
-                .iter()
-                .filter(|p| p.kind == ParamKind::Required)
-                .count();
-            let max_positional = positional
-                .iter()
-                .filter(|p| p.kind != ParamKind::Rest)
-                .count();
-            let method_has_keywords = sig.params.iter().any(|p| {
-                matches!(
-                    p.kind,
-                    ParamKind::KeywordRequired | ParamKind::KeywordOptional | ParamKind::DoubleRest
-                )
-            });
-
-            let mut messages: Vec<String> = Vec::new();
-
-            // Positional argument arity. If keywords are given but the callee has no
-            // keyword params, it's ambiguous whether "keywords = a positional Hash", so skip (avoids false positives).
-            let positional_unambiguous = site.keyword_names.is_empty() || method_has_keywords;
-            if positional_unambiguous {
-                let n = site.positional_count;
-                if n < required || (!has_rest && n > max_positional) {
-                    let expected = if has_rest {
-                        format!("{required}+")
-                    } else if required == max_positional {
-                        required.to_string()
-                    } else {
-                        format!("{required}..{max_positional}")
-                    };
-                    messages.push(format!(
-                        "wrong number of arguments (given {n}, expected {expected})"
-                    ));
-                }
-            }
-
-            // Missing required keyword. Skip if `**kwargs` forwarding is present, since the set can't be determined then.
-            if !site.has_kwsplat {
-                let missing: Vec<String> = sig
-                    .params
-                    .iter()
-                    .filter(|p| p.kind == ParamKind::KeywordRequired)
-                    .filter(|p| !site.keyword_names.iter().any(|k| k == &p.name))
-                    .map(|p| p.name.clone())
-                    .collect();
-                if !missing.is_empty() {
-                    let plural = if missing.len() > 1 { "s" } else { "" };
-                    let names = missing
-                        .iter()
-                        .map(|m| format!(":{m}"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    messages.push(format!("missing keyword{plural}: {names}"));
-                }
-            }
-
-            for message in messages {
                 if site.call_start >= site.call_end
                     || !seen.insert((site.call_start, site.call_end, message.clone()))
                 {
@@ -1351,6 +1430,169 @@ impl<'a> InferenceEngine<'a> {
                 });
             }
         }
+    }
+
+    fn union_member_arity_mismatches_for_sites(
+        &mut self,
+        sites: &[ArgCheckSite],
+        out: &mut Vec<StaticSiteDiagnostic>,
+    ) {
+        let mut seen: BTreeSet<(usize, usize, String, String)> = BTreeSet::new();
+        for site in sites {
+            if site.has_pos_splat
+                || site.method_name == "new"
+                || !Self::receiver_may_resolve_to_union(&site.receiver_type)
+            {
+                continue;
+            }
+            let receiver = self.resolve_type_for_hover(
+                &site.receiver_type,
+                &site.class_context,
+                site.method_context.as_deref(),
+            );
+            let lookup_receiver = if Self::contains_nil(&receiver) {
+                Self::remove_nil(&receiver)
+            } else {
+                receiver
+            };
+            let Type::Union(parts) = &lookup_receiver else {
+                continue;
+            };
+            if parts
+                .iter()
+                .any(|member| self.type_to_class_name(member).is_none())
+            {
+                continue;
+            }
+            for member in parts {
+                if site.safe_navigation && matches!(member, Type::Nil) {
+                    continue;
+                }
+                let member_display = member.to_string();
+                for message in self.arity_mismatch_messages_for_receiver(site, member, true) {
+                    let message = format!("For union member `{member_display}`: {message}");
+                    if site.call_start >= site.call_end
+                        || !seen.insert((
+                            site.call_start,
+                            site.call_end,
+                            member_display.clone(),
+                            message.clone(),
+                        ))
+                    {
+                        continue;
+                    }
+                    out.push(StaticSiteDiagnostic {
+                        start: site.call_start,
+                        end: site.call_end,
+                        code: "arity_mismatch",
+                        severity: "error",
+                        message,
+                        method_name: site.method_name.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn arity_mismatch_messages_for_receiver(
+        &mut self,
+        site: &ArgCheckSite,
+        receiver: &Type,
+        require_explicit_signature: bool,
+    ) -> Vec<String> {
+        let Some(class_name) = self.type_to_class_name(receiver) else {
+            return Vec::new();
+        };
+        self.ensure_external_class(&class_name);
+        let prefer_singleton = site.is_singleton || matches!(receiver, Type::Singleton(_));
+        let Some(sig) = self.registry.lookup_method_sig_for_receiver_with_hint(
+            &class_name,
+            &site.method_name,
+            prefer_singleton,
+        ) else {
+            return Vec::new();
+        };
+        // Inferred or incomplete signatures cannot prove a union member's call arity.
+        if require_explicit_signature {
+            if !(sig.rbs_annotated || sig.rbs_inline_annotated || sig.sig_annotated) {
+                return Vec::new();
+            }
+        } else if !(sig.rbs_annotated
+            || sig.rbs_inline_annotated
+            || sig.sig_annotated
+            || sig.rbs_file_source)
+        {
+            return Vec::new();
+        }
+        // Skip overloads since the resolution target isn't unique (same policy as type checking).
+        if !sig.overloads.is_empty() {
+            return Vec::new();
+        }
+
+        let positional: Vec<&Param> = sig
+            .params
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.kind,
+                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                )
+            })
+            .collect();
+        let has_rest = positional.iter().any(|p| p.kind == ParamKind::Rest);
+        let required = positional
+            .iter()
+            .filter(|p| p.kind == ParamKind::Required)
+            .count();
+        let max_positional = positional
+            .iter()
+            .filter(|p| p.kind != ParamKind::Rest)
+            .count();
+        let method_has_keywords = sig.params.iter().any(|p| {
+            matches!(
+                p.kind,
+                ParamKind::KeywordRequired | ParamKind::KeywordOptional | ParamKind::DoubleRest
+            )
+        });
+
+        let mut messages = Vec::new();
+        // Keywords without a keyword signature can be a positional Hash.
+        let positional_unambiguous = site.keyword_names.is_empty() || method_has_keywords;
+        if positional_unambiguous {
+            let given = site.positional_count;
+            if given < required || (!has_rest && given > max_positional) {
+                let expected = if has_rest {
+                    format!("{required}+")
+                } else if required == max_positional {
+                    required.to_string()
+                } else {
+                    format!("{required}..{max_positional}")
+                };
+                messages.push(format!(
+                    "wrong number of arguments (given {given}, expected {expected})"
+                ));
+            }
+        }
+
+        if !site.has_kwsplat {
+            let missing: Vec<String> = sig
+                .params
+                .iter()
+                .filter(|p| p.kind == ParamKind::KeywordRequired)
+                .filter(|p| !site.keyword_names.iter().any(|name| name == &p.name))
+                .map(|p| p.name.clone())
+                .collect();
+            if !missing.is_empty() {
+                let plural = if missing.len() > 1 { "s" } else { "" };
+                let names = missing
+                    .iter()
+                    .map(|name| format!(":{name}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                messages.push(format!("missing keyword{plural}: {names}"));
+            }
+        }
+        messages
     }
 
     pub(super) fn method_return_type_mismatches_for_sites(
@@ -2095,6 +2337,14 @@ impl<'a> InferenceEngine<'a> {
         )
     }
 
+    fn is_core_rbs_class(class_name: &str) -> bool {
+        Self::is_core_builtin_class(class_name)
+            || matches!(
+                class_name,
+                "Numeric" | "Rational" | "Complex" | "Comparable"
+            )
+    }
+
     fn type_is_unconstrained_for_check(ty: &Type) -> bool {
         matches!(
             ty,
@@ -2293,6 +2543,7 @@ impl<'a> InferenceEngine<'a> {
                 receiver_type,
                 ref result_type,
                 has_block,
+                ..
             } => {
                 let unresolved = Self::describe_unresolved_ref(result_type);
                 let resolved_receiver = self.resolve_type_for_hover(

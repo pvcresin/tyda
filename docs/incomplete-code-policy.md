@@ -21,6 +21,8 @@ Tyda はコンパイラではなく型推論器である。壊れた入力でも
 | 未定義 class / 未解決 superclass | method surface を推定せず missing method を抑制 |
 | 未定義 constant | receiver 文脈で確実な場合だけ information |
 | 既知 class の確実な missing method | warning |
+| Union receiver の既知候補型に対する missing method | warning。安全 navigation の `nil` は除外し、未知の候補型や開いた method surface があれば抑制。bare `Object` / `Class` / `Module`、plugin が解決する method、既知の class-body DSL は通常の missing method と同じく抑制 |
+| Union 候補型の権威ある署名に対する引数型・arity 不一致 | error。引数型は既存の `argument_type_mismatch` 判定、個数は曖昧な keyword / splat / overload を除外 |
 | 権威ある param との確実な型不一致 | error |
 | 権威ある戻り値型との確実な不一致 | error |
 | `untyped`、未解決 ref、開いた `method_missing` 面 | Unknown として沈黙 |
@@ -32,6 +34,7 @@ module の bare call も host が静的に分からなければ診断しない�
 ## severity
 
 - **error**: `argument_type_mismatch` の確実な不一致
+- **error**: Union 候補型に対する権威ある引数個数・必須 keyword の不一致
 - **error**: `return_type_mismatch` の確実な不一致。メソッド本体の到達可能な返却値を宣言型と比較し、未知型を含む結果は沈黙する。`bot` の返却は到達不能なので不一致にしない
 - **warning**: 完全に既知の class 上の `missing_method`
 - **information**: receiver 文脈で確実な `unresolved_constant`

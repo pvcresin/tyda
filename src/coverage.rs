@@ -564,6 +564,7 @@ mod tests {
                 receiver_type: Type::Untyped,
                 result_type: Type::String,
                 has_block: false,
+                safe_navigation: false,
             },
         );
         let mut recorder = CoverageRecorder::default();
