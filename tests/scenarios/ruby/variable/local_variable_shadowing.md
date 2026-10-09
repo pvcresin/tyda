@@ -50,10 +50,6 @@ end
 
 ## Assignment inside unreachable if false introduces local
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -74,6 +70,54 @@ end
 ```rbs
 class A
   def x: -> :method
+  def call: -> nil
+end
+```
+
+## Unreachable else assignment remains nil
+
+### update
+
+```ruby
+class A
+  def call
+    if true
+      selected = :live
+    else
+      discarded = :dead
+    end
+    [selected, discarded]
+  end
+end
+```
+
+### result
+
+```rbs
+class A
+  def call: -> [:live, nil]
+end
+```
+
+## Assignment inside unreachable unless branch remains nil
+
+### update
+
+```ruby
+class A
+  def call
+    unless true
+      discarded = :dead
+    end
+    discarded
+  end
+end
+```
+
+### result
+
+```rbs
+class A
   def call: -> nil
 end
 ```
@@ -137,10 +181,6 @@ end
 ```
 
 ## Setter without `self.` is local assignment
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -244,10 +284,6 @@ end
 ```
 
 ## `self.name = ...` calls setter method
-
-```yaml
-known_issue: true
-```
 
 ### update
 

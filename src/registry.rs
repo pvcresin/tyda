@@ -10795,6 +10795,18 @@ impl TypeRegistry {
         })
     }
 
+    pub(crate) fn lookup_method_def_for_dispatch(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        method_is_singleton: bool,
+    ) -> Option<(SharedName, bool, &MethodDef)> {
+        let (owner, is_singleton) =
+            self.first_method_call_owner_cached(class_name, method_name, method_is_singleton)?;
+        let method = self.lookup_method_def(&owner, method_name, is_singleton)?;
+        Some((owner, is_singleton, method))
+    }
+
     pub fn get_ivar_names(&self, class_name: &str) -> Vec<String> {
         self.class_data
             .get(class_name)

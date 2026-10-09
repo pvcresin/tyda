@@ -52,10 +52,6 @@ end
 
 ## branch-only local is nilable after case
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -80,10 +76,6 @@ end
 
 ## assignment in an exiting case branch is not reachable afterwards
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -97,6 +89,18 @@ def case_branch_local_after_return(value)
   end
   selected
 end
+
+def case_exit_keeps_only_fallthrough_local(value)
+  current = :before
+  case value
+  when Integer
+    current = :returned
+    return :returned
+  else
+    current = "live"
+  end
+  current
+end
 ```
 
 ### result
@@ -104,6 +108,7 @@ end
 ```rbs
 class Object < BasicObject
   def case_branch_local_after_return: (untyped value) -> :returned?
+  def case_exit_keeps_only_fallthrough_local: (untyped value) -> ("live" | :returned)
 end
 ```
 
@@ -133,10 +138,6 @@ end
 ```
 
 ## case when with class
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -220,10 +221,6 @@ end
 
 ## case when narrowing changes method return
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -249,10 +246,6 @@ end
 ```
 
 ## case when with multiple conditions
-
-```yaml
-known_issue: true
-```
 
 ### update
 

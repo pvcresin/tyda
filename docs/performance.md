@@ -168,7 +168,7 @@ warning が継続する場合や runner 環境が変わった場合は、まず�
 | subject | workspace scan | rescan | first display | cached / dirty display | scan 後 RSS |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `subject/gitlab/app` | 0.44–0.50s（3 runs、2026-08-27、6,458 files） | 5ms（no-op、6,458 known files） | 1–2ms | 0–2ms | 177–184MB（phys footprint、5 runs range） |
-| `subject/optcarrot` | 0.45s（3 runs、2026-09-05、42 files、worker 2） | - | - | - | 53–58MB（3 runs、range） |
+| `subject/optcarrot` | 0.19s（3 runs、2026-10-10、42 files、release） | - | 52ms | cached 0ms / dirty 33ms | 70.3–70.5MB（max RSS、3 runs） |
 
 subject、build mode、run 数が違う値を同じ行へ混ぜない。手元の非公開プロジェクトを
 subject にする場合は `TYDA_EXTRA_SUBJECT` で指すことができるが、再現できない値は

@@ -23,11 +23,11 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
   `extend` の適用順を反映。静的に完全な `Module#ancestors` は順序付き `Tuple`）
 - block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（tuple の要素 union とリテラル演算を block 内へ伝播）
 - Array / Hash / Set / Tuple / Record の要素型と shape
-- if / case / rescue / safe navigation / pattern matching の flow narrowing
+- if / unless / case / rescue / safe navigation / pattern matching の flow narrowing（既知の truthiness に基づく分岐選択と標準 `Module#===` の class guard を含む）、継続可能な分岐で初めて代入されたローカル変数の `nil` 合流
 - 多重代入、operator-write、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播
 - 静的に名前を求められる `alias` / `define_method` / `attr_*` / `Struct.new` /
-  `Data.define` / `Forwardable` / `send` / `const_get`
+  `Data.define` / `Forwardable` / `send` / `const_get`（生成 setter は設定値の型を戻り値にする）
 
 実行時にしか決まらない名前、object identity、method surface は推測せず `untyped` にする。
 型の深さ・union・collection shape には上限がある。

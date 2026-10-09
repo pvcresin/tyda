@@ -66,10 +66,6 @@ end
 
 ## local assigned on one branch is nilable after the branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

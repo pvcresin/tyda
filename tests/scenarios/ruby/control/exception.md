@@ -601,10 +601,6 @@ end
 
 ## Ignore code after a terminating begin body
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -651,6 +647,16 @@ def rescue_modifier_raise_continues
   raise rescue :rescued
   :reachable
 end
+
+def begin_return_after_possible_raise(flag)
+  begin
+    raise if flag
+    return :returned
+  rescue
+    :rescued
+  end
+  :after
+end
 ```
 
 ### result
@@ -663,19 +669,22 @@ class Object < BasicObject
   def begin_raise_rescue_continues: -> :reachable
   def rescue_modifier_return: -> :returned
   def rescue_modifier_raise_continues: -> :reachable
+  def begin_return_after_possible_raise: (untyped flag) -> (:after | :returned)
 end
 ```
 
 ## Exiting rescue branches do not widen fallthrough locals
 
-```yaml
-known_issue: true
-```
-
 ```ruby
-def exiting_rescue_does_not_widen_local
+def exiting_rescue_does_not_widen_local(flag)
+  value = :before
   begin
-    value = :normal
+    if flag
+      value = :normal
+    else
+      value = :before_raise
+      raise
+    end
   rescue
     value = :rescued
     raise
@@ -688,7 +697,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def exiting_rescue_does_not_widen_local: -> :normal
+  def exiting_rescue_does_not_widen_local: (untyped flag) -> :normal
 end
 ```
 
