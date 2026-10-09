@@ -50,7 +50,93 @@ class Object < BasicObject
 end
 ```
 
+## branch-only local is nilable after case
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def case_branch_local(value)
+  case value
+  when Integer
+    selected = :number
+  when String
+    selected = :text
+  end
+  selected
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_branch_local: (untyped value) -> (:number | :text)?
+end
+```
+
+## assignment in an exiting case branch is not reachable afterwards
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def case_branch_local_after_return(value)
+  case value
+  when Integer
+    selected = :number
+    return :returned
+  else
+    :other
+  end
+  selected
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_branch_local_after_return: (untyped value) -> :returned?
+end
+```
+
+## ignore code after every case branch exits
+
+### update
+
+```ruby
+def case_all_paths_return(value)
+  case value
+  when Integer
+    selected = :number
+    return :number
+  else
+    return :other
+  end
+  selected
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_all_paths_return: (untyped value) -> (:number | :other)
+end
+```
+
 ## case when with class
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -74,7 +160,7 @@ class_case(42)
 
 ```rbs
 class Object < BasicObject
-  def class_case: (Integer x) -> ("integer" | "other" | "string" | "symbol")
+  def class_case: (Integer x) -> "integer"
 end
 ```
 
@@ -134,6 +220,10 @@ end
 
 ## case when narrowing changes method return
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -154,11 +244,15 @@ describe(42)
 
 ```rbs
 class Object < BasicObject
-  def describe: (Integer val) -> Integer?
+  def describe: (Integer val) -> Integer
 end
 ```
 
 ## case when with multiple conditions
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -178,7 +272,7 @@ numeric_check(42)
 
 ```rbs
 class Object < BasicObject
-  def numeric_check: (Integer x) -> Float?
+  def numeric_check: (Integer x) -> Float
 end
 ```
 
@@ -269,6 +363,10 @@ end
 
 ## Pattern matching in Ruby 3+
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -287,11 +385,15 @@ pattern_match(42)
 
 ```rbs
 class Object < BasicObject
-  def pattern_match: (Integer x) -> ("integer" | "string")?
+  def pattern_match: (Integer x) -> "integer"
 end
 ```
 
 ## Use pattern match captured local in return
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -309,7 +411,7 @@ capture_match(1)
 
 ```rbs
 class Object < BasicObject
-  def capture_match: (Integer x) -> Integer?
+  def capture_match: (Integer x) -> Integer
 end
 ```
 

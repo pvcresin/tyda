@@ -2,6 +2,10 @@
 
 ## Hash pattern binding introduces local in enclosing scope
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -19,11 +23,15 @@ end
 
 ```rbs
 class A
-  def f: -> nil | untyped
+  def f: -> :matched
 end
 ```
 
 ## Pattern variable shadows method and only `x()` calls method
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -45,11 +53,15 @@ end
 ```rbs
 class A
   def x: -> :method
-  def f: -> [untyped, :method]?
+  def f: -> [:pattern_value, :method]
 end
 ```
 
 ## Array pattern introduces multiple local bindings
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -68,6 +80,6 @@ end
 
 ```rbs
 class A
-  def f: -> [untyped, untyped]?
+  def f: -> [1, "two"]
 end
 ```

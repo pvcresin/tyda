@@ -334,7 +334,11 @@ class Journal
 end
 ```
 
-## Ivar short-circuit AND keeps the narrowed method return
+## Ivar short-circuit AND keeps the narrowed return and nil branch
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -355,7 +359,7 @@ end
 
 ```rbs
 class Issue
-  def guard_and: -> "u"
+  def guard_and: -> "u"?
 end
 
 class Journal

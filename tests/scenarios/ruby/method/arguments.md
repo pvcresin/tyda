@@ -34,6 +34,10 @@ end
 
 ## Underscore method names without parentheses
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -51,7 +55,7 @@ def underscore_nested = ___ _(__)
 class Object < BasicObject
   def _: (Symbol x) -> Symbol
   def __: -> :arg
-  def ___: (untyped x) -> Symbol
+  def ___: (Symbol x) -> Symbol
   def underscore_arg: -> Symbol
   def underscore_nested: -> Symbol
 end

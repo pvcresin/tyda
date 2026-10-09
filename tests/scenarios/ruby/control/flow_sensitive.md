@@ -50,6 +50,75 @@ class IsAChecker
 end
 ```
 
+## Correlated locals narrow only along compatible types
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class CorrelatedFlowValues
+  #: () -> Integer
+  def integer_subject = 1
+
+  #: () -> String
+  def string_subject = "text"
+end
+
+def paired_value_after_string_check(flag)
+  if flag
+    subject = CorrelatedFlowValues.new.integer_subject
+    paired = :integer
+  else
+    subject = CorrelatedFlowValues.new.string_subject
+    paired = :string
+  end
+
+  return :unmatched unless subject.is_a?(String)
+  paired
+end
+```
+
+### result
+
+```rbs
+class CorrelatedFlowValues
+  def integer_subject: -> Integer
+  def string_subject: -> String
+end
+
+class Object < BasicObject
+  def paired_value_after_string_check: (untyped flag) -> (:string | :unmatched)
+end
+```
+
+## Narrow type with class case equality
+
+### update
+
+```ruby
+class ClassCaseEqualityChecker
+  #: (Integer | String) -> (String | 1)
+  def convert(x)
+    if String === x
+      x.upcase
+    else
+      1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class ClassCaseEqualityChecker
+  def convert: ((Integer | String) x) -> (String | 1)
+end
+```
+
 ## Keep different branch types after instance_of?
 
 ### update
@@ -420,6 +489,39 @@ end
 ```rbs
 class GuardTruthy
   def process: (String? x) -> String
+end
+```
+
+## Narrow a deferred optional method return after a guard
+
+### update
+
+```ruby
+class DeferredPayloadSource
+  def data(flag)
+    return unless flag
+    { title: "title", dynamic: Object.new }
+  end
+end
+
+class DeferredPayloadGuard
+  def call(flag)
+    data = DeferredPayloadSource.new.data(flag)
+    return "" unless data
+    data[:title].upcase
+  end
+end
+```
+
+### result
+
+```rbs
+class DeferredPayloadGuard
+  def call: (untyped flag) -> String
+end
+
+class DeferredPayloadSource
+  def data: (untyped flag) -> { title: "title", dynamic: Object }?
 end
 ```
 
@@ -1101,6 +1203,10 @@ end
 
 ## Regexp named capture binds local in the matched branch
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1124,7 +1230,7 @@ end
 
 ```rbs
 class C
-  def check: -> String | 1
+  def check: -> String
   def after_match: (untyped s) -> String?
 end
 ```

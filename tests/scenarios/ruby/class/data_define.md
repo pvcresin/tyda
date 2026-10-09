@@ -206,3 +206,33 @@ class Point
   def with: (?x: Integer, ?y: Integer) -> Point
 end
 ```
+
+## Infer positional constructor arguments
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+PosData = Data.define(:x, :y)
+
+def positional_data = PosData.new(1, "s").y
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def positional_data: -> String
+end
+
+class PosData
+  def x: -> Integer
+  def y: -> String
+  def initialize: (x: Integer, y: String) -> void
+  def self.members: -> Array[:x | :y]
+  def with: (?x: Integer, ?y: String) -> PosData
+end
+```

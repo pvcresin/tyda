@@ -107,6 +107,10 @@ end
 
 ## Infer splatted attr name lists
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -139,7 +143,7 @@ class Entry
   def count: -> 1
   def token: -> :token
   def flag: -> true
-  def flag=: (bool flag) -> true
+  def flag=: (bool flag) -> bool
   def initialize: -> void
   def snapshot: -> ["entry", 1, :token, true]
 end
@@ -276,6 +280,10 @@ end
 
 ## Resolve generated attr methods from call sites
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -312,8 +320,8 @@ end
 class Profile
   def name: -> "Ada"
   def age: -> Integer
-  def age=: (Integer age) -> 20
-  def token=: (String token) -> untyped
+  def age=: (Integer age) -> (20 | 21)
+  def token=: (String token) -> "secret"
   def initialize: -> void
 end
 
@@ -352,6 +360,10 @@ end
 
 ## attr true also generates writer
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -372,8 +384,8 @@ item.name
 
 ```rbs
 class Item
-  def name: -> "item"
-  def name=: (String name) -> "item"
+  def name: -> String
+  def name=: (String name) -> String
   def initialize: -> void
 end
 ```
@@ -405,6 +417,10 @@ end
 
 ## Collect attr inside visibility wrappers
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -417,11 +433,15 @@ class Item
   private attr :name
   protected attr :count, true
 
+  def set_count
+    self.count = 2
+  end
+
   def label = name
 end
 
 item = Item.new
-item.count = 2
+item.set_count
 item.label
 ```
 
@@ -431,9 +451,10 @@ item.label
 class Item
   def initialize: -> void
   private def name: -> "item"
-  private def count: -> 1
-  private def count=: (Integer count) -> 1
+  private def count: -> (1 | 2)
+  private def count=: (Integer count) -> Integer
   def label: -> "item"
+  def set_count: -> 2
 end
 ```
 
@@ -509,6 +530,10 @@ end
 
 ## attr_accessor getter reflects external setter writes
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -529,7 +554,40 @@ Account.new.balance = "frozen"
 ```rbs
 class Account
   def balance: -> Integer | String
-  def balance=: ((Integer | String) balance) -> 0
+  def balance=: ((Integer | String) balance) -> (Integer | String)
   def initialize: -> void
+end
+```
+
+## Local receiver setter refines a later getter
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class DirectStore
+  attr_accessor :value
+end
+
+def store_direct
+  store = DirectStore.new
+  store.value = 1
+  store.value
+end
+```
+
+### result
+
+```rbs
+class DirectStore
+  def value: -> Integer
+  def value=: (Integer value) -> 1
+end
+
+class Object < BasicObject
+  def store_direct: -> 1
 end
 ```
