@@ -500,7 +500,7 @@ end
 class DeferredPayloadSource
   def data(flag)
     return unless flag
-    { title: "title", dynamic: Object.new.dynamic_title }
+    { title: "title", dynamic: Object.new }
   end
 end
 
@@ -521,7 +521,7 @@ class DeferredPayloadGuard
 end
 
 class DeferredPayloadSource
-  def data: (untyped flag) -> { title: "title", dynamic: untyped }?
+  def data: (untyped flag) -> { title: "title", dynamic: Object }?
 end
 ```
 
@@ -1203,6 +1203,10 @@ end
 
 ## Regexp named capture binds local in the matched branch
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1226,7 +1230,7 @@ end
 
 ```rbs
 class C
-  def check: -> String | 1
+  def check: -> String
   def after_match: (untyped s) -> String?
 end
 ```

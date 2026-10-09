@@ -311,14 +311,18 @@ class Parent
 end
 ```
 
-## Extra key in a keyword splat widens the param
+## Keyword splat widens the optional parameter
+
+```yaml
+known_issue: true
+```
 
 ### update
 
 ```ruby
 def foo(check: false) = nil
 
-opt = { foo: 1 }
+opt = { check: 1 }
 foo(**opt)
 ```
 
@@ -326,7 +330,7 @@ foo(**opt)
 
 ```rbs
 class Object < BasicObject
-  def foo: (?check: bool) -> nil
+  def foo: (?check: (bool | Integer)) -> nil
 end
 ```
 

@@ -216,7 +216,7 @@ class Object < BasicObject
   def array_negation_case: -> :matched
   def literal_case: -> :matched
   def range_case: -> :unmatched
-  def inherited_literal_case: -> :unmatched
+  def inherited_literal_case: -> :matched
   def parenthesized_predicate_case: -> :matched
   def parenthesized_condition_case: -> :other
   def parenthesized_range_condition_case: -> :unmatched
@@ -228,7 +228,7 @@ class Object < BasicObject
   def ternary_condition_case: -> :matched
   def ternary_condition_truthiness_case: -> :matched
   def unless_condition_truthiness_case: -> :matched
-  def class_case_equality_keeps_union: (untyped flag) -> (1 | "value" | :unreachable)
+  def class_case_equality_keeps_union: (untyped flag) -> (1 | "value")
 end
 
 class Range

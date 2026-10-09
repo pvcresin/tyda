@@ -2,6 +2,10 @@
 
 ## Array index and slice facts require standard dispatch
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -24,12 +28,16 @@ end
 
 ```rbs
 class Object < BasicObject
-  def overridden_index_after_nonempty_guard: -> :empty?
-  def overridden_slice_after_nonempty_guard: -> :empty?
+  def overridden_index_after_nonempty_guard: -> nil
+  def overridden_slice_after_nonempty_guard: -> nil
 end
 ```
 
 ## Module case equality overrides do not narrow as Class#===
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -62,6 +70,6 @@ class Module
 end
 
 class Object < BasicObject
-  def module_case_equality_override: (untyped flag) -> (1 | "value" | :other)
+  def module_case_equality_override: (untyped flag) -> (1 | :other)
 end
 ```

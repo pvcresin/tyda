@@ -27,7 +27,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def first_after_nonempty_guard: -> 1 | :empty
-  def first_after_nonempty_guard_alias: -> 1 | :empty
+  def first_after_nonempty_guard: -> 1
+  def first_after_nonempty_guard_alias: -> 1
 end
 ```

@@ -55,7 +55,7 @@ def underscore_nested = ___ _(__)
 class Object < BasicObject
   def _: (Symbol x) -> Symbol
   def __: -> :arg
-  def ___: ((Symbol | untyped) x) -> Symbol
+  def ___: (Symbol x) -> Symbol
   def underscore_arg: -> Symbol
   def underscore_nested: -> Symbol
 end

@@ -109,7 +109,7 @@ end
 
 ```rbs
 class EmptyDeferredCollection
-  def mapped: -> Array[[untyped, 0]]
+  def mapped: -> [ ]
   def values: -> [ ]
 end
 ```
@@ -137,7 +137,7 @@ end
 
 ```rbs
 class EmptyDeferredCounter
-  def mapped: -> Array[[untyped, Integer]]
+  def mapped: -> [ ]
   def values: -> [ ]
 end
 ```

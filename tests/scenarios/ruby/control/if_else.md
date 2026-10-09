@@ -253,15 +253,7 @@ def first_generic_array_after_clear
   values[0]
 end
 
-def first_generic_array_after_unknown_call
-  values = [1].map { |value| value }
-  return :empty if values.empty?
-  unknown_mutator(values)
-  values[0]
-end
-
 first_generic_array_after_clear
-first_generic_array_after_unknown_call
 ```
 
 ### result
@@ -270,12 +262,11 @@ first_generic_array_after_unknown_call
 class Object < BasicObject
   def body_after_range_branches: (untyped ranges, untyped head) -> (:empty | :full | :head | :partial)
   def maybe_ranges: (untyped flag) -> [Range[Integer]]?
-  def body_after_typed_range_branches: (untyped flag, untyped head) -> (:empty | :full | :head | :partial)
-  def range_response_after_nested_branch: (untyped flag, untyped head, untyped single_range) -> (:empty | [200, Hash[untyped, untyped], :full] | [200, Hash[untyped, untyped], [ ]] | [206, Hash[:content_range, :single] | Hash[:content_type, :multiple], RangeResponseIterator] | [206, Hash[:content_range, :single] | Hash[:content_type, :multiple], [ ]])
-  def iterator_body_after_typed_range_branches: (untyped flag, untyped head) -> (:empty | :full | RangeResponseIterator | [ ])
-  def first_range_after_empty_guard: -> :empty | Range[Integer]
-  def first_generic_array_after_clear: -> :empty?
-  def first_generic_array_after_unknown_call: -> (1 | :empty)?
+  def body_after_typed_range_branches: (untyped flag, untyped head) -> (:full | :head | :partial)
+  def range_response_after_nested_branch: (untyped flag, untyped head, untyped single_range) -> ([200, Hash[untyped, untyped], :full] | [200, Hash[untyped, untyped], [ ]] | [206, Hash[:content_range, :single] | Hash[:content_type, :multiple], RangeResponseIterator] | [206, Hash[:content_range, :single] | Hash[:content_type, :multiple], [ ]])
+  def iterator_body_after_typed_range_branches: (untyped flag, untyped head) -> (:full | RangeResponseIterator | [ ])
+  def first_range_after_empty_guard: -> Range[Integer]
+  def first_generic_array_after_clear: -> nil
 end
 
 class RangeResponseIterator

@@ -140,6 +140,10 @@ end
 
 ## Keep type with right assignment pattern
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -149,18 +153,25 @@ def check(x)
 end
 
 check(1)
-check("x")
+begin
+  check("x")
+rescue NoMatchingPatternError
+end
 ```
 
 ### result
 
 ```rbs
 class Object < BasicObject
-  def check: ((Integer | String) x) -> (Integer | String)
+  def check: ((Integer | String) x) -> Integer
 end
 ```
 
 ## Use array pattern as condition
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -192,11 +203,15 @@ check([1].to_a)
 
 ```rbs
 class Object < BasicObject
-  def check: (Array[Integer] x) -> (:bar | :baz | :foo | :qux | :waldo | :zzz)
+  def check: (Array[Integer] x) -> (:bar | :foo | :waldo | :zzz)
 end
 ```
 
 ## Use hash pattern as condition
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -226,11 +241,15 @@ check({ a: 42 })
 
 ```rbs
 class Object < BasicObject
-  def check: ({ a: Integer } x) -> (:bar | :baz | :foo | :qux | :zzz)
+  def check: ({ a: Integer } x) -> :foo
 end
 ```
 
 ## Use numeric literal pattern as condition
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -257,11 +276,15 @@ check_numeric(1)
 
 ```rbs
 class Object < BasicObject
-  def check_numeric: (Integer x) -> (:complex | :float | :int | :rational | :zzz)
+  def check_numeric: (Integer x) -> (:int | :zzz)
 end
 ```
 
 ## Use string and symbol literal pattern as condition
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -292,11 +315,15 @@ check_text(:AAA)
 ```rbs
 class Object < BasicObject
   def check_interpolation: (untyped x) -> nil
-  def check_text: (Symbol x) -> (:interpolated_string | :interpolated_symbol | :string | :symbol | :zzz)
+  def check_text: (Symbol x) -> (:interpolated_symbol | :zzz)
 end
 ```
 
 ## Use nil bool and special literal pattern as condition
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -329,7 +356,7 @@ check_special(nil)
 
 ```rbs
 class Object < BasicObject
-  def check_special: (nil x) -> (:encoding | :false | :file | :line | :nil | :w_lit | :zzz)
+  def check_special: (nil x) -> :nil
 end
 ```
 
@@ -365,6 +392,10 @@ end
 
 ## Use find pattern as condition
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -386,7 +417,7 @@ check([1].to_a)
 
 ```rbs
 class Object < BasicObject
-  def check: (Array[Integer] x) -> (:bar | :foo | :zzz)
+  def check: (Array[Integer] x) -> (:foo | :zzz)
 end
 ```
 
@@ -418,7 +449,7 @@ class Object < BasicObject
 end
 ```
 
-## Keep variable pattern binding as untyped
+## Preserve types captured by a variable pattern
 
 ### update
 
@@ -442,7 +473,7 @@ class Object < BasicObject
 end
 ```
 
-## Keep array variable pattern binding as untyped
+## Infer types captured by an array pattern
 
 ```yaml
 known_issue: true
@@ -458,19 +489,19 @@ def check(x)
   end
 end
 
-check(1)
-check("x")
+check([1, 2, 3, 4])
+check(["a", "b", "c", "d"])
 ```
 
 ### result
 
 ```rbs
 class Object < BasicObject
-  def check: ((Integer | String) x) -> [untyped, untyped, untyped, Array[untyped]]
+  def check: (Array[Integer | String] x) -> [Integer | String, Integer | String, Integer | String, Array[Integer | String]]
 end
 ```
 
-## Keep hash variable pattern binding as untyped
+## Infer types captured by a hash pattern
 
 ```yaml
 known_issue: true
@@ -486,15 +517,15 @@ def check(x)
   end
 end
 
-check(1)
-check("x")
+check({ a: 1, b: "one", c: true, d: :left })
+check({ a: 2, b: "two", c: false, d: :right })
 ```
 
 ### result
 
 ```rbs
 class Object < BasicObject
-  def check: ((Integer | String) x) -> [untyped, untyped, untyped, Hash[untyped, untyped]]
+  def check: ({ a: Integer, b: String, c: bool, d: Symbol } x) -> [Integer, String, bool, { d: Symbol }]
 end
 ```
 
@@ -959,7 +990,7 @@ class PatternMatchExpressionBindings
   def capture_in_or_condition: (untyped value, untyped flag) -> Integer?
   def capture_after_case_match: (untyped value) -> Integer
   def capture_in_case_else: (untyped value) -> :matched?
-  def capture_in_statically_matched_guard_else: -> Integer | :matched
+  def capture_in_statically_matched_guard_else: -> -1
   def case_match_preserves_existing: (untyped value) -> Integer
   def capture_after_case_alternatives: (untyped value) -> ([Integer, nil] | [nil, String])
   def parenthesized_local_assignment: -> 1

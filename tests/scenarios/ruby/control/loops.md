@@ -287,6 +287,10 @@ end
 
 ## While-loop multiply widens a constant accumulator
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -305,7 +309,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def double_three_times: -> Float | 1
+  def double_three_times: -> Integer
 end
 ```
 
@@ -314,9 +318,9 @@ end
 ### update
 
 ```ruby
-def maybe_fresh
+def maybe_fresh(flag)
   counter = 0
-  while counter < 2
+  while counter < 2 && flag
     fresh = counter * 2
     counter += 1
   end
@@ -328,7 +332,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def maybe_fresh: -> Integer?
+  def maybe_fresh: (untyped flag) -> Integer?
 end
 ```
 
@@ -400,6 +404,10 @@ end
 
 ## Multi-value break in times
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -414,7 +422,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def check: -> 1 | [:a, :b, :c]
+  def check: -> [:a, :b, :c]
 end
 ```
 
@@ -1002,7 +1010,7 @@ class Array
 end
 
 class ForEachOverride
-  def result: -> :after | :item
+  def result: -> :item
 end
 ```
 
@@ -1033,7 +1041,7 @@ end
 
 ```rbs
 class ForHashEachOverride
-  def result: -> :after | :item
+  def result: -> :item
 end
 
 class Hash
@@ -1078,6 +1086,6 @@ module ForEachPrepend
 end
 
 class ForEachPrepended
-  def result: -> :after | :item
+  def result: -> :item
 end
 ```

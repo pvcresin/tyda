@@ -191,7 +191,7 @@ class DynamicHashOrAssignment
     values[key] << "done"
   end
 
-  def self.different_key_is_nilable
+  def self.different_key_returns_nil
     values = {}
     key = [:status, 1]
     other_key = [:status, 2]
@@ -199,7 +199,7 @@ class DynamicHashOrAssignment
     values[other_key]
   end
 
-  def self.mutated_key_is_nilable
+  def self.mutated_key_returns_nil
     values = {}
     key = [:status, 1]
     values[key] ||= []
@@ -217,7 +217,7 @@ class DynamicHashOrAssignment
   def self.append: -> Array["done"]
   def self.append_to_nonempty_hash: (untyped key) -> Array[1 | 2]
   def self.append_to_untyped_hash: (untyped values, untyped key) -> untyped
-  def self.different_key_is_nilable: -> [ ]?
-  def self.mutated_key_is_nilable: -> [ ]?
+  def self.different_key_returns_nil: -> nil
+  def self.mutated_key_returns_nil: -> nil
 end
 ```

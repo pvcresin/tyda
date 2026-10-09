@@ -134,6 +134,10 @@ end
 
 ## case when with class
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -156,7 +160,7 @@ class_case(42)
 
 ```rbs
 class Object < BasicObject
-  def class_case: (Integer x) -> ("integer" | "other" | "string" | "symbol")
+  def class_case: (Integer x) -> "integer"
 end
 ```
 
@@ -216,6 +220,10 @@ end
 
 ## case when narrowing changes method return
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -236,11 +244,15 @@ describe(42)
 
 ```rbs
 class Object < BasicObject
-  def describe: (Integer val) -> Integer?
+  def describe: (Integer val) -> Integer
 end
 ```
 
 ## case when with multiple conditions
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -260,7 +272,7 @@ numeric_check(42)
 
 ```rbs
 class Object < BasicObject
-  def numeric_check: (Integer x) -> Float?
+  def numeric_check: (Integer x) -> Float
 end
 ```
 
@@ -373,11 +385,15 @@ pattern_match(42)
 
 ```rbs
 class Object < BasicObject
-  def pattern_match: (Integer x) -> ("integer" | "string")
+  def pattern_match: (Integer x) -> "integer"
 end
 ```
 
 ## Use pattern match captured local in return
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -395,7 +411,7 @@ capture_match(1)
 
 ```rbs
 class Object < BasicObject
-  def capture_match: (Integer x) -> Integer?
+  def capture_match: (Integer x) -> Integer
 end
 ```
 

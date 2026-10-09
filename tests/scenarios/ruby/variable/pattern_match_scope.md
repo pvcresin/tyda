@@ -23,7 +23,7 @@ end
 
 ```rbs
 class A
-  def f: -> untyped
+  def f: -> :matched
 end
 ```
 
@@ -53,7 +53,7 @@ end
 ```rbs
 class A
   def x: -> :method
-  def f: -> [untyped, :method]
+  def f: -> [:pattern_value, :method]
 end
 ```
 
@@ -80,6 +80,6 @@ end
 
 ```rbs
 class A
-  def f: -> [untyped, untyped]
+  def f: -> [1, "two"]
 end
 ```

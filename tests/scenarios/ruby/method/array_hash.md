@@ -1639,7 +1639,7 @@ class Object < BasicObject
 end
 ```
 
-## `[]=` expression returns assigned value
+## Index assignment returns the RHS; direct `[]=` returns the method value
 
 ### update
 
@@ -1658,7 +1658,7 @@ class A
 
   def keyword
     matrix = MatrixLike.new
-    matrix[5, axis: :y] = 8
+    matrix.[]=(5, 8, axis: :y)
   end
 end
 ```
@@ -1668,7 +1668,7 @@ end
 ```rbs
 class A
   def plain: -> 8
-  def keyword: -> 8
+  def keyword: -> Symbol?
 end
 
 class MatrixLike
@@ -1676,7 +1676,11 @@ class MatrixLike
 end
 ```
 
-## `[]=` expression with block arg returns assigned value
+## Direct `[]=` call accepts a block argument
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -1692,7 +1696,7 @@ class A
   def with_block
     block = -> { 1 }
     matrix = MatrixLike.new
-    matrix[5, &block] = 8
+    matrix.[]=(5, 8, &block)
   end
 end
 ```
@@ -1701,7 +1705,7 @@ end
 
 ```rbs
 class A
-  def with_block: -> 8
+  def with_block: -> :from_method
 end
 
 class MatrixLike

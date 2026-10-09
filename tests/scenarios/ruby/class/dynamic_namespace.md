@@ -441,6 +441,9 @@ end
 
 ```ruby
 class A
+  class B
+  end
+
   class self::B::C
     def foo = 1
   end

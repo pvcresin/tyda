@@ -119,7 +119,7 @@ end
 ```rbs
 class Table
   def update: (Symbol key, value: String, **Integer options) -> [Symbol, String, { extra: 1 }]
-  def call_merge: -> [Symbol, String, Hash[Symbol, Integer]]
+  def call_merge: -> [Symbol, String, { extra: 1 }]
   alias merge_row update
 end
 ```

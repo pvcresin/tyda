@@ -259,18 +259,18 @@ class ExplicitBlockInvocation
   def invoke_after_short_circuit: (Symbol flag, ?untyped &block) -> :ignored
   def invoke_before_overwrite: (?untyped &block) -> :ignored
   def ignore: (?untyped &block) -> :ignored
-  def block_call_updates_outer_local: -> :after | :before
-  def forwarded_block_updates_outer_local: -> :after | :before
-  def aliased_block_updates_outer_local: -> :after | :before
+  def block_call_updates_outer_local: -> :after
+  def forwarded_block_updates_outer_local: -> :after
+  def aliased_block_updates_outer_local: -> :after
   def unused_block_alias_keeps_outer_local: -> :before
   def unused_block_keeps_outer_local: -> :before
   def overwritten_block_alias_keeps_outer_local: -> :before
-  def maybe_overwritten_block_alias_updates_outer_local: -> :after | :before
-  def case_block_alias_updates_outer_local: -> :after | :before
-  def loop_block_alias_updates_outer_local: -> :after | :before
-  def rescue_block_alias_updates_outer_local: -> :after | :before
-  def short_circuit_block_alias_updates_outer_local: -> :after | :before
-  def block_alias_runs_before_overwrite: -> :after | :before
+  def maybe_overwritten_block_alias_updates_outer_local: -> :before
+  def case_block_alias_updates_outer_local: -> :after
+  def loop_block_alias_updates_outer_local: -> :before
+  def rescue_block_alias_updates_outer_local: -> :after
+  def short_circuit_block_alias_updates_outer_local: -> :after
+  def block_alias_runs_before_overwrite: -> :after
 end
 ```
 

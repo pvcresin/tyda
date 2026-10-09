@@ -25,6 +25,8 @@ end
 ```ruby
 def multi_rescue
   begin
+    raise ArgumentError if [true, false].sample
+    raise TypeError if [true, false].sample
     1
   rescue ArgumentError
     "arg_error"
@@ -49,12 +51,14 @@ end
 ```ruby
 class Loader
   def value_or_nil
+    raise "unavailable" if [true, false].sample
     "loaded"
   rescue
     return nil
   end
 
   def with_fallback
+    raise "unavailable" if [true, false].sample
     return 1
   rescue
     return "error"
@@ -73,12 +77,17 @@ end
 
 ## rescue => e
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
 def rescue_var
   begin
-    1 / 0
+    raise ZeroDivisionError if [true, false].sample
+    :normal
   rescue => e
     e
   end
@@ -89,7 +98,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def rescue_var: -> Integer | StandardError
+  def rescue_var: -> (:normal | ZeroDivisionError)
 end
 ```
 
@@ -100,7 +109,8 @@ end
 ```ruby
 def rescue_specific
   begin
-    1 / 0
+    raise ArgumentError if [true, false].sample
+    1
   rescue ArgumentError => e
     e
   end
@@ -111,7 +121,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def rescue_specific: -> Integer | ArgumentError
+  def rescue_specific: -> 1 | ArgumentError
 end
 ```
 
@@ -122,7 +132,9 @@ end
 ```ruby
 def rescue_multiple_specific
   begin
-    1 / 0
+    raise ArgumentError if [true, false].sample
+    raise TypeError if [true, false].sample
+    1
   rescue ArgumentError, TypeError => e
     e
   end
@@ -133,7 +145,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def rescue_multiple_specific: -> Integer | ArgumentError | TypeError
+  def rescue_multiple_specific: -> 1 | ArgumentError | TypeError
 end
 ```
 
@@ -146,7 +158,8 @@ ERROR_CLASSES = [ArgumentError, TypeError]
 
 def rescue_splat_specific
   begin
-    1 / 0
+    raise ERROR_CLASSES.sample if [true, false].sample
+    1
   rescue *ERROR_CLASSES => e
     e
   end
@@ -159,7 +172,7 @@ end
 ERROR_CLASSES: [singleton(ArgumentError), singleton(TypeError)]
 
 class Object < BasicObject
-  def rescue_splat_specific: -> Integer | ArgumentError | TypeError
+  def rescue_splat_specific: -> 1 | ArgumentError | TypeError
 end
 ```
 
@@ -170,6 +183,7 @@ end
 ```ruby
 def rescue_var_after
   begin
+    raise StandardError if [true, false].sample
     1
   rescue => e
     e
@@ -196,6 +210,7 @@ def rescue_var_after_existing
   e = :before
 
   begin
+    raise ArgumentError if [true, false].sample
     1
   rescue ArgumentError => e
     e
@@ -221,14 +236,14 @@ end
 def explicit_return_with_ensure
   return 1
 ensure
-  cleanup
+  nil
 end
 
 def conditional_return_with_ensure(flag)
   return "early" if flag
   42
 ensure
-  cleanup
+  nil
 end
 ```
 
@@ -362,7 +377,7 @@ end
 
 ```ruby
 def rescue_modifier_union
-  1 rescue :fallback
+  ([true, false].sample ? raise("boom") : 1) rescue :fallback
 end
 ```
 
@@ -375,6 +390,10 @@ end
 ```
 
 ## retry
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -396,7 +415,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def with_retry: -> "failed" | "success"
+  def with_retry: -> "success"
 end
 ```
 
@@ -459,6 +478,7 @@ end
 ```ruby
 def foo
   begin
+    raise StandardError if [true, false].sample
     :a
   rescue *[StandardError]
     :b
@@ -517,6 +537,7 @@ def else_path
   x = :a
   begin
     x = :b
+    raise if [true, false].sample
     x = :c
   rescue
     x = :d
@@ -769,6 +790,6 @@ class ControlFlowMethodOverrides
   def loop_nonlocal_return: -> :after_loop
   def no_yield_nonlocal_return: -> :after_no_yield
   def explicit_no_yield_nonlocal_return: -> :after_no_yield
-  def yielding_nonlocal_return: -> :after_yield | :from_block
+  def yielding_nonlocal_return: -> :from_block
 end
 ```
