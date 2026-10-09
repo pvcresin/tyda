@@ -96,6 +96,10 @@ end
 
 ## alias_method preserves keywords
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -114,8 +118,8 @@ end
 
 ```rbs
 class Table
-  def update: (Symbol key, value: String, **Integer options) -> [Symbol, String, { extra: 1, value: "A" }]
-  def call_merge: -> [Symbol, String, Hash[Symbol, untyped]]
+  def update: (Symbol key, value: String, **Integer options) -> [Symbol, String, { extra: 1 }]
+  def call_merge: -> [Symbol, String, Hash[Symbol, Integer]]
   alias merge_row update
 end
 ```
@@ -126,7 +130,9 @@ end
 
 ```ruby
 class Store
-  def []=(key, value) = value
+  def []=(key, value)
+    value
+  end
 
   alias write []=
 

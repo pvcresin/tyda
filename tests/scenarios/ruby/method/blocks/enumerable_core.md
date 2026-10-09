@@ -16,6 +16,298 @@ class Object < BasicObject
 end
 ```
 
+## Re-infer a block call after its receiver's source return is resolved
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class DeferredMapReceiver
+  def self.headers_with_index
+    index = -1
+    headers.map { |header| [header, index += 1] }
+  end
+
+  def self.headers
+    ["id".to_s]
+  end
+end
+```
+
+### result
+
+```rbs
+class DeferredMapReceiver
+  def self.headers_with_index: -> Array[[String, Integer]]
+  def self.headers: -> [String]
+end
+```
+
+## Preserve the array result when a block return is deferred
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class DeferredMapResult
+  def self.load_raw(value) = value
+
+  def self.map_after_guard(value)
+    values = [value].compact
+    return [] if values.empty?
+
+    values.map { load_raw(_1) }
+  end
+end
+```
+
+### result
+
+```rbs
+class DeferredMapResult
+  def self.load_raw: (untyped value) -> untyped
+  def self.map_after_guard: (untyped value) -> Array[untyped]
+end
+```
+
+## Source methods distinguish yielded blocks from unused blocks
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class ExplicitBlockInvocation
+  def run(&block)
+    block.call
+  end
+
+  def forward(&block)
+    run(&block)
+  end
+
+  def run_via_alias(&block)
+    callback = block
+    callback.call
+  end
+
+  def alias_and_ignore(&block)
+    callback = block
+    :ignored
+  end
+
+  def overwrite_alias(&block)
+    callback = block
+    callback = -> { :other }
+    callback.call
+    :ignored
+  end
+
+  def conditionally_overwrite_alias(flag, &block)
+    callback = block
+    if flag
+      callback = -> { :other }
+    end
+    callback.call
+    :ignored
+  end
+
+  def invoke_from_case(flag, &block)
+    callback = block
+    case flag
+    when :overwrite
+      callback = -> { :other }
+    when :invoke
+      callback.call
+    end
+    :ignored
+  end
+
+  def invoke_after_loop(flag, &block)
+    callback = block
+    while flag
+      callback = -> { :other }
+      break
+    end
+    callback.call
+    :ignored
+  end
+
+  def invoke_from_rescue(flag, &block)
+    callback = block
+    begin
+      raise if flag
+      callback = -> { :other }
+    rescue
+      callback.call
+    end
+    :ignored
+  end
+
+  def invoke_after_short_circuit(flag, &block)
+    callback = block
+    flag || callback = -> { :other }
+    callback.call
+    :ignored
+  end
+
+  def invoke_before_overwrite(&block)
+    callback = block
+    callback = (callback.call; -> { :other })
+    :ignored
+  end
+
+  def ignore(&block)
+    :ignored
+  end
+
+  def block_call_updates_outer_local
+    value = :before
+    run { value = :after }
+    value
+  end
+
+  def forwarded_block_updates_outer_local
+    value = :before
+    forward { value = :after }
+    value
+  end
+
+  def aliased_block_updates_outer_local
+    value = :before
+    run_via_alias { value = :after }
+    value
+  end
+
+  def unused_block_alias_keeps_outer_local
+    value = :before
+    alias_and_ignore { value = :after }
+    value
+  end
+
+  def unused_block_keeps_outer_local
+    value = :before
+    ignore { value = :after }
+    value
+  end
+
+  def overwritten_block_alias_keeps_outer_local
+    value = :before
+    overwrite_alias { value = :after }
+    value
+  end
+
+  def maybe_overwritten_block_alias_updates_outer_local
+    value = :before
+    conditionally_overwrite_alias(:unknown) { value = :after }
+    value
+  end
+
+  def case_block_alias_updates_outer_local
+    value = :before
+    invoke_from_case(:invoke) { value = :after }
+    value
+  end
+
+  def loop_block_alias_updates_outer_local
+    value = :before
+    invoke_after_loop(:unknown) { value = :after }
+    value
+  end
+
+  def rescue_block_alias_updates_outer_local
+    value = :before
+    invoke_from_rescue(:unknown) { value = :after }
+    value
+  end
+
+  def short_circuit_block_alias_updates_outer_local
+    value = :before
+    invoke_after_short_circuit(:unknown) { value = :after }
+    value
+  end
+
+  def block_alias_runs_before_overwrite
+    value = :before
+    invoke_before_overwrite { value = :after }
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class ExplicitBlockInvocation
+  def run: (?untyped &block) -> :after
+  def forward: (?untyped &block) -> :after
+  def run_via_alias: (?untyped &block) -> :after
+  def alias_and_ignore: (?untyped &block) -> :ignored
+  def overwrite_alias: (?untyped &block) -> :ignored
+  def conditionally_overwrite_alias: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_from_case: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_after_loop: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_from_rescue: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_after_short_circuit: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_before_overwrite: (?untyped &block) -> :ignored
+  def ignore: (?untyped &block) -> :ignored
+  def block_call_updates_outer_local: -> :after | :before
+  def forwarded_block_updates_outer_local: -> :after | :before
+  def aliased_block_updates_outer_local: -> :after | :before
+  def unused_block_alias_keeps_outer_local: -> :before
+  def unused_block_keeps_outer_local: -> :before
+  def overwritten_block_alias_keeps_outer_local: -> :before
+  def maybe_overwritten_block_alias_updates_outer_local: -> :after | :before
+  def case_block_alias_updates_outer_local: -> :after | :before
+  def loop_block_alias_updates_outer_local: -> :after | :before
+  def rescue_block_alias_updates_outer_local: -> :after | :before
+  def short_circuit_block_alias_updates_outer_local: -> :after | :before
+  def block_alias_runs_before_overwrite: -> :after | :before
+end
+```
+
+## Hash iteration keeps the receiver result across block control flow
+
+### update
+
+```ruby
+class HashEachResult
+  #: () -> untyped
+  def self.config
+  end
+
+  def self.defaults = { enabled: config.enabled }
+
+  def each_with_next
+    @init_attributes = {}
+    self.class.defaults.each do |attribute, value|
+      next unless @init_attributes[:"#{attribute}_enabled"].nil? &&
+        @init_attributes[:"#{attribute}_access_level"].nil?
+
+      public_send("#{attribute}_enabled=", value)
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class HashEachResult
+  def self.config: -> untyped
+  def self.defaults: -> { enabled: untyped }
+  def each_with_next: -> { enabled: untyped }
+end
+```
+
 ## Map distributes literal operations across mixed tuple elements
 
 ### update
@@ -29,6 +321,43 @@ def mixed_literal_map = [1, 2, "3"].map { |n| n * 2 }
 ```rbs
 class Object < BasicObject
   def mixed_literal_map: -> Array[Integer | String]
+end
+```
+
+## Chained array transformations keep the result of symbol-proc sort_by
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+module Redmine
+  module FieldFormat
+    def self.all
+      @formats ||= Hash.new(Base.instance)
+    end
+
+    def self.as_select(class_name = nil)
+      formats = all.values.select do |format|
+        format.class.customized_class_names.nil? ||
+          format.class.customized_class_names.include?(class_name)
+      end
+      formats.map do |format|
+        [::I18n.t(format.label), format.name]
+      end.sort_by(&:first)
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+module Redmine::FieldFormat
+  def self.all: -> Hash[untyped, untyped]
+  def self.as_select: (?nil class_name) -> Array[[String, untyped]]
 end
 ```
 
@@ -1052,5 +1381,53 @@ end
 class Object < BasicObject
   def bar: -> nil
   def foo: -> nil
+end
+```
+
+## Unknown reverse_each receivers keep block arguments untyped
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def inspect_reverse_each_value(value)
+  (value ? ["address"] : []).reverse_each do |address|
+    observed_address(address)
+  end
+end
+
+def observed_address(address)
+  address
+end
+
+def inspect_split_header(value)
+  split_header(value).reverse_each do |address|
+    observed_split_header(address)
+  end
+  :done
+end
+
+def split_header(value)
+  value ? value.strip.split(/[, \t]+/) : []
+end
+
+def observed_split_header(address)
+  address
+end
+
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def inspect_reverse_each_value: (untyped value) -> Array["address"]
+  def observed_address: (String address) -> String
+  def inspect_split_header: (untyped value) -> :done
+  def split_header: (untyped value) -> (untyped | [ ])
+  def observed_split_header: (untyped address) -> untyped
 end
 ```

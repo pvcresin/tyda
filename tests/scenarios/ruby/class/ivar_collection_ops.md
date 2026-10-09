@@ -55,6 +55,51 @@ class Seeded
 end
 ```
 
+## Clearing an instance variable preserves its shared element summary
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Resettable
+  def initialize
+    @items = [1]
+  end
+
+  def clear_items
+    @items.clear
+  end
+
+  def return_clear_items
+    return @items.clear
+  end
+
+  def assign_clear_items
+    result = @items.clear
+    result
+  end
+
+  def items
+    @items
+  end
+end
+```
+
+### result
+
+```rbs
+class Resettable
+  def initialize: -> void
+  def clear_items: -> [ ]
+  def return_clear_items: -> [ ]
+  def assign_clear_items: -> [ ]
+  def items: -> Array[1]
+end
+```
+
 ## Hash `merge!` on an instance variable returns the merged hash
 
 ### update

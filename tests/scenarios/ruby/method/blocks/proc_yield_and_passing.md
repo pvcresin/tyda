@@ -370,6 +370,58 @@ class Builder
 end
 ```
 
+## Pass lambda and proc values as blocks
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class BlockRunner
+  def run(&block) = block.call(1)
+  def via_lambda = run(&->(value) { value.to_s })
+
+  def via_proc
+    callback = Proc.new { |value| value.to_s }
+    run(&callback)
+  end
+end
+```
+
+### result
+
+```rbs
+class BlockRunner
+  def run: { (Integer) -> String } -> String
+  def via_lambda: -> String
+  def via_proc: -> String
+end
+```
+
+## Method object to_proc forwards a callback block
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def method_object_map = [1, 2].method(:map).to_proc.call { |value| value.to_s }
+def method_object_map_without_block = [1, 2].method(:map).to_proc.call
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def method_object_map: -> Array[String]
+  def method_object_map_without_block: -> Enumerator[1 | 2, Array[untyped]]
+end
+```
+
 ## then/yield_self method block receives receiver
 
 ### update

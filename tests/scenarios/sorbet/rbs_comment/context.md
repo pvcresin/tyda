@@ -57,6 +57,7 @@ end
 class Builder
   #: { () [self: Config] -> void } -> void
   def self.configure
+    yield
   end
 end
 

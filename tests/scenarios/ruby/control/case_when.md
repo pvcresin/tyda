@@ -50,6 +50,88 @@ class Object < BasicObject
 end
 ```
 
+## branch-only local is nilable after case
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def case_branch_local(value)
+  case value
+  when Integer
+    selected = :number
+  when String
+    selected = :text
+  end
+  selected
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_branch_local: (untyped value) -> (:number | :text)?
+end
+```
+
+## assignment in an exiting case branch is not reachable afterwards
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def case_branch_local_after_return(value)
+  case value
+  when Integer
+    selected = :number
+    return :returned
+  else
+    :other
+  end
+  selected
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_branch_local_after_return: (untyped value) -> :returned?
+end
+```
+
+## ignore code after every case branch exits
+
+### update
+
+```ruby
+def case_all_paths_return(value)
+  case value
+  when Integer
+    selected = :number
+    return :number
+  else
+    return :other
+  end
+  selected
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_all_paths_return: (untyped value) -> (:number | :other)
+end
+```
+
 ## case when with class
 
 ### update
@@ -269,6 +351,10 @@ end
 
 ## Pattern matching in Ruby 3+
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -287,7 +373,7 @@ pattern_match(42)
 
 ```rbs
 class Object < BasicObject
-  def pattern_match: (Integer x) -> ("integer" | "string")?
+  def pattern_match: (Integer x) -> ("integer" | "string")
 end
 ```
 

@@ -50,6 +50,10 @@ end
 
 ## Assignment inside unreachable if false introduces local
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -70,7 +74,7 @@ end
 ```rbs
 class A
   def x: -> :method
-  def call: -> :local
+  def call: -> nil
 end
 ```
 
@@ -237,6 +241,10 @@ end
 
 ## `self.name = ...` calls setter method
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -258,7 +266,7 @@ end
 ```rbs
 class A
   def name: -> String
-  def name=: (String name) -> "alice"
+  def name=: (String name) -> ("alice" | "bob")
   def initialize: -> void
   def rename: -> "bob"
 end

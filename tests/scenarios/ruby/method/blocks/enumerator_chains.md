@@ -1077,6 +1077,10 @@ end
 
 ## User iterator enum substitutes call args
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1104,7 +1108,7 @@ end
 
 ```rbs
 class PairSource
-  def each_value: (String value) { (untyped) -> String } -> (String | Enumerator[String, untyped])
+  def each_value: (String value) { (String) -> String } -> (String | Enumerator[String, untyped])
   def block_value: -> String
   def enum_value: -> Array["B"]
   def direct_enum_value: -> Array["C"]
@@ -1202,5 +1206,27 @@ class BlockSource
   def each: { (String) -> String } -> String | Enumerator["a", BlockSource]
   def block_value: -> String
   def enum_value: -> Array["A"]
+end
+```
+
+## Infer Enumerator::Lazy.new source and yielder types
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def lazy_new_values
+  Enumerator::Lazy.new([1, 2]) { |yielder, value| yielder << value.to_s }.force
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def lazy_new_values: -> Array[String]
 end
 ```

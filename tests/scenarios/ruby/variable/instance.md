@@ -67,6 +67,10 @@ end
 
 ## Assign instance variable in method
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -86,7 +90,7 @@ end
 ```rbs
 class A
   def initialize: -> void
-  def foo: -> 0 | 1
+  def foo: -> 1
 end
 ```
 

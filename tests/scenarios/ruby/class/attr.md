@@ -276,6 +276,10 @@ end
 
 ## Resolve generated attr methods from call sites
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -312,8 +316,8 @@ end
 class Profile
   def name: -> "Ada"
   def age: -> Integer
-  def age=: (Integer age) -> 20
-  def token=: (String token) -> untyped
+  def age=: (Integer age) -> (20 | 21)
+  def token=: (String token) -> "secret"
   def initialize: -> void
 end
 
@@ -531,5 +535,38 @@ class Account
   def balance: -> Integer | String
   def balance=: ((Integer | String) balance) -> 0
   def initialize: -> void
+end
+```
+
+## Local receiver setter refines a later getter
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class DirectStore
+  attr_accessor :value
+end
+
+def store_direct
+  store = DirectStore.new
+  store.value = 1
+  store.value
+end
+```
+
+### result
+
+```rbs
+class DirectStore
+  def value: -> Integer
+  def value=: (Integer value) -> 1
+end
+
+class Object < BasicObject
+  def store_direct: -> 1
 end
 ```

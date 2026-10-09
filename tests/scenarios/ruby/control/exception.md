@@ -577,3 +577,198 @@ class Object < BasicObject
   def foo: -> 1 | "str"
 end
 ```
+
+## Ignore code after a terminating begin body
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def begin_return_only
+  begin
+    return :returned
+  end
+  :unreachable
+end
+
+def begin_ensure_return_only
+  begin
+    return :returned
+  ensure
+    :ensured
+  end
+  :unreachable
+end
+
+def begin_return_with_rescue
+  begin
+    return :returned
+  rescue
+    :rescued
+  end
+  :unreachable
+end
+
+def begin_raise_rescue_continues
+  begin
+    raise
+  rescue
+    :rescued
+  end
+  :reachable
+end
+
+def rescue_modifier_return
+  return :returned rescue :rescued
+  :unreachable
+end
+
+def rescue_modifier_raise_continues
+  raise rescue :rescued
+  :reachable
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def begin_return_only: -> :returned
+  def begin_ensure_return_only: -> :returned
+  def begin_return_with_rescue: -> :returned
+  def begin_raise_rescue_continues: -> :reachable
+  def rescue_modifier_return: -> :returned
+  def rescue_modifier_raise_continues: -> :reachable
+end
+```
+
+## Exiting rescue branches do not widen fallthrough locals
+
+```yaml
+known_issue: true
+```
+
+```ruby
+def exiting_rescue_does_not_widen_local
+  begin
+    value = :normal
+  rescue
+    value = :rescued
+    raise
+  end
+  value
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def exiting_rescue_does_not_widen_local: -> :normal
+end
+```
+
+## Source-defined control-flow method names remain ordinary calls
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class ControlFlowMethodOverrides
+  def raise
+    :raised
+  end
+
+  def fail
+    :failed
+  end
+
+  def exit
+    :exited
+  end
+
+  def abort
+    :aborted
+  end
+
+  def loop
+    :looped
+  end
+
+  def with_yield
+    yield
+  end
+
+  def no_yield
+    :ignored
+  end
+
+  def bare_calls
+    raise
+    fail
+    exit
+    abort
+    :after_calls
+  end
+
+  def explicit_calls
+    self.raise
+    self.fail
+    self.exit
+    self.abort
+    :after_calls
+  end
+
+  def loop_call
+    loop { :from_block }
+    :after_loop
+  end
+
+  def loop_nonlocal_return
+    loop { return :from_block }
+    :after_loop
+  end
+
+  def no_yield_nonlocal_return
+    no_yield { return :from_block }
+    :after_no_yield
+  end
+
+  def explicit_no_yield_nonlocal_return
+    self.no_yield { return :from_block }
+    :after_no_yield
+  end
+
+  def yielding_nonlocal_return
+    with_yield { return :from_block }
+    :after_yield
+  end
+end
+```
+
+### result
+
+```rbs
+class ControlFlowMethodOverrides
+  def raise: -> :raised
+  def fail: -> :failed
+  def exit: -> :exited
+  def abort: -> :aborted
+  def loop: -> :looped
+  def with_yield: -> bot
+  def no_yield: -> :ignored
+  def bare_calls: -> :after_calls
+  def explicit_calls: -> :after_calls
+  def loop_call: -> :after_loop
+  def loop_nonlocal_return: -> :after_loop
+  def no_yield_nonlocal_return: -> :after_no_yield
+  def explicit_no_yield_nonlocal_return: -> :after_no_yield
+  def yielding_nonlocal_return: -> :after_yield | :from_block
+end
+```
