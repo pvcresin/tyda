@@ -411,6 +411,136 @@ class Object < BasicObject
 end
 ```
 
+## Equality preserves numerically equal correlated alternatives
+
+### update
+
+```ruby
+def equality_keeps_equal_numeric_payloads(flag)
+  if flag
+    selector = 1
+    payload = [:integer]
+  else
+    selector = 1.0
+    payload = [:float]
+  end
+
+  if selector == 1
+    [selector, payload]
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def equality_keeps_equal_numeric_payloads: (untyped flag) -> [1 | 1.0, [:float | :integer]]?
+end
+```
+
+## Object equality keeps a numerically equal subtype
+
+```rbs
+class Object
+  def object_equality_keeps_numeric_subtypes: (Object value) -> Object?
+end
+```
+
+### update
+
+```ruby
+def object_equality_keeps_numeric_subtypes(value)
+  if value == 1
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def object_equality_keeps_numeric_subtypes: (Object value) -> Object?
+end
+```
+
+## Dynamic predicate calls keep branches overridable by subclasses
+
+### update
+
+```ruby
+class BranchPredicateBase
+  def enabled? = false
+
+  def result
+    if enabled?
+      [:enabled]
+    else
+      []
+    end
+  end
+end
+
+class BranchPredicateChild < BranchPredicateBase
+  def enabled? = true
+end
+
+class BranchPredicateAliasBase
+  def enabled? = false
+
+  def result
+    enabled = enabled?
+    if enabled
+      [:enabled]
+    else
+      []
+    end
+  end
+
+  def result_after_join(flag)
+    if flag
+      enabled = enabled?
+    else
+      enabled = false
+    end
+
+    if enabled
+      [:enabled]
+    else
+      []
+    end
+  end
+end
+
+class BranchPredicateAliasChild < BranchPredicateAliasBase
+  def enabled? = true
+end
+```
+
+### result
+
+```rbs
+class BranchPredicateAliasBase
+  def enabled?: -> false
+  def result: -> Array[:enabled]
+  def result_after_join: (untyped flag) -> Array[:enabled]
+end
+
+class BranchPredicateAliasChild < BranchPredicateAliasBase
+  def enabled?: -> true
+end
+
+class BranchPredicateBase
+  def enabled?: -> false
+  def result: -> Array[:enabled]
+end
+
+class BranchPredicateChild < BranchPredicateBase
+  def enabled?: -> true
+end
+```
+
 ## conditional instance data keeps fields from a truthy argument
 
 ### update

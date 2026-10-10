@@ -150,6 +150,45 @@ struct PotentialRaiseScan<'a> {
     node_may_raise: &'a mut dyn FnMut(&[u8], bool) -> bool,
 }
 
+struct DynamicTruthinessSourceScan<'a> {
+    found: bool,
+    scope: &'a Scope,
+}
+
+impl<'pr> ruby_prism::Visit<'pr> for DynamicTruthinessSourceScan<'_> {
+    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        if node.name().as_slice() == b"proc"
+            && node.receiver().is_none()
+            && node.arguments().is_none()
+            && node.block().is_some()
+        {
+            return;
+        }
+        self.found = true;
+    }
+
+    fn visit_yield_node(&mut self, _node: &ruby_prism::YieldNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_super_node(&mut self, _node: &ruby_prism::SuperNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_forwarding_super_node(&mut self, _node: &ruby_prism::ForwardingSuperNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_local_variable_read_node(&mut self, node: &ruby_prism::LocalVariableReadNode<'pr>) {
+        let name = String::from_utf8_lossy(node.name().as_slice());
+        self.found |= self.scope.has_dynamic_predicate_source(&name);
+    }
+
+    fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
+
+    fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+}
+
 impl<'pr> ruby_prism::Visit<'pr> for PotentialRaiseScan<'_> {
     fn visit_call_node(&mut self, _node: &ruby_prism::CallNode<'pr>) {
         self.found = true;
@@ -1198,6 +1237,7 @@ enum AliasTarget {
     Local(String),
     Ivar(String),
     Constant { owner: String, name: String },
+    Dynamic(Box<AliasTarget>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1371,7 +1411,7 @@ impl Scope {
 
     fn set(&mut self, name: &str, ty: Type) {
         Arc::make_mut(&mut self.locals).insert(name.to_string(), ty);
-        Arc::make_mut(&mut self.aliases).remove(name);
+        Self::clear_alias_for_local_update(Arc::make_mut(&mut self.aliases), name);
         Arc::make_mut(&mut self.enumerator_yielder_names).remove(name);
         Arc::make_mut(&mut self.runtime_facts).remove(name);
         Arc::make_mut(&mut self.local_singleton_methods).remove(name);
@@ -1379,15 +1419,66 @@ impl Scope {
         self.invalidate_exclusive_local_alts(name);
     }
 
+    fn clear_alias_for_local_update(aliases: &mut HashMap<String, AliasTarget>, name: &str) {
+        if matches!(aliases.get(name), Some(AliasTarget::Dynamic(_))) {
+            aliases.insert(
+                name.to_string(),
+                AliasTarget::Dynamic(Box::new(AliasTarget::Local(name.to_string()))),
+            );
+        } else {
+            aliases.remove(name);
+        }
+    }
+
+    fn set_dynamic_predicate_source(&mut self, name: &str, is_dynamic: bool) {
+        if is_dynamic {
+            let aliases = Arc::make_mut(&mut self.aliases);
+            match aliases.get(name).cloned() {
+                Some(AliasTarget::Dynamic(_)) => {}
+                Some(target) => {
+                    aliases.insert(name.to_string(), AliasTarget::Dynamic(Box::new(target)));
+                }
+                None => {
+                    aliases.insert(
+                        name.to_string(),
+                        AliasTarget::Dynamic(Box::new(AliasTarget::Local(name.to_string()))),
+                    );
+                }
+            }
+        } else if let Some(AliasTarget::Dynamic(target)) = self.aliases.get(name).cloned() {
+            let aliases = Arc::make_mut(&mut self.aliases);
+            match *target {
+                AliasTarget::Local(target) if target == name => {
+                    aliases.remove(name);
+                }
+                target => {
+                    aliases.insert(name.to_string(), target);
+                }
+            }
+        }
+    }
+
+    fn has_dynamic_predicate_source(&self, name: &str) -> bool {
+        let mut current = name;
+        for _ in 0..64 {
+            match self.aliases.get(current) {
+                Some(AliasTarget::Dynamic(_)) => return true,
+                Some(AliasTarget::Local(next)) => current = next,
+                _ => return false,
+            }
+        }
+        true
+    }
+
     fn narrow(&mut self, name: &str, ty: Type) {
         Arc::make_mut(&mut self.locals).insert(name.to_string(), ty);
-        Arc::make_mut(&mut self.aliases).remove(name);
+        Self::clear_alias_for_local_update(Arc::make_mut(&mut self.aliases), name);
         self.invalidate_exclusive_local_alts(name);
     }
 
     fn narrow_and_refine_exclusive_local_alts(&mut self, name: &str, ty: Type) {
         Arc::make_mut(&mut self.locals).insert(name.to_string(), ty.clone());
-        Arc::make_mut(&mut self.aliases).remove(name);
+        Self::clear_alias_for_local_update(Arc::make_mut(&mut self.aliases), name);
         if Self::is_immutable_branch_alternative_type(&ty) {
             self.refine_exclusive_local_alts(name, &ty);
         } else {
@@ -1444,7 +1535,7 @@ impl Scope {
             let aliases = Arc::make_mut(&mut self.aliases);
             for (local_name, ty) in &narrowed_alternatives[0] {
                 locals.insert(local_name.clone(), ty.clone());
-                aliases.remove(local_name);
+                Self::clear_alias_for_local_update(aliases, local_name);
             }
             return;
         }
@@ -1468,7 +1559,7 @@ impl Scope {
                 local_name.clone(),
                 Type::from_type_vec_preserve_untyped(types),
             );
-            aliases.remove(&local_name);
+            Self::clear_alias_for_local_update(aliases, &local_name);
         }
     }
 
@@ -1574,6 +1665,13 @@ impl Scope {
             }
             match self.aliases.get(current) {
                 Some(AliasTarget::Local(next)) => current = next,
+                Some(AliasTarget::Dynamic(target)) => match target.as_ref() {
+                    AliasTarget::Local(next) if next == current => {
+                        return AliasTarget::Local(current.to_string());
+                    }
+                    AliasTarget::Local(next) => current = next,
+                    target => return target.clone(),
+                },
                 Some(other) => return other.clone(),
                 None => return AliasTarget::Local(current.to_string()),
             }
@@ -3406,6 +3504,9 @@ impl<'a> InferenceEngine<'a> {
             AliasTarget::Constant { owner, name } => {
                 self.set_constant_value(owner, name, ty.clone(), None);
             }
+            AliasTarget::Dynamic(target) => {
+                self.write_alias_target(class_name, scope, target, ty.clone());
+            }
         }
         self.sync_alias_views(scope, target, &ty);
     }
@@ -3702,6 +3803,7 @@ impl<'a> InferenceEngine<'a> {
         names.extend(else_scope.locals.keys().cloned());
         if names.len() > Self::MAX_PRECISE_SCOPE_MERGE_LOCALS {
             let mut merged = base.clone();
+            Self::merge_dynamic_predicate_markers(&mut merged, &[then_scope, else_scope], &names);
             let mut return_types = Vec::with_capacity(
                 base.return_types.len()
                     + then_scope.return_types.len()
@@ -3868,6 +3970,7 @@ impl<'a> InferenceEngine<'a> {
                 }
                 (None, None) => {}
             }
+            Self::merge_dynamic_predicate_marker(&mut merged, &name, &[then_scope, else_scope]);
             if let (Some(left), Some(right)) = (then_def, else_def)
                 && left == right
             {
@@ -3929,6 +4032,23 @@ impl<'a> InferenceEngine<'a> {
         names.extend(then_scope.callback_mutated_record_locals.iter().cloned());
         names.extend(else_scope.callback_mutated_record_locals.iter().cloned());
         Arc::new(names)
+    }
+
+    fn merge_dynamic_predicate_markers(
+        merged: &mut Scope,
+        sources: &[&Scope],
+        names: &HashSet<String>,
+    ) {
+        for name in names {
+            Self::merge_dynamic_predicate_marker(merged, name, sources);
+        }
+    }
+
+    fn merge_dynamic_predicate_marker(merged: &mut Scope, name: &str, sources: &[&Scope]) {
+        let is_dynamic = sources
+            .iter()
+            .any(|scope| scope.has_dynamic_predicate_source(name));
+        merged.set_dynamic_predicate_source(name, is_dynamic);
     }
 
     fn assign_exclusive_local_alts(
@@ -4035,6 +4155,7 @@ impl<'a> InferenceEngine<'a> {
                 (None, Some(rhs)) => merged.set(&name, rhs.union_with(Type::Nil)),
                 (None, None) => {}
             }
+            Self::merge_dynamic_predicate_marker(&mut merged, &name, &[base, loop_scope]);
             if let Some(definition_loc) = base_def
                 && Some(definition_loc) == loop_def
             {
@@ -5367,10 +5488,107 @@ impl<'a> InferenceEngine<'a> {
                 && let Some(truthiness) =
                     self.refined_class_case_equality_truthiness(&target_name, scope)
             {
+                if args.arguments().iter().any(|argument| {
+                    Self::expression_has_dynamic_truthiness_source(&argument, scope)
+                }) {
+                    return None;
+                }
                 return Some(truthiness);
             }
         }
+        if Self::expression_has_dynamic_truthiness_source(predicate, scope) {
+            return None;
+        }
         truthiness
+    }
+
+    fn expression_has_intrinsic_truthiness(node: &Node<'_>) -> bool {
+        if let Some(parentheses) = node.as_parentheses_node()
+            && let Some(body) = parentheses.body()
+        {
+            let inner = body
+                .as_statements_node()
+                .and_then(|statements| statements.body().iter().last())
+                .unwrap_or(body);
+            return Self::expression_has_intrinsic_truthiness(&inner);
+        }
+        matches!(
+            node,
+            Node::ArrayNode { .. }
+                | Node::HashNode { .. }
+                | Node::InterpolatedStringNode { .. }
+                | Node::LambdaNode { .. }
+                | Node::RangeNode { .. }
+                | Node::RegularExpressionNode { .. }
+                | Node::SelfNode { .. }
+                | Node::StringNode { .. }
+                | Node::SymbolNode { .. }
+                | Node::IntegerNode { .. }
+                | Node::FloatNode { .. }
+                | Node::TrueNode { .. }
+        )
+    }
+
+    fn expression_has_dynamic_truthiness_source(node: &Node<'_>, scope: &Scope) -> bool {
+        if Self::expression_has_intrinsic_truthiness(node) {
+            return false;
+        }
+        if let Some(parentheses) = node.as_parentheses_node()
+            && let Some(body) = parentheses.body()
+        {
+            let inner = body
+                .as_statements_node()
+                .and_then(|statements| statements.body().iter().last())
+                .unwrap_or(body);
+            return Self::expression_has_dynamic_truthiness_source(&inner, scope);
+        }
+        if let Some(read) = node.as_local_variable_read_node() {
+            let name = String::from_utf8_lossy(read.name().as_slice());
+            return scope.has_dynamic_predicate_source(&name);
+        }
+        if let Some(and_node) = node.as_and_node() {
+            return Self::expression_has_dynamic_truthiness_source(&and_node.left(), scope)
+                || Self::expression_has_dynamic_truthiness_source(&and_node.right(), scope);
+        }
+        if let Some(or_node) = node.as_or_node() {
+            return Self::expression_has_dynamic_truthiness_source(&or_node.left(), scope)
+                || Self::expression_has_dynamic_truthiness_source(&or_node.right(), scope);
+        }
+        if let Some(write) = node.as_local_variable_write_node() {
+            return Self::expression_has_dynamic_truthiness_source(&write.value(), scope);
+        }
+        if let Some(write) = node.as_local_variable_or_write_node() {
+            let name = String::from_utf8_lossy(write.name().as_slice());
+            return scope.has_dynamic_predicate_source(&name)
+                || Self::expression_has_dynamic_truthiness_source(&write.value(), scope);
+        }
+        if let Some(write) = node.as_local_variable_and_write_node() {
+            let name = String::from_utf8_lossy(write.name().as_slice());
+            return scope.has_dynamic_predicate_source(&name)
+                || Self::expression_has_dynamic_truthiness_source(&write.value(), scope);
+        }
+        if node.as_local_variable_operator_write_node().is_some() {
+            return true;
+        }
+        if let Some(call) = node.as_call_node() {
+            return !(call.name().as_slice() == b"proc"
+                && call.receiver().is_none()
+                && call.arguments().is_none()
+                && call.block().is_some());
+        }
+        if matches!(
+            node,
+            Node::YieldNode { .. } | Node::SuperNode { .. } | Node::ForwardingSuperNode { .. }
+        ) {
+            return true;
+        }
+        use ruby_prism::Visit;
+        let mut scan = DynamicTruthinessSourceScan {
+            found: false,
+            scope,
+        };
+        scan.visit(node);
+        scan.found
     }
 
     fn predicate_reads_mutable_ivar(
@@ -9706,13 +9924,21 @@ impl<'a> InferenceEngine<'a> {
                     .as_local_variable_write_node()
                     .expect("must be LocalVariableWriteNode");
                 let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+                let dynamic_predicate_source = Self::expression_has_dynamic_truthiness_source(
+                    &write_node.value(),
+                    &self.top_level_scope,
+                );
                 let value_type = self.infer_node_type(
                     "Object",
                     &write_node.value(),
                     parse_result,
                     &self.top_level_scope.clone(),
                 );
+                let tracks_dynamic_predicate_source =
+                    dynamic_predicate_source && Self::node_truthiness(&value_type).is_some();
                 self.top_level_scope.set(&var_name, value_type);
+                self.top_level_scope
+                    .set_dynamic_predicate_source(&var_name, tracks_dynamic_predicate_source);
             }
             _ => {
                 let scope = self.top_level_scope.clone();
@@ -19216,7 +19442,11 @@ impl<'a> InferenceEngine<'a> {
                 let value_node = write_node.value();
                 let runtime_fact =
                     self.runtime_fact_from_value(class_name, &value_node, parse_result, scope);
+                let dynamic_predicate_source =
+                    Self::expression_has_dynamic_truthiness_source(&value_node, scope);
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
+                let tracks_dynamic_predicate_source =
+                    dynamic_predicate_source && Self::node_truthiness(&value_type).is_some();
                 if let Some(call_node) = value_node.as_call_node() {
                     self.apply_receiver_mutating_call_side_effect(
                         class_name,
@@ -19273,6 +19503,7 @@ impl<'a> InferenceEngine<'a> {
                         loc,
                     );
                 }
+                scope.set_dynamic_predicate_source(&var_name, tracks_dynamic_predicate_source);
                 if let Some(runtime_fact) = runtime_fact {
                     scope.set_runtime_fact(&var_name, runtime_fact);
                 }
@@ -19298,22 +19529,32 @@ impl<'a> InferenceEngine<'a> {
                     .as_local_variable_or_write_node()
                     .expect("must be LocalVariableOrWriteNode");
                 let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+                let dynamic_predicate_source = scope.has_dynamic_predicate_source(&var_name)
+                    || Self::expression_has_dynamic_truthiness_source(&write_node.value(), scope);
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let existing = scope.get(&var_name).cloned().unwrap_or(Type::Nil);
                 let result_type = Self::infer_or_write_result(&existing, &value_type);
+                let tracks_dynamic_predicate_source =
+                    dynamic_predicate_source && Self::node_truthiness(&result_type).is_some();
                 scope.set(&var_name, result_type);
+                scope.set_dynamic_predicate_source(&var_name, tracks_dynamic_predicate_source);
             }
             Node::LocalVariableAndWriteNode { .. } => {
                 let write_node = node
                     .as_local_variable_and_write_node()
                     .expect("must be LocalVariableAndWriteNode");
                 let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+                let dynamic_predicate_source = scope.has_dynamic_predicate_source(&var_name)
+                    || Self::expression_has_dynamic_truthiness_source(&write_node.value(), scope);
                 let current_type = scope.get(&var_name).cloned().unwrap_or(Type::Nil);
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_and_write_result(&current_type, &value_type);
+                let tracks_dynamic_predicate_source =
+                    dynamic_predicate_source && Self::node_truthiness(&result_type).is_some();
                 scope.set(&var_name, result_type);
+                scope.set_dynamic_predicate_source(&var_name, tracks_dynamic_predicate_source);
             }
             Node::LocalVariableOperatorWriteNode { .. } => {
                 let write_node = node
@@ -19330,7 +19571,9 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let result_type =
                     self.infer_operator_write_result(&current_type, &operator_name, &value_type);
+                let tracks_dynamic_predicate_source = Self::node_truthiness(&result_type).is_some();
                 scope.set(&var_name, result_type);
+                scope.set_dynamic_predicate_source(&var_name, tracks_dynamic_predicate_source);
             }
             Node::InstanceVariableOperatorWriteNode { .. } => {
                 let write_node = node
@@ -48240,6 +48483,72 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn class_may_match_numeric_literal_across_types(
+        &self,
+        class_name: &str,
+        literal_is_float: bool,
+    ) -> bool {
+        let bare_class_name = class_name.strip_prefix("::").unwrap_or(class_name);
+        if matches!(bare_class_name, "Object" | "BasicObject") {
+            return true;
+        }
+
+        let mut current = class_name;
+        for _ in 0..64 {
+            match current {
+                "Integer" => return literal_is_float,
+                "Float" => return !literal_is_float,
+                "Numeric" => return true,
+                _ => {}
+            }
+            let Some(superclass) = self.registry.get_superclass(current) else {
+                return self.registry.class_data_for(current).is_none();
+            };
+            current = superclass;
+        }
+        true
+    }
+
+    fn equality_may_match_across_numeric_types(&self, current: &Type, literal: &Type) -> bool {
+        let literal_is_float = match literal {
+            Type::LiteralInteger(_) => false,
+            Type::LiteralFloat(_) => true,
+            _ => return false,
+        };
+
+        match current {
+            Type::LiteralInteger(_) | Type::Integer => literal_is_float,
+            Type::LiteralFloat(_) | Type::Float => !literal_is_float,
+            Type::Union(parts) | Type::Intersection(parts) => parts
+                .iter()
+                .any(|part| self.equality_may_match_across_numeric_types(part, literal)),
+            Type::Class(name) => {
+                self.class_may_match_numeric_literal_across_types(name.as_str(), literal_is_float)
+            }
+            Type::Generic { base, .. } => {
+                self.class_may_match_numeric_literal_across_types(base.as_str(), literal_is_float)
+            }
+            Type::Untyped
+            | Type::Todo
+            | Type::Top
+            | Type::ParamRef(_)
+            | Type::KeywordParamRef(_)
+            | Type::IvarRef(_)
+            | Type::GlobalVariableRef(_)
+            | Type::MethodReturnRef(_, _)
+            | Type::BlockReturnRef
+            | Type::PatternIndexRef(_, _)
+            | Type::PatternRestRef(_)
+            | Type::PatternTrailingRef(_, _)
+            | Type::PatternKeyRef(_, _)
+            | Type::PatternKeyRestRef(_, _)
+            | Type::ReceiverMethodRef(_, _)
+            | Type::SelfType
+            | Type::InstanceType => true,
+            _ => false,
+        }
+    }
+
     fn extract_equality_condition_narrowing(
         &mut self,
         class_name: &str,
@@ -48291,6 +48600,15 @@ impl<'a> InferenceEngine<'a> {
             scope,
         ) {
             return None;
+        }
+        if matches!(literal_ty, Type::LiteralInteger(_) | Type::LiteralFloat(_)) {
+            let current = scope
+                .get(&var_name)
+                .map(|ty| self.resolve_narrowing_input_type(class_name, scope, ty))
+                .unwrap_or(Type::Untyped);
+            if self.equality_may_match_across_numeric_types(&current, &literal_ty) {
+                return None;
+            }
         }
         let correlate = Scope::is_immutable_branch_alternative_type(&literal_ty);
 
