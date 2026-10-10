@@ -44,6 +44,143 @@ class Object < BasicObject
 end
 ```
 
+## Known constants do not make rescue reachable
+
+### update
+
+```ruby
+KNOWN_EXCEPTION_VALUE = :known
+
+module KnownExceptionNamespace
+  VALUE = :known
+end
+
+if [true, false].sample
+  CONDITIONAL_EXCEPTION_VALUE = :conditional
+  class ConditionalExceptionClass; end
+end
+
+def returns_known_constant_through_rescue
+  begin
+    return KNOWN_EXCEPTION_VALUE
+  rescue
+    :rescued
+  end
+  :after
+end
+
+def returns_builtin_constant_through_rescue
+  begin
+    return RUBY_VERSION
+  rescue
+    :rescued
+  end
+  :after
+end
+
+def qualified_constant_keeps_rescue_reachable
+  begin
+    return KnownExceptionNamespace::VALUE
+  rescue NameError
+    :rescued
+  end
+  :after
+end
+
+def conditional_constant_keeps_rescue_fallthrough
+  begin
+    return CONDITIONAL_EXCEPTION_VALUE
+  rescue NameError
+    :rescued
+  end
+  :after
+end
+
+def conditional_class_constant_keeps_rescue_fallthrough
+  begin
+    return ConditionalExceptionClass
+  rescue NameError
+    :rescued
+  end
+  :after
+end
+```
+
+### result
+
+```rbs
+KNOWN_EXCEPTION_VALUE: :known
+
+module KnownExceptionNamespace
+  VALUE: :known
+end
+
+class Object < BasicObject
+  def returns_known_constant_through_rescue: -> :known
+  def returns_builtin_constant_through_rescue: -> String
+  def qualified_constant_keeps_rescue_reachable: -> :after | :known
+  def conditional_constant_keeps_rescue_fallthrough: -> untyped | :after
+  def conditional_class_constant_keeps_rescue_fallthrough: -> untyped | :after
+end
+
+```
+
+## Potentially raising operations keep rescue paths reachable
+
+### update
+
+```ruby
+def super_rescue_fallthrough
+  begin
+    super
+    return :returned
+  rescue
+    :rescued
+  end
+  :after
+end
+
+def explicit_super_rescue_fallthrough
+  begin
+    super()
+    return :returned
+  rescue
+    :rescued
+  end
+  :after
+end
+
+def unresolved_constant_rescue_fallthrough
+  begin
+    return MISSING_EXCEPTION_CONSTANT
+  rescue NameError
+    :rescued
+  end
+  :after
+end
+
+def defined_missing_constant_does_not_enter_rescue
+  begin
+    return :defined if defined?(MISSING_DEFINED_CONSTANT)
+    return :missing
+  rescue NameError
+    :rescued
+  end
+  :after
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def super_rescue_fallthrough: -> :after | :returned
+  def explicit_super_rescue_fallthrough: -> :after | :returned
+  def unresolved_constant_rescue_fallthrough: -> untyped | :after
+  def defined_missing_constant_does_not_enter_rescue: -> :defined | :missing
+end
+```
+
 ## A return inside rescue contributes to the method type
 
 ### update
@@ -629,6 +766,16 @@ def begin_return_with_rescue
   :unreachable
 end
 
+def begin_return_yield_with_rescue
+  begin
+    yield
+    return :returned
+  rescue
+    :rescued
+  end
+  :after
+end
+
 def begin_raise_rescue_continues
   begin
     raise
@@ -666,6 +813,7 @@ class Object < BasicObject
   def begin_return_only: -> :returned
   def begin_ensure_return_only: -> :returned
   def begin_return_with_rescue: -> :returned
+  def begin_return_yield_with_rescue: -> :after | :returned
   def begin_raise_rescue_continues: -> :reachable
   def rescue_modifier_return: -> :returned
   def rescue_modifier_raise_continues: -> :reachable

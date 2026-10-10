@@ -1855,6 +1855,7 @@ pub struct ClassDataCold {
     pub data_constructor: Option<DataConstructor>,
     // set of bare ivar readers (used only for self-fact narrowing).
     pub bare_ivar_readers: FxHashSet<(Sym, bool)>,
+    pub class_case_equality_kind_of_loc: Option<SourceLocation>,
     /// DSL recorded in a concern `included do` that must run against each includer
     /// (resource name / serializer owner), not the concern module itself.
     pub includer_bound_dsl: Vec<IncluderBoundDsl>,
@@ -2535,6 +2536,8 @@ pub struct TypeRegistry {
 }
 
 /// Registry state a per-file snapshot never populates, kept behind one box.
+type FrozenArrayIncludeElements = FxHashMap<(Sym, Sym), Arc<[Type]>>;
+
 #[derive(Debug, Default, Clone)]
 struct RegistryColdTail {
     type_aliases: HashMap<String, Type>,
@@ -2549,6 +2552,7 @@ struct RegistryColdTail {
     module_includer_index: Option<FxHashMap<SharedName, Vec<SharedName>>>,
     /// known gem/Rails namespaces: suppress `unresolved_constant` even without bundled types.
     known_constant_namespaces: HashSet<String>,
+    frozen_array_include_elements: Option<Arc<FrozenArrayIncludeElements>>,
 }
 
 fn empty_registry_cold_tail() -> &'static RegistryColdTail {
@@ -3799,6 +3803,7 @@ impl TypeRegistry {
         loc: Option<SourceLocation>,
         file_path: Option<&str>,
     ) {
+        self.remove_frozen_array_include_elements(class_name, constant_name);
         let data = self.class_data_mut(class_name);
         data.user_defined = true;
         let name = Sym::new(constant_name);
@@ -3812,6 +3817,127 @@ impl TypeRegistry {
                 external_source: false,
             },
         );
+    }
+
+    pub fn set_frozen_array_include_elements(
+        &mut self,
+        class_name: &str,
+        constant_name: &str,
+        elements: Vec<Type>,
+    ) {
+        let key = (Sym::new(class_name), Sym::new(constant_name));
+        let cold_tail = self
+            .cold_tail
+            .get_or_insert_with(|| Box::new(RegistryColdTail::default()));
+        let elements_by_constant = cold_tail
+            .frozen_array_include_elements
+            .get_or_insert_with(|| Arc::new(FxHashMap::default()));
+        Arc::make_mut(elements_by_constant).insert(key, Arc::from(elements));
+    }
+
+    fn remove_frozen_array_include_elements(&mut self, class_name: &str, constant_name: &str) {
+        let key = (Sym::new(class_name), Sym::new(constant_name));
+        let Some(cold_tail) = self.cold_tail.as_mut() else {
+            return;
+        };
+        let Some(elements_by_constant) = cold_tail.frozen_array_include_elements.as_mut() else {
+            return;
+        };
+        let elements_by_constant = Arc::make_mut(elements_by_constant);
+        elements_by_constant.remove(&key);
+        if elements_by_constant.is_empty() {
+            cold_tail.frozen_array_include_elements = None;
+        }
+    }
+
+    pub(crate) fn clear_frozen_array_include_elements(
+        &mut self,
+        class_name: &str,
+        constant_name: &str,
+    ) {
+        self.remove_frozen_array_include_elements(class_name, constant_name);
+    }
+
+    pub fn lookup_frozen_array_include_elements(
+        &self,
+        class_name: &str,
+        constant_name: &str,
+    ) -> Option<&[Type]> {
+        let data = self.class_data.get(class_name)?;
+        if !data.constants.contains_key(constant_name) {
+            return None;
+        }
+        let key = (Sym::new(class_name), Sym::new(constant_name));
+        self.cold_tail
+            .as_ref()?
+            .frozen_array_include_elements
+            .as_ref()?
+            .get(&key)
+            .map(AsRef::as_ref)
+    }
+
+    pub fn lookup_frozen_array_include_elements_through_ancestors(
+        &self,
+        class_name: &str,
+        constant_name: &str,
+    ) -> Option<&[Type]> {
+        let mut seen = Vec::new();
+        self.lookup_frozen_array_include_elements_through_ancestors_inner(
+            class_name,
+            constant_name,
+            &mut seen,
+        )
+    }
+
+    fn lookup_frozen_array_include_elements_through_ancestors_inner<'a>(
+        &'a self,
+        class_name: &str,
+        constant_name: &str,
+        seen: &mut Vec<String>,
+    ) -> Option<&'a [Type]> {
+        if seen.iter().any(|seen_class| seen_class == class_name) {
+            return None;
+        }
+        seen.push(class_name.to_string());
+        let data = self.class_data.get(class_name)?;
+        if data.constants.contains_key(constant_name) {
+            let key = (Sym::new(class_name), Sym::new(constant_name));
+            return self
+                .cold_tail
+                .as_ref()?
+                .frozen_array_include_elements
+                .as_ref()?
+                .get(&key)
+                .map(AsRef::as_ref);
+        }
+        for mixin in data.mixins.iter().rev() {
+            if matches!(mixin.kind, MixinKind::Include | MixinKind::Prepend) {
+                let resolved =
+                    self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
+                if let Some(elements) = self
+                    .lookup_frozen_array_include_elements_through_ancestors_inner(
+                        resolved,
+                        constant_name,
+                        seen,
+                    )
+                {
+                    return Some(elements);
+                }
+            }
+        }
+        if let Some(superclass) = &data.superclass {
+            let resolved = self.resolve_superclass_ref_borrow(class_name, superclass.as_ref());
+            if let Some(elements) = self
+                .lookup_frozen_array_include_elements_through_ancestors_inner(
+                    resolved,
+                    constant_name,
+                    seen,
+                )
+            {
+                return Some(elements);
+            }
+        }
+        None
     }
 
     pub fn lookup_constant_type(&self, class_name: &str, constant_name: &str) -> Option<Type> {
@@ -9876,6 +10002,16 @@ impl TypeRegistry {
             .cold_mut()
             .bare_ivar_readers
             .insert(key);
+    }
+
+    pub fn set_class_case_equality_kind_of_loc(
+        &mut self,
+        class_name: &str,
+        loc: Option<SourceLocation>,
+    ) {
+        self.class_data_mut(class_name)
+            .cold_mut()
+            .class_case_equality_kind_of_loc = loc;
     }
 
     /// look up a method's visibility override. Treated as `Public` (returns `None`) if there's no entry.
