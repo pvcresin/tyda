@@ -33,6 +33,9 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
   に置き、個別リポジトリ名に依存する分岐を解析コアへ持ち込まない。
 - **確信のある情報だけを user-facing に出す。** 不明な型や開いたメソッド面は `untyped` とし、
   診断は「確実に間違い」と証明できる場合に限る。
+- **分岐で外側の制御効果を失わない。** branch scope を選択・合流するときは、その枝で新たに
+  発生した効果と基底 scope までの効果を保つ。これにより block 内の `return` など、外側へ作用する
+  exit 情報を落とさない。Proc は truthy だが、Ruby の明示的な `&block` 引数は省略時に `nil` になる。
 - **コードパターンは scenario で固定する。** 実装詳細ではなく、Ruby 入力と期待する RBS /
   diagnostics を回帰の正本にする。
 - **解析コアを共有する。** CLI、LSP、scenario test の意味論を別々に実装しない。

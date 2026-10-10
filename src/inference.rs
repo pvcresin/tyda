@@ -3286,6 +3286,23 @@ impl<'a> InferenceEngine<'a> {
         Some(Arc::new(merged))
     }
 
+    fn merge_exception_entry_with_base(
+        base: Option<&Arc<HashMap<String, Type>>>,
+        branch: Option<&Arc<HashMap<String, Type>>>,
+    ) -> Option<Arc<HashMap<String, Type>>> {
+        match (base, branch) {
+            (None, None) => None,
+            (Some(base), None) => Some(Arc::clone(base)),
+            (None, Some(branch)) => Some(Arc::clone(branch)),
+            (Some(base), Some(branch)) if Arc::ptr_eq(base, branch) => Some(Arc::clone(base)),
+            (base, branch) => Self::merge_exception_entries(
+                base.map(|entry| entry.as_ref()),
+                branch.map(|entry| entry.as_ref()),
+                None,
+            ),
+        }
+    }
+
     fn call_site_contains_param_ref(call_site: &CallSite) -> bool {
         call_site
             .arg_types
@@ -3319,15 +3336,30 @@ impl<'a> InferenceEngine<'a> {
 
     fn scope_with_exit_effects_only(base: &Scope, branch: &Scope) -> Scope {
         let mut projected = base.fork_for_branch();
-        projected.return_types.clone_from(&branch.return_types);
-        projected.next_types.clone_from(&branch.next_types);
-        projected.break_types.clone_from(&branch.break_types);
-        projected
-            .exception_entry
-            .clone_from(&branch.exception_entry);
-        projected
-            .enumerator_yielded_types
-            .clone_from(&branch.enumerator_yielded_types);
+        Self::merge_branch_effect_types(
+            &base.return_types,
+            &branch.return_types,
+            &mut projected.return_types,
+        );
+        Self::merge_branch_effect_types(
+            &base.next_types,
+            &branch.next_types,
+            &mut projected.next_types,
+        );
+        Self::merge_branch_effect_types(
+            &base.break_types,
+            &branch.break_types,
+            &mut projected.break_types,
+        );
+        projected.exception_entry = Self::merge_exception_entry_with_base(
+            base.exception_entry.as_ref(),
+            branch.exception_entry.as_ref(),
+        );
+        Self::merge_branch_effect_types(
+            &base.enumerator_yielded_types,
+            &branch.enumerator_yielded_types,
+            &mut projected.enumerator_yielded_types,
+        );
         projected
     }
 
@@ -3337,6 +3369,41 @@ impl<'a> InferenceEngine<'a> {
         } else {
             branch
         }
+    }
+
+    fn merge_branch_effect_types(base: &[Type], branch: &[Type], merged: &mut Vec<Type>) {
+        if branch.starts_with(base) {
+            merged.extend_from_slice(&branch[base.len()..]);
+        } else {
+            merged.reserve(branch.len());
+            merged.extend_from_slice(branch);
+        }
+    }
+
+    fn preserve_base_branch_effect_types(base: &[Type], branch: &mut Vec<Type>) {
+        if branch.starts_with(base) {
+            return;
+        }
+        let branch_effects = std::mem::take(branch);
+        let mut merged = Vec::with_capacity(base.len() + branch_effects.len());
+        merged.extend_from_slice(base);
+        merged.extend(branch_effects);
+        *branch = merged;
+    }
+
+    fn merge_branch_scope_with_base_effects(base: &Scope, mut branch_scope: Scope) -> Scope {
+        Self::preserve_base_branch_effect_types(&base.return_types, &mut branch_scope.return_types);
+        Self::preserve_base_branch_effect_types(&base.next_types, &mut branch_scope.next_types);
+        Self::preserve_base_branch_effect_types(&base.break_types, &mut branch_scope.break_types);
+        Self::preserve_base_branch_effect_types(
+            &base.enumerator_yielded_types,
+            &mut branch_scope.enumerator_yielded_types,
+        );
+        branch_scope.exception_entry = Self::merge_exception_entry_with_base(
+            base.exception_entry.as_ref(),
+            branch_scope.exception_entry.as_ref(),
+        );
+        branch_scope
     }
 
     fn merge_exit_effects_into_fallthrough(
@@ -4828,6 +4895,10 @@ impl<'a> InferenceEngine<'a> {
             | Type::Class(_)
             | Type::Generic { .. }
             | Type::Singleton(_) => Some(true),
+            Type::Proc { return_type, .. } if Self::type_contains_block_return_ref(return_type) => {
+                None
+            }
+            Type::Proc { .. } => Some(true),
             _ => None,
         }
     }
@@ -12618,13 +12689,11 @@ impl<'a> InferenceEngine<'a> {
                 }
                 ParamKind::Block => {
                     if !pi.name.is_empty() {
-                        scope.set(
-                            &pi.name,
-                            Type::Proc {
-                                return_type: Box::new(Type::BlockReturnRef),
-                                param_count: 0,
-                            },
-                        );
+                        let block_type = Type::Proc {
+                            return_type: Box::new(Type::BlockReturnRef),
+                            param_count: 0,
+                        };
+                        scope.set(&pi.name, block_type);
                         scope.current_block_param_name = Some(pi.name.clone());
                     }
                 }
@@ -19580,7 +19649,7 @@ impl<'a> InferenceEngine<'a> {
                         &mut reachable_scope,
                         &unreachable_scope,
                     );
-                    *scope = reachable_scope;
+                    *scope = Self::merge_branch_scope_with_base_effects(scope, reachable_scope);
                     reachable_type
                 } else if then_always_exits && !else_always_exits {
                     let mut rt = scope.return_types.clone();
@@ -19724,7 +19793,7 @@ impl<'a> InferenceEngine<'a> {
                         &mut reachable_scope,
                         &unreachable_scope,
                     );
-                    *scope = reachable_scope;
+                    *scope = Self::merge_branch_scope_with_base_effects(scope, reachable_scope);
                     reachable_type
                 } else if body_always_exits && !else_always_exits {
                     let mut rt = scope.return_types.clone();
@@ -19952,7 +20021,7 @@ impl<'a> InferenceEngine<'a> {
                         &non_fallthrough_local_names,
                     );
                 }
-                *scope = result_scope;
+                *scope = Self::merge_branch_scope_with_base_effects(scope, result_scope);
                 Self::merge_reachable_types(branch_types)
             }
             Node::CaseMatchNode { .. } => {
@@ -20112,7 +20181,7 @@ impl<'a> InferenceEngine<'a> {
                         &non_fallthrough_local_names,
                     );
                 }
-                *scope = result_scope;
+                *scope = Self::merge_branch_scope_with_base_effects(scope, result_scope);
                 Self::merge_reachable_types(branch_types)
             }
             Node::ElseNode { .. } => {
@@ -20231,7 +20300,7 @@ impl<'a> InferenceEngine<'a> {
                     );
                 }
 
-                *scope = merged_scope;
+                *scope = Self::merge_branch_scope_with_base_effects(scope, merged_scope);
                 if Self::begin_ensure_always_exits(&begin_node) {
                     Type::Bot
                 } else {
