@@ -66,10 +66,6 @@ end
 
 ## local assigned on one branch is nilable after the branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -109,6 +105,97 @@ end
 ```rbs
 class Object < BasicObject
   def complete_branch_local: (untyped flag) -> (1 | "other")
+end
+```
+
+## Proc values are always truthy
+
+```ruby
+def proc_truthiness
+  callback = proc { :value }
+  if callback
+    :truthy
+  else
+    :falsy
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def proc_truthiness: -> :truthy
+end
+```
+
+## Optional block parameters may be nil
+
+```ruby
+def optional_block_truthiness(&block)
+  if block
+    :provided
+  else
+    :missing
+  end
+end
+
+def optional_block_alias_truthiness(&block)
+  callback = block
+  if callback
+    :provided
+  else
+    :missing
+  end
+end
+
+def optional_block_call(&block)
+  return :missing unless block
+
+  block.call
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def optional_block_truthiness: (?untyped &block) -> (:missing | :provided)
+  def optional_block_alias_truthiness: (?untyped &block) -> (:missing | :provided)
+  def optional_block_call: (?untyped &block) -> (untyped | :missing)
+end
+```
+
+## Repeated literal checks preserve branch-local values
+
+### update
+
+```rbs
+class FrameSource
+  def self.next_frame: -> (180 | 3000)
+end
+```
+
+```ruby
+def frame_extent
+  frames = FrameSource.next_frame
+  if frames == 3000
+    break_end = 20
+  end
+
+  if frames == 180
+    10
+  else
+    break_end + 10
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def frame_extent: -> Integer
 end
 ```
 

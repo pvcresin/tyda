@@ -18,7 +18,7 @@ end
 ```rbs
 module Utils
   def self.default_parser: -> untyped
-  def self.default_parser=: (Integer default_parser) -> untyped
+  def self.default_parser=: (Integer default_parser) -> Integer
 end
 ```
 
@@ -44,7 +44,7 @@ end
 ```rbs
 module Utils
   def self.default_parser: -> untyped
-  def self.default_parser=: (Integer default_parser) -> untyped
+  def self.default_parser=: (Integer default_parser) -> Integer
   def self.param_depth_limit=: (untyped v) -> untyped
 end
 ```

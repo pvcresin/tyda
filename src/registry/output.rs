@@ -437,13 +437,21 @@ impl TypeRegistry {
                 };
             }
         }
-        if method.name.ends_with('=')
-            && method.attr_ivar.is_some()
-            && params.len() == 1
-            && !Self::is_concrete_for_global_resolve(&params[0].param_type)
-            && Self::is_concrete_for_global_resolve(&return_type)
-        {
-            params[0].param_type = return_type.clone();
+        if method.name.ends_with('=') && method.attr_ivar.is_some() && params.len() == 1 {
+            if !method.has_annotation() {
+                if !Self::is_concrete_for_global_resolve(&params[0].param_type)
+                    && Self::is_concrete_for_global_resolve(&return_type)
+                {
+                    params[0].param_type = return_type.clone().widen();
+                }
+                if Self::is_concrete_for_global_resolve(&params[0].param_type) {
+                    return_type = params[0].param_type.clone();
+                }
+            } else if !Self::is_concrete_for_global_resolve(&params[0].param_type)
+                && Self::is_concrete_for_global_resolve(&return_type)
+            {
+                params[0].param_type = return_type.clone();
+            }
         }
 
         let overloads: Vec<OverloadSig> = if !method.extra_overloads.is_empty() {

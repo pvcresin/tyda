@@ -86,10 +86,6 @@ end
 
 ## Apply alternative pattern
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -112,10 +108,6 @@ end
 ```
 
 ## Apply range pattern
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -362,10 +354,6 @@ end
 
 ## Branch with constant pattern
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -423,10 +411,6 @@ end
 
 ## Apply pattern guard
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -475,10 +459,6 @@ end
 
 ## Infer types captured by an array pattern
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -502,10 +482,6 @@ end
 ```
 
 ## Infer types captured by a hash pattern
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -531,10 +507,6 @@ end
 
 ## Array variable pattern keeps tuple elements
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -558,10 +530,6 @@ end
 
 ## Hash variable pattern keeps record fields
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -584,10 +552,6 @@ end
 ```
 
 ## Find pattern keeps before and after rest as arrays
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -639,10 +603,6 @@ end
 
 ## Nested capture pattern binds the asserted type
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -673,10 +633,6 @@ end
 ```
 
 ## Pattern capture uses the binding after match
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1001,10 +957,6 @@ end
 
 ## Do not merge locals from an exiting case/in branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1018,6 +970,18 @@ def case_match_local_after_return(value)
   end
   selected
 end
+
+def case_match_exit_keeps_only_fallthrough_local(value)
+  current = :before
+  case value
+  in Integer
+    current = :returned
+    return :returned
+  else
+    current = "live"
+  end
+  current
+end
 ```
 
 ### result
@@ -1025,6 +989,7 @@ end
 ```rbs
 class Object < BasicObject
   def case_match_local_after_return: (untyped value) -> :returned?
+  def case_match_exit_keeps_only_fallthrough_local: (untyped value) -> ("live" | :returned)
 end
 ```
 

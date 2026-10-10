@@ -13,11 +13,11 @@
 | 分野 | 状態 | 代表的な範囲 |
 | --- | --- | --- |
 | 定義・dispatch・visibility | supported | class / module / mixin / constant / method / `super` |
-| 変数・flow | supported | local / ivar / 多重代入 / narrowing / rescue |
+| 変数・flow | supported | local / ivar / 多重代入 / narrowing（標準 `Module#===` の class guard を含む） / 分岐ローカルと `nil` の合流 / rescue |
 | block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy |
 | collection shape | supported | Array、Hash、Set、Tuple、Record |
 | pattern matching | partial | version gate、array / hash / find binding、guard 内の capture |
-| 動的定義 | partial | 静的な名前の `define_method`、`attr_*`、`Struct.new`、`Data.define` |
+| 動的定義 | partial | 静的な名前の `define_method`、`attr_*`（setter 戻り値を設定値の型にする）、`Struct.new`、`Data.define` |
 | runtime-only meta programming | partial | 未知の名前・object identity は `untyped` |
 | 深さ・union・shape の制限 | supported | 上限超過時は安全に `untyped` |
 

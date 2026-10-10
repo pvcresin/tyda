@@ -206,3 +206,92 @@ class Object < BasicObject
   def b: -> [1, "x"] | [2, "y"]
 end
 ```
+
+## Block return survives nested iteration and terminal raise branches
+
+```ruby
+def connect_nested
+  pending = [Object.new]
+  outer_error = nil
+
+  until pending.empty?
+    available = pending
+    available.each do
+      begin
+        connect_nonblock
+        return :connected
+      rescue
+        next
+      end
+    end
+    pending.clear
+  end
+
+  if outer_error
+    raise outer_error
+  else
+    raise "No socket connected"
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def connect_nested: -> :connected
+end
+```
+
+## Branch expressions preserve earlier block returns
+
+```ruby
+def return_across_unless
+  [1].each { return :from_block }
+  unless nil
+    raise "unreachable"
+  else
+    raise "terminal"
+  end
+end
+
+def return_across_case
+  [1].each { return :from_block }
+  status = :matched
+  case status
+  when :matched
+    raise "matched"
+  else
+    raise "unmatched"
+  end
+end
+
+def return_across_pattern_case
+  [1].each { return :from_block }
+  case 1
+  in 1
+    raise "matched"
+  else
+    raise "unmatched"
+  end
+end
+
+def return_across_begin
+  [1].each { return :from_block }
+  begin
+    :continued
+  end
+  raise "terminal"
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def return_across_unless: -> :from_block
+  def return_across_case: -> :from_block
+  def return_across_pattern_case: -> :from_block
+  def return_across_begin: -> :from_block
+end
+```
