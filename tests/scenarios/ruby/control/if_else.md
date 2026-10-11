@@ -129,6 +129,38 @@ class Object < BasicObject
 end
 ```
 
+## Keep nil-returning calls reachable for open dispatch
+
+### update
+
+```ruby
+class DynamicFieldPayload
+  def initialize(query: nil)
+    @query = query
+  end
+
+  def query
+    @query
+  end
+
+  def log_data
+    data = { query_sha: "sha" }
+    data[:query] = query if query
+    data
+  end
+end
+```
+
+### result
+
+```rbs
+class DynamicFieldPayload
+  def initialize: (?query: nil) -> void
+  def query: -> nil
+  def log_data: -> { query_sha: "sha", ?query: nil }
+end
+```
+
 ## Optional block parameters may be nil
 
 ```ruby

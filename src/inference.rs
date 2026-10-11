@@ -160,6 +160,48 @@ impl<'pr> ruby_prism::Visit<'pr> for CallPresenceScan {
     fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
 }
 
+#[derive(Default)]
+struct DynamicControlFlowReadScan {
+    found: bool,
+}
+
+impl<'pr> ruby_prism::Visit<'pr> for DynamicControlFlowReadScan {
+    fn visit_call_node(&mut self, _node: &ruby_prism::CallNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_instance_variable_read_node(
+        &mut self,
+        _node: &ruby_prism::InstanceVariableReadNode<'pr>,
+    ) {
+        self.found = true;
+    }
+
+    fn visit_class_variable_read_node(&mut self, _node: &ruby_prism::ClassVariableReadNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_global_variable_read_node(&mut self, _node: &ruby_prism::GlobalVariableReadNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_yield_node(&mut self, _node: &ruby_prism::YieldNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_super_node(&mut self, _node: &ruby_prism::SuperNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_forwarding_super_node(&mut self, _node: &ruby_prism::ForwardingSuperNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+
+    fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
+}
+
 impl<'a, 'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'a> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         if self.found {
@@ -4903,6 +4945,36 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn control_flow_truthiness(node: &Node<'_>, ty: &Type) -> Option<bool> {
+        let truthiness = Self::node_truthiness(ty)?;
+        if truthiness {
+            return Some(true);
+        }
+        match node {
+            Node::NilNode { .. } | Node::FalseNode { .. } | Node::LocalVariableReadNode { .. } => {
+                Some(false)
+            }
+            Node::CallNode { .. } | Node::InstanceVariableReadNode { .. } => None,
+            Node::ParenthesesNode { .. } => {
+                let parentheses = node.as_parentheses_node()?;
+                let body = parentheses.body()?;
+                if let Node::StatementsNode { .. } = body {
+                    let statements = body.as_statements_node()?;
+                    let last = statements.body().iter().last()?;
+                    Self::control_flow_truthiness(&last, ty)
+                } else {
+                    Self::control_flow_truthiness(&body, ty)
+                }
+            }
+            _ => {
+                use ruby_prism::Visit;
+                let mut scan = DynamicControlFlowReadScan::default();
+                scan.visit(node);
+                (!scan.found).then_some(false)
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn infer_loop_type(
         &mut self,
@@ -4925,9 +4997,15 @@ impl<'a> InferenceEngine<'a> {
                     Type::from_type_vec_preserve_untyped(loop_scope.break_types.clone());
                 let runs_at_least_once = is_begin_modifier
                     || if is_until {
-                        matches!(Self::node_truthiness(&predicate_type), Some(false))
+                        matches!(
+                            Self::control_flow_truthiness(predicate, &predicate_type),
+                            Some(false)
+                        )
                     } else {
-                        matches!(Self::node_truthiness(&predicate_type), Some(true))
+                        matches!(
+                            Self::control_flow_truthiness(predicate, &predicate_type),
+                            Some(true)
+                        )
                     };
                 if runs_at_least_once && Self::statements_last_is_break(&stmts) {
                     return break_type;
@@ -5006,7 +5084,7 @@ impl<'a> InferenceEngine<'a> {
         };
 
         let body_reachable = is_begin_modifier
-            || match Self::node_truthiness(&predicate_type) {
+            || match Self::control_flow_truthiness(predicate, &predicate_type) {
                 Some(false) => is_until,
                 Some(true) => !is_until,
                 None => true,
@@ -5059,9 +5137,15 @@ impl<'a> InferenceEngine<'a> {
             let break_type = Type::from_type_vec_preserve_untyped(loop_scope.break_types.clone());
             let runs_at_least_once = is_begin_modifier
                 || if is_until {
-                    matches!(Self::node_truthiness(&predicate_type), Some(false))
+                    matches!(
+                        Self::control_flow_truthiness(predicate, &predicate_type),
+                        Some(false)
+                    )
                 } else {
-                    matches!(Self::node_truthiness(&predicate_type), Some(true))
+                    matches!(
+                        Self::control_flow_truthiness(predicate, &predicate_type),
+                        Some(true)
+                    )
                 };
             if runs_at_least_once && Self::statements_last_is_break(&stmts) {
                 break_type
@@ -5071,9 +5155,15 @@ impl<'a> InferenceEngine<'a> {
         };
 
         let stops_after_first_body = if is_until {
-            matches!(Self::node_truthiness(&predicate_type), Some(true))
+            matches!(
+                Self::control_flow_truthiness(predicate, &predicate_type),
+                Some(true)
+            )
         } else {
-            matches!(Self::node_truthiness(&predicate_type), Some(false))
+            matches!(
+                Self::control_flow_truthiness(predicate, &predicate_type),
+                Some(false)
+            )
         };
         if is_begin_modifier && stops_after_first_body {
             loop_scope.break_types.clear();
@@ -19628,7 +19718,8 @@ impl<'a> InferenceEngine<'a> {
                 } else {
                     Type::Nil
                 };
-                let predicate_truthiness = Self::node_truthiness(&predicate_type);
+                let predicate_truthiness =
+                    Self::control_flow_truthiness(&if_node.predicate(), &predicate_type);
                 let then_always_exits = if_node
                     .statements()
                     .is_some_and(|s| Self::statements_always_exit(&s))
@@ -19781,7 +19872,9 @@ impl<'a> InferenceEngine<'a> {
                     .is_some_and(|s| Self::statements_always_exit(&s))
                     || (unless_node.else_clause().is_some()
                         && Self::type_never_returns(&else_type));
-                if let Some(predicate_is_truthy) = Self::node_truthiness(&predicate_type) {
+                if let Some(predicate_is_truthy) =
+                    Self::control_flow_truthiness(&unless_node.predicate(), &predicate_type)
+                {
                     let (mut reachable_scope, unreachable_scope, reachable_type) =
                         if predicate_is_truthy {
                             (else_scope, body_scope, else_type)
