@@ -5496,8 +5496,7 @@ impl<'a> InferenceEngine<'a> {
                 return Some(truthiness);
             }
         }
-        if truthiness.is_some() && Self::expression_has_dynamic_truthiness_source(predicate, scope)
-        {
+        if Self::expression_has_dynamic_truthiness_source(predicate, scope) {
             return None;
         }
         truthiness
@@ -9925,17 +9924,18 @@ impl<'a> InferenceEngine<'a> {
                     .as_local_variable_write_node()
                     .expect("must be LocalVariableWriteNode");
                 let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+                let dynamic_predicate_source = Self::expression_has_dynamic_truthiness_source(
+                    &write_node.value(),
+                    &self.top_level_scope,
+                );
                 let value_type = self.infer_node_type(
                     "Object",
                     &write_node.value(),
                     parse_result,
                     &self.top_level_scope.clone(),
                 );
-                let tracks_dynamic_predicate_source = Self::node_truthiness(&value_type).is_some()
-                    && Self::expression_has_dynamic_truthiness_source(
-                        &write_node.value(),
-                        &self.top_level_scope,
-                    );
+                let tracks_dynamic_predicate_source =
+                    dynamic_predicate_source && Self::node_truthiness(&value_type).is_some();
                 self.top_level_scope.set(&var_name, value_type);
                 self.top_level_scope
                     .set_dynamic_predicate_source(&var_name, tracks_dynamic_predicate_source);
@@ -19442,9 +19442,11 @@ impl<'a> InferenceEngine<'a> {
                 let value_node = write_node.value();
                 let runtime_fact =
                     self.runtime_fact_from_value(class_name, &value_node, parse_result, scope);
+                let dynamic_predicate_source =
+                    Self::expression_has_dynamic_truthiness_source(&value_node, scope);
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
-                let tracks_dynamic_predicate_source = Self::node_truthiness(&value_type).is_some()
-                    && Self::expression_has_dynamic_truthiness_source(&value_node, scope);
+                let tracks_dynamic_predicate_source =
+                    dynamic_predicate_source && Self::node_truthiness(&value_type).is_some();
                 if let Some(call_node) = value_node.as_call_node() {
                     self.apply_receiver_mutating_call_side_effect(
                         class_name,
@@ -19527,17 +19529,14 @@ impl<'a> InferenceEngine<'a> {
                     .as_local_variable_or_write_node()
                     .expect("must be LocalVariableOrWriteNode");
                 let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
-                let was_dynamic_predicate_source = scope.has_dynamic_predicate_source(&var_name);
+                let dynamic_predicate_source = scope.has_dynamic_predicate_source(&var_name)
+                    || Self::expression_has_dynamic_truthiness_source(&write_node.value(), scope);
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let existing = scope.get(&var_name).cloned().unwrap_or(Type::Nil);
                 let result_type = Self::infer_or_write_result(&existing, &value_type);
-                let tracks_dynamic_predicate_source = Self::node_truthiness(&result_type).is_some()
-                    && (was_dynamic_predicate_source
-                        || Self::expression_has_dynamic_truthiness_source(
-                            &write_node.value(),
-                            scope,
-                        ));
+                let tracks_dynamic_predicate_source =
+                    dynamic_predicate_source && Self::node_truthiness(&result_type).is_some();
                 scope.set(&var_name, result_type);
                 scope.set_dynamic_predicate_source(&var_name, tracks_dynamic_predicate_source);
             }
@@ -19546,17 +19545,14 @@ impl<'a> InferenceEngine<'a> {
                     .as_local_variable_and_write_node()
                     .expect("must be LocalVariableAndWriteNode");
                 let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
-                let was_dynamic_predicate_source = scope.has_dynamic_predicate_source(&var_name);
+                let dynamic_predicate_source = scope.has_dynamic_predicate_source(&var_name)
+                    || Self::expression_has_dynamic_truthiness_source(&write_node.value(), scope);
                 let current_type = scope.get(&var_name).cloned().unwrap_or(Type::Nil);
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_and_write_result(&current_type, &value_type);
-                let tracks_dynamic_predicate_source = Self::node_truthiness(&result_type).is_some()
-                    && (was_dynamic_predicate_source
-                        || Self::expression_has_dynamic_truthiness_source(
-                            &write_node.value(),
-                            scope,
-                        ));
+                let tracks_dynamic_predicate_source =
+                    dynamic_predicate_source && Self::node_truthiness(&result_type).is_some();
                 scope.set(&var_name, result_type);
                 scope.set_dynamic_predicate_source(&var_name, tracks_dynamic_predicate_source);
             }
