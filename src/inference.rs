@@ -19504,12 +19504,10 @@ impl<'a> InferenceEngine<'a> {
                 });
 
                 let mut branch_types: Vec<Type> = Vec::new();
-                let mut has_irrefutable_branch = false;
                 let mut merged_scope: Option<Scope> = None;
                 for condition in case_node.conditions().iter() {
                     if let Node::InNode { .. } = &condition {
                         let in_node = condition.as_in_node().expect("must be InNode");
-                        has_irrefutable_branch |= Self::pattern_is_irrefutable(&in_node.pattern());
                         let narrowed_type = self.extract_pattern_narrowing(
                             class_name,
                             &in_node.pattern(),
@@ -19553,8 +19551,8 @@ impl<'a> InferenceEngine<'a> {
                     }
                 }
 
-                let mut else_scope = scope.fork_for_branch();
                 if let Some(else_clause) = case_node.else_clause() {
+                    let mut else_scope = scope.fork_for_branch();
                     let else_type = if let Some(statements) = else_clause.statements() {
                         self.infer_statements_return_type(
                             class_name,
@@ -19566,15 +19564,15 @@ impl<'a> InferenceEngine<'a> {
                         Type::Nil
                     };
                     branch_types.push(else_type);
-                } else if !has_irrefutable_branch {
-                    branch_types.push(Type::Nil);
+                    *scope = if let Some(current) = merged_scope {
+                        self.merge_scope_locals(scope, &current, &else_scope)
+                    } else {
+                        self.merge_scope_locals(scope, &else_scope, &scope.fork_for_branch())
+                    };
+                } else if let Some(current) = merged_scope {
+                    // An unmatched case/in raises, so only matched branches reach this point.
+                    *scope = current;
                 }
-
-                *scope = if let Some(current) = merged_scope {
-                    self.merge_scope_locals(scope, &current, &else_scope)
-                } else {
-                    self.merge_scope_locals(scope, &else_scope, &scope.fork_for_branch())
-                };
                 Self::merge_reachable_types(branch_types)
             }
             Node::ElseNode { .. } => {
@@ -24031,7 +24029,6 @@ impl<'a> InferenceEngine<'a> {
                 } else {
                     let case_node = node.as_case_match_node().expect("must be CaseMatchNode");
                     let mut branch_types: Vec<Type> = Vec::new();
-                    let mut has_irrefutable_branch = false;
 
                     let predicate_var = case_node.predicate().and_then(|pred| {
                         if let Node::LocalVariableReadNode { .. } = &pred {
@@ -24050,8 +24047,6 @@ impl<'a> InferenceEngine<'a> {
                     for condition in case_node.conditions().iter() {
                         if let Node::InNode { .. } = &condition {
                             let in_node = condition.as_in_node().expect("must be InNode");
-                            has_irrefutable_branch |=
-                                Self::pattern_is_irrefutable(&in_node.pattern());
                             let narrowed_type = self.extract_pattern_narrowing(
                                 class_name,
                                 &in_node.pattern(),
@@ -24103,10 +24098,9 @@ impl<'a> InferenceEngine<'a> {
                             Type::Nil
                         };
                         branch_types.push(else_type);
-                    } else if !has_irrefutable_branch {
-                        branch_types.push(Type::Nil);
                     }
 
+                    // A missing case/in match raises rather than returning nil.
                     Self::merge_reachable_types(branch_types)
                 }
             }
@@ -45132,10 +45126,6 @@ impl<'a> InferenceEngine<'a> {
             return subject_type.clone();
         }
         Type::Untyped
-    }
-
-    fn pattern_is_irrefutable(pattern: &Node<'_>) -> bool {
-        matches!(pattern, Node::LocalVariableTargetNode { .. })
     }
 
     fn pattern_array_item_binding_type(matched_type: &Type, index: usize) -> Type {
