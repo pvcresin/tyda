@@ -160,48 +160,6 @@ impl<'pr> ruby_prism::Visit<'pr> for CallPresenceScan {
     fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
 }
 
-#[derive(Default)]
-struct DynamicControlFlowReadScan {
-    found: bool,
-}
-
-impl<'pr> ruby_prism::Visit<'pr> for DynamicControlFlowReadScan {
-    fn visit_call_node(&mut self, _node: &ruby_prism::CallNode<'pr>) {
-        self.found = true;
-    }
-
-    fn visit_instance_variable_read_node(
-        &mut self,
-        _node: &ruby_prism::InstanceVariableReadNode<'pr>,
-    ) {
-        self.found = true;
-    }
-
-    fn visit_class_variable_read_node(&mut self, _node: &ruby_prism::ClassVariableReadNode<'pr>) {
-        self.found = true;
-    }
-
-    fn visit_global_variable_read_node(&mut self, _node: &ruby_prism::GlobalVariableReadNode<'pr>) {
-        self.found = true;
-    }
-
-    fn visit_yield_node(&mut self, _node: &ruby_prism::YieldNode<'pr>) {
-        self.found = true;
-    }
-
-    fn visit_super_node(&mut self, _node: &ruby_prism::SuperNode<'pr>) {
-        self.found = true;
-    }
-
-    fn visit_forwarding_super_node(&mut self, _node: &ruby_prism::ForwardingSuperNode<'pr>) {
-        self.found = true;
-    }
-
-    fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
-
-    fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
-}
-
 impl<'a, 'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'a> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         if self.found {
@@ -1207,6 +1165,49 @@ enum RuntimeFact {
     Thread { value: Type },
     Fiber { first_resume: Type },
     Queue { element: Type },
+    DynamicTruthiness,
+}
+
+fn merge_branch_runtime_facts(
+    base: &Scope,
+    left: &Scope,
+    right: &Scope,
+) -> Arc<HashMap<String, RuntimeFact>> {
+    if Arc::ptr_eq(&left.runtime_facts, &right.runtime_facts) {
+        return left.runtime_facts.clone();
+    }
+
+    let has_dynamic_truthiness = left
+        .runtime_facts
+        .values()
+        .chain(right.runtime_facts.values())
+        .any(|fact| matches!(fact, RuntimeFact::DynamicTruthiness))
+        || base.runtime_facts.iter().any(|(name, fact)| {
+            matches!(fact, RuntimeFact::DynamicTruthiness)
+                && left.definition_location(name) == base.definition_location(name)
+                && right.definition_location(name) == base.definition_location(name)
+        });
+    if !has_dynamic_truthiness {
+        return merge_identical_scope_maps(&left.runtime_facts, &right.runtime_facts);
+    }
+
+    let mut merged = merge_identical_scope_maps(&left.runtime_facts, &right.runtime_facts)
+        .as_ref()
+        .clone();
+    for (name, fact) in left.runtime_facts.iter().chain(right.runtime_facts.iter()) {
+        if matches!(fact, RuntimeFact::DynamicTruthiness) {
+            merged.insert(name.clone(), RuntimeFact::DynamicTruthiness);
+        }
+    }
+    for (name, fact) in base.runtime_facts.iter() {
+        if matches!(fact, RuntimeFact::DynamicTruthiness)
+            && left.definition_location(name) == base.definition_location(name)
+            && right.definition_location(name) == base.definition_location(name)
+        {
+            merged.insert(name.clone(), RuntimeFact::DynamicTruthiness);
+        }
+    }
+    Arc::new(merged)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1373,6 +1374,12 @@ impl Scope {
     fn narrow(&mut self, name: &str, ty: Type) {
         Arc::make_mut(&mut self.locals).insert(name.to_string(), ty);
         Arc::make_mut(&mut self.aliases).remove(name);
+        if matches!(
+            self.runtime_facts.get(name),
+            Some(RuntimeFact::DynamicTruthiness)
+        ) {
+            Arc::make_mut(&mut self.runtime_facts).remove(name);
+        }
         self.invalidate_exclusive_local_alts(name);
     }
 
@@ -1544,6 +1551,8 @@ impl Scope {
 impl<'a> InferenceEngine<'a> {
     const MAX_PRECISE_SCOPE_MERGE_LOCALS: usize = 64;
     const MAX_PRECISE_RECORD_LITERAL_FIELDS: usize = 64;
+    const MAX_PRECISE_DYNAMIC_HASH_WRITE_KEYS: usize = 8;
+    const MAX_PRECISE_RECORD_SPLAT_ALTERNATIVES: usize = 8;
     const MAX_INTERPOLATED_LITERAL_VARIANTS: usize = 128;
     const MAX_EXACT_LITERAL_STRING_BYTES: usize = 4096;
     const MAX_DSL_BINDINGS: usize = 128;
@@ -3376,6 +3385,122 @@ impl<'a> InferenceEngine<'a> {
         )
     }
 
+    fn merge_exit_effect_scopes(
+        &self,
+        base: &Scope,
+        then_scope: &Scope,
+        else_scope: &Scope,
+    ) -> Scope {
+        if !Arc::ptr_eq(&base.locals, &then_scope.locals)
+            || !Arc::ptr_eq(&base.locals, &else_scope.locals)
+        {
+            return self.merge_scope_locals(base, then_scope, else_scope);
+        }
+
+        let mut merged = base.fork_for_branch();
+        merged.locals = base.locals.clone();
+        merged.definitions = Arc::new(HashMap::with_capacity(base.definitions.len()));
+        let mut merged_locals = None;
+
+        for name in base.locals.keys() {
+            let base_ty = base.get(name).cloned();
+            let then_ty = then_scope.get(name).cloned().or_else(|| base_ty.clone());
+            let else_ty = else_scope.get(name).cloned().or_else(|| base_ty.clone());
+            if let (Some(left), Some(right)) = (then_ty, else_ty) {
+                let merged_ty = Self::merge_branch_types(left, right);
+                if base_ty.as_ref() != Some(&merged_ty) {
+                    merged_locals
+                        .get_or_insert_with(|| base.locals.as_ref().clone())
+                        .insert(name.clone(), merged_ty);
+                }
+            }
+            Arc::make_mut(&mut merged.aliases).remove(name);
+
+            let then_def = then_scope
+                .definition_location(name)
+                .or_else(|| base.definition_location(name));
+            let else_def = else_scope
+                .definition_location(name)
+                .or_else(|| base.definition_location(name));
+            if let (Some(left), Some(right)) = (then_def, else_def)
+                && left == right
+            {
+                merged.set_definition(name, left);
+            }
+        }
+        if let Some(locals) = merged_locals {
+            merged.locals = Arc::new(locals);
+        }
+
+        let mut return_types = Vec::with_capacity(
+            base.return_types.len() + then_scope.return_types.len() + else_scope.return_types.len(),
+        );
+        return_types.extend(base.return_types.iter().cloned());
+        return_types.extend(then_scope.return_types.iter().cloned());
+        return_types.extend(else_scope.return_types.iter().cloned());
+        merged.return_types = return_types;
+
+        let mut next_types = Vec::with_capacity(
+            base.next_types.len() + then_scope.next_types.len() + else_scope.next_types.len(),
+        );
+        next_types.extend(base.next_types.iter().cloned());
+        next_types.extend(then_scope.next_types.iter().cloned());
+        next_types.extend(else_scope.next_types.iter().cloned());
+        merged.next_types = next_types;
+
+        let mut break_types = Vec::with_capacity(
+            base.break_types.len() + then_scope.break_types.len() + else_scope.break_types.len(),
+        );
+        break_types.extend(base.break_types.iter().cloned());
+        break_types.extend(then_scope.break_types.iter().cloned());
+        break_types.extend(else_scope.break_types.iter().cloned());
+        merged.break_types = break_types;
+
+        merged.exception_entry = Self::merge_exception_entries(
+            base.exception_entry.as_deref(),
+            then_scope.exception_entry.as_deref(),
+            else_scope.exception_entry.as_deref(),
+        );
+        merged.enumerator_yielded_types = Vec::with_capacity(
+            base.enumerator_yielded_types.len()
+                + then_scope.enumerator_yielded_types.len()
+                + else_scope.enumerator_yielded_types.len(),
+        );
+        merged
+            .enumerator_yielded_types
+            .extend(base.enumerator_yielded_types.iter().cloned());
+        merged
+            .enumerator_yielded_types
+            .extend(then_scope.enumerator_yielded_types.iter().cloned());
+        merged
+            .enumerator_yielded_types
+            .extend(else_scope.enumerator_yielded_types.iter().cloned());
+
+        merged.self_override = Self::merge_branch_self_override(base, then_scope, else_scope);
+        merged.self_facts = Self::merge_branch_self_facts(then_scope, else_scope);
+        merged.initialized_record_keys = Arc::new(
+            then_scope
+                .initialized_record_keys
+                .intersection(&else_scope.initialized_record_keys)
+                .cloned()
+                .collect(),
+        );
+        merged.callback_mutated_record_locals =
+            Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
+        merged.runtime_facts = merge_branch_runtime_facts(base, then_scope, else_scope);
+        merged.local_singleton_methods = merge_identical_scope_maps(
+            &then_scope.local_singleton_methods,
+            &else_scope.local_singleton_methods,
+        );
+        merged.dsl_bindings =
+            merge_identical_scope_maps(&then_scope.dsl_bindings, &else_scope.dsl_bindings);
+        merged.regexp_match_captures = then_scope.regexp_match_captures
+            || else_scope.regexp_match_captures
+            || base.regexp_match_captures;
+        Self::assign_exclusive_local_alts(&mut merged, base, HashMap::new(), HashMap::new());
+        merged
+    }
+
     fn scope_with_exit_effects_only(base: &Scope, branch: &Scope) -> Scope {
         let mut projected = base.fork_for_branch();
         Self::merge_branch_effect_types(
@@ -3549,7 +3674,7 @@ impl<'a> InferenceEngine<'a> {
             (false, true) => {
                 self.merge_exit_effects_into_fallthrough(base, left_scope, right_scope)
             }
-            (true, true) => self.merge_scope_locals(
+            (true, true) => self.merge_exit_effect_scopes(
                 base,
                 &Self::scope_with_exit_effects_only(base, left_scope),
                 &Self::scope_with_exit_effects_only(base, right_scope),
@@ -3638,8 +3763,7 @@ impl<'a> InferenceEngine<'a> {
             );
             merged.callback_mutated_record_locals =
                 Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
-            merged.runtime_facts =
-                merge_identical_scope_maps(&then_scope.runtime_facts, &else_scope.runtime_facts);
+            merged.runtime_facts = merge_branch_runtime_facts(base, then_scope, else_scope);
             merged.local_singleton_methods = merge_identical_scope_maps(
                 &then_scope.local_singleton_methods,
                 &else_scope.local_singleton_methods,
@@ -3779,8 +3903,7 @@ impl<'a> InferenceEngine<'a> {
             .enumerator_yielded_types
             .extend(else_scope.enumerator_yielded_types.clone());
         merged.enumerator_yielder_names = base.enumerator_yielder_names.clone();
-        merged.runtime_facts =
-            merge_identical_scope_maps(&then_scope.runtime_facts, &else_scope.runtime_facts);
+        merged.runtime_facts = merge_branch_runtime_facts(base, then_scope, else_scope);
         merged.local_singleton_methods = merge_identical_scope_maps(
             &then_scope.local_singleton_methods,
             &else_scope.local_singleton_methods,
@@ -3928,8 +4051,7 @@ impl<'a> InferenceEngine<'a> {
             .enumerator_yielded_types
             .extend(loop_scope.enumerator_yielded_types.iter().cloned());
         merged.enumerator_yielder_names = base.enumerator_yielder_names.clone();
-        merged.runtime_facts =
-            merge_identical_scope_maps(&base.runtime_facts, &loop_scope.runtime_facts);
+        merged.runtime_facts = merge_branch_runtime_facts(base, base, loop_scope);
         merged.local_singleton_methods = merge_identical_scope_maps(
             &base.local_singleton_methods,
             &loop_scope.local_singleton_methods,
@@ -4941,37 +5063,219 @@ impl<'a> InferenceEngine<'a> {
                 None
             }
             Type::Proc { .. } => Some(true),
+            Type::Union(parts) if !parts.is_empty() => {
+                let mut parts = parts.iter();
+                let truthiness = Self::node_truthiness(parts.next()?)?;
+                parts
+                    .all(|part| Self::node_truthiness(part) == Some(truthiness))
+                    .then_some(truthiness)
+            }
             _ => None,
         }
     }
 
-    fn control_flow_truthiness(node: &Node<'_>, ty: &Type) -> Option<bool> {
+    fn control_flow_truthiness(node: &Node<'_>, ty: &Type, scope: &Scope) -> Option<bool> {
         let truthiness = Self::node_truthiness(ty)?;
         if truthiness {
             return Some(true);
         }
+        Self::node_is_statically_falsey(node, scope).then_some(false)
+    }
+
+    fn known_node_truthiness(node: &Node<'_>, scope: &Scope) -> Option<bool> {
         match node {
-            Node::NilNode { .. } | Node::FalseNode { .. } | Node::LocalVariableReadNode { .. } => {
-                Some(false)
+            Node::NilNode { .. } | Node::FalseNode { .. } => Some(false),
+            Node::TrueNode { .. }
+            | Node::IntegerNode { .. }
+            | Node::FloatNode { .. }
+            | Node::StringNode { .. }
+            | Node::SymbolNode { .. }
+            | Node::ArrayNode { .. }
+            | Node::HashNode { .. }
+            | Node::RangeNode { .. }
+            | Node::LambdaNode { .. } => Some(true),
+            Node::LocalVariableReadNode { .. } => {
+                let local = node.as_local_variable_read_node()?;
+                let name = String::from_utf8_lossy(local.name().as_slice());
+                if matches!(
+                    scope.runtime_fact(name.as_ref()),
+                    Some(RuntimeFact::DynamicTruthiness)
+                ) {
+                    return None;
+                }
+                scope.get(name.as_ref()).and_then(Self::node_truthiness)
             }
-            Node::CallNode { .. } | Node::InstanceVariableReadNode { .. } => None,
             Node::ParenthesesNode { .. } => {
-                let parentheses = node.as_parentheses_node()?;
-                let body = parentheses.body()?;
+                let body = node.as_parentheses_node()?.body()?;
                 if let Node::StatementsNode { .. } = body {
-                    let statements = body.as_statements_node()?;
-                    let last = statements.body().iter().last()?;
-                    Self::control_flow_truthiness(&last, ty)
+                    body.as_statements_node()?
+                        .body()
+                        .iter()
+                        .last()
+                        .and_then(|last| Self::known_node_truthiness(&last, scope))
                 } else {
-                    Self::control_flow_truthiness(&body, ty)
+                    Self::known_node_truthiness(&body, scope)
                 }
             }
-            _ => {
-                use ruby_prism::Visit;
-                let mut scan = DynamicControlFlowReadScan::default();
-                scan.visit(node);
-                (!scan.found).then_some(false)
+            Node::StatementsNode { .. } => node
+                .as_statements_node()?
+                .body()
+                .iter()
+                .last()
+                .and_then(|last| Self::known_node_truthiness(&last, scope)),
+            Node::AndNode { .. } => {
+                let and_node = node.as_and_node()?;
+                let left = Self::known_node_truthiness(&and_node.left(), scope);
+                let right = Self::known_node_truthiness(&and_node.right(), scope);
+                match left {
+                    Some(false) => Some(false),
+                    Some(true) => right,
+                    None if right == Some(false) => Some(false),
+                    None => None,
+                }
             }
+            Node::OrNode { .. } => {
+                let or_node = node.as_or_node()?;
+                let left = Self::known_node_truthiness(&or_node.left(), scope);
+                let right = Self::known_node_truthiness(&or_node.right(), scope);
+                match left {
+                    Some(true) => Some(true),
+                    Some(false) => right,
+                    None if right == Some(true) => Some(true),
+                    None => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn statements_are_statically_falsey(
+        statements: Option<ruby_prism::StatementsNode<'_>>,
+        scope: &Scope,
+    ) -> bool {
+        statements
+            .and_then(|statements| statements.body().iter().last())
+            .is_none_or(|last| Self::node_is_statically_falsey(&last, scope))
+    }
+
+    fn rescue_is_statically_falsey(rescue: &ruby_prism::RescueNode<'_>, scope: &Scope) -> bool {
+        Self::statements_are_statically_falsey(rescue.statements(), scope)
+            && rescue
+                .subsequent()
+                .is_none_or(|next| Self::rescue_is_statically_falsey(&next, scope))
+    }
+
+    fn node_is_statically_falsey(node: &Node<'_>, scope: &Scope) -> bool {
+        if Self::known_node_truthiness(node, scope) == Some(false) {
+            return true;
+        }
+        match node {
+            Node::NilNode { .. } | Node::FalseNode { .. } | Node::LocalVariableReadNode { .. } => {
+                false
+            }
+            Node::ParenthesesNode { .. } => {
+                let Some(parentheses) = node.as_parentheses_node() else {
+                    return false;
+                };
+                let Some(body) = parentheses.body() else {
+                    return false;
+                };
+                if let Node::StatementsNode { .. } = body {
+                    body.as_statements_node()
+                        .and_then(|statements| statements.body().iter().last())
+                        .is_some_and(|last| Self::node_is_statically_falsey(&last, scope))
+                } else {
+                    Self::node_is_statically_falsey(&body, scope)
+                }
+            }
+            Node::StatementsNode { .. } => node.as_statements_node().is_some_and(|statements| {
+                Self::statements_are_statically_falsey(Some(statements), scope)
+            }),
+            Node::AndNode { .. } => node.as_and_node().is_some_and(|and_node| {
+                Self::node_is_statically_falsey(&and_node.left(), scope)
+                    || Self::node_is_statically_falsey(&and_node.right(), scope)
+            }),
+            Node::OrNode { .. } => node.as_or_node().is_some_and(|or_node| {
+                Self::node_is_statically_falsey(&or_node.left(), scope)
+                    && Self::node_is_statically_falsey(&or_node.right(), scope)
+            }),
+            Node::IfNode { .. } => node.as_if_node().is_some_and(|if_node| {
+                let then_is_falsey =
+                    || Self::statements_are_statically_falsey(if_node.statements(), scope);
+                let else_is_falsey = || {
+                    if_node.subsequent().is_none_or(|subsequent| {
+                        Self::node_is_statically_falsey(&subsequent, scope)
+                    })
+                };
+                match Self::known_node_truthiness(&if_node.predicate(), scope) {
+                    Some(true) => then_is_falsey(),
+                    Some(false) => else_is_falsey(),
+                    None => then_is_falsey() && else_is_falsey(),
+                }
+            }),
+            Node::UnlessNode { .. } => node.as_unless_node().is_some_and(|unless_node| {
+                let then_is_falsey =
+                    || Self::statements_are_statically_falsey(unless_node.statements(), scope);
+                let else_is_falsey = || {
+                    Self::statements_are_statically_falsey(
+                        unless_node
+                            .else_clause()
+                            .and_then(|clause| clause.statements()),
+                        scope,
+                    )
+                };
+                match Self::known_node_truthiness(&unless_node.predicate(), scope) {
+                    Some(true) => else_is_falsey(),
+                    Some(false) => then_is_falsey(),
+                    None => then_is_falsey() && else_is_falsey(),
+                }
+            }),
+            Node::ElseNode { .. } => node.as_else_node().is_some_and(|else_node| {
+                Self::statements_are_statically_falsey(else_node.statements(), scope)
+            }),
+            Node::CaseNode { .. } => node.as_case_node().is_some_and(|case_node| {
+                case_node.conditions().iter().all(|condition| {
+                    condition.as_when_node().is_some_and(|when_node| {
+                        Self::statements_are_statically_falsey(when_node.statements(), scope)
+                    })
+                }) && case_node.else_clause().is_none_or(|clause| {
+                    Self::statements_are_statically_falsey(clause.statements(), scope)
+                })
+            }),
+            Node::CaseMatchNode { .. } => node.as_case_match_node().is_some_and(|case_node| {
+                case_node.conditions().iter().all(|condition| {
+                    condition.as_in_node().is_some_and(|in_node| {
+                        Self::statements_are_statically_falsey(in_node.statements(), scope)
+                    })
+                }) && case_node.else_clause().is_none_or(|clause| {
+                    Self::statements_are_statically_falsey(clause.statements(), scope)
+                })
+            }),
+            Node::BeginNode { .. } => node.as_begin_node().is_some_and(|begin_node| {
+                let normal_result = begin_node
+                    .else_clause()
+                    .and_then(|clause| clause.statements())
+                    .or_else(|| begin_node.statements());
+                Self::statements_are_statically_falsey(normal_result, scope)
+                    && begin_node
+                        .rescue_clause()
+                        .is_none_or(|rescue| Self::rescue_is_statically_falsey(&rescue, scope))
+                    && begin_node
+                        .ensure_clause()
+                        .and_then(|clause| clause.statements())
+                        .is_none_or(|statements| {
+                            !Self::statements_always_exit(&statements)
+                                || Self::statements_are_statically_falsey(Some(statements), scope)
+                        })
+            }),
+            Node::RescueModifierNode { .. } => {
+                node.as_rescue_modifier_node().is_some_and(|rescue_node| {
+                    (Self::node_always_exits(&rescue_node.expression())
+                        || Self::node_is_statically_falsey(&rescue_node.expression(), scope))
+                        && Self::node_is_statically_falsey(&rescue_node.rescue_expression(), scope)
+                })
+            }
+            _ => false,
         }
     }
 
@@ -4998,12 +5302,12 @@ impl<'a> InferenceEngine<'a> {
                 let runs_at_least_once = is_begin_modifier
                     || if is_until {
                         matches!(
-                            Self::control_flow_truthiness(predicate, &predicate_type),
+                            Self::control_flow_truthiness(predicate, &predicate_type, scope),
                             Some(false)
                         )
                     } else {
                         matches!(
-                            Self::control_flow_truthiness(predicate, &predicate_type),
+                            Self::control_flow_truthiness(predicate, &predicate_type, scope),
                             Some(true)
                         )
                     };
@@ -5084,7 +5388,7 @@ impl<'a> InferenceEngine<'a> {
         };
 
         let body_reachable = is_begin_modifier
-            || match Self::control_flow_truthiness(predicate, &predicate_type) {
+            || match Self::control_flow_truthiness(predicate, &predicate_type, scope) {
                 Some(false) => is_until,
                 Some(true) => !is_until,
                 None => true,
@@ -5138,12 +5442,12 @@ impl<'a> InferenceEngine<'a> {
             let runs_at_least_once = is_begin_modifier
                 || if is_until {
                     matches!(
-                        Self::control_flow_truthiness(predicate, &predicate_type),
+                        Self::control_flow_truthiness(predicate, &predicate_type, scope),
                         Some(false)
                     )
                 } else {
                     matches!(
-                        Self::control_flow_truthiness(predicate, &predicate_type),
+                        Self::control_flow_truthiness(predicate, &predicate_type, scope),
                         Some(true)
                     )
                 };
@@ -5156,12 +5460,12 @@ impl<'a> InferenceEngine<'a> {
 
         let stops_after_first_body = if is_until {
             matches!(
-                Self::control_flow_truthiness(predicate, &predicate_type),
+                Self::control_flow_truthiness(predicate, &predicate_type, scope),
                 Some(true)
             )
         } else {
             matches!(
-                Self::control_flow_truthiness(predicate, &predicate_type),
+                Self::control_flow_truthiness(predicate, &predicate_type, scope),
                 Some(false)
             )
         };
@@ -5427,6 +5731,79 @@ impl<'a> InferenceEngine<'a> {
             }
         }
         Type::Record(merged)
+    }
+
+    fn merged_record_splat_fields(types: &[Type]) -> Option<Vec<RecordField>> {
+        if types.is_empty() || types.len() > Self::MAX_PRECISE_RECORD_SPLAT_ALTERNATIVES {
+            return None;
+        }
+
+        let mut merged = None;
+        for ty in types {
+            let Type::Record(fields) = ty else {
+                return None;
+            };
+            merged = Some(match merged {
+                Some(existing) => match Self::merge_record_types(existing, fields.clone()) {
+                    Type::Record(fields) => fields,
+                    _ => return None,
+                },
+                None => fields.clone(),
+            });
+        }
+        merged
+    }
+
+    fn static_hash_splat_alternatives(node: &Node<'_>) -> Option<bool> {
+        match node {
+            Node::ParenthesesNode { .. } => {
+                let parentheses = node.as_parentheses_node()?;
+                let body = parentheses.body()?;
+                if let Node::StatementsNode { .. } = body {
+                    let statements = body.as_statements_node()?;
+                    let last = statements.body().iter().last()?;
+                    Self::static_hash_splat_alternatives(&last)
+                } else {
+                    Self::static_hash_splat_alternatives(&body)
+                }
+            }
+            Node::StatementsNode { .. } => {
+                let statements = node.as_statements_node()?;
+                let last = statements.body().iter().last()?;
+                Self::static_hash_splat_alternatives(&last)
+            }
+            Node::IfNode { .. } => {
+                let if_node = node.as_if_node()?;
+                let then_statements = if_node.statements()?;
+                let then_value = then_statements.body().iter().last()?;
+                let then_empty = Self::static_hash_splat_alternatives(&then_value)?;
+                let else_clause = if_node.subsequent()?;
+                let else_empty = Self::static_hash_splat_alternatives(&else_clause)?;
+                Some(then_empty || else_empty)
+            }
+            Node::ElseNode { .. } => {
+                let else_node = node.as_else_node()?;
+                let statements = else_node.statements()?;
+                let last = statements.body().iter().last()?;
+                Self::static_hash_splat_alternatives(&last)
+            }
+            Node::HashNode { .. } => {
+                let hash = node.as_hash_node()?;
+                let mut is_empty = true;
+                for element in hash.elements().iter() {
+                    is_empty = false;
+                    let assoc = element.as_assoc_node()?;
+                    if !matches!(
+                        assoc.key(),
+                        Node::SymbolNode { .. } | Node::StringNode { .. }
+                    ) {
+                        return None;
+                    }
+                }
+                Some(is_empty)
+            }
+            _ => None,
+        }
     }
 
     fn is_exact_array_like(ty: &Type) -> bool {
@@ -5834,6 +6211,45 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn collect_literal_record_keys(ty: &Type, keys: &mut Vec<RecordKey>) -> bool {
+        match ty {
+            Type::LiteralSymbol(name) => {
+                let key = RecordKey::Symbol(name.to_string());
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+            Type::LiteralString(name) => {
+                let key = RecordKey::String(name.clone());
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+            Type::Union(parts) => {
+                for part in parts {
+                    if !Self::collect_literal_record_keys(part, keys) {
+                        return false;
+                    }
+                }
+            }
+            _ => return false,
+        }
+        keys.len() <= Self::MAX_PRECISE_DYNAMIC_HASH_WRITE_KEYS
+    }
+
+    fn literal_record_keys(ty: &Type) -> Option<Vec<RecordKey>> {
+        let mut keys = Vec::new();
+        (Self::collect_literal_record_keys(ty, &mut keys) && !keys.is_empty()).then_some(keys)
+    }
+
+    fn single_literal_record_key(ty: &Type) -> Option<RecordKey> {
+        match ty {
+            Type::LiteralSymbol(name) => Some(RecordKey::Symbol(name.to_string())),
+            Type::LiteralString(name) => Some(RecordKey::String(name.clone())),
+            _ => None,
+        }
+    }
+
     fn apply_dynamic_hash_write(existing: Type, key_type: Type, value: Type) -> Type {
         match existing {
             Type::Record(fields) if fields.is_empty() => Type::Hash(
@@ -5841,6 +6257,17 @@ impl<'a> InferenceEngine<'a> {
                 Some(Box::new(Self::cap_collection_growth_type(value))),
             ),
             Type::Record(fields) => {
+                if let Some(key) = Self::single_literal_record_key(&key_type) {
+                    return Self::apply_record_write(Type::Record(fields), key, value);
+                }
+                if let Some(keys) = Self::literal_record_keys(&key_type) {
+                    let mut branches = keys.into_iter().map(|key| {
+                        Self::apply_record_write(Type::Record(fields.clone()), key, value.clone())
+                    });
+                    if let Some(first) = branches.next() {
+                        return branches.fold(first, Self::merge_branch_types);
+                    }
+                }
                 let existing_key_type = Self::record_fields_key_type(&fields);
                 let existing_value_type = Self::record_fields_value_type(fields);
                 Type::Hash(
@@ -18495,6 +18922,8 @@ impl<'a> InferenceEngine<'a> {
                 let runtime_fact =
                     self.runtime_fact_from_value(class_name, &value_node, parse_result, scope);
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
+                let dynamic_truthiness = Self::node_truthiness(&value_type) == Some(false)
+                    && !Self::node_is_statically_falsey(&value_node, scope);
                 if let Some(call_node) = value_node.as_call_node() {
                     self.apply_receiver_mutating_call_side_effect(
                         class_name,
@@ -18553,6 +18982,8 @@ impl<'a> InferenceEngine<'a> {
                 }
                 if let Some(runtime_fact) = runtime_fact {
                     scope.set_runtime_fact(&var_name, runtime_fact);
+                } else if dynamic_truthiness {
+                    scope.set_runtime_fact(&var_name, RuntimeFact::DynamicTruthiness);
                 }
             }
             Node::InstanceVariableWriteNode { .. } => {
@@ -19719,7 +20150,7 @@ impl<'a> InferenceEngine<'a> {
                     Type::Nil
                 };
                 let predicate_truthiness =
-                    Self::control_flow_truthiness(&if_node.predicate(), &predicate_type);
+                    Self::control_flow_truthiness(&if_node.predicate(), &predicate_type, scope);
                 let then_always_exits = if_node
                     .statements()
                     .is_some_and(|s| Self::statements_always_exit(&s))
@@ -19873,7 +20304,7 @@ impl<'a> InferenceEngine<'a> {
                     || (unless_node.else_clause().is_some()
                         && Self::type_never_returns(&else_type));
                 if let Some(predicate_is_truthy) =
-                    Self::control_flow_truthiness(&unless_node.predicate(), &predicate_type)
+                    Self::control_flow_truthiness(&unless_node.predicate(), &predicate_type, scope)
                 {
                     let (mut reachable_scope, unreachable_scope, reachable_type) =
                         if predicate_is_truthy {
@@ -20016,9 +20447,11 @@ impl<'a> InferenceEngine<'a> {
                                 let branch_effects =
                                     Self::scope_with_exit_effects_only(scope, &branch_scope);
                                 exiting_scope = Some(match exiting_scope {
-                                    Some(current) => {
-                                        self.merge_scope_locals(scope, &current, &branch_effects)
-                                    }
+                                    Some(current) => self.merge_exit_effect_scopes(
+                                        scope,
+                                        &current,
+                                        &branch_effects,
+                                    ),
                                     None => branch_effects,
                                 });
                             } else {
@@ -20073,7 +20506,7 @@ impl<'a> InferenceEngine<'a> {
                         let branch_effects = Self::scope_with_exit_effects_only(scope, &else_scope);
                         exiting_scope = Some(match exiting_scope {
                             Some(current) => {
-                                self.merge_scope_locals(scope, &current, &branch_effects)
+                                self.merge_exit_effect_scopes(scope, &current, &branch_effects)
                             }
                             None => branch_effects,
                         });
@@ -20189,7 +20622,7 @@ impl<'a> InferenceEngine<'a> {
                                 Self::scope_with_exit_effects_only(scope, &branch_scope);
                             exiting_scope = Some(match exiting_scope {
                                 Some(current) => {
-                                    self.merge_scope_locals(scope, &current, &branch_effects)
+                                    self.merge_exit_effect_scopes(scope, &current, &branch_effects)
                                 }
                                 None => branch_effects,
                             });
@@ -20239,7 +20672,7 @@ impl<'a> InferenceEngine<'a> {
                         let branch_effects = Self::scope_with_exit_effects_only(scope, &else_scope);
                         exiting_scope = Some(match exiting_scope {
                             Some(current) => {
-                                self.merge_scope_locals(scope, &current, &branch_effects)
+                                self.merge_exit_effect_scopes(scope, &current, &branch_effects)
                             }
                             None => branch_effects,
                         });
@@ -25745,12 +26178,50 @@ impl<'a> InferenceEngine<'a> {
                 // `{ **other, k: v }` merges `other`'s entries. A record splat keeps the exact shape (last-wins on key collisions);
                 // a dynamic hash splat contributes its key/value types but drops the exact shape;
                 let assoc = elem.as_assoc_splat_node().expect("must be AssocSplatNode");
+                let has_empty_literal_alternative = assoc
+                    .value()
+                    .and_then(|node| Self::static_hash_splat_alternatives(&node))
+                    .unwrap_or(false);
                 let splatted = assoc.value().map(|v| {
                     let ty = self.infer_node_type(class_name, &v, parse_result, scope);
                     self.try_resolve_receiver_inline(class_name, &ty)
                 });
                 match splatted {
                     Some(Type::Record(fields)) => {
+                        for field in fields {
+                            let key_type = Self::record_key_type(&field.key);
+                            Type::merge_into_vec(&mut key_types, key_type);
+                            Type::merge_into_vec(&mut value_types, field.value.clone());
+                            if preserve_record_shape {
+                                Self::upsert_record_field(&mut record_fields, field);
+                            } else {
+                                all_static_keys = false;
+                            }
+                        }
+                    }
+                    Some(Type::Union(parts)) => {
+                        let parts = if has_empty_literal_alternative {
+                            parts
+                                .into_iter()
+                                .map(|part| match part {
+                                    Type::Hash(Some(key), Some(value))
+                                        if key.as_ref() == &Type::Untyped
+                                            && value.as_ref() == &Type::Untyped =>
+                                    {
+                                        Type::Record(Vec::new())
+                                    }
+                                    other => other,
+                                })
+                                .collect()
+                        } else {
+                            parts
+                        };
+                        let Some(fields) = Self::merged_record_splat_fields(&parts) else {
+                            all_static_keys = false;
+                            Type::merge_into_vec(&mut key_types, Type::Untyped);
+                            Type::merge_into_vec(&mut value_types, Type::Untyped);
+                            continue;
+                        };
                         for field in fields {
                             let key_type = Self::record_key_type(&field.key);
                             Type::merge_into_vec(&mut key_types, key_type);
@@ -28685,6 +29156,62 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn record_key_may_match_type(key: &RecordKey, ty: &Type) -> bool {
+        match (key, ty) {
+            (RecordKey::Symbol(name), Type::LiteralSymbol(value)) => name == value,
+            (RecordKey::String(name), Type::LiteralString(value)) => name == value,
+            (RecordKey::Symbol(_), Type::Symbol) | (RecordKey::String(_), Type::String) => true,
+            (_, Type::Untyped | Type::ParamRef(_) | Type::KeywordParamRef(_)) => true,
+            (
+                _,
+                Type::ReceiverMethodRef(_, _)
+                | Type::MethodReturnRef(_, _)
+                | Type::BlockReturnRef
+                | Type::GlobalVariableRef(_)
+                | Type::IvarRef(_)
+                | Type::SelfType
+                | Type::InstanceType
+                | Type::Todo
+                | Type::Top,
+            ) => true,
+            (_, Type::Union(parts)) => parts
+                .iter()
+                .any(|part| Self::record_key_may_match_type(key, part)),
+            _ => false,
+        }
+    }
+
+    fn record_index_keys_all_present(
+        ty: &Type,
+        fields: &[RecordField],
+        remaining: &mut usize,
+    ) -> bool {
+        match ty {
+            Type::LiteralSymbol(name) => {
+                if *remaining == 0 {
+                    return false;
+                }
+                *remaining -= 1;
+                fields.iter().any(|field| {
+                    matches!(&field.key, RecordKey::Symbol(field_name) if field_name == name.as_ref())
+                })
+            }
+            Type::LiteralString(name) => {
+                if *remaining == 0 {
+                    return false;
+                }
+                *remaining -= 1;
+                fields.iter().any(|field| {
+                    matches!(&field.key, RecordKey::String(field_name) if field_name == name)
+                })
+            }
+            Type::Union(parts) if !parts.is_empty() => parts
+                .iter()
+                .all(|part| Self::record_index_keys_all_present(part, fields, remaining)),
+            _ => false,
+        }
+    }
+
     fn resolve_record_index(
         &mut self,
         class_name: &str,
@@ -28696,18 +29223,23 @@ impl<'a> InferenceEngine<'a> {
         let args = call_node.arguments()?;
         let key_node = args.arguments().iter().next()?;
         let key_type = self.infer_node_type(class_name, &key_node, parse_result, scope);
+        let dynamic_key = matches!(key_type, Type::Nil | Type::False)
+            && !Self::node_is_statically_falsey(&key_node, scope);
         match receiver_type {
             Type::Untyped | Type::ParamRef(_) | Type::KeywordParamRef(_) => Some(Type::Untyped),
             Type::Record(fields) => {
+                let all_keys_present = match &key_type {
+                    Type::LiteralSymbol(_) | Type::LiteralString(_) => true,
+                    Type::Union(parts) if !parts.is_empty() => {
+                        let mut key_budget = Self::MAX_PRECISE_DYNAMIC_HASH_WRITE_KEYS;
+                        Self::record_index_keys_all_present(&key_type, fields, &mut key_budget)
+                    }
+                    _ => false,
+                };
                 let matched_values: Vec<Type> = fields
                     .iter()
-                    .filter(|field| match (&field.key, &key_type) {
-                        (RecordKey::Symbol(name), Type::LiteralSymbol(key)) => name == key,
-                        (RecordKey::String(name), Type::LiteralString(key)) => name == key,
-                        (RecordKey::Symbol(_), Type::Symbol) => true,
-                        (RecordKey::String(_), Type::String) => true,
-                        (_, Type::Untyped | Type::ParamRef(_) | Type::KeywordParamRef(_)) => true,
-                        _ => false,
+                    .filter(|field| {
+                        dynamic_key || Self::record_key_may_match_type(&field.key, &key_type)
                     })
                     .map(|field| {
                         if field.optional {
@@ -28719,7 +29251,7 @@ impl<'a> InferenceEngine<'a> {
                     .collect();
                 if matched_values.is_empty() {
                     Some(Type::Nil)
-                } else if matches!(key_type, Type::LiteralSymbol(_) | Type::LiteralString(_)) {
+                } else if all_keys_present {
                     Some(Type::from_type_vec_preserve_untyped(matched_values))
                 } else {
                     let mut values = matched_values;

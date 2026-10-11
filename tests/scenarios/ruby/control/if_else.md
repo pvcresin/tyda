@@ -148,7 +148,89 @@ class DynamicFieldPayload
     data[:query] = query if query
     data
   end
+
+  def log_data_through_local
+    query_value = query
+    saved_query = query_value
+    data = { query_sha: "sha" }
+    data[:query] = saved_query if saved_query
+    data
+  end
+
+  def log_data_after_conditional(flag)
+    value = nil
+    if flag
+      value = query
+    end
+    data = { query_sha: "sha" }
+    data[:query] = value if value
+    data
+  end
+
+  def literal_nil_local
+    value = nil
+    if value
+      :unreachable
+    else
+      :missing
+    end
+  end
+
+  def literal_nil_after_dynamic_call
+    value = query && nil
+    if value
+      :unreachable
+    else
+      :missing
+    end
+  end
+
+  def literal_nil_from_dynamic_and
+    if query && nil
+      :unreachable
+    else
+      :missing
+    end
+  end
+
+  def dynamic_and_value
+    value = query && :present
+    if value
+      :present
+    else
+      :missing
+    end
+  end
+
+  def literal_nil_from_dynamic_predicate
+    value = if query
+      nil
+    else
+      nil
+    end
+    if value
+      :unreachable
+    else
+      :missing
+    end
+  end
+
+  def falsey_and_branch_values(flag)
+    value = query && (flag ? nil : false)
+    if value
+      :unreachable
+    else
+      :missing
+    end
+  end
 end
+
+class DynamicFieldPayloadChild < DynamicFieldPayload
+  def query
+    "query"
+  end
+end
+
 ```
 
 ### result
@@ -158,6 +240,111 @@ class DynamicFieldPayload
   def initialize: (?query: nil) -> void
   def query: -> nil
   def log_data: -> { query_sha: "sha", ?query: nil }
+  def log_data_through_local: -> { query_sha: "sha", ?query: nil }
+  def log_data_after_conditional: (untyped flag) -> { query_sha: "sha", ?query: nil }
+  def literal_nil_local: -> :missing
+  def literal_nil_after_dynamic_call: -> :missing
+  def literal_nil_from_dynamic_and: -> :missing
+  def dynamic_and_value: -> :missing | :present
+  def literal_nil_from_dynamic_predicate: -> :missing
+  def falsey_and_branch_values: (untyped flag) -> :missing
+end
+
+class DynamicFieldPayloadChild < DynamicFieldPayload
+  def query: -> "query"
+end
+
+```
+
+## Preserve record shape for finite dynamic hash writes
+
+```ruby
+class FiniteDynamicHashKey
+  KEY_TO_FIELD = {
+    "project" => :project_ids,
+    "group" => :group_ids
+  }.freeze
+
+  def append(id)
+    data = { project_ids: [], group_ids: [] }
+    key = KEY_TO_FIELD[id]
+    data[key] << id if key
+    data
+  end
+end
+```
+
+### result
+
+```rbs
+class FiniteDynamicHashKey
+  KEY_TO_FIELD: { "project" => :project_ids, "group" => :group_ids }
+
+  def append: (untyped id) -> { project_ids: Array[untyped], group_ids: Array[untyped] }
+end
+```
+
+## Keep finite hash values after an open-dispatch key lookup
+
+```ruby
+class DynamicRecordLookupKey
+  KEY_TO_FIELD = {
+    "project" => :project_ids,
+    "group" => :group_ids
+  }.freeze
+
+  def lookup_source
+    nil
+  end
+
+  def append(id)
+    data = { project_ids: [], group_ids: [] }
+    key = KEY_TO_FIELD[lookup_source]
+    data[key] << id if key
+    data
+  end
+
+  def append_many(namespaces)
+    data = { project_ids: [], group_ids: [] }
+    namespaces.each do |namespace|
+      key = KEY_TO_FIELD[namespace.type]
+      data[key] << namespace.id if key
+    end
+    data
+  end
+end
+```
+
+### result
+
+```rbs
+class DynamicRecordLookupKey
+  KEY_TO_FIELD: { "project" => :project_ids, "group" => :group_ids }
+
+  def lookup_source: -> nil
+  def append: (untyped id) -> { project_ids: Array[untyped], group_ids: Array[untyped] }
+  def append_many: (untyped namespaces) -> { project_ids: Array[untyped], group_ids: Array[untyped] }
+end
+```
+
+## Preserve optional fields from conditional hash splats
+
+```ruby
+class ConditionalRecordHashSplat
+  def collect(flag)
+    {
+      **(flag ? {} : { failed_builds: %i[project metadata] }),
+      manual_actions: []
+    }
+  end
+end
+```
+
+### result
+
+```rbs
+class ConditionalRecordHashSplat
+  def collect: (untyped flag) -> { ?failed_builds: [:project, :metadata], manual_actions: [ ] }
 end
 ```
 
@@ -390,5 +577,75 @@ end
 
 class RangeResponseIterator
   def bytesize: -> 10
+end
+```
+
+## Ignore dynamic calls in statically unreachable result branches
+
+```ruby
+class UnreachableDynamicTruthiness
+  def query
+    nil
+  end
+
+  def result
+    value = if false
+      query
+    else
+      nil
+    end
+
+    if value
+      :unreachable
+    else
+      :missing
+    end
+  end
+end
+
+class UnreachableDynamicTruthinessChild < UnreachableDynamicTruthiness
+  def query
+    "present"
+  end
+end
+```
+
+### result
+
+```rbs
+class UnreachableDynamicTruthiness
+  def query: -> nil
+  def result: -> :missing
+end
+
+class UnreachableDynamicTruthinessChild < UnreachableDynamicTruthiness
+  def query: -> "present"
+end
+```
+
+## Preserve nil for finite record keys that may be absent
+
+```ruby
+class FiniteRecordLookupWithMissingKey
+  def lookup_present(flag)
+    values = { first: :first, second: :second }
+    key = flag ? :first : :second
+    values[key]
+  end
+
+  def lookup(flag)
+    values = { present: :value }
+    key = flag ? :present : :missing
+    values[key]
+  end
+end
+```
+
+### result
+
+```rbs
+class FiniteRecordLookupWithMissingKey
+  def lookup_present: (untyped flag) -> (:first | :second)
+  def lookup: (untyped flag) -> :value?
 end
 ```
