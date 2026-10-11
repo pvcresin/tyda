@@ -532,7 +532,7 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn type_contains_method_ref(ty: &Type) -> bool {
+    pub(super) fn type_contains_method_ref(ty: &Type) -> bool {
         match ty {
             Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) | Type::IvarRef(..) => true,
             Type::Union(parts) | Type::Intersection(parts) => {
@@ -589,6 +589,20 @@ impl<'a> InferenceEngine<'a> {
             } => Self::is_concrete_for_method_ref_resolve(return_type),
             _ => false,
         }
+    }
+
+    pub(super) fn deferred_receiver_type_resolves_to_concrete(
+        registry: &TypeRegistry,
+        context_class: &str,
+        ty: &Type,
+    ) -> bool {
+        if !Self::type_contains_method_ref(ty) {
+            return false;
+        }
+        let mut visiting = HashSet::new();
+        let resolved =
+            Self::resolve_general_method_refs(registry, context_class, ty, &mut visiting);
+        resolved != *ty && Self::is_concrete_for_method_ref_resolve(&resolved)
     }
 
     fn merge_external_rbs_for_resolution(&mut self) {

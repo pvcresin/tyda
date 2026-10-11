@@ -24,6 +24,10 @@ CLI、LSP、playground、scenario test は入力の与え方と解決 profile �
 `analysis::analyze_source_for_display` に集約し、LSP、playground、詳細 CLI、通常の Ruby scenario
 は同じ snapshot / registry / query 経路を使う。
 
+source method の戻り値参照を解決した後、その型によって block receiver が具体化する場合は、該当する
+method body だけを backward propagation で再推論する。receiver が unresolved のままなら再走査せず、
+block parameter も推測で具体化しない。
+
 ## 主要コンポーネント
 
 | 層・ファイル | 責務 |

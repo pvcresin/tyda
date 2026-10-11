@@ -62,10 +62,6 @@ end
 
 ## Resolve an instance method return before dispatching a block call
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class DeferredCollectionReceiver
   def indexed_headers(default = nil)
