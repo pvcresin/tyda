@@ -34,6 +34,8 @@ Rust の日常的な反復では、まず `mise run check-quick`（全targetの�
 `./scripts/check.sh` は、実行性能を重視する `release`（thin LTO、codegen 1）ではなく、
 LTOを無効にしてcodegenを並列化した `release-fast` を使う。配布物、性能計測、package
 workflowは引き続き `release` を使う。
+ローカルの `release-fast` は増分コンパイルを有効にし、変更後の再ビルドを短くする。CIは
+`CARGO_INCREMENTAL=0` と sccache を使うため、この設定の影響を受けない。
 
 `./scripts/check.sh` は lockfile に合わせた stdlib RBS の生成確認と、Rust の format、clippy、test、release-fast build をまとめて実行する。
 `mise run check` はこれに加えて playground の typecheck、oxlint、oxfmt check も実行し、変更の完了条件とする。
