@@ -13,9 +13,9 @@
 | 分野 | 状態 | 代表的な範囲 |
 | --- | --- | --- |
 | 定義・dispatch・visibility | supported | class / module / mixin / constant / method / `super` |
-| 変数・flow | supported | local / ivar / 多重代入 / narrowing（直接リテラル配列と固定要素の frozen 配列定数に対する `Array#include?`、`Class` / `Module` の refinement と singleton override を考慮した class guard。独自 `===` は対象側と比較対象側の `is_a?` dispatch が標準の場合に認識） / mutable ivar reader の到達性 / 分岐ローカルと `nil` の合流 / rescue 到達性 |
+| 変数・flow | supported | local / ivar / 多重代入 / narrowing（標準 `Module#===` の class guard を含む） / 分岐ローカルと `nil` の合流 / rescue |
 | block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy |
-| collection shape | supported | Array、Hash、Set、Tuple、Record。union 型または動的な String / Symbol 型のキーで record を読む場合は候補キーの値型を合流 |
+| collection shape | supported | Array、Hash、Set、Tuple、Record |
 | pattern matching | partial | version gate、array / hash / find binding、guard 内の capture |
 | 動的定義 | partial | 静的な名前の `define_method`、`attr_*`（setter 戻り値を設定値の型にする）、`Struct.new`、`Data.define` |
 | runtime-only meta programming | partial | 未知の名前・object identity は `untyped` |

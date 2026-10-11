@@ -36,9 +36,6 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
 - **分岐で外側の制御効果を失わない。** branch scope を選択・合流するときは、その枝で新たに
   発生した効果と基底 scope までの効果を保つ。これにより block 内の `return` など、外側へ作用する
   exit 情報を落とさない。Proc は truthy だが、Ruby の明示的な `&block` 引数は省略時に `nil` になる。
-- **相関した分岐値は検証済みの比較だけで復元する。** 分岐の immutable scalar 値と一緒に変化した
-  ローカル値は、標準の `==` / `!=` で絞り込める場合に限って対応する枝へ戻す。alias write や独自 dispatch
-  で根拠が崩れたら相関を破棄し、開いた型は `untyped` を保持する。
 - **コードパターンは scenario で固定する。** 実装詳細ではなく、Ruby 入力と期待する RBS /
   diagnostics を回帰の正本にする。
 - **解析コアを共有する。** CLI、LSP、scenario test の意味論を別々に実装しない。
