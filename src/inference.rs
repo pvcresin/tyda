@@ -12471,7 +12471,7 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let has_deferred_block_receiver_return = !unresolved_block_receivers.is_empty()
-            && Self::type_needs_backward_propagation(&return_type);
+            && Self::type_contains_deferred_method_ref(&return_type);
 
         let _ = positional_count;
 
@@ -47839,15 +47839,17 @@ impl<'a> InferenceEngine<'a> {
             &deferred_offsets,
             false,
         );
-        // Super / helper call sites recorded in the first walk need a second
-        // pass so callees see the newly concrete argument types.
-        self.backward_propagate_in_statements(
-            "Object",
-            &statements,
-            parse_result,
-            &deferred_offsets,
-            false,
-        );
+        if include_existing_defer_reasons {
+            // Super / helper call sites recorded in the first walk need a second
+            // pass so callees see the newly concrete argument types.
+            self.backward_propagate_in_statements(
+                "Object",
+                &statements,
+                parse_result,
+                &deferred_offsets,
+                false,
+            );
+        }
         self.suppress_external_merge = false;
     }
 
@@ -48180,10 +48182,21 @@ impl<'a> InferenceEngine<'a> {
         let has_concrete = resolved_param_types
             .iter()
             .any(|t| !matches!(t, Type::Untyped));
+        let receiver_replay_can_use_defaults = receiver_dependency_resolved
+            && method_info
+                .param_infos
+                .iter()
+                .all(|param| match param.kind {
+                    ParamKind::Optional | ParamKind::KeywordOptional => param
+                        .default_type
+                        .as_ref()
+                        .is_some_and(|ty| !Self::type_needs_backward_propagation(ty)),
+                    _ => false,
+                });
         if !method_info.param_infos.is_empty()
             && !has_concrete
             && !has_keyword_sites
-            && !receiver_dependency_resolved
+            && !receiver_replay_can_use_defaults
         {
             if let Some(saved) = saved_ctx {
                 self.enter_method_body_context(saved);
@@ -48522,6 +48535,37 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .any(|f| Self::type_needs_backward_propagation(&f.value)),
+            _ => false,
+        }
+    }
+
+    fn type_contains_deferred_method_ref(ty: &Type) -> bool {
+        match ty {
+            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) | Type::IvarRef(..) => true,
+            Type::Union(parts) | Type::Intersection(parts) => {
+                parts.iter().any(Self::type_contains_deferred_method_ref)
+            }
+            Type::Array(inner) => inner
+                .as_deref()
+                .is_some_and(Self::type_contains_deferred_method_ref),
+            Type::Hash(key, value) => {
+                key.as_deref()
+                    .is_some_and(Self::type_contains_deferred_method_ref)
+                    || value
+                        .as_deref()
+                        .is_some_and(Self::type_contains_deferred_method_ref)
+            }
+            Type::Record(fields) => fields
+                .iter()
+                .any(|field| Self::type_contains_deferred_method_ref(&field.value)),
+            Type::PatternIndexRef(inner, _)
+            | Type::PatternRestRef(inner)
+            | Type::PatternTrailingRef(inner, _)
+            | Type::PatternKeyRef(inner, _)
+            | Type::PatternKeyRestRef(inner, _) => Self::type_contains_deferred_method_ref(inner),
+            Type::Proc { return_type, .. } => Self::type_contains_deferred_method_ref(return_type),
+            Type::Tuple(elements) => elements.iter().any(Self::type_contains_deferred_method_ref),
+            Type::Generic { args, .. } => args.iter().any(Self::type_contains_deferred_method_ref),
             _ => false,
         }
     }
