@@ -84,11 +84,7 @@ class Object < BasicObject
 end
 ```
 
-## Apply alternative pattern
-
-```yaml
-known_issue: true
-```
+## Exclude an unmatched case/in path from normal returns
 
 ### update
 
@@ -111,11 +107,31 @@ class Object < BasicObject
 end
 ```
 
-## Apply range pattern
+## Continue with only matched case/in branches
 
-```yaml
-known_issue: true
+### update
+
+```ruby
+def selected_label(value)
+  case value
+  in Integer
+    label = :integer
+  in String
+    label = :string
+  end
+  label
+end
 ```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def selected_label: (untyped value) -> (:integer | :string)
+end
+```
+
+## Apply range pattern
 
 ### update
 
@@ -362,10 +378,6 @@ end
 
 ## Branch with constant pattern
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -423,10 +435,6 @@ end
 
 ## Apply pattern guard
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -475,10 +483,6 @@ end
 
 ## Infer types captured by an array pattern
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -502,10 +506,6 @@ end
 ```
 
 ## Infer types captured by a hash pattern
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -531,10 +531,6 @@ end
 
 ## Array variable pattern keeps tuple elements
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -558,10 +554,6 @@ end
 
 ## Hash variable pattern keeps record fields
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -584,10 +576,6 @@ end
 ```
 
 ## Find pattern keeps before and after rest as arrays
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -639,10 +627,6 @@ end
 
 ## Nested capture pattern binds the asserted type
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -673,10 +657,6 @@ end
 ```
 
 ## Pattern capture uses the binding after match
-
-```yaml
-known_issue: true
-```
 
 ### update
 
