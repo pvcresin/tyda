@@ -23,7 +23,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
   `extend` の適用順を反映。静的に完全な `Module#ancestors` は順序付き `Tuple`）
 - block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（tuple の要素 union とリテラル演算を block 内へ伝播）
 - Array / Hash / Set / Tuple / Record の要素型と shape
-- if / unless / case / rescue / safe navigation / pattern matching の flow narrowing（Proc と optional `&block` の `nil` を区別する truthiness、直接リテラル配列と固定要素の frozen 配列定数に対する `Array#include?`、Integer と Float の数値等価を考慮した equality guard、refinement と singleton override を考慮した class guard、対象側と比較対象側の `is_a?` dispatch が標準の場合に限る `is_a?(self)` 委譲の独自 `===`、呼び出し・未解決定数と qualified constant path を含む rescue 到達性）、継続可能な分岐で初めて代入されたローカル変数の `nil` 合流
+- if / unless / case / rescue / safe navigation / pattern matching の flow narrowing（Proc と optional `&block` の `nil` を区別する truthiness、直接リテラル配列と固定要素の frozen 配列定数に対する `Array#include?`、refinement と singleton override を考慮した class guard、対象側と比較対象側の `is_a?` dispatch が標準の場合に限る `is_a?(self)` 委譲の独自 `===`、呼び出し・未解決定数と qualified constant path を含む rescue 到達性）、継続可能な分岐で初めて代入されたローカル変数の `nil` 合流
 - union 型、または動的な `String` / `Symbol` 型のキーによる `Hash#[]` は、record の対応する候補値を合流し、未知のキーに対する `nil` も保持する。初期化引数またはwriterに結び付くivar readerの条件は、初期値だけを根拠に到達不能としない
 - 多重代入、operator-write、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播
