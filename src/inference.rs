@@ -69,23 +69,6 @@ enum StaticLookupMatch {
     Never,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ClassRelation {
-    Match,
-    NoMatch,
-    Unknown,
-}
-
-impl ClassRelation {
-    fn any(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Match, _) | (_, Self::Match) => Self::Match,
-            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
-            _ => Self::NoMatch,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CollectionFilterPredicate {
     KindOf {
@@ -36542,11 +36525,8 @@ impl<'a> InferenceEngine<'a> {
             Type::Union(parts) => {
                 let mut remaining = Vec::new();
                 for part in parts {
-                    match self.type_matches_kind_of_target(part, target_name) {
-                        ClassRelation::Match => {}
-                        ClassRelation::NoMatch | ClassRelation::Unknown => {
-                            remaining.push(part.clone());
-                        }
+                    if !self.type_matches_kind_of_target(part, target_name) {
+                        remaining.push(part.clone());
                     }
                 }
                 match remaining.len() {
@@ -36556,10 +36536,9 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             Type::Untyped | Type::Top => Some(current.clone()),
-            _ => match self.type_matches_kind_of_target(current, target_name) {
-                ClassRelation::Match => None,
-                ClassRelation::NoMatch | ClassRelation::Unknown => Some(current.clone()),
-            },
+            _ => {
+                (!self.type_matches_kind_of_target(current, target_name)).then_some(current.clone())
+            }
         }
     }
 
@@ -47440,10 +47419,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Union(parts) => {
                 let filtered: Vec<Type> = parts
                     .iter()
-                    .filter(|part| {
-                        self.type_matches_kind_of_target(part, target_name)
-                            != ClassRelation::NoMatch
-                    })
+                    .filter(|part| self.type_matches_kind_of_target(part, target_name))
                     .cloned()
                     .collect();
                 match filtered.len() {
@@ -47453,10 +47429,9 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             Type::Untyped | Type::Top => Some(current.clone()),
-            _ => match self.type_matches_kind_of_target(current, target_name) {
-                ClassRelation::Match | ClassRelation::Unknown => Some(current.clone()),
-                ClassRelation::NoMatch => None,
-            },
+            _ => self
+                .type_matches_kind_of_target(current, target_name)
+                .then_some(current.clone()),
         }
     }
 
@@ -47490,20 +47465,17 @@ impl<'a> InferenceEngine<'a> {
                 _ => None,
             };
         }
-        match self.type_matches_kind_of_target(current, target_name) {
-            ClassRelation::Match | ClassRelation::Unknown => return Some(current.clone()),
-            ClassRelation::NoMatch => {}
+        if self.type_matches_kind_of_target(current, target_name) {
+            return Some(current.clone());
         }
         if self.kind_of_target_is_module(target_name) {
             return None;
         }
         let current_class = self.type_to_class_name(current)?;
-        match self.class_is_or_subclass_of_target(target_name, &current_class, &mut HashSet::new())
-        {
-            ClassRelation::Match => Some(Self::class_name_to_type(target_name)),
-            ClassRelation::NoMatch => None,
-            ClassRelation::Unknown => Some(current.clone()),
+        if self.class_is_or_subclass_of_target(target_name, &current_class, &mut HashSet::new()) {
+            return Some(Self::class_name_to_type(target_name));
         }
+        None
     }
 
     fn kind_of_target_is_module(&mut self, target_name: &str) -> bool {
@@ -47513,25 +47485,19 @@ impl<'a> InferenceEngine<'a> {
             .is_some_and(|data| data.is_module)
     }
 
-    fn type_matches_kind_of_target(&mut self, ty: &Type, target_name: &str) -> ClassRelation {
+    fn type_matches_kind_of_target(&mut self, ty: &Type, target_name: &str) -> bool {
         match ty {
-            Type::Untyped | Type::Top => ClassRelation::Match,
+            Type::Untyped | Type::Top => true,
             Type::Singleton(owner) => {
                 self.singleton_object_matches_kind_of_target(owner, target_name)
             }
-            _ => self
-                .type_to_class_name(ty)
-                .map_or(ClassRelation::NoMatch, |class_name| {
-                    self.class_relation_to_target(&class_name, target_name)
-                }),
+            _ => self.type_to_class_name(ty).is_some_and(|class_name| {
+                self.class_matches_kind_of_target(&class_name, target_name)
+            }),
         }
     }
 
-    fn singleton_object_matches_kind_of_target(
-        &mut self,
-        owner: &str,
-        target_name: &str,
-    ) -> ClassRelation {
+    fn singleton_object_matches_kind_of_target(&mut self, owner: &str, target_name: &str) -> bool {
         self.ensure_class_available(owner);
         let object_class = if self
             .registry
@@ -47542,43 +47508,26 @@ impl<'a> InferenceEngine<'a> {
         } else {
             "Class"
         };
-        self.class_relation_to_target(object_class, target_name)
+        self.class_matches_kind_of_target(object_class, target_name)
     }
 
     fn class_matches_kind_of_target(&mut self, class_name: &str, target_name: &str) -> bool {
-        self.class_relation_to_target(class_name, target_name) == ClassRelation::Match
-    }
-
-    fn class_relation_to_target(&mut self, class_name: &str, target_name: &str) -> ClassRelation {
         self.ensure_external_class(class_name);
         self.ensure_external_class(target_name);
 
         if class_name == target_name {
-            return ClassRelation::Match;
+            return true;
         }
 
-        let target_is_module = self
+        if self
             .registry
             .class_data_for(target_name)
-            .map(|data| data.is_module);
-        match target_is_module {
-            Some(true) => {
-                self.class_includes_module_target(class_name, target_name, &mut HashSet::new())
-            }
-            Some(false) => {
-                self.class_is_or_subclass_of_target(class_name, target_name, &mut HashSet::new())
-            }
-            None => {
-                let class_relation = self.class_is_or_subclass_of_target(
-                    class_name,
-                    target_name,
-                    &mut HashSet::new(),
-                );
-                let module_relation =
-                    self.class_includes_module_target(class_name, target_name, &mut HashSet::new());
-                class_relation.any(module_relation)
-            }
+            .is_some_and(|data| data.is_module)
+        {
+            return self.class_includes_module_target(class_name, target_name, &mut HashSet::new());
         }
+
+        self.class_is_or_subclass_of_target(class_name, target_name, &mut HashSet::new())
     }
 
     fn class_is_or_subclass_of_target(
@@ -47586,34 +47535,20 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         target_name: &str,
         seen: &mut HashSet<String>,
-    ) -> ClassRelation {
+    ) -> bool {
         if !seen.insert(class_name.to_string()) {
-            return ClassRelation::Unknown;
+            return false;
         }
         self.ensure_external_class(class_name);
         if class_name == target_name {
-            seen.remove(class_name);
-            return ClassRelation::Match;
+            return true;
         }
-        let class_is_known = self
-            .registry
-            .class_data_for(class_name)
-            .is_some_and(ClassData::has_type_substance);
-        let relation = if !class_is_known {
-            if seen.len() > 1 {
-                ClassRelation::Unknown
-            } else {
-                ClassRelation::NoMatch
-            }
-        } else if let Some(superclass) =
-            self.registry.get_superclass(class_name).map(str::to_string)
-        {
-            self.class_is_or_subclass_of_target(&superclass, target_name, seen)
-        } else {
-            ClassRelation::NoMatch
-        };
-        seen.remove(class_name);
-        relation
+        self.registry
+            .get_superclass(class_name)
+            .map(str::to_string)
+            .is_some_and(|superclass| {
+                self.class_is_or_subclass_of_target(&superclass, target_name, seen)
+            })
     }
 
     fn class_includes_module_target(
@@ -47621,49 +47556,31 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         target_module: &str,
         seen: &mut HashSet<String>,
-    ) -> ClassRelation {
+    ) -> bool {
         if !seen.insert(class_name.to_string()) {
-            return ClassRelation::Unknown;
+            return false;
         }
         self.ensure_external_class(class_name);
-        let Some(data) = self
-            .registry
-            .class_data_for(class_name)
-            .filter(|data| data.has_type_substance())
-        else {
-            seen.remove(class_name);
-            return if seen.is_empty() {
-                ClassRelation::NoMatch
-            } else {
-                ClassRelation::Unknown
-            };
+        let Some(data) = self.registry.class_data_for(class_name) else {
+            return false;
         };
 
         let mixins = data.mixins.clone();
         let superclass = self.registry.get_superclass(class_name).map(str::to_string);
-        let mut relation = ClassRelation::NoMatch;
         for mixin in mixins {
             if mixin.kind == MixinKind::Extend {
                 continue;
             }
-            let mixin_relation = if mixin.module_name.as_ref() == target_module {
-                ClassRelation::Match
-            } else {
-                self.module_includes_module_target(&mixin.module_name, target_module, seen)
-            };
-            relation = relation.any(mixin_relation);
-            if relation == ClassRelation::Match {
-                seen.remove(class_name);
-                return relation;
+            if mixin.module_name.as_ref() == target_module
+                || self.module_includes_module_target(&mixin.module_name, target_module, seen)
+            {
+                return true;
             }
         }
 
-        if let Some(superclass) = superclass {
-            relation =
-                relation.any(self.class_includes_module_target(&superclass, target_module, seen));
-        }
-        seen.remove(class_name);
-        relation
+        superclass.is_some_and(|superclass| {
+            self.class_includes_module_target(&superclass, target_module, seen)
+        })
     }
 
     fn module_includes_module_target(
@@ -47671,46 +47588,23 @@ impl<'a> InferenceEngine<'a> {
         module_name: &str,
         target_module: &str,
         seen: &mut HashSet<String>,
-    ) -> ClassRelation {
+    ) -> bool {
         if !seen.insert(module_name.to_string()) {
-            return ClassRelation::Unknown;
+            return false;
         }
         self.ensure_external_class(module_name);
         if module_name == target_module {
-            seen.remove(module_name);
-            return ClassRelation::Match;
+            return true;
         }
-        let Some(data) = self
-            .registry
-            .class_data_for(module_name)
-            .filter(|data| data.has_type_substance())
-        else {
-            seen.remove(module_name);
-            return if seen.is_empty() {
-                ClassRelation::NoMatch
-            } else {
-                ClassRelation::Unknown
-            };
+        let Some(data) = self.registry.class_data_for(module_name) else {
+            return false;
         };
         let mixins = data.mixins.clone();
-        let mut relation = ClassRelation::NoMatch;
-        for mixin in mixins {
-            if mixin.kind == MixinKind::Extend {
-                continue;
-            }
-            let mixin_relation = if mixin.module_name.as_ref() == target_module {
-                ClassRelation::Match
-            } else {
-                self.module_includes_module_target(&mixin.module_name, target_module, seen)
-            };
-            relation = relation.any(mixin_relation);
-            if relation == ClassRelation::Match {
-                seen.remove(module_name);
-                return relation;
-            }
-        }
-        seen.remove(module_name);
-        relation
+        mixins.iter().any(|mixin| {
+            mixin.kind != MixinKind::Extend
+                && (mixin.module_name.as_ref() == target_module
+                    || self.module_includes_module_target(&mixin.module_name, target_module, seen))
+        })
     }
 
     fn subtract_narrowed_union_parts(current: &Type, narrow_ty: &Type) -> Option<Type> {

@@ -29,8 +29,6 @@ Tyda はコンパイラではなく型推論器である。壊れた入力でも
 | complexity / fuel / union 上限超過 | `untyped` へ縮退 |
 
 祖先 chain に未解決 edge がある場合、class の method surface は完全とはみなさない。
-同じ edge を `is_a?` や class case の型絞り込みがたどる場合も、確実な不一致とはせず、該当する分岐を
-到達可能なまま残す。確定した superclass / mixin の関係だけを根拠に分岐を除外する。
 module の bare call も host が静的に分からなければ診断しない。
 
 ## severity
