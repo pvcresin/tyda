@@ -527,12 +527,39 @@ struct DeferredMethodBody {
     is_singleton: bool,
     start_offset: usize,
     has_existing_defer_reason: bool,
-    unresolved_block_receivers: Option<Box<[Type]>>,
+    unresolved_block_receivers: Option<DeferredBlockReceiverCandidates>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DeferredBlockReceiverCandidates {
+    first: Option<Type>,
+    additional: Vec<Type>,
+}
+
+impl DeferredBlockReceiverCandidates {
+    fn insert(&mut self, receiver: &Type) {
+        if let Some(first) = self.first.as_ref() {
+            if first == receiver || self.additional.contains(receiver) {
+                return;
+            }
+            self.additional.push(receiver.clone());
+        } else {
+            self.first = Some(receiver.clone());
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_none()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Type> {
+        self.first.iter().chain(self.additional.iter())
+    }
 }
 
 #[derive(Default)]
 struct ActiveMethodBody {
-    unresolved_block_receivers: FxHashSet<Type>,
+    unresolved_block_receivers: DeferredBlockReceiverCandidates,
 }
 
 pub struct InferenceEngine<'a> {
@@ -12471,7 +12498,7 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let has_deferred_block_receiver_return = !unresolved_block_receivers.is_empty()
-            && Self::type_contains_deferred_method_ref(&return_type);
+            && Self::type_contains_receiver_resolution_ref(&return_type);
 
         let _ = positional_count;
 
@@ -12569,12 +12596,8 @@ impl<'a> InferenceEngine<'a> {
                 is_singleton,
                 start_offset: def_node.location().start_offset(),
                 has_existing_defer_reason,
-                unresolved_block_receivers: has_deferred_block_receiver_return.then(|| {
-                    unresolved_block_receivers
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice()
-                }),
+                unresolved_block_receivers: has_deferred_block_receiver_return
+                    .then_some(unresolved_block_receivers),
             });
         }
 
@@ -21792,15 +21815,22 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         receiver_type
                     };
-                    let receiver_type = self.resolve_receiver_method_refs(&receiver_type);
-                    if call_node.block().is_some()
+                    let track_deferred_block_receiver = call_node.block().is_some()
                         && (self.defer_unresolved_body_call_sites
                             || self.track_deferred_block_receiver_bodies)
-                        && Self::type_contains_method_ref(&receiver_type)
+                        && self.active_method_body.is_some();
+                    let (receiver_type, has_deferred_receiver_candidate) =
+                        if track_deferred_block_receiver {
+                            self.resolve_receiver_method_refs_with_deferred_candidate(
+                                &receiver_type,
+                            )
+                        } else {
+                            (self.resolve_receiver_method_refs(&receiver_type), false)
+                        };
+                    if has_deferred_receiver_candidate
                         && let Some(body) = self.active_method_body.as_mut()
                     {
-                        body.unresolved_block_receivers
-                            .insert(receiver_type.clone());
+                        body.unresolved_block_receivers.insert(&receiver_type);
                     }
                     let is_safe_nav = call_node.is_safe_navigation();
                     let safe_nav_receiver_type = if is_safe_nav {
@@ -44332,6 +44362,20 @@ impl<'a> InferenceEngine<'a> {
         if !Self::type_contains_receiver_resolution_ref(ty) {
             return ty.clone();
         }
+        self.resolve_receiver_method_refs_after_preflight(ty)
+    }
+
+    fn resolve_receiver_method_refs_with_deferred_candidate(&mut self, ty: &Type) -> (Type, bool) {
+        if !Self::type_contains_receiver_resolution_ref(ty) {
+            return (ty.clone(), false);
+        }
+
+        let resolved = self.resolve_receiver_method_refs_after_preflight(ty);
+        let has_deferred_method_ref = Self::type_contains_receiver_resolution_ref(&resolved);
+        (resolved, has_deferred_method_ref)
+    }
+
+    fn resolve_receiver_method_refs_after_preflight(&mut self, ty: &Type) -> Type {
         let mut memo = std::mem::take(&mut self.receiver_ref_memo_scratch);
         let mut visiting = std::mem::take(&mut self.receiver_ref_visiting_scratch);
         memo.clear();
@@ -47798,19 +47842,21 @@ impl<'a> InferenceEngine<'a> {
         if self.deferred_method_bodies.is_empty() {
             return;
         }
+        let mut deferred_receiver_visiting = FxHashSet::default();
         let deferred_offsets: HashMap<usize, (bool, bool)> =
             std::mem::take(&mut self.deferred_method_bodies)
                 .into_iter()
                 .filter_map(|body| {
                     let receiver_dependency_resolved = body
                         .unresolved_block_receivers
-                        .as_deref()
+                        .as_ref()
                         .is_some_and(|receivers| {
                             receivers.iter().any(|receiver| {
                                 Self::deferred_receiver_type_resolves_to_concrete(
                                     &self.registry,
                                     &body.class_name,
                                     receiver,
+                                    &mut deferred_receiver_visiting,
                                 )
                             })
                         });
@@ -47830,6 +47876,7 @@ impl<'a> InferenceEngine<'a> {
         if deferred_offsets.is_empty() {
             return;
         }
+        drop(deferred_receiver_visiting);
         let statements = program.statements();
         self.suppress_external_merge = true;
         self.backward_propagate_in_statements(
@@ -48539,37 +48586,6 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn type_contains_deferred_method_ref(ty: &Type) -> bool {
-        match ty {
-            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) | Type::IvarRef(..) => true,
-            Type::Union(parts) | Type::Intersection(parts) => {
-                parts.iter().any(Self::type_contains_deferred_method_ref)
-            }
-            Type::Array(inner) => inner
-                .as_deref()
-                .is_some_and(Self::type_contains_deferred_method_ref),
-            Type::Hash(key, value) => {
-                key.as_deref()
-                    .is_some_and(Self::type_contains_deferred_method_ref)
-                    || value
-                        .as_deref()
-                        .is_some_and(Self::type_contains_deferred_method_ref)
-            }
-            Type::Record(fields) => fields
-                .iter()
-                .any(|field| Self::type_contains_deferred_method_ref(&field.value)),
-            Type::PatternIndexRef(inner, _)
-            | Type::PatternRestRef(inner)
-            | Type::PatternTrailingRef(inner, _)
-            | Type::PatternKeyRef(inner, _)
-            | Type::PatternKeyRestRef(inner, _) => Self::type_contains_deferred_method_ref(inner),
-            Type::Proc { return_type, .. } => Self::type_contains_deferred_method_ref(return_type),
-            Type::Tuple(elements) => elements.iter().any(Self::type_contains_deferred_method_ref),
-            Type::Generic { args, .. } => args.iter().any(Self::type_contains_deferred_method_ref),
-            _ => false,
-        }
-    }
-
     fn type_contains_unresolved_pattern_ref(ty: &Type) -> bool {
         match ty {
             Type::PatternIndexRef(subject, _)
@@ -48953,6 +48969,46 @@ end
         assert!(engine.receiver_ref_memo_scratch.is_empty());
         assert!(engine.receiver_ref_visiting_scratch.is_empty());
         assert!(engine.receiver_ref_memo_scratch.capacity() > 0);
+    }
+
+    #[test]
+    fn deferred_block_receiver_tracking_requires_method_refs() {
+        let method_return_ref = Type::MethodReturnRef(Sym::new("Source"), Sym::new("items"));
+        let receiver_method_ref =
+            Type::ReceiverMethodRef(Box::new(Type::Class(Sym::new("Source"))), Sym::new("items"));
+        let ivar_ref = Type::IvarRef(Sym::new("@items"));
+        assert!(InferenceEngine::type_contains_receiver_resolution_ref(
+            &method_return_ref
+        ));
+        assert!(InferenceEngine::type_contains_receiver_resolution_ref(
+            &receiver_method_ref
+        ));
+        assert!(InferenceEngine::type_contains_receiver_resolution_ref(
+            &Type::Tuple(vec![
+                Type::Array(Some(Box::new(receiver_method_ref.clone()))),
+                Type::Integer,
+            ])
+        ));
+        assert!(!InferenceEngine::type_contains_receiver_resolution_ref(
+            &ivar_ref
+        ));
+        assert!(!InferenceEngine::type_contains_receiver_resolution_ref(
+            &Type::Array(Some(Box::new(ivar_ref.clone())))
+        ));
+
+        let mut engine = InferenceEngine::new();
+        let (resolved, has_deferred_candidate) =
+            engine.resolve_receiver_method_refs_with_deferred_candidate(&receiver_method_ref);
+        assert_eq!(
+            resolved,
+            engine.resolve_receiver_method_refs(&receiver_method_ref)
+        );
+        assert!(has_deferred_candidate);
+
+        let (resolved, has_deferred_candidate) =
+            engine.resolve_receiver_method_refs_with_deferred_candidate(&ivar_ref);
+        assert_eq!(resolved, ivar_ref);
+        assert!(!has_deferred_candidate);
     }
 
     #[test]

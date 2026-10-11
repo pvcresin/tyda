@@ -96,8 +96,8 @@ compile jobは `CARGO_INCREMENTAL=0` と sccache の GitHub Actions backendで�
 TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
 ~~~
 
-単一 run の揺れで失敗しないよう中央値で比較し、時間は 15% 超、メモリは 10% 超で warning を出す。
-時間が 30% 超かつ 100ms 以上、または max RSS が 20% 超かつ 16MiB 以上増えた場合だけ CI を失敗させる。
+単一 run の揺れで失敗しないよう中央値で比較し、時間は 5% 超、メモリは 10% 超で warning を出す。
+時間が 10% 超かつ 50ms 以上、または max RSS が 20% 超かつ 8MiB 以上増えた場合に CI を失敗させる。
 小さな劣化を許容しつつ、実質的な回帰は PR の段階で止めるための初期値である。基準を別 runner の
 過去値と比較せず、base/head を同じ job で測ることで CPU や runner の世代差を打ち消す。
 

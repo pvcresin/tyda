@@ -358,7 +358,7 @@ impl<'a> InferenceEngine<'a> {
                         if !Self::type_contains_method_ref(&method.raw_return_type) {
                             return None;
                         }
-                        let mut visiting = HashSet::new();
+                        let mut visiting = FxHashSet::default();
                         visiting.insert((class_name.to_string(), Sym::new(method.name)));
                         let resolved = Self::resolve_general_method_refs(
                             &self.registry,
@@ -395,7 +395,7 @@ impl<'a> InferenceEngine<'a> {
         registry: &TypeRegistry,
         context_class: &str,
         ty: &Type,
-        visiting: &mut HashSet<(String, Sym)>,
+        visiting: &mut FxHashSet<(String, Sym)>,
     ) -> Type {
         Self::resolve_general_method_refs_depth(registry, context_class, ty, visiting, 0)
     }
@@ -404,7 +404,7 @@ impl<'a> InferenceEngine<'a> {
         registry: &TypeRegistry,
         context_class: &str,
         ty: &Type,
-        visiting: &mut HashSet<(String, Sym)>,
+        visiting: &mut FxHashSet<(String, Sym)>,
         depth: usize,
     ) -> Type {
         if depth >= 12 {
@@ -595,13 +595,14 @@ impl<'a> InferenceEngine<'a> {
         registry: &TypeRegistry,
         context_class: &str,
         ty: &Type,
+        visiting: &mut FxHashSet<(String, Sym)>,
     ) -> bool {
         if !Self::type_contains_method_ref(ty) {
             return false;
         }
-        let mut visiting = HashSet::new();
-        let resolved =
-            Self::resolve_general_method_refs(registry, context_class, ty, &mut visiting);
+        visiting.clear();
+        let resolved = Self::resolve_general_method_refs(registry, context_class, ty, visiting);
+        visiting.clear();
         resolved != *ty && Self::is_concrete_for_method_ref_resolve(&resolved)
     }
 

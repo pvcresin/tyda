@@ -27,12 +27,12 @@ if [[ "$RBS_DIR" != /* ]]; then
 fi
 
 # A warning is useful for trend monitoring; only the larger limit fails PR CI.
-TIME_WARN_PERCENT="15"
-TIME_FAIL_PERCENT="30"
+TIME_WARN_PERCENT="5"
+TIME_FAIL_PERCENT="10"
 MEMORY_WARN_PERCENT="10"
 MEMORY_FAIL_PERCENT="20"
-MIN_TIME_DELTA_MS="100"
-MIN_MEMORY_DELTA_BYTES="$((16 * 1024 * 1024))"
+MIN_TIME_DELTA_MS="50"
+MIN_MEMORY_DELTA_BYTES="$((8 * 1024 * 1024))"
 
 if ! [[ "$RUNS" =~ ^[1-9][0-9]*$ ]]; then
   echo "TYDA_PERF_RUNS must be a positive integer" >&2
