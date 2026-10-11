@@ -3,6 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+export CARGO_INCREMENTAL=0
+
 # vendor/rbs comes from the rbs gem (scripts/vendor-rbs.sh). The script is a
 # no-op when the ignored tree already matches Gemfile.lock, and refreshes it
 # when a dependency bump leaves an older generated tree in place.
