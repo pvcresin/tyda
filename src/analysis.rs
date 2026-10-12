@@ -107,11 +107,16 @@ enum ExternalRbsLoading {
 enum ResolutionDepth {
     Full,
     ExportedFactsOnly,
+    ExportedFactsOnlyWithBlockReceiverReplay,
 }
 
 impl ResolutionDepth {
     fn keeps_only_exported_facts(self) -> bool {
-        matches!(self, Self::ExportedFactsOnly)
+        !matches!(self, Self::Full)
+    }
+
+    fn replays_deferred_block_receiver_bodies(self) -> bool {
+        matches!(self, Self::ExportedFactsOnlyWithBlockReceiverReplay)
     }
 }
 
@@ -573,7 +578,7 @@ fn build_compact_scan_engine<'a>(
         } else {
             ExternalRbsLoading::Preload
         },
-        resolution_depth: ResolutionDepth::ExportedFactsOnly,
+        resolution_depth: ResolutionDepth::ExportedFactsOnlyWithBlockReceiverReplay,
         rbi_declaration_source: false,
     })
 }
@@ -1636,6 +1641,9 @@ fn build_engine_with_timings<'a>(
     );
     engine.set_analyzing_rbi_declaration(rbi_declaration_source);
     engine.set_defer_unresolved_body_call_sites(!resolution_depth.keeps_only_exported_facts());
+    engine.set_track_deferred_block_receiver_bodies(
+        resolution_depth.replays_deferred_block_receiver_bodies(),
+    );
     let mut effective_dsl_activation = options.dsl_activation.clone();
     detect_realtime_dsl_from_source(source, &mut effective_dsl_activation);
     engine.set_dsl_activation(effective_dsl_activation);
@@ -1729,6 +1737,12 @@ fn build_engine_with_timings<'a>(
             engine.resolve_parameter_references_from_calls();
             timings.parameter_reference_resolution =
                 parameter_reference_resolution_started.elapsed();
+        }
+
+        if resolution_depth.replays_deferred_block_receiver_bodies() {
+            let backward_propagate_started = Instant::now();
+            engine.replay_deferred_block_receiver_bodies(&program, &parse_result);
+            timings.backward_propagate = backward_propagate_started.elapsed();
         }
 
         if !resolution_depth.keeps_only_exported_facts() {
@@ -1997,7 +2011,25 @@ box.value
 
     #[test]
     fn compact_scan_preserves_receiver_block_inference() {
-        let source = "class Sample\n  def foo = [1, 2]\n\n  def bar\n    foo.map { |item| item }\n  end\nend\n";
+        let source = r#"
+class Sample
+  def foo = [1, 2]
+
+  def bar
+    foo.map { |item| item }
+  end
+end
+
+class DeferredCollectionReceiver
+  def indexed_headers(default = nil)
+    headers.map { |header| [header, 0] }
+  end
+
+  def headers
+    ["id".to_s]
+  end
+end
+"#;
         let loader = playground_loader();
         let snapshot = analyze_compact_file_snapshot_timed(
             source,
@@ -2019,6 +2051,17 @@ box.value
                 Type::LiteralInteger(2),
             ]))))),
             "compact scans must keep the existing receiver block resolution"
+        );
+
+        assert_eq!(
+            snapshot
+                .registry()
+                .lookup_method_return_type("DeferredCollectionReceiver", "indexed_headers"),
+            Some(Type::Array(Some(Box::new(Type::Tuple(vec![
+                Type::String,
+                Type::LiteralInteger(0),
+            ]))))),
+            "compact scans must replay a block body after its source receiver resolves"
         );
     }
 

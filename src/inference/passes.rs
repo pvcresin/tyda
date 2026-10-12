@@ -358,7 +358,7 @@ impl<'a> InferenceEngine<'a> {
                         if !Self::type_contains_method_ref(&method.raw_return_type) {
                             return None;
                         }
-                        let mut visiting = HashSet::new();
+                        let mut visiting = FxHashSet::default();
                         visiting.insert((class_name.to_string(), Sym::new(method.name)));
                         let resolved = Self::resolve_general_method_refs(
                             &self.registry,
@@ -395,7 +395,7 @@ impl<'a> InferenceEngine<'a> {
         registry: &TypeRegistry,
         context_class: &str,
         ty: &Type,
-        visiting: &mut HashSet<(String, Sym)>,
+        visiting: &mut FxHashSet<(String, Sym)>,
     ) -> Type {
         Self::resolve_general_method_refs_depth(registry, context_class, ty, visiting, 0)
     }
@@ -404,7 +404,7 @@ impl<'a> InferenceEngine<'a> {
         registry: &TypeRegistry,
         context_class: &str,
         ty: &Type,
-        visiting: &mut HashSet<(String, Sym)>,
+        visiting: &mut FxHashSet<(String, Sym)>,
         depth: usize,
     ) -> Type {
         if depth >= 12 {
@@ -532,7 +532,7 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn type_contains_method_ref(ty: &Type) -> bool {
+    pub(super) fn type_contains_method_ref(ty: &Type) -> bool {
         match ty {
             Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) | Type::IvarRef(..) => true,
             Type::Union(parts) | Type::Intersection(parts) => {
@@ -589,6 +589,21 @@ impl<'a> InferenceEngine<'a> {
             } => Self::is_concrete_for_method_ref_resolve(return_type),
             _ => false,
         }
+    }
+
+    pub(super) fn deferred_receiver_type_resolves_to_concrete(
+        registry: &TypeRegistry,
+        context_class: &str,
+        ty: &Type,
+        visiting: &mut FxHashSet<(String, Sym)>,
+    ) -> bool {
+        if !Self::type_contains_method_ref(ty) {
+            return false;
+        }
+        visiting.clear();
+        let resolved = Self::resolve_general_method_refs(registry, context_class, ty, visiting);
+        visiting.clear();
+        resolved != *ty && Self::is_concrete_for_method_ref_resolve(&resolved)
     }
 
     fn merge_external_rbs_for_resolution(&mut self) {

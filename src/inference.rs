@@ -521,6 +521,47 @@ fn offset_to_location_from(
     offset_to_location(source, offset)
 }
 
+#[derive(Debug, Clone)]
+struct DeferredMethodBody {
+    class_name: String,
+    is_singleton: bool,
+    start_offset: usize,
+    has_existing_defer_reason: bool,
+    unresolved_block_receivers: Option<DeferredBlockReceiverCandidates>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DeferredBlockReceiverCandidates {
+    first: Option<Type>,
+    additional: Vec<Type>,
+}
+
+impl DeferredBlockReceiverCandidates {
+    fn insert(&mut self, receiver: &Type) {
+        if let Some(first) = self.first.as_ref() {
+            if first == receiver || self.additional.contains(receiver) {
+                return;
+            }
+            self.additional.push(receiver.clone());
+        } else {
+            self.first = Some(receiver.clone());
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_none()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Type> {
+        self.first.iter().chain(self.additional.iter())
+    }
+}
+
+#[derive(Default)]
+struct ActiveMethodBody {
+    unresolved_block_receivers: DeferredBlockReceiverCandidates,
+}
+
 pub struct InferenceEngine<'a> {
     registry: TypeRegistry,
     constants: HashMap<String, Type>,
@@ -551,7 +592,8 @@ pub struct InferenceEngine<'a> {
     with_options_stack: Vec<crate::inference::rails_dsl::AssociationOptions>,
     inline_assertion_comments: Vec<InlineAssertionComment>,
     self_bind_comments: Vec<SorbetSelfBindComment>,
-    deferred_method_bodies: Vec<(String, String, bool, usize)>,
+    deferred_method_bodies: Vec<DeferredMethodBody>,
+    active_method_body: Option<ActiveMethodBody>,
     module_function_mirrors: Vec<(String, String)>,
     refinement_methods: HashMap<String, HashMap<String, LocalSingletonMethod>>,
     refinement_modules: HashMap<String, Vec<String>>,
@@ -571,6 +613,7 @@ pub struct InferenceEngine<'a> {
     /// Full analysis re-infers bodies, so first-pass ParamRef call sites are skipped.
     /// Compact/CLI snapshots have no re-infer and must keep those sites.
     defer_unresolved_body_call_sites: bool,
+    track_deferred_block_receiver_bodies: bool,
     suppress_body_call_sites: bool,
     /// Enclosing `class`/`module` names that are not part of the current FQN
     /// (`class ::Bar` inside `module Foo`).
@@ -1627,6 +1670,7 @@ impl<'a> InferenceEngine<'a> {
             inline_assertion_comments: Vec::new(),
             self_bind_comments: Vec::new(),
             deferred_method_bodies: Vec::new(),
+            active_method_body: None,
             module_function_mirrors: Vec::new(),
             refinement_methods: HashMap::new(),
             refinement_modules: HashMap::new(),
@@ -1643,6 +1687,7 @@ impl<'a> InferenceEngine<'a> {
             collecting_concern_included: false,
             suppress_external_merge: false,
             defer_unresolved_body_call_sites: false,
+            track_deferred_block_receiver_bodies: false,
             suppress_body_call_sites: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
@@ -1687,6 +1732,7 @@ impl<'a> InferenceEngine<'a> {
             inline_assertion_comments: Vec::new(),
             self_bind_comments: Vec::new(),
             deferred_method_bodies: Vec::new(),
+            active_method_body: None,
             module_function_mirrors: Vec::new(),
             refinement_methods: HashMap::new(),
             refinement_modules: HashMap::new(),
@@ -1703,6 +1749,7 @@ impl<'a> InferenceEngine<'a> {
             collecting_concern_included: false,
             suppress_external_merge: false,
             defer_unresolved_body_call_sites: false,
+            track_deferred_block_receiver_bodies: false,
             suppress_body_call_sites: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
@@ -1740,6 +1787,10 @@ impl<'a> InferenceEngine<'a> {
 
     pub fn set_defer_unresolved_body_call_sites(&mut self, enabled: bool) {
         self.defer_unresolved_body_call_sites = enabled;
+    }
+
+    pub(crate) fn set_track_deferred_block_receiver_bodies(&mut self, enabled: bool) {
+        self.track_deferred_block_receiver_bodies = enabled;
     }
 
     pub fn set_record_annotated_method_body_hover_snapshots(&mut self, enabled: bool) {
@@ -12341,6 +12392,11 @@ impl<'a> InferenceEngine<'a> {
         if self.defer_unresolved_body_call_sites && !param_infos.is_empty() {
             self.suppress_body_call_sites = true;
         }
+        let saved_active_method_body = std::mem::replace(
+            &mut self.active_method_body,
+            (self.defer_unresolved_body_call_sites || self.track_deferred_block_receiver_bodies)
+                .then(ActiveMethodBody::default),
+        );
         let mut return_type = if method_name == "initialize" {
             if let Some(body) = def_node.body() {
                 self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
@@ -12394,6 +12450,12 @@ impl<'a> InferenceEngine<'a> {
             (has_yield || has_named_block)
                 .then(|| self.scan_method_body_summary(class_name, &body, parse_result, &scope))
         });
+        let unresolved_block_receivers = self
+            .active_method_body
+            .take()
+            .map(|body| body.unresolved_block_receivers)
+            .unwrap_or_default();
+        self.active_method_body = saved_active_method_body;
         if let Some(summary) = &body_scan_summary {
             let yield_param_types: Vec<Type> = summary
                 .yield_param_types
@@ -12434,6 +12496,9 @@ impl<'a> InferenceEngine<'a> {
         if is_singleton && Self::def_body_returns_only_bare_new(&def_node) {
             return_type = Type::InstanceType;
         }
+
+        let has_deferred_block_receiver_return = !unresolved_block_receivers.is_empty()
+            && Self::type_contains_receiver_resolution_ref(&return_type);
 
         let _ = positional_count;
 
@@ -12518,19 +12583,22 @@ impl<'a> InferenceEngine<'a> {
                 b"**",
             )
         });
-        if (has_positional_params
+        let has_existing_defer_reason = has_positional_params
             || needs_late_constant_return
             || needs_late_ivar_return
-            || needs_late_hash_splat)
+            || needs_late_hash_splat;
+        if (has_existing_defer_reason || has_deferred_block_receiver_return)
             && !rbs_inline_annotated
             && !sig_annotated
         {
-            self.deferred_method_bodies.push((
-                class_name.to_string(),
-                method_name.clone(),
+            self.deferred_method_bodies.push(DeferredMethodBody {
+                class_name: class_name.to_string(),
                 is_singleton,
-                def_node.location().start_offset(),
-            ));
+                start_offset: def_node.location().start_offset(),
+                has_existing_defer_reason,
+                unresolved_block_receivers: has_deferred_block_receiver_return
+                    .then_some(unresolved_block_receivers),
+            });
         }
 
         let yield_param_types = if let Some(meta) = &rbs_block_meta {
@@ -21747,7 +21815,23 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         receiver_type
                     };
-                    let receiver_type = self.resolve_receiver_method_refs(&receiver_type);
+                    let track_deferred_block_receiver = call_node.block().is_some()
+                        && (self.defer_unresolved_body_call_sites
+                            || self.track_deferred_block_receiver_bodies)
+                        && self.active_method_body.is_some();
+                    let (receiver_type, has_deferred_receiver_candidate) =
+                        if track_deferred_block_receiver {
+                            self.resolve_receiver_method_refs_with_deferred_candidate(
+                                &receiver_type,
+                            )
+                        } else {
+                            (self.resolve_receiver_method_refs(&receiver_type), false)
+                        };
+                    if has_deferred_receiver_candidate
+                        && let Some(body) = self.active_method_body.as_mut()
+                    {
+                        body.unresolved_block_receivers.insert(&receiver_type);
+                    }
                     let is_safe_nav = call_node.is_safe_navigation();
                     let safe_nav_receiver_type = if is_safe_nav {
                         Self::remove_nil(&receiver_type)
@@ -44278,6 +44362,20 @@ impl<'a> InferenceEngine<'a> {
         if !Self::type_contains_receiver_resolution_ref(ty) {
             return ty.clone();
         }
+        self.resolve_receiver_method_refs_after_preflight(ty)
+    }
+
+    fn resolve_receiver_method_refs_with_deferred_candidate(&mut self, ty: &Type) -> (Type, bool) {
+        if !Self::type_contains_receiver_resolution_ref(ty) {
+            return (ty.clone(), false);
+        }
+
+        let resolved = self.resolve_receiver_method_refs_after_preflight(ty);
+        let has_deferred_method_ref = Self::type_contains_receiver_resolution_ref(&resolved);
+        (resolved, has_deferred_method_ref)
+    }
+
+    fn resolve_receiver_method_refs_after_preflight(&mut self, ty: &Type) -> Type {
         let mut memo = std::mem::take(&mut self.receiver_ref_memo_scratch);
         let mut visiting = std::mem::take(&mut self.receiver_ref_visiting_scratch);
         memo.clear();
@@ -47724,13 +47822,61 @@ impl<'a> InferenceEngine<'a> {
         program: &ruby_prism::ProgramNode<'b>,
         parse_result: &ParseResult<'b>,
     ) {
+        self.replay_deferred_method_bodies(program, parse_result, true);
+    }
+
+    pub(crate) fn replay_deferred_block_receiver_bodies<'b>(
+        &mut self,
+        program: &ruby_prism::ProgramNode<'b>,
+        parse_result: &ParseResult<'b>,
+    ) {
+        self.replay_deferred_method_bodies(program, parse_result, false);
+    }
+
+    fn replay_deferred_method_bodies<'b>(
+        &mut self,
+        program: &ruby_prism::ProgramNode<'b>,
+        parse_result: &ParseResult<'b>,
+        include_existing_defer_reasons: bool,
+    ) {
         if self.deferred_method_bodies.is_empty() {
             return;
         }
-        let deferred_offsets: HashMap<_, _> = std::mem::take(&mut self.deferred_method_bodies)
-            .into_iter()
-            .map(|(_, _, is_singleton, start_offset)| (start_offset, is_singleton))
-            .collect();
+        let mut deferred_receiver_visiting = FxHashSet::default();
+        let deferred_offsets: HashMap<usize, (bool, bool)> =
+            std::mem::take(&mut self.deferred_method_bodies)
+                .into_iter()
+                .filter_map(|body| {
+                    let receiver_dependency_resolved = body
+                        .unresolved_block_receivers
+                        .as_ref()
+                        .is_some_and(|receivers| {
+                            receivers.iter().any(|receiver| {
+                                Self::deferred_receiver_type_resolves_to_concrete(
+                                    &self.registry,
+                                    &body.class_name,
+                                    receiver,
+                                    &mut deferred_receiver_visiting,
+                                )
+                            })
+                        });
+                    if include_existing_defer_reasons {
+                        if !body.has_existing_defer_reason && !receiver_dependency_resolved {
+                            return None;
+                        }
+                    } else if !receiver_dependency_resolved {
+                        return None;
+                    }
+                    Some((
+                        body.start_offset,
+                        (body.is_singleton, receiver_dependency_resolved),
+                    ))
+                })
+                .collect();
+        if deferred_offsets.is_empty() {
+            return;
+        }
+        drop(deferred_receiver_visiting);
         let statements = program.statements();
         self.suppress_external_merge = true;
         self.backward_propagate_in_statements(
@@ -47740,15 +47886,17 @@ impl<'a> InferenceEngine<'a> {
             &deferred_offsets,
             false,
         );
-        // Super / helper call sites recorded in the first walk need a second
-        // pass so callees see the newly concrete argument types.
-        self.backward_propagate_in_statements(
-            "Object",
-            &statements,
-            parse_result,
-            &deferred_offsets,
-            false,
-        );
+        if include_existing_defer_reasons {
+            // Super / helper call sites recorded in the first walk need a second
+            // pass so callees see the newly concrete argument types.
+            self.backward_propagate_in_statements(
+                "Object",
+                &statements,
+                parse_result,
+                &deferred_offsets,
+                false,
+            );
+        }
         self.suppress_external_merge = false;
     }
 
@@ -47757,7 +47905,7 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         statements: &ruby_prism::StatementsNode<'b>,
         parse_result: &ParseResult<'b>,
-        deferred_offsets: &HashMap<usize, bool>,
+        deferred_offsets: &HashMap<usize, (bool, bool)>,
         in_singleton_class: bool,
     ) {
         for node in statements.body().iter() {
@@ -47821,7 +47969,9 @@ impl<'a> InferenceEngine<'a> {
                 Node::DefNode { .. } => {
                     let def_node = node.as_def_node().expect("must be DefNode");
                     let start_offset = def_node.location().start_offset();
-                    if let Some(is_singleton) = deferred_offsets.get(&start_offset).copied() {
+                    if let Some((is_singleton, receiver_dependency_resolved)) =
+                        deferred_offsets.get(&start_offset).copied()
+                    {
                         let (method_owner, _) = self.const_receiver_method_owner(
                             class_name,
                             &def_node,
@@ -47833,6 +47983,7 @@ impl<'a> InferenceEngine<'a> {
                             &def_node,
                             parse_result,
                             is_singleton || in_singleton_class,
+                            receiver_dependency_resolved,
                         );
                     }
                 }
@@ -47980,6 +48131,7 @@ impl<'a> InferenceEngine<'a> {
         def_node: &ruby_prism::DefNode<'b>,
         parse_result: &ParseResult<'b>,
         force_singleton: bool,
+        receiver_dependency_resolved: bool,
     ) {
         let method_name = String::from_utf8_lossy(def_node.name().as_slice()).to_string();
         let is_singleton = force_singleton
@@ -48035,6 +48187,7 @@ impl<'a> InferenceEngine<'a> {
             && !has_explicit_empty_super
             && !has_concrete_call_site
             && !has_hash_splat
+            && !receiver_dependency_resolved
         {
             return;
         }
@@ -48076,7 +48229,22 @@ impl<'a> InferenceEngine<'a> {
         let has_concrete = resolved_param_types
             .iter()
             .any(|t| !matches!(t, Type::Untyped));
-        if !method_info.param_infos.is_empty() && !has_concrete && !has_keyword_sites {
+        let receiver_replay_can_use_defaults = receiver_dependency_resolved
+            && method_info
+                .param_infos
+                .iter()
+                .all(|param| match param.kind {
+                    ParamKind::Optional | ParamKind::KeywordOptional => param
+                        .default_type
+                        .as_ref()
+                        .is_some_and(|ty| !Self::type_needs_backward_propagation(ty)),
+                    _ => false,
+                });
+        if !method_info.param_infos.is_empty()
+            && !has_concrete
+            && !has_keyword_sites
+            && !receiver_replay_can_use_defaults
+        {
             if let Some(saved) = saved_ctx {
                 self.enter_method_body_context(saved);
             }
@@ -48801,6 +48969,46 @@ end
         assert!(engine.receiver_ref_memo_scratch.is_empty());
         assert!(engine.receiver_ref_visiting_scratch.is_empty());
         assert!(engine.receiver_ref_memo_scratch.capacity() > 0);
+    }
+
+    #[test]
+    fn deferred_block_receiver_tracking_requires_method_refs() {
+        let method_return_ref = Type::MethodReturnRef(Sym::new("Source"), Sym::new("items"));
+        let receiver_method_ref =
+            Type::ReceiverMethodRef(Box::new(Type::Class(Sym::new("Source"))), Sym::new("items"));
+        let ivar_ref = Type::IvarRef(Sym::new("@items"));
+        assert!(InferenceEngine::type_contains_receiver_resolution_ref(
+            &method_return_ref
+        ));
+        assert!(InferenceEngine::type_contains_receiver_resolution_ref(
+            &receiver_method_ref
+        ));
+        assert!(InferenceEngine::type_contains_receiver_resolution_ref(
+            &Type::Tuple(vec![
+                Type::Array(Some(Box::new(receiver_method_ref.clone()))),
+                Type::Integer,
+            ])
+        ));
+        assert!(!InferenceEngine::type_contains_receiver_resolution_ref(
+            &ivar_ref
+        ));
+        assert!(!InferenceEngine::type_contains_receiver_resolution_ref(
+            &Type::Array(Some(Box::new(ivar_ref.clone())))
+        ));
+
+        let mut engine = InferenceEngine::new();
+        let (resolved, has_deferred_candidate) =
+            engine.resolve_receiver_method_refs_with_deferred_candidate(&receiver_method_ref);
+        assert_eq!(
+            resolved,
+            engine.resolve_receiver_method_refs(&receiver_method_ref)
+        );
+        assert!(has_deferred_candidate);
+
+        let (resolved, has_deferred_candidate) =
+            engine.resolve_receiver_method_refs_with_deferred_candidate(&ivar_ref);
+        assert_eq!(resolved, ivar_ref);
+        assert!(!has_deferred_candidate);
     }
 
     #[test]

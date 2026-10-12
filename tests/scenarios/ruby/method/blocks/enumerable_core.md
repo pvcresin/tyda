@@ -18,10 +18,6 @@ end
 
 ## Re-infer a block call after its receiver's source return is resolved
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
