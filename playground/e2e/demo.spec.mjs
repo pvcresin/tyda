@@ -157,7 +157,7 @@ test("keeps Ruby primary and adapts the pane layout to the viewport", async ({ p
   expect(mobileLayout.gridRows.split(" ")).toHaveLength(2);
 });
 
-test("loads and restores the curated examples with one trailing blank line", async ({ page }) => {
+test("loads and restores the curated examples with one trailing newline", async ({ page }) => {
   await page.goto(PLAYGROUND_PATH);
   await waitForPlayground(page);
 
@@ -183,10 +183,10 @@ test("loads and restores the curated examples with one trailing blank line", asy
       rbs: window.__editors.rbs.getValue(),
     }));
     expect(source.ruby).toContain(example.ruby);
-    expect(source.ruby.match(/\n*$/)?.[0].length).toBe(2);
+    expect(source.ruby.match(/\n*$/)?.[0].length).toBe(1);
     if (example.rbs) {
       expect(source.rbs).toContain(example.rbs);
-      expect(source.rbs.match(/\n*$/)?.[0].length).toBe(2);
+      expect(source.rbs.match(/\n*$/)?.[0].length).toBe(1);
     }
   }
 

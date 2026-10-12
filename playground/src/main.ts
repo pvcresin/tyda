@@ -125,7 +125,6 @@ const SAMPLE_RUBY = `class User
   # Unresolved method calls show up as diagnostics (squiggles)
   def oops = totally_undefined_helper(@name)
 end
-
 `;
 
 const SAMPLE_RBS = `# Hand-written RBS here is passed as type context for the Ruby pane on the left.
@@ -133,7 +132,6 @@ const SAMPLE_RBS = `# Hand-written RBS here is passed as type context for the Ru
 # class User
 #   def name: () -> String
 # end
-
 `;
 
 const EXAMPLES: Example[] = [
@@ -149,7 +147,6 @@ const EXAMPLES: Example[] = [
 
   def baz = [1, 2, 3].map { |n| n.to_s }
 end
-
 `,
       rbs: "",
     },
@@ -165,7 +162,6 @@ end
 
   def baz = foo[0]
 end
-
 `,
       rbs: "",
     },
@@ -179,7 +175,6 @@ end
 
   def bar = foo[:a]
 end
-
 `,
       rbs: "",
     },
@@ -197,7 +192,6 @@ end
 end
 
 C.new(1)
-
 `,
       rbs: "",
     },
@@ -213,7 +207,6 @@ C.new(1)
 end
 
 C.new.bar(true)
-
 `,
       rbs: "",
     },
@@ -229,7 +222,6 @@ C.new.bar(true)
 end
 
 C.new.bar
-
 `,
       rbs: "",
     },
@@ -257,7 +249,6 @@ end
 
 C.new.foo
 C.bar
-
 `,
       rbs: "",
     },
@@ -269,12 +260,10 @@ C.bar
       ruby: `class C
   def bar = foo
 end
-
 `,
       rbs: `class C
   def foo: -> String
 end
-
 `,
     },
   },
@@ -296,7 +285,6 @@ C.new.foo("1")
 
 C.new.bar(:a)
 C.new.bar("a")
-
 `,
       rbs: "",
     },

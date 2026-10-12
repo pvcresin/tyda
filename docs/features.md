@@ -130,6 +130,7 @@ LSP は TypeProf VSCode 拡張が期待する起動・version・request 契約�
 
 Playground は同じ LSP 表示経路を wasm で実行し、Ruby と手書き RBS の結果をブラウザで確認する。
 右上の `Examples` メニューから、配列・Tuple・mixin・RBS などの短いサンプルに切り替えられる。
+サンプルのソースは末尾改行一つで統一する。
 Ruby エディタを主領域として PC / 横長画面では左、狭い画面（768px 以下）では上に置き、RBS は補助領域として右または下に配置する。エディタ内の長い行は折り返し、横スクロールは使わない。動的viewportとSafe Area insetにも対応する。
 
 ## 主なコマンド
