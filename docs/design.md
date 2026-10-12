@@ -37,6 +37,12 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
   diagnostics を回帰の正本にする。
 - **解析コアを共有する。** CLI、LSP、scenario test の意味論を別々に実装しない。
 
+分岐 join では、互いに重ならない組み込みprimitive型が識別子として存在するとき、厳密なscope mergeで
+変更されたlocalの分岐値を一つずつ一時保持する。追跡対象は通常の厳密なmergeが受け持つlocal集合
+（現在は最大64個）に従い、相関専用の件数上限は重ねない。追加状態は変更local数に比例し、分岐の直積は
+作らない。後続のnarrowingで一致する枝が一つに定まった場合だけ、関連localにもその枝の型を反映する。
+候補が重なる、または追跡中のlocalが再代入された場合は相関を捨て、既存のunionを維持する。
+
 ## semantic backend
 
 長寿命の `WorkspaceState` にファイルの snapshot、依存関係、推論結果を保持し、CLI / LSP /
