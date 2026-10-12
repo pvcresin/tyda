@@ -6,6 +6,7 @@
 ## 初回セットアップ
 
 ツールの版は mise と `rust-toolchain.toml` で固定する。
+Node.js 22 は VitePress 2 でドキュメントをビルドするために必要。
 
 ~~~bash
 mise trust

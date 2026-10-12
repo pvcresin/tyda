@@ -16,7 +16,7 @@
 # rustup and this toolchain plus clippy/rustfmt. wasm32-wasip1 is added by
 # `mise run setup` / build-wasm.sh (not every cargo invocation).
 rust = { version = "1.98.1", components = "clippy,rustfmt" }
-node = "20"
+node = "22"
 # Fetch the rbs gem and expand into vendor/rbs/ (vendor-rbs). Build-time only;
 # the shipped CLI/wasm have no Ruby runtime dependency.
 ruby = "3.4"
