@@ -90,6 +90,25 @@ def paired_value_after_subject_reassignment(flag)
   paired
 end
 
+def paired_value_after_branch_reassignment(flag, replacement)
+  if flag
+    subject = CorrelatedFlowValues.new.integer_subject
+    paired = :integer
+  else
+    subject = CorrelatedFlowValues.new.string_subject
+    paired = :string
+  end
+
+  if replacement
+    subject = "replacement"
+  else
+    subject = "another replacement"
+  end
+
+  return :unmatched unless subject.is_a?(String)
+  paired
+end
+
 def paired_value_after_same_class_check(flag)
   if flag
     subject = "first"
@@ -115,6 +134,7 @@ end
 class Object < BasicObject
   def paired_value_after_string_check: (untyped flag) -> (:string | :unmatched)
   def paired_value_after_subject_reassignment: (untyped flag) -> (:integer | :string | :unmatched)
+  def paired_value_after_branch_reassignment: (untyped flag, untyped replacement) -> (:integer | :string | :unmatched)
   def paired_value_after_same_class_check: (untyped flag) -> (:first | :second | :unmatched)
 end
 ```

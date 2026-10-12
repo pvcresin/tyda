@@ -3581,7 +3581,16 @@ impl<'a> InferenceEngine<'a> {
         let mut alternatives_overflowed = false;
         let mut changed_local_count = 0;
         let mut has_disjoint_primitive_pair = false;
-        let mut overlaps_previous = false;
+        let mut overlaps_previous = base.exclusive_local_alts.as_ref().is_some_and(|base_alts| {
+            !then_scope
+                .exclusive_local_alts
+                .as_ref()
+                .is_some_and(|branch_alts| Arc::ptr_eq(base_alts, branch_alts))
+                || !else_scope
+                    .exclusive_local_alts
+                    .as_ref()
+                    .is_some_and(|branch_alts| Arc::ptr_eq(base_alts, branch_alts))
+        });
         for name in &names {
             let base_ty = base.get(name).cloned();
             let then_ty = then_scope.get(name).cloned().or_else(|| base_ty.clone());
