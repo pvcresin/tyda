@@ -52,10 +52,6 @@ end
 
 ## Correlated locals narrow only along compatible types
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -79,6 +75,33 @@ def paired_value_after_string_check(flag)
   return :unmatched unless subject.is_a?(String)
   paired
 end
+
+def paired_value_after_subject_reassignment(flag)
+  if flag
+    subject = CorrelatedFlowValues.new.integer_subject
+    paired = :integer
+  else
+    subject = CorrelatedFlowValues.new.string_subject
+    paired = :string
+  end
+
+  subject = "replacement"
+  return :unmatched unless subject.is_a?(String)
+  paired
+end
+
+def paired_value_after_same_class_check(flag)
+  if flag
+    subject = "first"
+    paired = :first
+  else
+    subject = "second"
+    paired = :second
+  end
+
+  return :unmatched unless subject.is_a?(String)
+  paired
+end
 ```
 
 ### result
@@ -91,6 +114,8 @@ end
 
 class Object < BasicObject
   def paired_value_after_string_check: (untyped flag) -> (:string | :unmatched)
+  def paired_value_after_subject_reassignment: (untyped flag) -> (:integer | :string | :unmatched)
+  def paired_value_after_same_class_check: (untyped flag) -> (:first | :second | :unmatched)
 end
 ```
 

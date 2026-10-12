@@ -24,7 +24,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（遅延解決された source method return を
   block dispatch 前に反映し、tuple の要素 union とリテラル演算を block 内へ伝播）
 - Array / Hash / Set / Tuple / Record の要素型と shape
-- if / case / rescue / safe navigation / pattern matching の flow narrowing
+- if / case / rescue / safe navigation / pattern matching の flow narrowing。分岐で相関したlocalも、識別可能な型で絞られた場合に反映
 - 多重代入、operator-write、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播
 - 静的に名前を求められる `alias` / `define_method` / `attr_*` / `Struct.new` /

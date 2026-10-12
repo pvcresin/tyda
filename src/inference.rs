@@ -112,6 +112,66 @@ enum NarrowSubject {
     SelfMethod(String),
 }
 
+const MAX_EXCLUSIVE_LOCAL_NAMES: usize = 8;
+
+#[derive(Debug, Clone)]
+struct CorrelatedLocalAlternative {
+    name: String,
+    then_type: Type,
+    else_type: Type,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrimitiveFlowKind {
+    Integer,
+    Float,
+    String,
+    Symbol,
+    Boolean,
+    Nil,
+}
+
+fn primitive_flow_kind(ty: &Type) -> Option<PrimitiveFlowKind> {
+    match ty {
+        Type::Integer | Type::LiteralInteger(_) => Some(PrimitiveFlowKind::Integer),
+        Type::Float | Type::LiteralFloat(_) => Some(PrimitiveFlowKind::Float),
+        Type::String | Type::LiteralString(_) => Some(PrimitiveFlowKind::String),
+        Type::Symbol | Type::LiteralSymbol(_) => Some(PrimitiveFlowKind::Symbol),
+        Type::Bool | Type::True | Type::False => Some(PrimitiveFlowKind::Boolean),
+        Type::Nil => Some(PrimitiveFlowKind::Nil),
+        _ => None,
+    }
+}
+
+fn is_stable_primitive_flow_type(ty: &Type) -> bool {
+    match ty {
+        Type::Union(parts) => !parts.is_empty() && parts.iter().all(is_stable_primitive_flow_type),
+        _ => primitive_flow_kind(ty).is_some(),
+    }
+}
+
+fn primitive_flow_types_may_overlap(left: &Type, right: &Type) -> bool {
+    match (left, right) {
+        (Type::Union(parts), other) | (other, Type::Union(parts)) => parts
+            .iter()
+            .any(|part| primitive_flow_types_may_overlap(part, other)),
+        (Type::LiteralInteger(left), Type::LiteralInteger(right)) => left == right,
+        (Type::LiteralString(left), Type::LiteralString(right)) => left == right,
+        (Type::LiteralSymbol(left), Type::LiteralSymbol(right)) => left == right,
+        (Type::True, Type::False) | (Type::False, Type::True) => false,
+        _ => match (primitive_flow_kind(left), primitive_flow_kind(right)) {
+            (Some(left), Some(right)) => left == right,
+            _ => true,
+        },
+    }
+}
+
+fn has_disjoint_primitive_flow_types(left: &Type, right: &Type) -> bool {
+    is_stable_primitive_flow_type(left)
+        && is_stable_primitive_flow_type(right)
+        && !primitive_flow_types_may_overlap(left, right)
+}
+
 fn call_invalidates_self_facts(
     call: &ruby_prism::CallNode<'_>,
     fact_keys: &HashMap<String, Type>,
@@ -1121,10 +1181,9 @@ pub(crate) struct Scope {
     dsl_bindings: Arc<HashMap<String, Type>>,
     rspec_context: bool,
     regexp_match_captures: bool,
-    /// Last then/else join's diverging locals, kept so `[a, b]` after
-    /// `(cond ? a : b)[k] = v` stays an exclusive tuple union instead of a
-    /// cartesian product. Dropped on the next write to a tracked name.
-    exclusive_local_alts: Option<Arc<Vec<HashMap<String, Type>>>>,
+    /// Bounded alternatives from the last then/else join, used for tuple shape
+    /// and local correlation. Dropped on the next write to a tracked name.
+    exclusive_local_alts: Option<Arc<[CorrelatedLocalAlternative]>>,
 }
 
 impl Scope {
@@ -1319,11 +1378,56 @@ impl Scope {
 
     fn narrow_subject(&mut self, subject: &NarrowSubject, ty: Type) {
         match subject {
-            NarrowSubject::Local(name) => self.narrow(name, ty),
+            NarrowSubject::Local(name) => self.narrow_correlated_local(name, ty),
             NarrowSubject::Ivar(name) | NarrowSubject::SelfMethod(name) => {
                 Arc::make_mut(&mut self.self_facts).insert(name.clone(), ty);
             }
         }
+    }
+
+    fn narrow_correlated_local(&mut self, name: &str, ty: Type) {
+        let Some(alternatives) = self.exclusive_local_alts.clone() else {
+            self.narrow(name, ty);
+            return;
+        };
+        let Some(subject) = alternatives
+            .iter()
+            .find(|alternative| alternative.name == name)
+        else {
+            self.narrow(name, ty);
+            return;
+        };
+        if alternatives.len() < 2
+            || !is_stable_primitive_flow_type(&ty)
+            || !is_stable_primitive_flow_type(&subject.then_type)
+            || !is_stable_primitive_flow_type(&subject.else_type)
+        {
+            self.narrow(name, ty);
+            return;
+        }
+
+        let then_matches = primitive_flow_types_may_overlap(&subject.then_type, &ty);
+        let else_matches = primitive_flow_types_may_overlap(&subject.else_type, &ty);
+        let selected_then = match (then_matches, else_matches) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => {
+                self.narrow(name, ty);
+                return;
+            }
+        };
+
+        for alternative in alternatives.iter() {
+            if alternative.name != name {
+                let correlated_ty = if selected_then {
+                    &alternative.then_type
+                } else {
+                    &alternative.else_type
+                };
+                self.narrow(&alternative.name, correlated_ty.clone());
+            }
+        }
+        self.narrow(name, ty);
     }
 
     fn clear_self_facts(&mut self) {
@@ -1366,7 +1470,7 @@ impl Scope {
         if self
             .exclusive_local_alts
             .as_ref()
-            .is_some_and(|alts| alts.iter().any(|alt| alt.contains_key(name)))
+            .is_some_and(|alts| alts.iter().any(|alt| alt.name == name))
         {
             self.exclusive_local_alts = None;
         }
@@ -1424,6 +1528,7 @@ impl Scope {
         Arc::make_mut(&mut self.aliases).insert(name.to_string(), target);
         Arc::make_mut(&mut self.runtime_facts).remove(name);
         Arc::make_mut(&mut self.local_singleton_methods).remove(name);
+        self.invalidate_exclusive_local_alts(name);
     }
 
     fn set_alias_with_definition(
@@ -1485,6 +1590,9 @@ impl Scope {
     fn remove_locals(&mut self, names: &HashSet<String>) {
         if names.is_empty() {
             return;
+        }
+        for name in names {
+            self.invalidate_exclusive_local_alts(name);
         }
         let locals = Arc::make_mut(&mut self.locals);
         for name in names {
@@ -3267,7 +3375,8 @@ impl<'a> InferenceEngine<'a> {
             .cloned()
             .collect();
         for name in aliases {
-            Arc::make_mut(&mut scope.locals).insert(name, ty.clone());
+            Arc::make_mut(&mut scope.locals).insert(name.clone(), ty.clone());
+            scope.invalidate_exclusive_local_alts(&name);
         }
     }
 
@@ -3468,36 +3577,86 @@ impl<'a> InferenceEngine<'a> {
             ),
         };
 
-        let mut then_alt = HashMap::new();
-        let mut else_alt = HashMap::new();
-        for name in names {
-            let base_ty = base.get(&name).cloned();
-            let then_ty = then_scope.get(&name).cloned().or_else(|| base_ty.clone());
-            let else_ty = else_scope.get(&name).cloned().or_else(|| base_ty.clone());
+        let mut alternatives = Vec::new();
+        let mut alternatives_overflowed = false;
+        let mut changed_local_count = 0;
+        let mut has_disjoint_primitive_pair = false;
+        let mut overlaps_previous = false;
+        for name in &names {
+            let base_ty = base.get(name).cloned();
+            let then_ty = then_scope.get(name).cloned().or_else(|| base_ty.clone());
+            let else_ty = else_scope.get(name).cloned().or_else(|| base_ty.clone());
             let then_def = then_scope
-                .definition_location(&name)
-                .or_else(|| base.definition_location(&name));
+                .definition_location(name)
+                .or_else(|| base.definition_location(name));
             let else_def = else_scope
-                .definition_location(&name)
-                .or_else(|| base.definition_location(&name));
+                .definition_location(name)
+                .or_else(|| base.definition_location(name));
             match (then_ty, else_ty) {
                 (Some(left), Some(right)) => {
-                    if left != right
-                        && (Self::is_exclusive_join_type(&left)
-                            || Self::is_exclusive_join_type(&right))
-                    {
-                        then_alt.insert(name.clone(), left.clone());
-                        else_alt.insert(name.clone(), right.clone());
+                    if left != right {
+                        changed_local_count += 1;
+                        has_disjoint_primitive_pair |=
+                            has_disjoint_primitive_flow_types(&left, &right);
+                        if Self::is_exclusive_join_type(&left)
+                            || Self::is_exclusive_join_type(&right)
+                        {
+                            overlaps_previous |= base
+                                .exclusive_local_alts
+                                .as_ref()
+                                .is_some_and(|alts| alts.iter().any(|alt| alt.name == *name));
+                            if !alternatives_overflowed {
+                                if alternatives.len() == MAX_EXCLUSIVE_LOCAL_NAMES {
+                                    alternatives_overflowed = true;
+                                    alternatives.clear();
+                                } else {
+                                    if alternatives.is_empty() {
+                                        alternatives.reserve_exact(MAX_EXCLUSIVE_LOCAL_NAMES);
+                                    }
+                                    alternatives.push(CorrelatedLocalAlternative {
+                                        name: name.clone(),
+                                        then_type: left.clone(),
+                                        else_type: right.clone(),
+                                    });
+                                }
+                            }
+                        }
                     }
-                    merged.set(&name, Self::merge_branch_types(left, right))
+                    merged.set(name, Self::merge_branch_types(left, right))
                 }
-                (Some(only), None) | (None, Some(only)) => merged.set(&name, only),
+                (Some(only), None) | (None, Some(only)) => merged.set(name, only),
                 (None, None) => {}
             }
             if let (Some(left), Some(right)) = (then_def, else_def)
                 && left == right
             {
-                merged.set_definition(&name, left);
+                merged.set_definition(name, left);
+            }
+        }
+
+        if has_disjoint_primitive_pair
+            && (2..=MAX_EXCLUSIVE_LOCAL_NAMES).contains(&changed_local_count)
+        {
+            alternatives.clear();
+            alternatives.reserve_exact(changed_local_count);
+            alternatives_overflowed = false;
+            overlaps_previous = false;
+            for name in &names {
+                let left = then_scope.get(name).or_else(|| base.get(name));
+                let right = else_scope.get(name).or_else(|| base.get(name));
+                if let (Some(left), Some(right)) = (left, right)
+                    && left != right
+                {
+                    overlaps_previous |= base
+                        .exclusive_local_alts
+                        .as_ref()
+                        .is_some_and(|alts| alts.iter().any(|alt| alt.name == *name));
+                    alternatives.push(CorrelatedLocalAlternative {
+                        name: name.clone(),
+                        then_type: left.clone(),
+                        else_type: right.clone(),
+                    });
+                }
             }
         }
 
@@ -3542,7 +3701,10 @@ impl<'a> InferenceEngine<'a> {
             merge_identical_scope_maps(&then_scope.dsl_bindings, &else_scope.dsl_bindings);
         merged.callback_mutated_record_locals =
             Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
-        Self::assign_exclusive_local_alts(&mut merged, base, then_alt, else_alt);
+        if alternatives_overflowed {
+            alternatives.clear();
+        }
+        Self::assign_exclusive_local_alts(&mut merged, base, alternatives, overlaps_previous);
         merged
     }
 
@@ -3560,19 +3722,13 @@ impl<'a> InferenceEngine<'a> {
     fn assign_exclusive_local_alts(
         merged: &mut Scope,
         base: &Scope,
-        then_alt: HashMap<String, Type>,
-        else_alt: HashMap<String, Type>,
+        alternatives: Vec<CorrelatedLocalAlternative>,
+        overlaps_previous: bool,
     ) {
-        const MAX_EXCLUSIVE_LOCAL_NAMES: usize = 8;
-        if (2..=MAX_EXCLUSIVE_LOCAL_NAMES).contains(&then_alt.len()) {
-            merged.exclusive_local_alts = Some(Arc::new(vec![then_alt, else_alt]));
+        if (2..=MAX_EXCLUSIVE_LOCAL_NAMES).contains(&alternatives.len()) {
+            merged.exclusive_local_alts = Some(Arc::from(alternatives));
             return;
         }
-        let overlaps_previous = then_alt.keys().any(|name| {
-            base.exclusive_local_alts
-                .as_ref()
-                .is_some_and(|alts| alts.iter().any(|alt| alt.contains_key(name)))
-        });
         if overlaps_previous {
             merged.exclusive_local_alts = None;
         } else {
@@ -24947,7 +25103,7 @@ impl<'a> InferenceEngine<'a> {
 
     fn correlated_tuple_from_local_reads(scope: &Scope, elements: &[Node<'_>]) -> Option<Type> {
         let alts = scope.exclusive_local_alts.as_ref()?;
-        if alts.len() != 2 || elements.len() < 2 {
+        if alts.len() < 2 || elements.len() < 2 {
             return None;
         }
         let mut names = Vec::with_capacity(elements.len());
@@ -24960,18 +25116,25 @@ impl<'a> InferenceEngine<'a> {
         }
         let correlated = names
             .iter()
-            .filter(|name| alts.iter().any(|alt| alt.contains_key(*name)))
+            .filter(|name| alts.iter().any(|alt| alt.name == **name))
             .count();
         if correlated < 2 {
             return None;
         }
-        let mut tuples = Vec::with_capacity(alts.len());
-        for alt in alts.iter() {
+        let mut tuples = Vec::with_capacity(2);
+        for then_branch in [true, false] {
             let mut elems = Vec::with_capacity(names.len());
             for name in &names {
-                let ty = alt
-                    .get(name)
-                    .cloned()
+                let ty = alts
+                    .iter()
+                    .find(|alternative| alternative.name == *name)
+                    .map(|alternative| {
+                        if then_branch {
+                            alternative.then_type.clone()
+                        } else {
+                            alternative.else_type.clone()
+                        }
+                    })
                     .or_else(|| scope.get(name).cloned())?;
                 elems.push(ty);
             }
@@ -48638,6 +48801,65 @@ impl<'a> InferenceEngine<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primitive_flow_overlap_preserves_ambiguous_values() {
+        let string_literal = Type::LiteralString("text".to_owned());
+        let left_symbol = Type::LiteralSymbol(Sym::new("left"));
+        let right_symbol = Type::LiteralSymbol(Sym::new("right"));
+
+        assert!(primitive_flow_types_may_overlap(
+            &Type::String,
+            &string_literal
+        ));
+        assert!(!primitive_flow_types_may_overlap(
+            &Type::Integer,
+            &Type::String
+        ));
+        assert!(!primitive_flow_types_may_overlap(
+            &left_symbol,
+            &right_symbol
+        ));
+        assert!(primitive_flow_types_may_overlap(
+            &Type::LiteralFloat("1.0".to_owned()),
+            &Type::LiteralFloat("1.00".to_owned()),
+        ));
+        assert!(!has_disjoint_primitive_flow_types(
+            &Type::Class(Sym::new("Parent")),
+            &Type::Class(Sym::new("Child")),
+        ));
+    }
+
+    #[test]
+    fn local_alias_writes_and_removals_invalidate_correlations() {
+        let mut scope = Scope {
+            exclusive_local_alts: Some(Arc::from(vec![CorrelatedLocalAlternative {
+                name: "subject".to_owned(),
+                then_type: Type::Integer,
+                else_type: Type::String,
+            }])),
+            ..Scope::default()
+        };
+
+        scope.set_alias(
+            "subject",
+            AliasTarget::Local("source".to_owned()),
+            Type::String,
+        );
+        assert!(scope.exclusive_local_alts.is_none());
+
+        let mut scope = Scope {
+            exclusive_local_alts: Some(Arc::from(vec![CorrelatedLocalAlternative {
+                name: "subject".to_owned(),
+                then_type: Type::Integer,
+                else_type: Type::String,
+            }])),
+            ..Scope::default()
+        };
+        let names = HashSet::from(["subject".to_owned()]);
+        scope.remove_locals(&names);
+        assert!(scope.exclusive_local_alts.is_none());
+    }
 
     #[test]
     fn parse_type_string_tolerates_malformed_generics_and_literals() {
