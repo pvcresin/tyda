@@ -109,6 +109,35 @@ def paired_value_after_branch_reassignment(flag, replacement)
   paired
 end
 
+def paired_value_after_many_branch_locals(flag)
+  if flag
+    subject = 1
+    marker_a = :left_a
+    marker_b = :left_b
+    marker_c = :left_c
+    marker_d = :left_d
+    marker_e = :left_e
+    marker_f = :left_f
+    marker_g = :left_g
+    marker_h = :left_h
+    paired = :integer
+  else
+    subject = "text"
+    marker_a = :right_a
+    marker_b = :right_b
+    marker_c = :right_c
+    marker_d = :right_d
+    marker_e = :right_e
+    marker_f = :right_f
+    marker_g = :right_g
+    marker_h = :right_h
+    paired = :string
+  end
+
+  return :unmatched unless subject.is_a?(String)
+  paired
+end
+
 def paired_value_after_same_class_check(flag)
   if flag
     subject = "first"
@@ -135,6 +164,7 @@ class Object < BasicObject
   def paired_value_after_string_check: (untyped flag) -> (:string | :unmatched)
   def paired_value_after_subject_reassignment: (untyped flag) -> (:integer | :string | :unmatched)
   def paired_value_after_branch_reassignment: (untyped flag, untyped replacement) -> (:integer | :string | :unmatched)
+  def paired_value_after_many_branch_locals: (untyped flag) -> (:string | :unmatched)
   def paired_value_after_same_class_check: (untyped flag) -> (:first | :second | :unmatched)
 end
 ```

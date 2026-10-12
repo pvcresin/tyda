@@ -112,8 +112,6 @@ enum NarrowSubject {
     SelfMethod(String),
 }
 
-const MAX_EXCLUSIVE_LOCAL_NAMES: usize = 8;
-
 #[derive(Debug, Clone)]
 struct CorrelatedLocalAlternative {
     name: String,
@@ -3578,7 +3576,6 @@ impl<'a> InferenceEngine<'a> {
         };
 
         let mut alternatives = Vec::new();
-        let mut alternatives_overflowed = false;
         let mut changed_local_count = 0;
         let mut has_disjoint_primitive_pair = false;
         let mut overlaps_previous = base.exclusive_local_alts.as_ref().is_some_and(|base_alts| {
@@ -3614,21 +3611,11 @@ impl<'a> InferenceEngine<'a> {
                                 .exclusive_local_alts
                                 .as_ref()
                                 .is_some_and(|alts| alts.iter().any(|alt| alt.name == *name));
-                            if !alternatives_overflowed {
-                                if alternatives.len() == MAX_EXCLUSIVE_LOCAL_NAMES {
-                                    alternatives_overflowed = true;
-                                    alternatives.clear();
-                                } else {
-                                    if alternatives.is_empty() {
-                                        alternatives.reserve_exact(MAX_EXCLUSIVE_LOCAL_NAMES);
-                                    }
-                                    alternatives.push(CorrelatedLocalAlternative {
-                                        name: name.clone(),
-                                        then_type: left.clone(),
-                                        else_type: right.clone(),
-                                    });
-                                }
-                            }
+                            alternatives.push(CorrelatedLocalAlternative {
+                                name: name.clone(),
+                                then_type: left.clone(),
+                                else_type: right.clone(),
+                            });
                         }
                     }
                     merged.set(name, Self::merge_branch_types(left, right))
@@ -3643,12 +3630,9 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
-        if has_disjoint_primitive_pair
-            && (2..=MAX_EXCLUSIVE_LOCAL_NAMES).contains(&changed_local_count)
-        {
+        if has_disjoint_primitive_pair && changed_local_count >= 2 {
             alternatives.clear();
             alternatives.reserve_exact(changed_local_count);
-            alternatives_overflowed = false;
             overlaps_previous = false;
             for name in &names {
                 let left = then_scope.get(name).or_else(|| base.get(name));
@@ -3710,9 +3694,6 @@ impl<'a> InferenceEngine<'a> {
             merge_identical_scope_maps(&then_scope.dsl_bindings, &else_scope.dsl_bindings);
         merged.callback_mutated_record_locals =
             Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
-        if alternatives_overflowed {
-            alternatives.clear();
-        }
         Self::assign_exclusive_local_alts(&mut merged, base, alternatives, overlaps_previous);
         merged
     }
@@ -3734,7 +3715,7 @@ impl<'a> InferenceEngine<'a> {
         alternatives: Vec<CorrelatedLocalAlternative>,
         overlaps_previous: bool,
     ) {
-        if (2..=MAX_EXCLUSIVE_LOCAL_NAMES).contains(&alternatives.len()) {
+        if (2..=Self::MAX_PRECISE_SCOPE_MERGE_LOCALS).contains(&alternatives.len()) {
             merged.exclusive_local_alts = Some(Arc::from(alternatives));
             return;
         }
