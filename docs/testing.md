@@ -147,6 +147,10 @@ project-backed case は `config/`、`db/`、`app/models/` 以下の最小 fixtur
 見つけるために使う。推論できるパターンは scenario にし、まだ扱えないパターンは安全な
 縮退結果を確認するか、対応範囲として記録する。
 
+解析対象の Ruby は必要性と信頼境界を見て扱う。挙動確認には必要な小さなコード片を隔離して実行する。
+大規模 OSS はプログラムとして起動せず、静的解析・ドキュメント・最小再現例で調べる。性能計測では
+OSS を解析対象として扱う。
+
 | 素材 | 収集するパターン |
 | --- | --- |
 | Ruby / Prism | 構文、AST 境界、壊れた入力、version gate |
@@ -186,7 +190,10 @@ mutation test は壊れた入力の graceful degradation、pathological test は
 - 期待 RBS は user-facing な契約だけを含め、内部用 synthetic method を無闇に表示しない。
 - まだ推論できない入力も panic / hang しない結果を固定する。
 - 正しい Ruby だが未対応の期待値は `tests/scenarios/known-issues/` に置くか、case config に
-  `known_issue: true` を付ける。推論が後から一致したら通常 scenario へ昇格する。
+  `known_issue: true` を付ける。最小の Ruby 例と Ruby semantics / RBS に基づく暫定期待値を残し、
+  推論が一致したら通常 scenario へ昇格する。
+- 大きな推論変更は最小例から始め、対象 scenario、全 suite、OSS subject、benchmark へ段階的に広げる。
+- flaky test は原因を再現・修正し、retry や skip で隠さない。
 - Ruby version / Rails version による意味の差だけを version case にする。
 - DSL は gem / framework ごとに分け、1 case に複数の無関係な機能を詰め込まない。
 - source 固有の名前は一般化し、API 名や DSL 名など意味に必要な固有名だけ残す。

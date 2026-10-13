@@ -28,14 +28,23 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
 ## 中核原則
 
 - **大規模 workspace で速く、少ないメモリで動く。** 永続キャッシュは持たず、共有・遅延ロード・
-  増分更新・bounded な型表現で速度とメモリを制御する。
-- **アドホックな例外を増やさない。** 知識は RBS、宣言的なテーブル、または gem 単位の plugin
-  に置き、個別リポジトリ名に依存する分岐を解析コアへ持ち込まない。
+  増分更新で速度とメモリを制御する。
+- **Ruby semantics と公式 RBS を優先する。** 一般規則が明確なら最初から広く扱う。公式 RBS の誤りは
+  upstream の修正を優先し、修正までは安全に `untyped` とする。個別リポジトリや特定クラス名に
+  依存する分岐をコアに持ち込まず、RBS で表しにくい library DSL は plugin に置く。
+- **推論品質と性能を同時に守る。** 性能問題はアルゴリズムから解決し、通常コードの推論を落とす
+  固定深度上限を性能対策に使わない。病的入力向けの安全ガードは許容するが、通常の大規模 OSS では
+  発動させない。ガード時は影響部分を `untyped` にして診断する。
+- **簡潔で明確な実装を選ぶ。** 同じ振る舞いなら簡潔に書き、重複が見えたら適切に抽象化する。
+  既存実装を正解と決めつけず、今回の変更に密接なアンチパターンは範囲を保てるなら直す。無関係な
+  リファクタには広げない。読みやすさやコード量の改善は、compile / runtime の負荷も減らし得る。
+  分割は読みやすさと性能を保ち、変更の影響と作業衝突を小さくする。
 - **確信のある情報だけを user-facing に出す。** 不明な型や開いたメソッド面は `untyped` とし、
-  診断は「確実に間違い」と証明できる場合に限る。
+  型の誤りを示す診断は「確実に間違い」と証明できる場合に限る。安全ガードの診断は、解析制限に
+  到達した事実を伝える。
 - **コードパターンは scenario で固定する。** 実装詳細ではなく、Ruby 入力と期待する RBS /
   diagnostics を回帰の正本にする。
-- **解析コアを共有する。** CLI、LSP、scenario test の意味論を別々に実装しない。
+- **解析コアを共有する。** CLI、LSP、MCP、WASM / playground、scenario test の意味論を別々に実装しない。
 
 分岐 join では、互いに重ならない組み込みprimitive型が識別子として存在するとき、厳密なscope mergeで
 変更されたlocalの分岐値を一つずつ一時保持する。追跡対象は通常の厳密なmergeが受け持つlocal集合
@@ -45,8 +54,8 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
 
 ## semantic backend
 
-長寿命の `WorkspaceState` にファイルの snapshot、依存関係、推論結果を保持し、CLI / LSP /
-scenario test が共通の query backend を使う。変更は export が変わった依存先へだけ伝播させ、
+長寿命の `WorkspaceState` にファイルの snapshot、依存関係、推論結果を保持し、CLI / LSP / MCP /
+WASM / scenario test が共通の query backend を使う。変更は export が変わった依存先へだけ伝播させ、
 request ごとの workspace 全体の再解析・再 merge を避ける。
 
 RBS 出力、Hover、CodeLens、completion、diagnostics はこの query backend の projection であり、

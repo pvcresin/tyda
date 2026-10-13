@@ -7,19 +7,35 @@ parser FFI), `vscode/` (editor extension), `playground/` (wasm demo), `docs/` (l
 ## Rules (always apply)
 
 - **Respond to the user in Japanese** (identifiers and code stay as-is). `docs/` is
-  Japanese; root entry files, code, comments, and commit messages are English.
-- Code comments: English, minimal, why-not only — prefer no comment.
+  Japanese; code, comments, commit messages, and PRs are English. Use simple English.
+- Keep comments minimal; explain why only when the code does not make it clear.
+- Keep code readable with clear responsibilities. Generalize clear Ruby / RBS rules;
+  keep core logic generic and put dynamic library DSL support in plugins. Prefer
+  official RBS fixes; until then, safely return `untyped`.
+- Do not assume existing code is ideal. Improve a closely related anti-pattern when
+  the change stays focused; avoid unrelated refactors.
+- Preserve inference quality, speed, and memory. Do not add fixed depth limits as a
+  performance fix. Safety guards are for pathological input; return `untyped` and a
+  diagnostic for the affected part.
+- Scenarios define user-facing behavior; unit tests cover internal invariants.
+  Reproduce regressions and flaky tests; never hide them with retries or skips.
+- Keep each PR to one purpose and include related tests and docs. Preserve public
+  output by default; intentional changes need a scenario and review agreement. Run
+  `pr-self-review` before PR creation; review performance and resources every time.
+- Avoid new dependencies. Explain why one is needed and compare alternatives,
+  maintenance, license, and performance impact case by case.
 - Commits: English, ≤50 chars, start with an imperative verb.
-- PRs: title and body in English. Use an imperative title like commits and follow
-  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md), keeping
-  its `## Summary` and `## Verification` sections.
-- When finishing: update the matching living doc (map below) and run `./scripts/check.sh`.
+- PRs: English title and body, imperative title, and the sections in
+  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md).
+- Update the matching living doc (map below). Run checks for changed areas and
+  `git diff --check`; see [`docs/development.md`](docs/development.md).
 
 ## Skills — task recipes
 
 Reusable step-by-step recipes live in [`.agents/skills/`](.agents/skills/)
 (`.claude/skills` is a symlink to it): `env-setup`, `dep-pr`, `dev-loop`,
-`add-scenario-test`, `benchmark`, `render-compare`, `worktree-setup`, `submit-pr`.
+`add-scenario-test`, `benchmark`, `render-compare`, `worktree-setup`,
+`pr-self-review`, `submit-pr`.
 If your agent does not load skills automatically, open the matching `SKILL.md`
 before doing that task.
 

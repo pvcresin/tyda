@@ -73,12 +73,23 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
 ## 変更の進め方
 
 1. 変更の user-facing な契約を scenario、CLI test、LSP test のいずれかで先に特定する。
-2. 既存の query backend / plugin / 宣言テーブルに合流できる設計を選ぶ。
-3. 実装、回帰テスト、対応する living document を同じ変更に含める。
-4. `git diff --check` と `./scripts/check.sh` を実行する。
+2. Ruby semantics / RBS に沿う一般規則を使い、既存の query backend / plugin / 宣言テーブルに合流する。
+3. 推論変更は最小例から段階的に検証する（[testing.md](testing.md)、[performance.md](performance.md)）。
+4. 実装、回帰テスト、対応する living document を同じ変更に含める。
+5. 変更後に `pr-self-review` を実行する。実装変更は `mise run check`、すべての変更は `git diff --check` を行う。
+
+実装中に今回の変更と密接に関係する既存のアンチパターンを見つけたら、範囲を保って改善できる場合は
+合わせて直す。無関係なリファクタへ広げない。
 
 個別 repository の名前に依存する分岐や、一時的な debug API は追加しない。DSL が runtime に
 登録されるだけで静的に証明できない場合は、外部 RBS / RBI の入力を選ぶ。
+
+## PR と依存
+
+一つの PR は一つの目的に絞り、その目的に必要な関連修正・テスト・文書をまとめる。説明は簡潔にし、
+実装方針と検証結果を示す。公開出力の意図的な変更は scenario に残し、PR review で合意を得る。
+依存追加は避け、必要な場合は理由と代替案を示して保守状況・ライセンス・性能影響を比較する。
+ライセンスの適否は一律の許可リストを設けず、プロジェクトとの両立性をPRごとに判断する。
 
 ## CI
 

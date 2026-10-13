@@ -19,7 +19,7 @@ registry / inference / query
 RBS render / diagnostics / LSP display
 ~~~
 
-CLI、LSP、playground、scenario test は入力の与え方と解決 profile が違うだけで、意味論の中心は
+CLI、LSP、MCP、WASM / playground、scenario test は入力の与え方と解決 profile が違うだけで、意味論の中心は
 `WorkspaceState` と query backend を共有する。単一ファイルを完全解決して表示する入口は
 `analysis::analyze_source_for_display` に集約し、LSP、playground、詳細 CLI、通常の Ruby scenario
 は同じ snapshot / registry / query 経路を使う。

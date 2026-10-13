@@ -8,8 +8,9 @@ description: Finish a change and open a pull request following this repo's conve
 ## Before committing
 
 1. Update the living doc matching your change — map in `AGENTS.md` (docs table).
-2. Run `./scripts/check.sh` (fmt / clippy / all tests / release build). Docs-only
-   changes may skip it (Markdown is not covered by formatters or tests).
+2. Run `pr-self-review` on the complete diff and resolve its findings.
+3. Run `mise run check` for implementation changes. For docs-only changes, run
+   relevant docs checks. Always run `git diff --check`.
 
 ## Commit
 
@@ -19,10 +20,9 @@ change per commit.
 ## PR
 
 - Title: English, imperative, like a commit subject.
-- Body: English, following `.github/PULL_REQUEST_TEMPLATE.md` — keep the `## Summary`
-  section (what/why, bullet points; subheadings per area for large PRs) and the
-  `## Verification` section (check.sh checkbox plus any extra gates: render byte
-  comparison, benchmark non-regression, testbed counts).
+- Body: English, following `.github/PULL_REQUEST_TEMPLATE.md` — keep its
+  `## Background`, `## Implementation`, and `## Test` sections concise. Include
+  scenario and all-subject benchmark results when relevant.
 - Base branch: `main`.
 
 ```bash

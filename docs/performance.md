@@ -101,6 +101,10 @@ TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
 小さな劣化を許容しつつ、実質的な回帰は PR の段階で止めるための初期値である。基準を別 runner の
 過去値と比較せず、base/head を同じ job で測ることで CPU や runner の世代差を打ち消す。
 
+実行時挙動に関わる変更は全 subject で比較する。warning は再現性を確かめ、実質的な劣化は設計を
+見直して解消する。判断には既存の CI 閾値と大規模 OSS の処理時間・ピーク RSS を使う。CI の並列度は
+GitHub の利用枠に合わせ、検証対象を減らさず待ち時間で調整する。
+
 GitHub の branch protection では、この workflow の `performance` gateだけを required に設定する。
 gateは対象scopeで `performance-build` と全ての `performance (<subject>)` matrix jobの
 successを要求し、対象外scopeでは分類成功と依存jobの全skipを確認した場合だけsuccessを

@@ -5,12 +5,13 @@ Tyda はコンパイラではなく型推論器である。壊れた入力でも
 
 ## 基本原則
 
-1. **必ず部分結果を返す。** Prism の error tolerance、再帰 guard、型の complexity cap で
-   panic、hang、過剰な型の増殖を防ぐ。
+1. **必ず部分結果を返す。** Prism の error tolerance と安全ガードで panic、hang、過剰な型の
+   増殖を防ぐ。ガードは病的入力向けとし、性能対策として通常コードの推論を制限しない。
 2. **被害を局所化する。** 壊れた method だけの Hover / CodeLens / diagnostics を抑制し、
    無関係な method の結果は残す。
 3. **Unknown と No を分ける。** receiver、祖先、actual type が不明なら「間違い」と断定しない。
-4. **未完成と確実な誤りを分ける。** 前者は `untyped` または沈黙、後者だけ diagnostics にする。
+4. **未完成と確実な誤りを分ける。** 前者は `untyped` または沈黙、後者だけ型エラーの診断にする。
+   安全ガード発動時は解析制限に到達したことを診断する。
 
 ## 入力別の挙動
 
@@ -26,7 +27,7 @@ Tyda はコンパイラではなく型推論器である。壊れた入力でも
 | 権威ある param との確実な型不一致 | error |
 | 権威ある戻り値型との確実な不一致 | error |
 | `untyped`、未解決 ref、開いた `method_missing` 面 | Unknown として沈黙 |
-| complexity / fuel / union 上限超過 | `untyped` へ縮退 |
+| 病的入力で complexity / fuel / union の安全上限に到達 | 影響部分を `untyped` にし、診断を出す。通常の大規模 OSS では発動させない |
 
 祖先 chain に未解決 edge がある場合、class の method surface は完全とはみなさない。
 module の bare call も host が静的に分からなければ診断しない。

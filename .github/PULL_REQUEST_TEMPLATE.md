@@ -10,5 +10,6 @@
 
 ## Test
 
-- [ ] `./scripts/check.sh` (fmt / clippy / test / release build)
-<!-- Include relevant tests and checks: render byte comparison, benchmark non-regression, testbed counts, etc. -->
+- [ ] `mise run check` (implementation changes; docs-only changes may use targeted checks)
+- [ ] `git diff --check`
+<!-- Inference changes: scenario. Runtime changes: benchmark all subjects. Include other relevant gates. -->
