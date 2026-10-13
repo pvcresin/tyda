@@ -6439,24 +6439,22 @@ impl TypeRegistry {
                             &method.param_infos,
                         );
                     }
-                    // if any argument position is untyped, treat the whole thing as Untyped (a partially-untyped union would get incorrectly narrowed to e.g. `nil` downstream).
-                    let finalize = |ty: Type| -> Type {
-                        if Self::type_contains_untyped_member(&ty) {
-                            Type::Untyped
-                        } else {
-                            ty
-                        }
-                    };
-                    let resolved_params: Vec<Type> = param_types
-                        .into_iter()
-                        .map(|types| {
+                    // If any argument position is untyped, treat the whole thing as Untyped (a partially-untyped union would get incorrectly narrowed to e.g. `nil` downstream).
+                    let finalize_param_types =
+                        |mut types: Vec<Type>, default_type: Option<&Type>| {
+                            if let Some(default_type) = default_type {
+                                types.push(default_type.clone());
+                            }
                             if types.is_empty() {
+                                return Type::Untyped;
+                            }
+                            let ty = Type::from_type_vec(types).widen_arg_for_param();
+                            if Self::type_contains_untyped_member(&ty) {
                                 Type::Untyped
                             } else {
-                                finalize(Type::from_type_vec(types).widen_arg_for_param())
+                                ty
                             }
-                        })
-                        .collect();
+                        };
                     let mut keyword_merged: FxHashMap<String, Vec<Type>> = FxHashMap::default();
                     for site in sites {
                         for (name, ty) in &site.keyword_arg_types {
@@ -6466,15 +6464,57 @@ impl TypeRegistry {
                                 .push(ty.clone());
                         }
                     }
-                    let keyword_types: HashMap<String, Type> = keyword_merged
-                        .into_iter()
-                        .map(|(name, types)| {
-                            (
-                                name,
-                                finalize(Type::from_type_vec(types).widen_arg_for_param()),
-                            )
-                        })
-                        .collect();
+                    let mut resolved_params = Vec::with_capacity(param_types.len());
+                    let mut keyword_types = HashMap::new();
+                    let mut positional_idx = 0;
+                    for param in &method.param_infos {
+                        match param.kind {
+                            ParamKind::Required | ParamKind::Optional | ParamKind::Rest => {
+                                let default_type = if matches!(param.kind, ParamKind::Optional) {
+                                    param.default_type.as_ref().map(|default_type| {
+                                        Self::substitute_param_refs_static_with_keywords(
+                                            default_type,
+                                            &resolved_params,
+                                            &keyword_types,
+                                        )
+                                    })
+                                } else {
+                                    None
+                                };
+                                let ty = finalize_param_types(
+                                    std::mem::take(&mut param_types[positional_idx]),
+                                    default_type.as_ref(),
+                                );
+                                resolved_params.push(ty);
+                                positional_idx += 1;
+                            }
+                            ParamKind::KeywordRequired | ParamKind::KeywordOptional => {
+                                let default_type =
+                                    if matches!(param.kind, ParamKind::KeywordOptional) {
+                                        param.default_type.as_ref().map(|default_type| {
+                                            Self::substitute_param_refs_static_with_keywords(
+                                                default_type,
+                                                &resolved_params,
+                                                &keyword_types,
+                                            )
+                                        })
+                                    } else {
+                                        None
+                                    };
+                                let ty = finalize_param_types(
+                                    keyword_merged.remove(&param.name).unwrap_or_default(),
+                                    default_type.as_ref(),
+                                );
+                                keyword_types.insert(param.name.clone(), ty);
+                            }
+                            ParamKind::DoubleRest | ParamKind::Block => {}
+                        }
+                    }
+                    for (name, types) in keyword_merged {
+                        keyword_types
+                            .entry(name)
+                            .or_insert_with(|| finalize_param_types(types, None));
+                    }
                     let resolved = Self::substitute_param_refs_static_with_keywords(
                         &method.raw_return_type,
                         &resolved_params,
@@ -9178,6 +9218,19 @@ impl TypeRegistry {
             note_param_table_read(table_key.clone());
             return self.resolve_params_cache.get(&table_key);
         }
+        if self
+            .resolve_params_cache_frozen
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let cache_key = (
+                self.shared_name(class_name),
+                self.shared_name(method_name),
+                is_singleton,
+            );
+            if let Some(params) = self.resolve_params_cache.get(&cache_key) {
+                return Some(params);
+            }
+        }
         let key = (
             class_name.to_string(),
             method_name.to_string(),
@@ -9466,6 +9519,14 @@ impl TypeRegistry {
         }
     }
 
+    fn default_type_for_param_signature(ty: &Type) -> Type {
+        if matches!(ty, Type::Record(fields) if fields.is_empty()) {
+            Type::Hash(Some(Box::new(Type::Untyped)), Some(Box::new(Type::Untyped)))
+        } else {
+            ty.clone()
+        }
+    }
+
     fn resolve_params_inner(
         &self,
         class_name: &str,
@@ -9482,7 +9543,11 @@ impl TypeRegistry {
                 .iter()
                 .map(|pi| Param {
                     name: pi.name.clone(),
-                    param_type: pi.default_type.clone().unwrap_or(Type::Untyped),
+                    param_type: pi
+                        .default_type
+                        .as_ref()
+                        .map(Self::default_type_for_param_signature)
+                        .unwrap_or(Type::Untyped),
                     kind: pi.kind,
                 })
                 .collect();
@@ -9521,7 +9586,7 @@ impl TypeRegistry {
                                 Type::Untyped
                             }
                         } else {
-                            default_ty
+                            Self::default_type_for_param_signature(&default_ty)
                         };
                     }
                     let kind = method
@@ -9621,7 +9686,7 @@ impl TypeRegistry {
                         if ty == Type::Untyped
                             && let Some(ref default_ty) = pi.default_type
                         {
-                            ty = default_ty.clone();
+                            ty = Self::default_type_for_param_signature(default_ty);
                         }
                         positional_idx += 1;
                         (ty, ParamKind::Required)
@@ -9642,7 +9707,8 @@ impl TypeRegistry {
                             ty = passthrough_ty.clone();
                         }
                         if let Some(ref default_ty) = resolved_default_type {
-                            let default_ty = default_ty.clone().widen_arg_for_param();
+                            let default_ty = Self::default_type_for_param_signature(default_ty)
+                                .widen_arg_for_param();
                             if ty == Type::Untyped {
                                 ty = default_ty;
                             } else {
@@ -9691,14 +9757,18 @@ impl TypeRegistry {
                         let ty = if call_ty == Type::Untyped {
                             let passthrough_ty = passthrough_type.clone().unwrap_or(Type::Untyped);
                             if passthrough_ty == Type::Untyped {
-                                resolved_default_type.clone().unwrap_or(Type::Untyped)
+                                resolved_default_type
+                                    .as_ref()
+                                    .map(Self::default_type_for_param_signature)
+                                    .unwrap_or(Type::Untyped)
                             } else if let Some(ref default_ty) = resolved_default_type {
-                                passthrough_ty.union_with(default_ty.clone())
+                                passthrough_ty
+                                    .union_with(Self::default_type_for_param_signature(default_ty))
                             } else {
                                 passthrough_ty
                             }
                         } else if let Some(ref default_ty) = resolved_default_type {
-                            call_ty.union_with(default_ty.clone())
+                            call_ty.union_with(Self::default_type_for_param_signature(default_ty))
                         } else {
                             call_ty
                         };

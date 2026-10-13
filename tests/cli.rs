@@ -275,6 +275,138 @@ fn analyze_directory_preserves_optional_param_through_deferred_truthiness() {
 }
 
 #[test]
+fn analyze_directory_preserves_optional_param_defaults_after_merge() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("counter.rb"),
+        concat!(
+            "class OptionalDefaultCounter\n",
+            "  def count\n",
+            "    nil\n",
+            "  end\n",
+            "\n",
+            "  def count_with_default(default = 4)\n",
+            "    count || default\n",
+            "  end\n",
+            "\n",
+            "  def count_with_keyword_default(default: 4)\n",
+            "    count || default\n",
+            "  end\n",
+            "\n",
+            "  def count_with_chained_defaults(first, second = first)\n",
+            "    second\n",
+            "  end\n",
+            "\n",
+            "  def count_with_keyword_default_from_positional(value = 4, fallback: value)\n",
+            "    fallback\n",
+            "  end\n",
+            "\n",
+            "  def menu_item(id, options = {})\n",
+            "    if actions = options[:only]\n",
+            "      actions = [] << actions unless actions.is_a?(Array)\n",
+            "      actions.each { |action| action.to_sym }\n",
+            "    else\n",
+            "      id\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write counter");
+    fs::write(
+        dir.path().join("caller.rb"),
+        concat!(
+            "class OptionalDefaultCounterCaller\n",
+            "  def positional\n",
+            "    OptionalDefaultCounter.new.count_with_default\n",
+            "  end\n",
+            "\n",
+            "  def keyword\n",
+            "    OptionalDefaultCounter.new.count_with_keyword_default\n",
+            "  end\n",
+            "\n",
+            "  def chained_positional\n",
+            "    OptionalDefaultCounter.new.count_with_chained_defaults(4)\n",
+            "  end\n",
+            "\n",
+            "  def chained_keyword\n",
+            "    OptionalDefaultCounter.new.count_with_keyword_default_from_positional\n",
+            "  end\n",
+            "\n",
+            "  def menu_default\n",
+            "    OptionalDefaultCounter.new.menu_item(:home)\n",
+            "  end\n",
+            "\n",
+            "  def menu_symbol_only\n",
+            "    OptionalDefaultCounter.new.menu_item(:home, only: :index)\n",
+            "  end\n",
+            "\n",
+            "  def menu_array_only\n",
+            "    OptionalDefaultCounter.new.menu_item(:home, only: [:index, :show])\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write caller");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("def count_with_default: (?Integer default) -> Integer"),
+        "the positional default must survive workspace ParamRef resolution: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("def count_with_keyword_default: (?default: Integer) -> Integer"),
+        "the keyword default must survive workspace ParamRef resolution: {stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "def count_with_chained_defaults: (Integer first, ?Integer second) -> Integer"
+        ),
+        "a positional default that references an earlier parameter must resolve after merge: {stdout}"
+    );
+    assert!(
+        stdout.contains("def count_with_keyword_default_from_positional: (?Integer value, ?fallback: Integer) -> Integer"),
+        "a keyword default that references a positional parameter must resolve after merge: {stdout}"
+    );
+    assert!(stdout.contains("def positional: -> Integer"), "{stdout}");
+    assert!(stdout.contains("def keyword: -> Integer"), "{stdout}");
+    assert!(
+        stdout.contains("def chained_positional: -> Integer"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("def chained_keyword: -> Integer"),
+        "{stdout}"
+    );
+    let menu_item_signature = stdout
+        .lines()
+        .find(|line| line.contains("def menu_item:"))
+        .unwrap_or("");
+    assert!(
+        menu_item_signature.ends_with("-> (Symbol | Array | [Symbol | Array[Symbol]])"),
+        "an empty hash default must remain empty when resolving return ParamRefs: {stdout}"
+    );
+    assert!(
+        menu_item_signature.contains("Hash[untyped, untyped]"),
+        "the optional parameter signature must still accept general hash values: {stdout}"
+    );
+    let menu_item_return_type = menu_item_signature
+        .split_once(" -> ")
+        .map(|(_, return_type)| return_type)
+        .unwrap_or("");
+    assert!(
+        !menu_item_return_type.contains("untyped"),
+        "an empty hash default must not add an untyped return alternative: {stdout}"
+    );
+}
+
+#[test]
 fn verbose_shows_file_names() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("a.rb");

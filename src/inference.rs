@@ -11400,6 +11400,23 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn infer_method_default_type(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Type {
+        if let Node::HashNode { .. } = node
+            && node
+                .as_hash_node()
+                .is_some_and(|hash| hash.elements().iter().next().is_none())
+        {
+            return Type::Record(Vec::new());
+        }
+        self.infer_node_type(class_name, node, parse_result, scope)
+    }
+
     fn refresh_method_default_types(
         &mut self,
         class_name: &str,
@@ -11442,8 +11459,12 @@ impl<'a> InferenceEngine<'a> {
                         .as_optional_parameter_node()
                         .expect("must be OptionalParameterNode");
                     let name = String::from_utf8_lossy(opt.name().as_slice()).to_string();
-                    let default_type =
-                        self.infer_node_type(class_name, &opt.value(), parse_result, &scope);
+                    let default_type = self.infer_method_default_type(
+                        class_name,
+                        &opt.value(),
+                        parse_result,
+                        &scope,
+                    );
                     if default_type != Type::Untyped {
                         self.registry.update_method_param_default_type_variant(
                             class_name,
@@ -11499,8 +11520,12 @@ impl<'a> InferenceEngine<'a> {
                             .as_optional_keyword_parameter_node()
                             .expect("must be OptionalKeywordParameterNode");
                         let name = String::from_utf8_lossy(kw.name().as_slice()).to_string();
-                        let default_type =
-                            self.infer_node_type(class_name, &kw.value(), parse_result, &scope);
+                        let default_type = self.infer_method_default_type(
+                            class_name,
+                            &kw.value(),
+                            parse_result,
+                            &scope,
+                        );
                         if default_type != Type::Untyped {
                             self.registry.update_method_param_default_type_variant(
                                 class_name,
