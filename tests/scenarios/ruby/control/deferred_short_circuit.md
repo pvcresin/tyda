@@ -575,3 +575,65 @@ class DeferredResolvedPredicateNegation
   def file?: -> bool
 end
 ```
+
+## Preserve explicit cache keys through inherited short-circuit methods
+
+### file: app/services/projects/open_issues_count_service.rb
+
+```ruby
+module Projects
+  class OpenIssuesCountService < CountService
+    PUBLIC_COUNT_KEY = "public_open_issues_count"
+    TOTAL_COUNT_KEY = "total_open_issues_count"
+
+    def cache_key_name
+      public_only? ? PUBLIC_COUNT_KEY : TOTAL_COUNT_KEY
+    end
+
+    def public_only?
+      true
+    end
+
+    def public_count_cache_key
+      cache_key(PUBLIC_COUNT_KEY)
+    end
+
+    def total_count_cache_key
+      cache_key(TOTAL_COUNT_KEY)
+    end
+  end
+end
+```
+
+```ruby
+module Projects
+  class CountService
+    VERSION = 1
+
+    def initialize(project)
+      @project = project
+    end
+
+    def cache_key(key = nil)
+      cache_key = key || cache_key_name
+      ["projects", "count_service", VERSION, @project.id, cache_key]
+    end
+
+    def cache_key_name
+      raise NotImplementedError
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Projects::CountService
+  VERSION: 1
+
+  def initialize: (untyped project) -> void
+  def cache_key: (?String? key) -> ["projects", "count_service", 1, untyped, String]
+  def cache_key_name: -> bot
+end
+```

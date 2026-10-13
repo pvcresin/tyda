@@ -136,6 +136,7 @@ workspace context を分ける。
 3. チャンク単位で並列解析し、`workspace_state::BatchProjectionBuilder` でチャンクが出来上がるたび
    即時に registry へ merge する（全ファイルの snapshot を同時に保持しない）。順序はチャンク順、
    チャンク内はファイル順を保つ。`Batch` resolution は全ファイル投入後に一度だけ行う。
+   file snapshot の `ParamRef` は部分的な call site だけでは確定せず、全ファイルを merge した後に解決する。
 4. RBS 出力ではソースもチャンク単位で読み、merge 後に破棄する。preload の並列読み込みは
    DSL 検出だけを行い本文を残さない。`--diagnostics` は message 生成が target の本文を再度
    使うため、targets のソースだけ保持する。

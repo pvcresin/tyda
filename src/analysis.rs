@@ -1732,7 +1732,11 @@ fn build_engine_with_timings<'a>(
             timings.merge_alias_call_sites = merge_alias_call_sites_started.elapsed();
         }
 
-        if engine.needs_parameter_reference_resolution() {
+        // File snapshots do not contain complete project call sites; defer ParamRef
+        // substitution until the workspace registry has merged every snapshot.
+        if !resolution_depth.keeps_only_exported_facts()
+            && engine.needs_parameter_reference_resolution()
+        {
             let parameter_reference_resolution_started = Instant::now();
             engine.resolve_parameter_references_from_calls();
             timings.parameter_reference_resolution =

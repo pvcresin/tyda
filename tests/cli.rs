@@ -216,6 +216,65 @@ fn analyze_directory() {
 }
 
 #[test]
+fn analyze_directory_preserves_optional_param_through_deferred_truthiness() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let services = dir.path().join("app").join("services").join("projects");
+    fs::create_dir_all(&services).expect("failed to create services directory");
+    fs::write(
+        services.join("count_service.rb"),
+        concat!(
+            "module Projects\n",
+            "  class CountService\n",
+            "    def cache_key(key = nil)\n",
+            "      [\"projects\", key || cache_key_name]\n",
+            "    end\n",
+            "\n",
+            "    def cache_key_name\n",
+            "      raise NotImplementedError\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write base service");
+    fs::write(
+        services.join("open_issues_count_service.rb"),
+        concat!(
+            "module Projects\n",
+            "  class OpenIssuesCountService < CountService\n",
+            "    PUBLIC_COUNT_KEY = \"public_open_issues_count\"\n",
+            "\n",
+            "    def cache_key_name\n",
+            "      PUBLIC_COUNT_KEY\n",
+            "    end\n",
+            "\n",
+            "    def public_count_cache_key\n",
+            "      cache_key(PUBLIC_COUNT_KEY)\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write child service");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("def cache_key: (?String? key) -> [\"projects\", String]"),
+        "the explicit String key must remain available after resolving the deferred fallback: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("def public_count_cache_key: -> [\"projects\", String]"),
+        "the inherited call must substitute its explicit key: {stdout}"
+    );
+}
+
+#[test]
 fn verbose_shows_file_names() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("a.rb");
