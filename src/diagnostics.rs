@@ -739,6 +739,7 @@ fn reason_from_type(ty: &Type, annotated: bool) -> TypeHoleReason {
             })
             .unwrap_or(TypeHoleReason::DeferredType),
         Type::Array(Some(inner)) => reason_from_type(inner, annotated),
+        Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => reason_from_type(inner, annotated),
         Type::Hash(Some(key), Some(value)) => {
             let key_reason = reason_from_type(key, annotated);
             if key_reason != TypeHoleReason::Unknown {
@@ -780,6 +781,7 @@ fn type_contains_hole(ty: &Type) -> bool {
             parts.iter().any(type_contains_hole)
         }
         Type::Array(Some(inner)) => type_contains_hole(inner),
+        Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => type_contains_hole(inner),
         Type::Hash(Some(key), Some(value)) => type_contains_hole(key) || type_contains_hole(value),
         Type::Hash(Some(key), None) => type_contains_hole(key),
         Type::Hash(None, Some(value)) => type_contains_hole(value),

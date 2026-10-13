@@ -406,6 +406,9 @@ fn type_level(ty: &Type, class_context: &str, method_context: Option<&str>) -> C
                 CoverageLevel::Untyped | CoverageLevel::Typed => CoverageLevel::Untyped,
             }
         }
+        Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+            type_level(inner, class_context, method_context)
+        }
         Type::Class(name) | Type::Singleton(name) => {
             if name.is_empty() || is_unknown_name(name.as_ref()) {
                 CoverageLevel::Unknown

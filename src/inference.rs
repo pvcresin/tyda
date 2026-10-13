@@ -662,6 +662,7 @@ pub struct InferenceEngine<'a> {
     singleton_ivars: HashMap<(String, String), Vec<Type>>,
     context_free_type_cache: HashMap<(usize, usize, u8), Type>,
     receiver_ref_memo_scratch: FxHashMap<Type, Type>,
+    receiver_ref_preserve_untyped_memo_scratch: FxHashMap<Type, Type>,
     receiver_ref_visiting_scratch: FxHashSet<Type>,
     class_comment_index: Option<Vec<(usize, std::string::String)>>,
     pub(crate) universal_singleton_tail_preloaded: bool,
@@ -1161,6 +1162,7 @@ pub(crate) struct Scope {
     singleton_dispatch: bool,
     yield_param_types: Vec<Vec<Type>>,
     current_block_param_name: Option<String>,
+    block_param_truthiness: Option<bool>,
     forwarded_block: Option<(String, bool)>,
     forwarding_rest: Option<Box<Type>>,
     forwarding_kw: Option<Type>,
@@ -1318,6 +1320,7 @@ impl Scope {
             singleton_dispatch: self.singleton_dispatch,
             yield_param_types: self.yield_param_types.clone(),
             current_block_param_name: self.current_block_param_name.clone(),
+            block_param_truthiness: self.block_param_truthiness,
             forwarded_block: self.forwarded_block.clone(),
             forwarding_rest: self.forwarding_rest.clone(),
             forwarding_kw: self.forwarding_kw.clone(),
@@ -1449,6 +1452,9 @@ impl Scope {
     }
 
     fn set(&mut self, name: &str, ty: Type) {
+        if self.current_block_param_name.as_deref() == Some(name) {
+            self.block_param_truthiness = None;
+        }
         Arc::make_mut(&mut self.locals).insert(name.to_string(), ty);
         Arc::make_mut(&mut self.aliases).remove(name);
         Arc::make_mut(&mut self.enumerator_yielder_names).remove(name);
@@ -1459,6 +1465,16 @@ impl Scope {
     }
 
     fn narrow(&mut self, name: &str, ty: Type) {
+        if self.current_block_param_name.as_deref() == Some(name) {
+            self.block_param_truthiness = match (
+                Type::truthy_only(&ty).is_some(),
+                Type::falsy_only(&ty).is_some(),
+            ) {
+                (true, false) => Some(true),
+                (false, true) => Some(false),
+                _ => None,
+            };
+        }
         Arc::make_mut(&mut self.locals).insert(name.to_string(), ty);
         Arc::make_mut(&mut self.aliases).remove(name);
         self.invalidate_exclusive_local_alts(name);
@@ -1787,6 +1803,7 @@ impl<'a> InferenceEngine<'a> {
             singleton_ivars: HashMap::new(),
             context_free_type_cache: HashMap::new(),
             receiver_ref_memo_scratch: FxHashMap::default(),
+            receiver_ref_preserve_untyped_memo_scratch: FxHashMap::default(),
             receiver_ref_visiting_scratch: FxHashSet::default(),
             class_comment_index: None,
             universal_singleton_tail_preloaded: false,
@@ -1849,6 +1866,7 @@ impl<'a> InferenceEngine<'a> {
             singleton_ivars: HashMap::new(),
             context_free_type_cache: HashMap::new(),
             receiver_ref_memo_scratch: FxHashMap::default(),
+            receiver_ref_preserve_untyped_memo_scratch: FxHashMap::default(),
             receiver_ref_visiting_scratch: FxHashSet::default(),
             class_comment_index: None,
             universal_singleton_tail_preloaded: false,
@@ -3496,6 +3514,8 @@ impl<'a> InferenceEngine<'a> {
             merged.enumerator_yielded_types = yielded_types;
             merged.self_override = Self::merge_branch_self_override(base, then_scope, else_scope);
             merged.self_facts = Self::merge_branch_self_facts(then_scope, else_scope);
+            merged.block_param_truthiness =
+                Self::merge_block_param_truthiness(then_scope, else_scope);
             merged.initialized_record_keys = Arc::new(
                 then_scope
                     .initialized_record_keys
@@ -3537,6 +3557,7 @@ impl<'a> InferenceEngine<'a> {
             singleton_dispatch: base.singleton_dispatch,
             yield_param_types: base.yield_param_types.clone(),
             current_block_param_name: base.current_block_param_name.clone(),
+            block_param_truthiness: Self::merge_block_param_truthiness(then_scope, else_scope),
             forwarded_block: base.forwarded_block.clone(),
             forwarding_rest: base.forwarding_rest.clone(),
             forwarding_kw: base.forwarding_kw.clone(),
@@ -3695,6 +3716,7 @@ impl<'a> InferenceEngine<'a> {
         merged.callback_mutated_record_locals =
             Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
         Self::assign_exclusive_local_alts(&mut merged, base, alternatives, overlaps_previous);
+        merged.block_param_truthiness = Self::merge_block_param_truthiness(then_scope, else_scope);
         merged
     }
 
@@ -3707,6 +3729,13 @@ impl<'a> InferenceEngine<'a> {
         names.extend(then_scope.callback_mutated_record_locals.iter().cloned());
         names.extend(else_scope.callback_mutated_record_locals.iter().cloned());
         Arc::new(names)
+    }
+
+    fn merge_block_param_truthiness(left: &Scope, right: &Scope) -> Option<bool> {
+        (left.current_block_param_name == right.current_block_param_name
+            && left.block_param_truthiness == right.block_param_truthiness)
+            .then_some(left.block_param_truthiness)
+            .flatten()
     }
 
     fn assign_exclusive_local_alts(
@@ -3766,6 +3795,10 @@ impl<'a> InferenceEngine<'a> {
             singleton_dispatch: base.singleton_dispatch,
             yield_param_types: base.yield_param_types.clone(),
             current_block_param_name: base.current_block_param_name.clone(),
+            block_param_truthiness: (base.block_param_truthiness
+                == loop_scope.block_param_truthiness)
+                .then_some(base.block_param_truthiness)
+                .flatten(),
             forwarded_block: base.forwarded_block.clone(),
             forwarding_rest: base.forwarding_rest.clone(),
             forwarding_kw: base.forwarding_kw.clone(),
@@ -3840,6 +3873,10 @@ impl<'a> InferenceEngine<'a> {
         callback_mutated_record_locals
             .extend(loop_scope.callback_mutated_record_locals.iter().cloned());
         merged.callback_mutated_record_locals = Arc::new(callback_mutated_record_locals);
+        merged.block_param_truthiness = (base.block_param_truthiness
+            == loop_scope.block_param_truthiness)
+            .then_some(base.block_param_truthiness)
+            .flatten();
         merged
     }
 
@@ -7998,10 +8035,23 @@ impl<'a> InferenceEngine<'a> {
             })
             .cloned();
         let Some(method_def) = method_def else {
-            return self.registry.lookup_method_return_type_with_hint(
-                &superclass,
-                &method_name,
-                scope.singleton_dispatch,
+            return Some(
+                self.registry
+                    .lookup_method_return_type_with_hint(
+                        &superclass,
+                        &method_name,
+                        scope.singleton_dispatch,
+                    )
+                    .unwrap_or_else(|| {
+                        if scope.singleton_dispatch {
+                            Type::ReceiverMethodRef(
+                                Box::new(Type::Singleton(Sym::new(&superclass))),
+                                Sym::new(&method_name),
+                            )
+                        } else {
+                            Type::MethodReturnRef(Sym::new(&superclass), Sym::new(&method_name))
+                        }
+                    }),
             );
         };
 
@@ -16363,6 +16413,9 @@ impl<'a> InferenceEngine<'a> {
     fn type_contains_block_return_ref(ty: &Type) -> bool {
         match ty {
             Type::BlockReturnRef => true,
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::type_contains_block_return_ref(inner)
+            }
             Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
                 parts.iter().any(Self::type_contains_block_return_ref)
             }
@@ -16393,6 +16446,14 @@ impl<'a> InferenceEngine<'a> {
     fn substitute_block_return_ref(ty: Type, block_return_type: &Type) -> Type {
         match ty {
             Type::BlockReturnRef => block_return_type.clone(),
+            Type::TruthyOnly(inner) => {
+                let resolved = Self::substitute_block_return_ref(*inner, block_return_type);
+                Type::project_truthiness(resolved, true)
+            }
+            Type::FalsyOnly(inner) => {
+                let resolved = Self::substitute_block_return_ref(*inner, block_return_type);
+                Type::project_truthiness(resolved, false)
+            }
             Type::Union(parts) => Type::from_type_vec_preserve_untyped(
                 parts
                     .into_iter()
@@ -19301,6 +19362,7 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let left_type =
                     self.infer_node_type(class_name, &or_node.left(), parse_result, scope);
+                let left_type = Self::block_param_value_type(&or_node.left(), scope, left_type);
                 let mut right_scope = scope.fork_for_branch();
                 self.apply_compound_branch_leaf(
                     class_name,
@@ -19312,6 +19374,8 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let right_type =
                     self.infer_node_type(class_name, &or_node.right(), parse_result, &right_scope);
+                let right_type =
+                    Self::block_param_value_type(&or_node.right(), &right_scope, right_type);
                 if Self::type_never_returns(&right_type) {
                     let base = scope.clone();
                     self.apply_compound_branch_leaf(
@@ -19330,13 +19394,14 @@ impl<'a> InferenceEngine<'a> {
                         let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
                         if let Some(truthy) = Self::truthy_only(&left_type) {
                             scope.set(&name, truthy.clone());
-                            return truthy;
+                            return Type::project_truthiness_option(&left_type, true)
+                                .unwrap_or(truthy);
                         }
                     }
-                    return Self::truthy_only(&left_type).unwrap_or(left_type);
+                    return Type::project_truthiness_option(&left_type, true).unwrap_or(left_type);
                 }
                 let mut result_types = Vec::new();
-                if let Some(truthy) = Self::truthy_only(&left_type) {
+                if let Some(truthy) = Type::project_truthiness_option(&left_type, true) {
                     result_types.push(truthy);
                 }
                 result_types.push(right_type);
@@ -19352,6 +19417,7 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let left_type =
                     self.infer_node_type(class_name, &and_node.left(), parse_result, scope);
+                let left_type = Self::block_param_value_type(&and_node.left(), scope, left_type);
                 let mut right_scope = scope.fork_for_branch();
                 self.apply_compound_branch_leaf(
                     class_name,
@@ -19363,6 +19429,8 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let right_type =
                     self.infer_node_type(class_name, &and_node.right(), parse_result, &right_scope);
+                let right_type =
+                    Self::block_param_value_type(&and_node.right(), &right_scope, right_type);
                 if Self::type_never_returns(&right_type) {
                     let base = scope.clone();
                     self.apply_compound_branch_leaf(
@@ -19373,10 +19441,10 @@ impl<'a> InferenceEngine<'a> {
                         scope,
                         false,
                     );
-                    return Self::falsy_only(&left_type).unwrap_or(left_type);
+                    return Type::project_truthiness_option(&left_type, false).unwrap_or(left_type);
                 }
                 let mut result_types = Vec::new();
-                if let Some(falsy) = Self::falsy_only(&left_type) {
+                if let Some(falsy) = Type::project_truthiness_option(&left_type, false) {
                     result_types.push(falsy);
                 }
                 result_types.push(right_type);
@@ -21152,6 +21220,51 @@ impl<'a> InferenceEngine<'a> {
             Node::CallNode { .. } => {
                 let call_node = node.as_call_node().expect("must be CallNode");
                 let method_name = String::from_utf8_lossy(call_node.name().as_slice()).to_string();
+
+                if method_name == "!"
+                    && call_node.arguments().is_none()
+                    && call_node.block().is_none()
+                    && let Some(receiver) = call_node.receiver()
+                    && let Some(receiver_call) = receiver.as_call_node()
+                    && receiver_call.receiver().is_none()
+                    && receiver_call.arguments().is_none()
+                    && receiver_call.block().is_none()
+                {
+                    let receiver_method =
+                        String::from_utf8_lossy(receiver_call.name().as_slice()).to_string();
+                    let inferred_receiver =
+                        self.infer_node_type(class_name, &receiver, parse_result, scope);
+                    if matches!(&inferred_receiver, Type::Untyped)
+                        || matches!(&inferred_receiver, Type::Union(parts) if parts.contains(&Type::Untyped))
+                        || Self::contains_unresolved_ref(&inferred_receiver)
+                    {
+                        let can_be_truthy =
+                            Type::project_truthiness_option(&inferred_receiver, true).is_some();
+                        let can_be_falsy =
+                            Type::project_truthiness_option(&inferred_receiver, false).is_some();
+                        let negated = match (can_be_truthy, can_be_falsy) {
+                            (true, false) => Type::False,
+                            (false, true) => Type::True,
+                            _ => Type::Bool,
+                        };
+                        return self.apply_inline_assertion_for_node(
+                            node,
+                            parse_result.source(),
+                            negated,
+                        );
+                    }
+                    let deferred_receiver = Type::ReceiverMethodRef(
+                        Box::new(scope.current_self_type(class_name)),
+                        Sym::new(receiver_method),
+                    );
+                    let negated =
+                        Type::ReceiverMethodRef(Box::new(deferred_receiver), Sym::new("!"));
+                    return self.apply_inline_assertion_for_node(
+                        node,
+                        parse_result.source(),
+                        negated,
+                    );
+                }
 
                 if let Some(sorbet_type) = self.try_resolve_sorbet_assertion(
                     class_name,
@@ -24353,6 +24466,7 @@ impl<'a> InferenceEngine<'a> {
                 let and_node = node.as_and_node().expect("must be AndNode");
                 let left_type =
                     self.infer_node_type(class_name, &and_node.left(), parse_result, scope);
+                let left_type = Self::block_param_value_type(&and_node.left(), scope, left_type);
                 let mut right_scope = scope.fork_for_branch();
                 self.apply_compound_branch_leaf(
                     class_name,
@@ -24370,8 +24484,10 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let right_type =
                     self.infer_node_type(class_name, &and_node.right(), parse_result, &right_scope);
+                let right_type =
+                    Self::block_param_value_type(&and_node.right(), &right_scope, right_type);
                 let mut result_types = Vec::new();
-                if let Some(falsy) = Self::falsy_only(&left_type) {
+                if let Some(falsy) = Type::project_truthiness_option(&left_type, false) {
                     result_types.push(falsy);
                 }
                 result_types.push(right_type);
@@ -24382,6 +24498,7 @@ impl<'a> InferenceEngine<'a> {
                 let or_node = node.as_or_node().expect("must be OrNode");
                 let left_type =
                     self.infer_node_type(class_name, &or_node.left(), parse_result, scope);
+                let left_type = Self::block_param_value_type(&or_node.left(), scope, left_type);
                 let mut right_scope = scope.fork_for_branch();
                 self.apply_compound_branch_leaf(
                     class_name,
@@ -24393,8 +24510,10 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let right_type =
                     self.infer_node_type(class_name, &or_node.right(), parse_result, &right_scope);
+                let right_type =
+                    Self::block_param_value_type(&or_node.right(), &right_scope, right_type);
                 let mut result_types = Vec::new();
-                if let Some(truthy) = Self::truthy_only(&left_type) {
+                if let Some(truthy) = Type::project_truthiness_option(&left_type, true) {
                     result_types.push(truthy);
                 }
                 result_types.push(right_type);
@@ -43918,6 +44037,8 @@ impl<'a> InferenceEngine<'a> {
                 | Type::PatternRestRef(_)
                 | Type::PatternTrailingRef(_, _)
                 | Type::PatternKeyRestRef(_, _)
+                | Type::TruthyOnly(_)
+                | Type::FalsyOnly(_)
         )
     }
 
@@ -44199,7 +44320,9 @@ impl<'a> InferenceEngine<'a> {
                     Type::ReceiverMethodRef(recv, m)
                         if recv.as_ref() == member && m.as_str() == effective_method_name
                 );
-                if !member_lacks_method {
+                if !member_lacks_method
+                    || matches!(member, Type::TruthyOnly(_) | Type::FalsyOnly(_))
+                {
                     resolved.push(r.clone());
                 }
                 all.push(r);
@@ -44237,7 +44360,9 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternKeyRef(_, _)
             | Type::PatternRestRef(_)
             | Type::PatternTrailingRef(_, _)
-            | Type::PatternKeyRestRef(_, _) => {
+            | Type::PatternKeyRestRef(_, _)
+            | Type::TruthyOnly(_)
+            | Type::FalsyOnly(_) => {
                 if method_name == "!" || method_name.ends_with('?') {
                     return Type::Bool;
                 }
@@ -44530,13 +44655,25 @@ impl<'a> InferenceEngine<'a> {
 
     fn resolve_receiver_method_refs_after_preflight(&mut self, ty: &Type) -> Type {
         let mut memo = std::mem::take(&mut self.receiver_ref_memo_scratch);
+        let mut preserve_untyped_memo =
+            std::mem::take(&mut self.receiver_ref_preserve_untyped_memo_scratch);
         let mut visiting = std::mem::take(&mut self.receiver_ref_visiting_scratch);
         memo.clear();
+        preserve_untyped_memo.clear();
         visiting.clear();
-        let resolved = self.resolve_receiver_method_refs_depth(ty, 0, &mut memo, &mut visiting);
+        let resolved = self.resolve_receiver_method_refs_depth(
+            ty,
+            0,
+            &mut memo,
+            &mut preserve_untyped_memo,
+            &mut visiting,
+            false,
+        );
         memo.clear();
+        preserve_untyped_memo.clear();
         visiting.clear();
         self.receiver_ref_memo_scratch = memo;
+        self.receiver_ref_preserve_untyped_memo_scratch = preserve_untyped_memo;
         self.receiver_ref_visiting_scratch = visiting;
         resolved
     }
@@ -44602,13 +44739,20 @@ impl<'a> InferenceEngine<'a> {
         ty: &Type,
         depth: usize,
         memo: &mut FxHashMap<Type, Type>,
+        preserve_untyped_memo: &mut FxHashMap<Type, Type>,
         visiting: &mut FxHashSet<Type>,
+        preserve_untyped: bool,
     ) -> Type {
         const MAX_DEPTH: usize = 32;
         if depth >= MAX_DEPTH {
             return ty.clone();
         }
-        if let Some(cached) = memo.get(ty) {
+        let cached = if preserve_untyped {
+            preserve_untyped_memo.get(ty)
+        } else {
+            memo.get(ty)
+        };
+        if let Some(cached) = cached {
             return cached.clone();
         }
         if !visiting.insert(ty.clone()) {
@@ -44624,15 +44768,25 @@ impl<'a> InferenceEngine<'a> {
                 if resolved == Type::Untyped {
                     Type::MethodReturnRef(*class_name, *method_name)
                 } else {
-                    self.resolve_receiver_method_refs_depth(&resolved, depth + 1, memo, visiting)
+                    self.resolve_receiver_method_refs_depth(
+                        &resolved,
+                        depth + 1,
+                        memo,
+                        preserve_untyped_memo,
+                        visiting,
+                        preserve_untyped,
+                    )
                 }
             }
             Type::ReceiverMethodRef(receiver_type, method_name) => {
+                let preserve_receiver_untyped = preserve_untyped || method_name.as_str() == "!";
                 let resolved_receiver = self.resolve_receiver_method_refs_depth(
                     receiver_type,
                     depth + 1,
                     memo,
+                    preserve_untyped_memo,
                     visiting,
+                    preserve_receiver_untyped,
                 );
                 if let Some(result) =
                     self.resolve_receiver_ref_overloaded_return(&resolved_receiver, method_name)
@@ -44649,6 +44803,16 @@ impl<'a> InferenceEngine<'a> {
                 let result = self.resolve_method_on_type(&resolved_receiver, method_name);
                 if result != Type::Untyped && Self::is_concrete(&result) {
                     result
+                } else if method_name.as_str() == "!"
+                    && matches!(
+                        &result,
+                        Type::ReceiverMethodRef(receiver, unresolved_method)
+                            if receiver.as_ref() == &resolved_receiver
+                                && unresolved_method == method_name
+                    )
+                    && let Some(negated) = Type::negated_truthiness_result(&resolved_receiver)
+                {
+                    negated
                 } else {
                     Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
                 }
@@ -44656,31 +44820,64 @@ impl<'a> InferenceEngine<'a> {
             Type::Union(parts) => {
                 let resolved: Vec<Type> = parts
                     .iter()
-                    .map(|t| self.resolve_receiver_method_refs_depth(t, depth + 1, memo, visiting))
+                    .map(|t| {
+                        self.resolve_receiver_method_refs_depth(
+                            t,
+                            depth + 1,
+                            memo,
+                            preserve_untyped_memo,
+                            visiting,
+                            preserve_untyped,
+                        )
+                    })
                     .collect();
-                Type::from_type_vec(resolved)
+                if preserve_untyped {
+                    Type::from_type_vec_preserve_untyped(resolved)
+                } else {
+                    Type::from_type_vec(resolved)
+                }
             }
             Type::Intersection(parts) => Type::Intersection(
                 parts
                     .iter()
-                    .map(|t| self.resolve_receiver_method_refs_depth(t, depth + 1, memo, visiting))
+                    .map(|t| {
+                        self.resolve_receiver_method_refs_depth(
+                            t,
+                            depth + 1,
+                            memo,
+                            preserve_untyped_memo,
+                            visiting,
+                            preserve_untyped,
+                        )
+                    })
                     .collect(),
             ),
-            Type::Array(Some(inner)) => Type::Array(Some(Box::new(
-                self.resolve_receiver_method_refs_depth(inner, depth + 1, memo, visiting),
-            ))),
+            Type::Array(Some(inner)) => {
+                Type::Array(Some(Box::new(self.resolve_receiver_method_refs_depth(
+                    inner,
+                    depth + 1,
+                    memo,
+                    preserve_untyped_memo,
+                    visiting,
+                    preserve_untyped,
+                ))))
+            }
             Type::Hash(Some(k), Some(v)) => Type::Hash(
                 Some(Box::new(self.resolve_receiver_method_refs_depth(
                     k,
                     depth + 1,
                     memo,
+                    preserve_untyped_memo,
                     visiting,
+                    preserve_untyped,
                 ))),
                 Some(Box::new(self.resolve_receiver_method_refs_depth(
                     v,
                     depth + 1,
                     memo,
+                    preserve_untyped_memo,
                     visiting,
+                    preserve_untyped,
                 ))),
             ),
             Type::Hash(Some(k), None) => Type::Hash(
@@ -44688,7 +44885,9 @@ impl<'a> InferenceEngine<'a> {
                     k,
                     depth + 1,
                     memo,
+                    preserve_untyped_memo,
                     visiting,
+                    preserve_untyped,
                 ))),
                 None,
             ),
@@ -44698,7 +44897,9 @@ impl<'a> InferenceEngine<'a> {
                     v,
                     depth + 1,
                     memo,
+                    preserve_untyped_memo,
                     visiting,
+                    preserve_untyped,
                 ))),
             ),
             Type::Record(fields) => Type::Record(
@@ -44710,7 +44911,9 @@ impl<'a> InferenceEngine<'a> {
                             &field.value,
                             depth + 1,
                             memo,
+                            preserve_untyped_memo,
                             visiting,
+                            preserve_untyped,
                         ),
                         optional: field.optional,
                     })
@@ -44719,7 +44922,16 @@ impl<'a> InferenceEngine<'a> {
             Type::Tuple(elems) => {
                 let resolved: Vec<Type> = elems
                     .iter()
-                    .map(|t| self.resolve_receiver_method_refs_depth(t, depth + 1, memo, visiting))
+                    .map(|t| {
+                        self.resolve_receiver_method_refs_depth(
+                            t,
+                            depth + 1,
+                            memo,
+                            preserve_untyped_memo,
+                            visiting,
+                            preserve_untyped,
+                        )
+                    })
                     .collect();
                 Type::Tuple(resolved)
             }
@@ -44731,13 +44943,42 @@ impl<'a> InferenceEngine<'a> {
                     return_type,
                     depth + 1,
                     memo,
+                    preserve_untyped_memo,
                     visiting,
+                    preserve_untyped,
                 )),
                 param_count: *param_count,
             },
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                let keep_truthy = matches!(ty, Type::TruthyOnly(_));
+                let resolved = self.resolve_receiver_method_refs_depth(
+                    inner,
+                    depth + 1,
+                    memo,
+                    preserve_untyped_memo,
+                    visiting,
+                    preserve_untyped,
+                );
+                match resolved {
+                    unresolved @ (Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..)) => {
+                        if keep_truthy {
+                            Type::TruthyOnly(Box::new(unresolved))
+                        } else {
+                            Type::FalsyOnly(Box::new(unresolved))
+                        }
+                    }
+                    resolved => Type::project_truthiness(resolved, keep_truthy),
+                }
+            }
             Type::PatternIndexRef(subject, index) => {
-                let resolved_subject =
-                    self.resolve_receiver_method_refs_depth(subject, depth + 1, memo, visiting);
+                let resolved_subject = self.resolve_receiver_method_refs_depth(
+                    subject,
+                    depth + 1,
+                    memo,
+                    preserve_untyped_memo,
+                    visiting,
+                    preserve_untyped,
+                );
                 if Self::type_contains_receiver_resolution_ref(&resolved_subject) {
                     Type::PatternIndexRef(Box::new(resolved_subject), *index)
                 } else {
@@ -44745,8 +44986,14 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             Type::PatternRestRef(subject) => {
-                let resolved_subject =
-                    self.resolve_receiver_method_refs_depth(subject, depth + 1, memo, visiting);
+                let resolved_subject = self.resolve_receiver_method_refs_depth(
+                    subject,
+                    depth + 1,
+                    memo,
+                    preserve_untyped_memo,
+                    visiting,
+                    preserve_untyped,
+                );
                 if Self::type_contains_receiver_resolution_ref(&resolved_subject) {
                     Type::PatternRestRef(Box::new(resolved_subject))
                 } else {
@@ -44754,8 +45001,14 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             Type::PatternKeyRef(subject, key) => {
-                let resolved_subject =
-                    self.resolve_receiver_method_refs_depth(subject, depth + 1, memo, visiting);
+                let resolved_subject = self.resolve_receiver_method_refs_depth(
+                    subject,
+                    depth + 1,
+                    memo,
+                    preserve_untyped_memo,
+                    visiting,
+                    preserve_untyped,
+                );
                 if Self::type_contains_receiver_resolution_ref(&resolved_subject) {
                     Type::PatternKeyRef(Box::new(resolved_subject), key.clone())
                 } else {
@@ -44763,8 +45016,14 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             Type::PatternKeyRestRef(subject, matched_keys) => {
-                let resolved_subject =
-                    self.resolve_receiver_method_refs_depth(subject, depth + 1, memo, visiting);
+                let resolved_subject = self.resolve_receiver_method_refs_depth(
+                    subject,
+                    depth + 1,
+                    memo,
+                    preserve_untyped_memo,
+                    visiting,
+                    preserve_untyped,
+                );
                 if Self::type_contains_receiver_resolution_ref(&resolved_subject) {
                     Type::PatternKeyRestRef(Box::new(resolved_subject), matched_keys.clone())
                 } else {
@@ -44774,7 +45033,11 @@ impl<'a> InferenceEngine<'a> {
             _ => ty.clone(),
         };
         visiting.remove(ty);
-        memo.insert(ty.clone(), resolved.clone());
+        if preserve_untyped {
+            preserve_untyped_memo.insert(ty.clone(), resolved.clone());
+        } else {
+            memo.insert(ty.clone(), resolved.clone());
+        }
         resolved
     }
 
@@ -44955,6 +45218,24 @@ impl<'a> InferenceEngine<'a> {
                 )),
                 param_count: *param_count,
             },
+            Type::TruthyOnly(inner) => Type::project_truthiness(
+                self.resolve_receiver_method_refs_for_destructuring_depth(
+                    inner,
+                    depth + 1,
+                    memo,
+                    visiting,
+                ),
+                true,
+            ),
+            Type::FalsyOnly(inner) => Type::project_truthiness(
+                self.resolve_receiver_method_refs_for_destructuring_depth(
+                    inner,
+                    depth + 1,
+                    memo,
+                    visiting,
+                ),
+                false,
+            ),
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_receiver_method_refs_for_destructuring_depth(
                     subject,
@@ -45062,9 +45343,9 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
-            | Type::PatternKeyRestRef(subject, _) => {
-                Self::type_contains_receiver_resolution_ref(subject)
-            }
+            | Type::PatternKeyRestRef(subject, _)
+            | Type::TruthyOnly(subject)
+            | Type::FalsyOnly(subject) => Self::type_contains_receiver_resolution_ref(subject),
             _ => false,
         }
     }
@@ -45101,7 +45382,9 @@ impl<'a> InferenceEngine<'a> {
         const MIGRATION_ACTIONS: &[&str] = &["up", "down", "change"];
 
         if self.rails_feature_enabled() {
-            if method_name.starts_with("set_") || method_name.starts_with("assign_") {
+            if self.is_action_controller_class(class_name)
+                && (method_name.starts_with("set_") || method_name.starts_with("assign_"))
+            {
                 return true;
             }
             if MIGRATION_ACTIONS.contains(&method_name)
@@ -46256,6 +46539,7 @@ impl<'a> InferenceEngine<'a> {
                 let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
                 let current =
                     self.resolve_narrowing_input_type(class_name, scope, scope.get(&name)?);
+                let current = Self::block_param_value_type(predicate, scope, current);
                 Some(CondNarrowing {
                     subject: NarrowSubject::Local(name),
                     then_ty: Self::truthy_only(&current),
@@ -46406,6 +46690,9 @@ impl<'a> InferenceEngine<'a> {
     fn contains_unresolved_ref(ty: &Type) -> bool {
         match ty {
             Type::Union(parts) => parts.iter().any(Self::contains_unresolved_ref),
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::contains_unresolved_ref(inner)
+            }
             Type::ParamRef(_)
             | Type::KeywordParamRef(_)
             | Type::IvarRef(_)
@@ -47326,6 +47613,34 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn block_param_value_type(node: &Node<'_>, scope: &Scope, ty: Type) -> Type {
+        if scope.block_param_truthiness == Some(true) {
+            return ty;
+        }
+        let Some(name) = scope.current_block_param_name.as_deref() else {
+            return ty;
+        };
+        let Some(read) = node.as_local_variable_read_node() else {
+            return ty;
+        };
+        if read.name().as_slice() != name.as_bytes()
+            || !matches!(
+                scope.get(name),
+                Some(Type::Proc {
+                    return_type,
+                    ..
+                }) if matches!(return_type.as_ref(), Type::BlockReturnRef)
+            )
+        {
+            return ty;
+        }
+        if matches!(&ty, Type::Nil) {
+            ty
+        } else {
+            Type::from_type_vec_preserve_untyped(vec![Type::Nil, ty])
+        }
+    }
+
     fn extract_local_var_name_in_scope(node: &Node<'_>, scope: &Scope) -> Option<String> {
         if let Some(name) = Self::extract_local_var_name(node) {
             return Some(name);
@@ -47618,38 +47933,11 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn falsy_only(ty: &Type) -> Option<Type> {
-        match ty {
-            Type::Nil => Some(Type::Nil),
-            Type::False => Some(Type::False),
-            Type::Bool => Some(Type::False),
-            Type::Untyped | Type::Todo | Type::Top => Some(ty.clone()),
-            Type::Union(parts) => {
-                let filtered: Vec<Type> = parts.iter().filter_map(Self::falsy_only).collect();
-                match filtered.len() {
-                    0 => None,
-                    1 => filtered.into_iter().next(),
-                    _ => Some(Type::from_type_vec_preserve_untyped(filtered)),
-                }
-            }
-            _ => None,
-        }
+        Type::falsy_only(ty)
     }
 
     fn truthy_only(ty: &Type) -> Option<Type> {
-        match ty {
-            Type::Nil | Type::False | Type::Void | Type::Bot => None,
-            Type::Bool => Some(Type::True),
-            Type::Untyped | Type::Todo | Type::Top => Some(ty.clone()),
-            Type::Union(parts) => {
-                let filtered: Vec<Type> = parts.iter().filter_map(Self::truthy_only).collect();
-                match filtered.len() {
-                    0 => None,
-                    1 => filtered.into_iter().next(),
-                    _ => Some(Type::from_type_vec_preserve_untyped(filtered)),
-                }
-            }
-            _ => Some(ty.clone()),
-        }
+        Type::truthy_only(ty)
     }
 
     fn extract_sorbet_class_modifiers(
@@ -49181,6 +49469,17 @@ end
         assert!(engine.receiver_ref_memo_scratch.is_empty());
         assert!(engine.receiver_ref_visiting_scratch.is_empty());
         assert!(engine.receiver_ref_memo_scratch.capacity() > 0);
+
+        let negated = Type::ReceiverMethodRef(
+            Box::new(Type::Union(vec![
+                Type::MethodReturnRef(Sym::new("Missing"), Sym::new("value")),
+                Type::LiteralInteger(1),
+            ])),
+            Sym::new("!"),
+        );
+        assert_eq!(engine.resolve_receiver_method_refs(&negated), Type::Bool);
+        assert!(engine.receiver_ref_preserve_untyped_memo_scratch.is_empty());
+        assert!(engine.receiver_ref_preserve_untyped_memo_scratch.capacity() > 0);
     }
 
     #[test]
@@ -49195,6 +49494,14 @@ end
         assert!(InferenceEngine::type_contains_receiver_resolution_ref(
             &receiver_method_ref
         ));
+        for projected in [
+            Type::TruthyOnly(Box::new(method_return_ref.clone())),
+            Type::FalsyOnly(Box::new(method_return_ref.clone())),
+        ] {
+            assert!(InferenceEngine::type_contains_receiver_resolution_ref(
+                &projected
+            ));
+        }
         assert!(InferenceEngine::type_contains_receiver_resolution_ref(
             &Type::Tuple(vec![
                 Type::Array(Some(Box::new(receiver_method_ref.clone()))),

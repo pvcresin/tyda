@@ -194,7 +194,7 @@ class UsersController < ActionController::Base
 end
 ```
 
-## Infer set_ methods as void
+## Apply set_ / assign_ void convention only to controllers
 
 ### update
 
@@ -208,6 +208,16 @@ class Admin::PostsController < ActionController::Base
     @role = lookup_role
   end
 end
+
+class NonControllerSetMethod
+  def set_value
+    (lookup_value || "fallback").upcase
+  end
+
+  def lookup_value
+    "value"
+  end
+end
 ```
 
 ### result
@@ -216,5 +226,10 @@ end
 class Admin::PostsController < ActionController::Base
   def set_post: -> void
   def assign_role: -> void
+end
+
+class NonControllerSetMethod
+  def set_value: -> String
+  def lookup_value: -> "value"
 end
 ```

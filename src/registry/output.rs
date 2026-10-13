@@ -361,7 +361,9 @@ impl TypeRegistry {
                 Some(
                     ref deferred @ (Type::IvarRef(_)
                     | Type::MethodReturnRef(..)
-                    | Type::ReceiverMethodRef(..)),
+                    | Type::ReceiverMethodRef(..)
+                    | Type::TruthyOnly(..)
+                    | Type::FalsyOnly(..)),
                 ) => {
                     let resolved = self.resolve_deferred_refs_for_context(
                         receiver_class,
@@ -386,6 +388,8 @@ impl TypeRegistry {
                                         Type::IvarRef(_)
                                             | Type::MethodReturnRef(..)
                                             | Type::ReceiverMethodRef(..)
+                                            | Type::TruthyOnly(..)
+                                            | Type::FalsyOnly(..)
                                     )
                                 {
                                     resolved

@@ -105,6 +105,9 @@ pub enum Type {
     PatternKeyRef(Box<Type>, Box<RecordKey>),
     PatternKeyRestRef(Box<Type>, Box<[RecordKey]>),
     ReceiverMethodRef(Box<Type>, Sym),
+    // Deferred projections preserve short-circuit value semantics until referenced types resolve.
+    TruthyOnly(Box<Type>),
+    FalsyOnly(Box<Type>),
     SelfType,
     // At a call site this resolves to the receiver; when rendering a declaration, it resolves to an instance of the owner.
     InstanceType,
@@ -129,6 +132,107 @@ impl RecordKey {
 }
 
 impl Type {
+    pub(crate) fn falsy_only(ty: &Type) -> Option<Type> {
+        Self::filter_truthiness(ty, false, false)
+    }
+
+    pub(crate) fn truthy_only(ty: &Type) -> Option<Type> {
+        Self::filter_truthiness(ty, true, false)
+    }
+
+    pub(crate) fn project_truthiness_option(ty: &Type, keep_truthy: bool) -> Option<Type> {
+        Self::filter_truthiness(ty, keep_truthy, true)
+    }
+
+    pub(crate) fn project_truthiness(ty: Type, keep_truthy: bool) -> Type {
+        Self::project_truthiness_option(&ty, keep_truthy).unwrap_or(Type::Bot)
+    }
+
+    pub(crate) fn negated_truthiness_result(ty: &Type) -> Option<Type> {
+        match ty {
+            Type::True => Some(Type::False),
+            Type::False | Type::Nil => Some(Type::True),
+            Type::Bool | Type::Untyped | Type::Todo | Type::Top => Some(Type::Bool),
+            Type::Union(parts) => {
+                let mut can_be_true = false;
+                let mut can_be_false = false;
+                for part in parts {
+                    match Self::negated_truthiness_result(part)? {
+                        Type::True => can_be_true = true,
+                        Type::False => can_be_false = true,
+                        Type::Bool => {
+                            can_be_true = true;
+                            can_be_false = true;
+                        }
+                        _ => return None,
+                    }
+                }
+                match (can_be_true, can_be_false) {
+                    (true, false) => Some(Type::True),
+                    (false, true) => Some(Type::False),
+                    (true, true) => Some(Type::Bool),
+                    (false, false) => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn deferred_truthiness(ty: &Type, keep_truthy: bool) -> Type {
+        if keep_truthy {
+            Type::TruthyOnly(Box::new(ty.clone()))
+        } else {
+            Type::FalsyOnly(Box::new(ty.clone()))
+        }
+    }
+
+    fn filter_truthiness(ty: &Type, keep_truthy: bool, defer_references: bool) -> Option<Type> {
+        match ty {
+            Type::Union(parts) => {
+                let filtered: Vec<Type> = parts
+                    .iter()
+                    .filter_map(|part| Self::filter_truthiness(part, keep_truthy, defer_references))
+                    .collect();
+                match filtered.len() {
+                    0 => None,
+                    1 => filtered.into_iter().next(),
+                    _ => Some(Type::from_type_vec_preserve_untyped(filtered)),
+                }
+            }
+            Type::TruthyOnly(_) if keep_truthy => Some(ty.clone()),
+            Type::FalsyOnly(_) if !keep_truthy => Some(ty.clone()),
+            Type::TruthyOnly(_) | Type::FalsyOnly(_) => None,
+            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) if defer_references => {
+                Some(Self::deferred_truthiness(ty, keep_truthy))
+            }
+            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) if keep_truthy => {
+                Some(ty.clone())
+            }
+            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) => None,
+            Type::ParamRef(_)
+            | Type::KeywordParamRef(_)
+            | Type::IvarRef(_)
+            | Type::GlobalVariableRef(_)
+            | Type::BlockReturnRef
+            | Type::PatternIndexRef(..)
+            | Type::PatternRestRef(..)
+            | Type::PatternTrailingRef(..)
+            | Type::PatternKeyRef(..)
+            | Type::PatternKeyRestRef(..)
+                if defer_references =>
+            {
+                Some(Self::deferred_truthiness(ty, keep_truthy))
+            }
+            Type::Nil | Type::False if !keep_truthy => Some(ty.clone()),
+            Type::Nil | Type::False | Type::Void | Type::Bot => None,
+            Type::Bool if keep_truthy => Some(Type::True),
+            Type::Bool => Some(Type::False),
+            Type::Untyped | Type::Todo | Type::Top => Some(ty.clone()),
+            _ if keep_truthy => Some(ty.clone()),
+            _ => None,
+        }
+    }
+
     pub fn deep_extra_bytes(&self) -> usize {
         const SLOT: usize = std::mem::size_of::<Type>();
         fn vec_bytes(types: &[Type]) -> usize {
@@ -154,7 +258,9 @@ impl Type {
             }
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
-            | Type::PatternTrailingRef(subject, _) => SLOT + subject.deep_extra_bytes(),
+            | Type::PatternTrailingRef(subject, _)
+            | Type::TruthyOnly(subject)
+            | Type::FalsyOnly(subject) => SLOT + subject.deep_extra_bytes(),
             Type::PatternKeyRef(subject, key) => {
                 SLOT + subject.deep_extra_bytes()
                     + std::mem::size_of::<RecordKey>()
@@ -224,6 +330,8 @@ impl PartialEq for Type {
             (Type::ReceiverMethodRef(t1, m1), Type::ReceiverMethodRef(t2, m2)) => {
                 t1 == t2 && m1 == m2
             }
+            (Type::TruthyOnly(t1), Type::TruthyOnly(t2))
+            | (Type::FalsyOnly(t1), Type::FalsyOnly(t2)) => t1 == t2,
             (
                 Type::Proc {
                     return_type: r1,
@@ -290,6 +398,7 @@ impl std::hash::Hash for Type {
                 t.hash(state);
                 m.hash(state);
             }
+            Type::TruthyOnly(ty) | Type::FalsyOnly(ty) => ty.hash(state),
             Type::Proc {
                 return_type,
                 param_count,
@@ -359,6 +468,8 @@ impl Type {
             Type::PatternKeyRef(_, _) => 28,
             Type::PatternKeyRestRef(_, _) => 29,
             Type::ReceiverMethodRef(_, _) => 30,
+            Type::TruthyOnly(_) => 40,
+            Type::FalsyOnly(_) => 41,
             Type::SelfType => 31,
             Type::InstanceType => 38,
             Type::Proc { .. } => 32,
@@ -415,6 +526,8 @@ impl Type {
             (Type::ReceiverMethodRef(t1, m1), Type::ReceiverMethodRef(t2, m2)) => {
                 t1.cmp(t2).then(m1.cmp(m2))
             }
+            (Type::TruthyOnly(t1), Type::TruthyOnly(t2))
+            | (Type::FalsyOnly(t1), Type::FalsyOnly(t2)) => t1.cmp(t2),
             (
                 Type::Proc {
                     return_type: a,
@@ -482,6 +595,10 @@ impl Type {
                 return_type: Box::new(return_type.replace_self_type(self_type)),
                 param_count: *param_count,
             },
+            Type::TruthyOnly(inner) => {
+                Type::TruthyOnly(Box::new(inner.replace_self_type(self_type)))
+            }
+            Type::FalsyOnly(inner) => Type::FalsyOnly(Box::new(inner.replace_self_type(self_type))),
             Type::Tuple(types) => Type::Tuple(
                 types
                     .iter()
@@ -514,6 +631,7 @@ impl Type {
             }
             Type::Record(fields) => fields.iter().any(|f| f.value.contains_instance_type()),
             Type::Proc { return_type, .. } => return_type.contains_instance_type(),
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => inner.contains_instance_type(),
             _ => false,
         }
     }
@@ -576,6 +694,12 @@ impl Type {
                     .map(|ty| ty.replace_instance_type(instance_type))
                     .collect(),
             },
+            Type::TruthyOnly(inner) => {
+                Type::TruthyOnly(Box::new(inner.replace_instance_type(instance_type)))
+            }
+            Type::FalsyOnly(inner) => {
+                Type::FalsyOnly(Box::new(inner.replace_instance_type(instance_type)))
+            }
             _ => self.clone(),
         }
     }
@@ -1090,6 +1214,7 @@ impl fmt::Display for Type {
             Type::PatternKeyRef(_, _) => write!(f, "untyped"),
             Type::PatternKeyRestRef(_, _) => write!(f, "untyped"),
             Type::ReceiverMethodRef(_, _) => write!(f, "untyped"),
+            Type::TruthyOnly(_) | Type::FalsyOnly(_) => write!(f, "untyped"),
             Type::SelfType => write!(f, "self"),
             Type::InstanceType => write!(f, "instance"),
             Type::Proc { .. } => write!(f, "Proc"),
@@ -1225,7 +1350,82 @@ pub struct MethodAliasSig {
 
 #[cfg(test)]
 mod tests {
-    use super::Type;
+    use super::{Sym, Type};
+
+    #[test]
+    fn truthiness_projection_defers_parameter_references() {
+        let param_ref = Type::ParamRef(0);
+        assert_eq!(
+            Type::project_truthiness(param_ref.clone(), true),
+            Type::TruthyOnly(Box::new(param_ref.clone()))
+        );
+        assert_eq!(
+            Type::project_truthiness(param_ref.clone(), false),
+            Type::FalsyOnly(Box::new(param_ref))
+        );
+
+        let param_ref = Type::ParamRef(0);
+        assert_eq!(Type::truthy_only(&param_ref), Some(param_ref.clone()));
+        assert_eq!(Type::falsy_only(&param_ref), None);
+    }
+
+    #[test]
+    fn negated_truthiness_preserves_boolean_outcomes() {
+        assert_eq!(
+            Type::negated_truthiness_result(&Type::True),
+            Some(Type::False)
+        );
+        assert_eq!(
+            Type::negated_truthiness_result(&Type::False),
+            Some(Type::True)
+        );
+        assert_eq!(
+            Type::negated_truthiness_result(&Type::Nil),
+            Some(Type::True)
+        );
+        assert_eq!(
+            Type::negated_truthiness_result(&Type::Bool),
+            Some(Type::Bool)
+        );
+        assert_eq!(
+            Type::negated_truthiness_result(&Type::Union(vec![Type::False, Type::Untyped])),
+            Some(Type::Bool)
+        );
+        assert_eq!(
+            Type::negated_truthiness_result(&Type::Class(Sym::new("Example"))),
+            None
+        );
+    }
+
+    #[test]
+    fn truthiness_flow_projection_keeps_method_reference_behavior() {
+        let method_return = Type::MethodReturnRef(Sym::new("Example"), Sym::new("value"));
+        assert_eq!(
+            Type::truthy_only(&method_return),
+            Some(method_return.clone())
+        );
+        assert_eq!(Type::falsy_only(&method_return), None);
+    }
+
+    #[test]
+    fn truthiness_projection_defers_method_refs_per_union_member() {
+        let method_return = Type::MethodReturnRef(Sym::new("Example"), Sym::new("value"));
+
+        assert_eq!(
+            Type::project_truthiness(Type::Union(vec![Type::Bool, method_return.clone()]), true),
+            Type::from_type_vec_preserve_untyped(vec![
+                Type::True,
+                Type::TruthyOnly(Box::new(method_return.clone()))
+            ])
+        );
+        assert_eq!(
+            Type::project_truthiness(Type::Union(vec![Type::Bool, method_return.clone()]), false),
+            Type::from_type_vec_preserve_untyped(vec![
+                Type::False,
+                Type::FalsyOnly(Box::new(method_return))
+            ])
+        );
+    }
 
     #[test]
     fn display_deduplicates_union_members() {

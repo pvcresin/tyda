@@ -41,6 +41,9 @@ impl WorkspaceState {
             | Type::MethodReturnRef(..)
             | Type::ReceiverMethodRef(..)
             | Type::BlockReturnRef => true,
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::type_needs_display_workspace(inner)
+            }
             Type::Array(Some(inner))
             | Type::PatternRestRef(inner)
             | Type::Proc {

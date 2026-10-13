@@ -6594,6 +6594,9 @@ impl TypeRegistry {
     fn type_contains_untyped_member(ty: &Type) -> bool {
         match ty {
             Type::Untyped => true,
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::type_contains_untyped_member(inner)
+            }
             Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
                 parts.iter().any(Self::type_contains_untyped_member)
             }
@@ -6613,6 +6616,9 @@ impl TypeRegistry {
     fn type_contains_param_ref_static(ty: &Type) -> bool {
         match ty {
             Type::ParamRef(_) | Type::KeywordParamRef(_) => true,
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::type_contains_param_ref_static(inner)
+            }
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::type_contains_param_ref_static)
             }
@@ -6698,6 +6704,20 @@ impl TypeRegistry {
         let mut any_resolved = false;
         let mut any_unresolved = false;
         let resolved_type = match ty {
+            Type::TruthyOnly(inner) => {
+                let (resolved, any, unresolved) =
+                    self.resolve_scoped_refs_in_type(scope_class, inner);
+                any_resolved |= any;
+                any_unresolved |= unresolved;
+                Type::project_truthiness(resolved, true)
+            }
+            Type::FalsyOnly(inner) => {
+                let (resolved, any, unresolved) =
+                    self.resolve_scoped_refs_in_type(scope_class, inner);
+                any_resolved |= any;
+                any_unresolved |= unresolved;
+                Type::project_truthiness(resolved, false)
+            }
             Type::Class(name) => match self.resolve_scoped_nominal_name(scope_class, name.as_str())
             {
                 Some(canonical) => {
@@ -6823,6 +6843,9 @@ impl TypeRegistry {
     pub(crate) fn type_contains_scoped_nominal_ref(ty: &Type) -> bool {
         match ty {
             Type::Class(_) | Type::Singleton(_) | Type::Generic { .. } => true,
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::type_contains_scoped_nominal_ref(inner)
+            }
             Type::Array(Some(inner)) => Self::type_contains_scoped_nominal_ref(inner),
             Type::Hash(key, value) => {
                 key.as_deref()
@@ -6889,6 +6912,9 @@ impl TypeRegistry {
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::type_contains_subclass_ref_candidate)
             }
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::type_contains_subclass_ref_candidate(inner)
+            }
             Type::Array(Some(inner))
             | Type::PatternRestRef(inner)
             | Type::PatternTrailingRef(inner, _)
@@ -6931,6 +6957,14 @@ impl TypeRegistry {
                     return ret;
                 }
                 ty.clone()
+            }
+            Type::TruthyOnly(inner) => {
+                let resolved = self.resolve_subclass_refs_in_type(inner);
+                Type::project_truthiness(resolved, true)
+            }
+            Type::FalsyOnly(inner) => {
+                let resolved = self.resolve_subclass_refs_in_type(inner);
+                Type::project_truthiness(resolved, false)
             }
             Type::ReceiverMethodRef(receiver_type, method_name) => {
                 let resolved_receiver = self.resolve_subclass_refs_in_type(receiver_type);
@@ -7222,6 +7256,9 @@ impl TypeRegistry {
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::global_type_contains_ref)
             }
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::global_type_contains_ref(inner)
+            }
             Type::Array(Some(inner)) => Self::global_type_contains_ref(inner),
             Type::Tuple(elems) => elems.iter().any(Self::global_type_contains_ref),
             Type::Hash(Some(k), Some(v)) => {
@@ -7251,7 +7288,10 @@ impl TypeRegistry {
                 | Type::ReceiverMethodRef(..)
                 | Type::ParamRef(_)
                 | Type::KeywordParamRef(_)
-        )
+        ) || match ty {
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => Self::type_is_deferred_ref(inner),
+            _ => false,
+        }
     }
 
     fn is_concrete_for_global_resolve(ty: &Type) -> bool {
@@ -7424,6 +7464,34 @@ impl TypeRegistry {
                     }
                 }
             }
+            Type::TruthyOnly(inner) => {
+                let resolved = self.resolve_global_refs(
+                    context_class,
+                    inner,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
+                Type::project_truthiness(resolved, true)
+            }
+            Type::FalsyOnly(inner) => {
+                let resolved = self.resolve_global_refs(
+                    context_class,
+                    inner,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
+                Type::project_truthiness(resolved, false)
+            }
             Type::ReceiverMethodRef(receiver_type, method_name) => {
                 let resolved_receiver = self.resolve_global_refs(
                     context_class,
@@ -7435,6 +7503,11 @@ impl TypeRegistry {
                 );
                 if budget.is_exhausted() {
                     return Type::Untyped;
+                }
+                if method_name.as_str() == "!"
+                    && !Self::is_concrete_for_global_resolve(&resolved_receiver)
+                {
+                    return Type::Bool;
                 }
                 // union receiver: only produce a union return type once all members are concretized, otherwise keep the ref (prevents incorrect concretization).
                 if let Type::Union(members) = &resolved_receiver {
@@ -7518,6 +7591,10 @@ impl TypeRegistry {
                     ) {
                         // stdlib on the deferred path: a pure table of return-invariant entries only (no lazy loader).
                         stdlib_ret
+                    } else if method_name.as_str() == "!"
+                        && let Some(negated) = Type::negated_truthiness_result(&resolved_receiver)
+                    {
+                        negated
                     } else {
                         Self::deferred_receiver_method_ref(
                             receiver_type,
@@ -7822,6 +7899,13 @@ impl TypeRegistry {
             return Type::Untyped;
         };
         match ty {
+            Type::TruthyOnly(inner) => {
+                Type::project_truthiness(self.resolve_param_refs_from_resolved(inner, params), true)
+            }
+            Type::FalsyOnly(inner) => Type::project_truthiness(
+                self.resolve_param_refs_from_resolved(inner, params),
+                false,
+            ),
             Type::KeywordParamRef(name) => params
                 .iter()
                 .find(|p| &p.name == name)
@@ -7993,6 +8077,9 @@ impl TypeRegistry {
             | Type::PatternTrailingRef(..)
             | Type::PatternKeyRef(..)
             | Type::PatternKeyRestRef(..) => true,
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::type_needs_deferred_resolution_depth(inner, depth + 1)
+            }
             Type::Union(parts) | Type::Intersection(parts) => parts
                 .iter()
                 .any(|part| Self::type_needs_deferred_resolution_depth(part, depth + 1)),
@@ -8100,7 +8187,9 @@ impl TypeRegistry {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
-            | Type::PatternKeyRestRef(subject, _) => Self::type_is_memo_small(subject, budget),
+            | Type::PatternKeyRestRef(subject, _)
+            | Type::TruthyOnly(subject)
+            | Type::FalsyOnly(subject) => Self::type_is_memo_small(subject, budget),
             _ => true,
         }
     }
@@ -8304,6 +8393,28 @@ impl TypeRegistry {
                     visiting,
                 );
                 Self::resolve_pattern_key_rest_ref(&resolved_subject, matched_keys)
+            }
+            Type::TruthyOnly(inner) => {
+                let resolved = self.resolve_deferred_refs_depth(
+                    class_name,
+                    singleton_context,
+                    inner,
+                    depth + 1,
+                    memo,
+                    visiting,
+                );
+                Type::project_truthiness(resolved, true)
+            }
+            Type::FalsyOnly(inner) => {
+                let resolved = self.resolve_deferred_refs_depth(
+                    class_name,
+                    singleton_context,
+                    inner,
+                    depth + 1,
+                    memo,
+                    visiting,
+                );
+                Type::project_truthiness(resolved, false)
             }
             // children with no deferred ref pass through as-is; skip re-normalizing if nothing changed (avoids sorting huge param unions on every wake).
             Type::Union(parts) => {
@@ -8519,6 +8630,9 @@ impl TypeRegistry {
         if let Type::Union(parts) = resolved_receiver {
             let mut resolved_parts: Vec<Type> = Vec::new();
             for part in parts {
+                if method_name == "!" && !Self::is_concrete_for_global_resolve(part) {
+                    return Type::Bool;
+                }
                 if let Some(cls) = Self::type_to_class_name(part) {
                     let prefer_singleton = matches!(part, Type::Singleton(_));
                     let ret = self
@@ -8872,6 +8986,14 @@ impl TypeRegistry {
         visiting: &mut FxHashSet<(String, String, bool)>,
     ) -> Type {
         match ty {
+            Type::TruthyOnly(inner) => Type::project_truthiness(
+                self.resolve_call_site_type_from_caller_context(call_site, inner, visiting),
+                true,
+            ),
+            Type::FalsyOnly(inner) => Type::project_truthiness(
+                self.resolve_call_site_type_from_caller_context(call_site, inner, visiting),
+                false,
+            ),
             Type::ParamRef(idx) => self
                 .resolve_caller_positional_param_type(call_site, *idx, visiting)
                 .unwrap_or(Type::Untyped),
@@ -10573,6 +10695,9 @@ impl TypeRegistry {
     fn type_contains_param_ref(ty: &Type) -> bool {
         match ty {
             Type::ParamRef(_) | Type::KeywordParamRef(_) => true,
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::type_contains_param_ref(inner)
+            }
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::type_contains_param_ref)
             }
@@ -10833,6 +10958,8 @@ impl TypeRegistry {
             Self::substitute_param_refs_static_with_keywords(t, param_types, keyword_types)
         };
         match ty {
+            Type::TruthyOnly(inner) => Type::project_truthiness(recur(inner), true),
+            Type::FalsyOnly(inner) => Type::project_truthiness(recur(inner), false),
             Type::ParamRef(idx) => param_types.get(*idx).cloned().unwrap_or(Type::Untyped),
             Type::KeywordParamRef(name) => keyword_types
                 .get(name.as_str())

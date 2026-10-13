@@ -24,7 +24,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（遅延解決された source method return を
   block dispatch 前に反映し、tuple の要素 union とリテラル演算を block 内へ伝播）
 - Array / Hash / Set / Tuple / Record の要素型と shape
-- if / case / rescue / safe navigation / pattern matching の flow narrowing。分岐で相関したlocalも、識別可能な型で絞られた場合に反映
+- if / case / rescue / safe navigation / pattern matching の flow narrowing。`&&` / `||` は選択された左辺値を保ち、deferred reference は戻り値の解決後に真偽値で絞る。分岐で相関したlocalも、識別可能な型で絞られた場合に反映
 - 多重代入、operator-write、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播
 - 静的に名前を求められる `alias` / `define_method` / `attr_*` / `Struct.new` /
@@ -110,6 +110,8 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 - schema / `attribute` / relation から model の型を補う
 - Concern、association、scope、enum、delegate などの静的な DSL を展開する
 - ActiveRecord の `find` は単一 ID、ID 配列、複数 ID の overload とモデル／配列の戻り値を出力する
+- ActionController の `set_` / `assign_` callback helper は `void` として扱う。同じ名前の
+  他クラスでは推論した戻り値を保つ
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
 - GitLab in-tree の Presenter / CurrentSettings / Metrics / EE 拡張を検出する

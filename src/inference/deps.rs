@@ -174,6 +174,9 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             Type::Array(Some(inner)) => Self::collect_type_references_into(inner, defined, refs),
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::collect_type_references_into(inner, defined, refs)
+            }
             Type::Hash(Some(k), Some(v)) => {
                 Self::collect_type_references_into(k, defined, refs);
                 Self::collect_type_references_into(v, defined, refs);

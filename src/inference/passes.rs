@@ -491,6 +491,26 @@ impl<'a> InferenceEngine<'a> {
                 }
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
             }
+            Type::TruthyOnly(inner) => {
+                let resolved = Self::resolve_general_method_refs_depth(
+                    registry,
+                    context_class,
+                    inner,
+                    visiting,
+                    depth,
+                );
+                Type::project_truthiness(resolved, true)
+            }
+            Type::FalsyOnly(inner) => {
+                let resolved = Self::resolve_general_method_refs_depth(
+                    registry,
+                    context_class,
+                    inner,
+                    visiting,
+                    depth,
+                );
+                Type::project_truthiness(resolved, false)
+            }
             Type::Union(parts) => Type::from_type_vec(
                 parts
                     .iter()
@@ -538,6 +558,9 @@ impl<'a> InferenceEngine<'a> {
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::type_contains_method_ref)
             }
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::type_contains_method_ref(inner)
+            }
             Type::Array(Some(inner)) => Self::type_contains_method_ref(inner),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_method_ref),
             Type::Hash(Some(k), Some(v)) => {
@@ -583,6 +606,9 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .all(|f| Self::is_concrete_for_method_ref_resolve(&f.value)),
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::is_concrete_for_method_ref_resolve(inner)
+            }
             Type::Proc {
                 return_type,
                 param_count: _,
@@ -787,6 +813,9 @@ impl<'a> InferenceEngine<'a> {
     fn type_contains_param_ref(ty: &Type) -> bool {
         match ty {
             Type::ParamRef(_) | Type::KeywordParamRef(_) => true,
+            Type::TruthyOnly(inner) | Type::FalsyOnly(inner) => {
+                Self::type_contains_param_ref(inner)
+            }
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::type_contains_param_ref)
             }
@@ -1480,6 +1509,14 @@ impl<'a> InferenceEngine<'a> {
         keyword_types: &std::collections::HashMap<String, Type>,
     ) -> Type {
         match ty {
+            Type::TruthyOnly(inner) => Type::project_truthiness(
+                Self::substitute_param_refs_with_keywords(inner, param_types, keyword_types),
+                true,
+            ),
+            Type::FalsyOnly(inner) => Type::project_truthiness(
+                Self::substitute_param_refs_with_keywords(inner, param_types, keyword_types),
+                false,
+            ),
             Type::ParamRef(idx) => param_types.get(*idx).cloned().unwrap_or(Type::Untyped),
             Type::KeywordParamRef(name) => keyword_types
                 .get(name.as_str())
@@ -1790,6 +1827,45 @@ mod tests {
             &mut classes,
         );
         assert!(classes.is_empty());
+    }
+
+    #[test]
+    fn deferred_truthiness_keeps_method_returns_with_unresolved_params() {
+        let mut registry = TypeRegistry::new();
+        registry.mark_user_defined("Example");
+        registry.add_method_def(
+            "Example",
+            MethodDef {
+                name: Sym::new("value"),
+                param_infos: Vec::new(),
+                raw_return_type: Type::Union(vec![Type::Bool, Type::ParamRef(0)]),
+                sorbet_modifier_comments: Vec::new(),
+                rbs_annotated: false,
+                rbs_inline_annotated: false,
+                sig_annotated: false,
+                attr_ivar: None,
+                is_singleton: false,
+                rbs_file_source: false,
+                synthetic_dsl_source: false,
+                rbs_method_types: Default::default(),
+                extra_overloads: Vec::new(),
+                loc: None,
+            },
+        );
+
+        let method_return = Type::MethodReturnRef(Sym::new("Example"), Sym::new("value"));
+        for projected in [
+            Type::TruthyOnly(Box::new(method_return.clone())),
+            Type::FalsyOnly(Box::new(method_return.clone())),
+        ] {
+            let resolved = InferenceEngine::resolve_general_method_refs(
+                &registry,
+                "Example",
+                &projected,
+                &mut FxHashSet::default(),
+            );
+            assert_eq!(resolved, projected);
+        }
     }
 
     #[test]

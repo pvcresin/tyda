@@ -30,6 +30,21 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 重複を複製前に除外する。再推論対象の解決判定では訪問集合を再利用する。receiver が unresolved のままなら
 再走査せず、block parameter も推測で具体化しない。
 
+`||` / `&&` の式結果は、左辺の truthy / falsy 値を右辺との union に含める。左辺が deferred
+reference なら結果に `TruthyOnly` / `FalsyOnly` を保持し、参照と parameter ref の解決後に絞り込む。
+短絡式の結果を method receiver に使う場合も、投影の内側にある receiver reference を先に解決してから
+dispatch する。
+分岐の型絞り込みはこの結果投影と分け、既存の flow narrowing を保つ。省略可能な `&block` を値として
+読む場合は欠落時の `nil` を含め、分岐で truthy と判明した後は `nil` を再追加しない。ブロック転送用の
+scope 型は変えない。
+未解決のまま残る参照は推測で絞らず、出力では `untyped` として扱う。参照を含まない通常の型はその場で処理するため、追加の型ノードを作らない。
+参照解決は対象の型木を一度検査し、receiver / method return reference がなければ元の型を返す。
+union 内の deferred truthiness projection は receiver dispatch で未解決の候補も保持し、投影対象を解決してから method return を確定する。
+無引数の暗黙 self 呼び出しを `!` で否定する場合、呼び出し先の推論が揃うまで method reference として保持する。`!` の独自定義がない真偽値・`nil` receiver は、解決後に取り得る真偽値から結果を計算し、未解決値は `bool` とする。
+`super` の親 method が registry にない場合は `MethodReturnRef` を保持し、親の解析後に戻り値を解決する。これにより解析順で戻り値が literal に狭まるのを防ぐ。
+Rails の `set_` / `assign_` を `void` とみなす規約は ActionController class に限る。
+短絡式などの未解決戻り値を持つ他クラスの method は、名前だけで戻り値を `void` に置き換えない。
+
 ## 主要コンポーネント
 
 | 層・ファイル | 責務 |
