@@ -321,6 +321,10 @@ fn analyze_directory_preserves_optional_param_defaults_after_merge() {
             "    OptionalDefaultCounter.new.count_with_default\n",
             "  end\n",
             "\n",
+            "  def positional_with_override\n",
+            "    OptionalDefaultCounter.new.count_with_default(\"custom\")\n",
+            "  end\n",
+            "\n",
             "  def keyword\n",
             "    OptionalDefaultCounter.new.count_with_keyword_default\n",
             "  end\n",
@@ -356,7 +360,9 @@ fn analyze_directory_preserves_optional_param_defaults_after_merge() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("def count_with_default: (?Integer default) -> Integer"),
+        stdout.contains(
+            "def count_with_default: (?(Integer | String) default) -> (Integer | String)"
+        ),
         "the positional default must survive workspace ParamRef resolution: {stdout}\nstderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -374,7 +380,14 @@ fn analyze_directory_preserves_optional_param_defaults_after_merge() {
         stdout.contains("def count_with_keyword_default_from_positional: (?Integer value, ?fallback: Integer) -> Integer"),
         "a keyword default that references a positional parameter must resolve after merge: {stdout}"
     );
-    assert!(stdout.contains("def positional: -> Integer"), "{stdout}");
+    assert!(
+        stdout.contains("def positional: -> Integer | String"),
+        "all call-site argument types and the default must contribute to the method return: {stdout}"
+    );
+    assert!(
+        stdout.contains("def positional_with_override: -> Integer | String"),
+        "the explicit argument and omitted default must both contribute to the method return: {stdout}"
+    );
     assert!(stdout.contains("def keyword: -> Integer"), "{stdout}");
     assert!(
         stdout.contains("def chained_positional: -> Integer"),

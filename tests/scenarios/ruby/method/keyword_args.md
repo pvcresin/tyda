@@ -99,6 +99,47 @@ class Object < BasicObject
 end
 ```
 
+## Resolve optional defaults across workspace files
+
+```ruby
+class CrossFileOptionalDefault
+  def positional(value = 4)
+    value
+  end
+
+  def keyword(value: 5)
+    value
+  end
+end
+```
+
+### file: app/services/cross_file_optional_default_caller.rb
+
+```ruby
+class CrossFileOptionalDefaultCaller
+  def positional_default
+    CrossFileOptionalDefault.new.positional
+  end
+
+  def positional_override
+    CrossFileOptionalDefault.new.positional("custom")
+  end
+
+  def keyword_default
+    CrossFileOptionalDefault.new.keyword
+  end
+end
+```
+
+### result
+
+```rbs
+class CrossFileOptionalDefault
+  def positional: (?(Integer | String) value) -> (String | 4)
+  def keyword: (?value: Integer) -> Integer
+end
+```
+
 ## Forward a union of keyword records
 
 ```yaml
