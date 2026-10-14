@@ -25,7 +25,7 @@ class News < ApplicationRecord
 end
 ```
 
-## Preserve explicit instance methods
+## Keep unresolved predicate calls untyped
 
 ### update
 
@@ -45,6 +45,6 @@ end
 class Issue < ApplicationRecord
   include Redmine::SafeAttributes
 
-  def editable?: -> bool
+  def editable?: -> untyped
 end
 ```

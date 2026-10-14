@@ -8702,7 +8702,7 @@ impl TypeRegistry {
                 return Type::from_type_vec_preserve_untyped(resolved_parts);
             }
         }
-        if method_name == "!" || method_name.ends_with('?') {
+        if method_name == "!" {
             return Type::Bool;
         }
         match method_name {

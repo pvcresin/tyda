@@ -41,6 +41,7 @@ scope 型は変えない。
 参照解決は対象の型木を一度検査し、receiver / method return reference がなければ元の型を返す。
 union 内の deferred truthiness projection は receiver dispatch で未解決の候補も保持し、投影対象を解決してから method return を確定する。
 無引数の暗黙 self 呼び出しを `!` で否定する場合、呼び出し先の推論が揃うまで method reference として保持する。`!` の独自定義がない真偽値・`nil` receiver は、解決後に取り得る真偽値から結果を計算し、未解決値は `bool` とする。
+`?` で終わる method 名は真偽値を保証しない。実装や型宣言から戻り値を推論し、解決できない呼び出しは名前だけで `bool` にせず `untyped` とする。
 `super` の親 method が registry にない場合は `MethodReturnRef` を保持し、親の解析後に戻り値を解決する。これにより解析順で戻り値が literal に狭まるのを防ぐ。
 Rails の `set_` / `assign_` を `void` とみなす規約は ActionController class に限る。
 短絡式などの未解決戻り値を持つ他クラスの method は、名前だけで戻り値を `void` に置き換えない。

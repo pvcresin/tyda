@@ -416,6 +416,87 @@ class DeferredPredicateNegation
 end
 ```
 
+## Preserve non-boolean values from predicate-named methods
+
+```ruby
+class DeferredPredicateOperand
+  def self.maybe_token(flag)
+    return nil unless flag
+
+    "ready"
+  end
+
+  def self.token_available?(flag)
+    maybe_token(flag) || false
+  end
+end
+```
+
+### result
+
+```rbs
+class DeferredPredicateOperand
+  def self.maybe_token: (untyped flag) -> "ready"?
+  def self.token_available?: (untyped flag) -> (false | "ready")
+end
+```
+
+## Keep predicate-named calls on deferred receivers non-boolean
+
+```ruby
+class DeferredPredicateReceiver
+  class Target
+    def ready?
+      "ready"
+    end
+  end
+
+  def self.ready_status
+    (maybe_target || Target.new).ready?
+  end
+
+  def self.maybe_target
+    Target.new
+  end
+end
+```
+
+### result
+
+```rbs
+class DeferredPredicateReceiver
+  def self.ready_status: -> "ready"
+  def self.maybe_target: -> DeferredPredicateReceiver::Target
+end
+
+class DeferredPredicateReceiver::Target
+  def ready?: -> "ready"
+end
+```
+
+## Keep a deferred predicate delegate's return value
+
+```ruby
+class DeferredPredicateDelegate
+  def self.available?
+    status?
+  end
+
+  def self.status?
+    "ready"
+  end
+end
+```
+
+### result
+
+```rbs
+class DeferredPredicateDelegate
+  def self.available?: -> "ready"
+  def self.status?: -> "ready"
+end
+```
+
 ## Negate a predicate inferred through memoization
 
 ```ruby

@@ -11611,11 +11611,6 @@ impl<'a> InferenceEngine<'a> {
         {
             return;
         }
-        let new_return_type = if method_name.ends_with('?') {
-            Self::resolve_predicate_return_type(new_return_type)
-        } else {
-            new_return_type
-        };
         if !Self::type_needs_backward_propagation(&method_info.raw_return_type)
             && !Self::is_concrete(&new_return_type)
         {
@@ -12708,10 +12703,6 @@ impl<'a> InferenceEngine<'a> {
             )
         {
             return_type = Type::Void;
-        }
-
-        if method_name.ends_with('?') {
-            return_type = Self::resolve_predicate_return_type(return_type);
         }
 
         if is_singleton && Self::def_body_returns_only_bare_new(&def_node) {
@@ -44199,7 +44190,6 @@ impl<'a> InferenceEngine<'a> {
             "instance_methods" | "class_variables" | "constants" => {
                 Type::Array(Some(Box::new(Type::Symbol)))
             }
-            name if name.ends_with('?') => Type::Bool,
             _ => return None,
         };
         Some(ty)
@@ -44388,7 +44378,7 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternKeyRestRef(_, _)
             | Type::TruthyOnly(_)
             | Type::FalsyOnly(_) => {
-                if method_name == "!" || method_name.ends_with('?') {
+                if method_name == "!" {
                     return Type::Bool;
                 }
                 return Type::ReceiverMethodRef(
@@ -45448,35 +45438,6 @@ impl<'a> InferenceEngine<'a> {
                 | Node::InstanceVariableAndWriteNode { .. }
                 | Node::InstanceVariableOperatorWriteNode { .. }
         )
-    }
-
-    fn resolve_predicate_return_type(return_type: Type) -> Type {
-        match &return_type {
-            Type::ReceiverMethodRef(_, m) if m.ends_with('?') => Type::Bool,
-            Type::MethodReturnRef(_, m) if m.ends_with('?') => Type::Bool,
-            Type::Union(parts) => {
-                let has_method_ref = parts.iter().any(|t| {
-                    matches!(
-                        t,
-                        Type::ReceiverMethodRef(_, _) | Type::MethodReturnRef(_, _)
-                    )
-                });
-                if !has_method_ref {
-                    return return_type;
-                }
-                let all_boolean_context = parts.iter().all(|t| match t {
-                    Type::Bool | Type::True | Type::False | Type::Nil => true,
-                    Type::ReceiverMethodRef(_, m) | Type::MethodReturnRef(_, m) => m.ends_with('?'),
-                    _ => false,
-                });
-                if all_boolean_context {
-                    Type::Bool
-                } else {
-                    return_type
-                }
-            }
-            _ => return_type,
-        }
     }
 
     fn return_type_is_controller_void(&self, class_name: &str, return_type: &Type) -> bool {
@@ -48926,12 +48887,6 @@ impl<'a> InferenceEngine<'a> {
             }
             return;
         }
-
-        let new_return_type = if method_name.ends_with('?') {
-            Self::resolve_predicate_return_type(new_return_type)
-        } else {
-            new_return_type
-        };
 
         self.registry.update_method_return_type_variant(
             class_name,
