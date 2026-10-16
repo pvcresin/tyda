@@ -28,7 +28,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - 多重代入、operator-write、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播
 - 静的に名前を求められる `alias` / `define_method` / `attr_*` / `Struct.new` /
-  `Data.define` / `Forwardable` / `send` / `const_get`
+  `Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） / `Forwardable` / `send` / `const_get`
 
 実行時にしか決まらない名前、object identity、method surface は推測せず `untyped` にする。
 型の深さ・union・collection shape には上限がある。

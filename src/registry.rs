@@ -6151,6 +6151,21 @@ impl TypeRegistry {
                 .iter()
                 .position(|pi| pi.name == param_name);
 
+            let data_positional_index = match (data.cold().data_constructor.as_ref(), param_index) {
+                (Some(DataConstructor::Known(members)), Some(index))
+                    if members
+                        .get(index)
+                        .is_some_and(|member| member == param_name)
+                        && init_method
+                            .param_infos
+                            .get(index)
+                            .is_some_and(|param| param.kind == ParamKind::KeywordRequired) =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            };
+
             let positional_count = Self::positional_param_count(&init_method.param_infos);
 
             if let Some(param_index) = param_index {
@@ -6190,7 +6205,15 @@ impl TypeRegistry {
                     for call_site in &data.call_sites {
                         if call_site.method_name.as_ref() == "initialize"
                             && !call_site.method_is_singleton
-                            && let Some(ty) = call_site.keyword_arg_types.get(param_name)
+                            && let Some(ty) =
+                                call_site.keyword_arg_types.get(param_name).or_else(|| {
+                                    if call_site.keyword_arg_types.is_empty() {
+                                        data_positional_index
+                                            .and_then(|index| call_site.arg_types.get(index))
+                                    } else {
+                                        None
+                                    }
+                                })
                         {
                             let mut visiting = FxHashSet::from_iter([(
                                 class_name.to_string(),
