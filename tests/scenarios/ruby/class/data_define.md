@@ -209,10 +209,6 @@ end
 
 ## Infer positional constructor arguments
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
