@@ -67,10 +67,6 @@ end
 
 ## Assign instance variable in method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

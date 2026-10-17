@@ -2,10 +2,6 @@
 
 ## A direct write replaces an older instance variable value
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -27,10 +23,6 @@ end
 ```
 
 ## Branch writes merge the reachable instance variable values
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -57,10 +49,6 @@ end
 ```
 
 ## Compound writes update the current instance variable value
-
-```yaml
-known_issue: true
-```
 
 ### update
 

@@ -1378,9 +1378,13 @@ impl Scope {
         match subject {
             NarrowSubject::Local(name) => self.narrow_correlated_local(name, ty),
             NarrowSubject::Ivar(name) | NarrowSubject::SelfMethod(name) => {
-                Arc::make_mut(&mut self.self_facts).insert(name.clone(), ty);
+                self.set_self_fact(name, ty);
             }
         }
+    }
+
+    fn set_self_fact(&mut self, name: &str, ty: Type) {
+        Arc::make_mut(&mut self.self_facts).insert(name.to_string(), ty);
     }
 
     fn narrow_correlated_local(&mut self, name: &str, ty: Type) {
@@ -18297,15 +18301,15 @@ impl<'a> InferenceEngine<'a> {
                     .expect("must be InstanceVariableWriteNode");
                 let ivar_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
+                // Keep method-local writes separate from values inferred in other methods.
+                scope.invalidate_self_facts_for_ivar_write(&ivar_name);
+                scope.set_self_fact(&ivar_name, value_type.clone());
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, value_type);
                 } else {
                     self.registry
                         .add_ivar_type(class_name, &ivar_name, value_type);
                 }
-                // The assignment changes the value, so in addition to this ivar's fact, conservatively
-                // discard the fact for any method name whose backing ivar is statically unknown.
-                scope.invalidate_self_facts_for_ivar_write(&ivar_name);
             }
             Node::LocalVariableOrWriteNode { .. } => {
                 let write_node = node
@@ -18363,15 +18367,14 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let result_type =
                     self.infer_operator_write_result(&current_type, &operator_name, &value_type);
+                scope.invalidate_self_facts_for_ivar_write(&ivar_name);
+                scope.set_self_fact(&ivar_name, result_type.clone());
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, result_type);
                 } else {
                     self.registry
                         .add_ivar_type(class_name, &ivar_name, result_type);
                 }
-                // The assignment changes the value, so in addition to this ivar's fact, conservatively
-                // discard the fact for any method name whose backing ivar is statically unknown.
-                scope.invalidate_self_facts_for_ivar_write(&ivar_name);
             }
             Node::ClassVariableWriteNode { .. }
             | Node::ClassVariableOrWriteNode { .. }
@@ -18540,15 +18543,14 @@ impl<'a> InferenceEngine<'a> {
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_or_write_result(&current_type, &value_type);
+                scope.invalidate_self_facts_for_ivar_write(&ivar_name);
+                scope.set_self_fact(&ivar_name, result_type.clone());
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, result_type);
                 } else {
                     self.registry
                         .add_ivar_type(class_name, &ivar_name, result_type);
                 }
-                // The assignment changes the value, so in addition to this ivar's fact, conservatively
-                // discard the fact for any method name whose backing ivar is statically unknown.
-                scope.invalidate_self_facts_for_ivar_write(&ivar_name);
             }
             Node::InstanceVariableAndWriteNode { .. } => {
                 let write_node = node
@@ -18561,15 +18563,14 @@ impl<'a> InferenceEngine<'a> {
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_and_write_result(&current_type, &value_type);
+                scope.invalidate_self_facts_for_ivar_write(&ivar_name);
+                scope.set_self_fact(&ivar_name, result_type.clone());
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, result_type);
                 } else {
                     self.registry
                         .add_ivar_type(class_name, &ivar_name, result_type);
                 }
-                // The assignment changes the value, so in addition to this ivar's fact, conservatively
-                // discard the fact for any method name whose backing ivar is statically unknown.
-                scope.invalidate_self_facts_for_ivar_write(&ivar_name);
             }
             Node::GlobalVariableWriteNode { .. } => {
                 let write_node = node
@@ -47914,6 +47915,9 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn current_ivar_type(&self, class_name: &str, scope: &Scope, ivar_name: &str) -> Option<Type> {
+        if let Some(ty) = scope.self_facts.get(ivar_name) {
+            return Some(ty.clone());
+        }
         if scope.singleton_dispatch {
             self.singleton_ivars
                 .get(&(class_name.to_string(), ivar_name.to_string()))
@@ -50458,7 +50462,7 @@ end
         assert!(result.is_some(), "hover should find '@corporation'");
         let hover = result.unwrap();
         assert_eq!(hover.name, "@corporation");
-        assert_eq!(hover.ty.to_string(), "Corporation?");
+        assert_eq!(hover.ty.to_string(), "nil");
     }
 
     #[test]

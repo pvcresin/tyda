@@ -336,10 +336,6 @@ end
 
 ## Ivar short-circuit AND keeps the narrowed return and nil branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
