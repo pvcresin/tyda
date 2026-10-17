@@ -73,3 +73,38 @@ class Object < BasicObject
   def module_case_equality_override: (untyped flag) -> (1 | :other)
 end
 ```
+
+## Class-specific overrides do not use built-in case equality narrowing
+
+### update
+
+```ruby
+class CaseTarget
+  def self.===(_other) = true
+end
+
+def class_case_equality_override(flag)
+  value = if flag
+    1
+  else
+    "value"
+  end
+  if CaseTarget === value
+    value
+  else
+    :other
+  end
+end
+```
+
+### result
+
+```rbs
+class CaseTarget
+  def self.===: ((Integer | String) _other) -> true
+end
+
+class Object < BasicObject
+  def class_case_equality_override: (untyped flag) -> (1 | "value" | :other)
+end
+```

@@ -13,7 +13,7 @@
 | 分野 | 状態 | 代表的な範囲 |
 | --- | --- | --- |
 | 定義・dispatch・visibility | supported | class / module / mixin / constant / method / `super` |
-| 変数・flow | supported | local / ivar / 多重代入 / narrowing / 分岐間のlocal相関 / rescue |
+| 変数・flow | supported | local / ivar / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入を含む） / 分岐間のlocal相関 / rescue |
 | block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy |
 | collection shape | supported | Array、Hash、Set、Tuple、Record |
 | pattern matching | partial | version gate、array / hash / find binding、guard 内の capture、`case/in` の不一致は例外経路 |

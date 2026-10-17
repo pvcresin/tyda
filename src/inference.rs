@@ -19391,9 +19391,9 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
-                let narrowing = self.extract_condition_narrowing(
+                let narrowing = self.extract_if_node_narrowing(
                     class_name,
-                    &if_node.predicate(),
+                    &if_node,
                     parse_result,
                     scope,
                     self.supports_pattern_matching(),
@@ -24032,9 +24032,9 @@ impl<'a> InferenceEngine<'a> {
 
                 self.infer_node_type(class_name, &if_node.predicate(), parse_result, scope);
 
-                let narrowing = self.extract_condition_narrowing(
+                let narrowing = self.extract_if_node_narrowing(
                     class_name,
-                    &if_node.predicate(),
+                    &if_node,
                     parse_result,
                     scope,
                     self.supports_pattern_matching(),
@@ -46311,6 +46311,109 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => None,
         }
+    }
+
+    fn extract_class_case_equality_narrowing(
+        &mut self,
+        class_name: &str,
+        call: &ruby_prism::CallNode<'_>,
+        scope: &Scope,
+    ) -> Option<CondNarrowing> {
+        let receiver = call.receiver()?;
+        if !matches!(
+            &receiver,
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+        ) {
+            return None;
+        }
+        let mut args = call.arguments()?.arguments().iter();
+        let subject_node = args.next()?;
+        if args.next().is_some() {
+            return None;
+        }
+        let subject = Self::extract_narrow_subject_in_scope(&subject_node, scope)?;
+        let current = self.resolve_subject_input_type(class_name, scope, &subject)?;
+        if !matches!(current, Type::Union(_)) {
+            return None;
+        }
+
+        let receiver_name = String::from_utf8_lossy(receiver.location().as_slice());
+        let Type::Singleton(target_name) =
+            self.resolve_constant_type_in_scope(&receiver_name, class_name)
+        else {
+            return None;
+        };
+        let target_name = target_name.to_string();
+
+        if self
+            .registry
+            .class_data_for(&target_name)
+            .is_none_or(|class| class.is_module)
+        {
+            return None;
+        }
+        let narrowed = self.narrow_type_by_kind_of(&current, &target_name)?;
+        if narrowed == current || !self.uses_standard_class_case_equality(&target_name) {
+            return None;
+        }
+        Some(self.narrowing_with_default_negation(class_name, scope, subject, narrowed))
+    }
+
+    fn extract_if_node_narrowing(
+        &mut self,
+        class_name: &str,
+        if_node: &ruby_prism::IfNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+        allow_pattern_matching: bool,
+    ) -> Option<CondNarrowing> {
+        let narrowing = self.extract_condition_narrowing(
+            class_name,
+            &if_node.predicate(),
+            parse_result,
+            scope,
+            allow_pattern_matching,
+        );
+        if narrowing.is_some() {
+            return narrowing;
+        }
+
+        let predicate = if_node.predicate();
+        let call = predicate.as_call_node()?;
+        if call.name().as_slice() != b"===" || !Self::is_postfix_local_assignment(if_node) {
+            return None;
+        }
+        self.extract_class_case_equality_narrowing(class_name, &call, scope)
+    }
+
+    fn is_postfix_local_assignment(if_node: &ruby_prism::IfNode<'_>) -> bool {
+        if_node
+            .if_keyword_loc()
+            .is_some_and(|keyword| keyword.start_offset() > if_node.location().start_offset())
+            && if_node.statements().is_some_and(|statements| {
+                statements
+                    .body()
+                    .iter()
+                    .any(|statement| matches!(statement, Node::LocalVariableWriteNode { .. }))
+            })
+    }
+
+    fn uses_standard_class_case_equality(&mut self, class_name: &str) -> bool {
+        let Some((owner, is_singleton)) = self
+            .registry
+            .resolve_method_call_owners(class_name, "===", true)
+            .into_iter()
+            .next()
+        else {
+            return false;
+        };
+        if owner != "Module" || is_singleton {
+            return false;
+        }
+        !self
+            .registry
+            .lookup_method_def("Module", "===", false)
+            .is_some_and(|method| !method.rbs_file_source)
     }
 
     fn extract_predicate_method_narrowing(
