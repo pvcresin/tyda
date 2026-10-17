@@ -1,9 +1,5 @@
 ## class equality narrows postfix conditional assignment
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
