@@ -64,10 +64,11 @@ LSP workspace scan の速度・最大 RSS を比較する。対象は Ruby-only 
 2 に固定する。matrix は最大 10 job を並列に実行し、各解析 job の上限は 10 分とする。
 
 TypeProf PR #449 の4対象は、TypeProf自身（v0.32.0）、Optcarrot、RubyGems.org、Redmine
-である。Tydaでは Optcarrot と Redmine は既存の subject pin をそのまま再利用し、
-既存の RubyGems source (`ruby/rubygems`) と RubyGems.org (`rubygems/rubygems.org`) は
-別 subject として扱う。RubyKaigi由来のRails素材には `kaigionrails/conference-app`
-を追加した。これらはCIのmatrix対象を増やすもので、ローカルのsnapshot対象は増やさない。
+である。Tydaの4 subject も同じ repository revision に揃え、Redmine は TypeProf と同じ
+v7.0.1 の commit を使う。RubyGems source (`ruby/rubygems`) と RubyGems.org
+(`rubygems/rubygems.org`) は別 subject として扱う。RubyKaigi由来のRails素材には
+`kaigionrails/conference-app` を追加した。これらはCIのmatrix対象を増やすもので、ローカルの
+snapshot対象は増やさない。
 
 対象を追加するときは `setup_subjects.sh` に remote と commit を追加し、workflow の
 matrix に subject名・解析path・timeoutを追加する。base/headのbinary buildは増えず、
@@ -145,7 +146,7 @@ warning が継続する場合や runner 環境が変わった場合は、まず�
 | Ruby-only | `typeprof` | 中 | `subject/typeprof/lib` | `e20d7783c85911c601c8b535cd174f2951f4c430`（v0.32.0） |
 | Ruby-only | `rubygems` | 中 | `subject/rubygems` | `f72d9d9f9e42a246e5301f8f6492e8258134baee` |
 | Rails | `conference-app` | 小 | `subject/conference-app` | `12e49b9d8d35b2fbbec419e756cffca8bed2a800` |
-| Rails | `redmine` | 中 | `subject/redmine` | `890812e49cc60e96c7c252b7dedbd881a4edba55` |
+| Rails | `redmine` | 中 | `subject/redmine` | `752772866745192659850a632cd2c7a159856994`（v7.0.1） |
 | Rails | `rubygems.org` | 中 | `subject/rubygems.org` | `2abc82667d02ef7ae3a1433d621c1f7463985c6d` |
 | Rails | `mastodon` | 中 | `subject/mastodon` | `eb848d082afc8864b2aa15858f414e4867902c65` |
 | Rails | `gitlab` | 大 | `subject/gitlab/app` | `088eaeded42c93b4cbb0389b567e2f48d5b08b7c` |
