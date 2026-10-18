@@ -18303,7 +18303,9 @@ impl<'a> InferenceEngine<'a> {
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
                 // Keep method-local writes separate from values inferred in other methods.
                 scope.invalidate_self_facts_for_ivar_write(&ivar_name);
-                scope.set_self_fact(&ivar_name, value_type.clone());
+                if Self::can_track_ivar_write_locally(&write_node.value(), &value_type) {
+                    scope.set_self_fact(&ivar_name, value_type.clone());
+                }
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, value_type);
                 } else {
@@ -18368,7 +18370,9 @@ impl<'a> InferenceEngine<'a> {
                 let result_type =
                     self.infer_operator_write_result(&current_type, &operator_name, &value_type);
                 scope.invalidate_self_facts_for_ivar_write(&ivar_name);
-                scope.set_self_fact(&ivar_name, result_type.clone());
+                if Self::can_track_ivar_write_locally(&write_node.value(), &result_type) {
+                    scope.set_self_fact(&ivar_name, result_type.clone());
+                }
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, result_type);
                 } else {
@@ -18544,7 +18548,9 @@ impl<'a> InferenceEngine<'a> {
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_or_write_result(&current_type, &value_type);
                 scope.invalidate_self_facts_for_ivar_write(&ivar_name);
-                scope.set_self_fact(&ivar_name, result_type.clone());
+                if Self::can_track_ivar_write_locally(&write_node.value(), &result_type) {
+                    scope.set_self_fact(&ivar_name, result_type.clone());
+                }
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, result_type);
                 } else {
@@ -18564,7 +18570,9 @@ impl<'a> InferenceEngine<'a> {
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_and_write_result(&current_type, &value_type);
                 scope.invalidate_self_facts_for_ivar_write(&ivar_name);
-                scope.set_self_fact(&ivar_name, result_type.clone());
+                if Self::can_track_ivar_write_locally(&write_node.value(), &result_type) {
+                    scope.set_self_fact(&ivar_name, result_type.clone());
+                }
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, result_type);
                 } else {
@@ -19329,15 +19337,15 @@ impl<'a> InferenceEngine<'a> {
                             .as_local_variable_write_node()
                             .expect("must be LocalVariableWriteNode");
                         let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-                        if let Some(truthy) = Self::truthy_only(&left_type) {
+                        if let Some(truthy) = Self::deferred_truthy_only(&left_type) {
                             scope.set(&name, truthy.clone());
                             return truthy;
                         }
                     }
-                    return Self::truthy_only(&left_type).unwrap_or(left_type);
+                    return Self::deferred_truthy_only(&left_type).unwrap_or(left_type);
                 }
                 let mut result_types = Vec::new();
-                if let Some(truthy) = Self::truthy_only(&left_type) {
+                if let Some(truthy) = Self::deferred_truthy_only(&left_type) {
                     result_types.push(truthy);
                 }
                 result_types.push(right_type);
@@ -19374,10 +19382,10 @@ impl<'a> InferenceEngine<'a> {
                         scope,
                         false,
                     );
-                    return Self::falsy_only(&left_type).unwrap_or(left_type);
+                    return Self::deferred_falsy_only(&left_type).unwrap_or(left_type);
                 }
                 let mut result_types = Vec::new();
-                if let Some(falsy) = Self::falsy_only(&left_type) {
+                if let Some(falsy) = Self::deferred_falsy_only(&left_type) {
                     result_types.push(falsy);
                 }
                 result_types.push(right_type);
@@ -21980,12 +21988,15 @@ impl<'a> InferenceEngine<'a> {
                         body.unresolved_block_receivers.insert(&receiver_type);
                     }
                     let is_safe_nav = call_node.is_safe_navigation();
-                    let safe_nav_receiver_type = if is_safe_nav {
+                    let active_support_try = matches!(method_name.as_str(), "try" | "try!")
+                        && self.rails_feature_enabled();
+                    let nil_safe_dispatch = is_safe_nav || active_support_try;
+                    let safe_nav_receiver_type = if nil_safe_dispatch {
                         Self::remove_nil(&receiver_type)
                     } else {
                         receiver_type.clone()
                     };
-                    let safe_nav_adds_nil = is_safe_nav && Self::contains_nil(&receiver_type);
+                    let safe_nav_adds_nil = nil_safe_dispatch && Self::contains_nil(&receiver_type);
 
                     let wrap = |ty: Type| -> Type {
                         if safe_nav_adds_nil {
@@ -21996,7 +22007,7 @@ impl<'a> InferenceEngine<'a> {
                     };
 
                     let result = 'recv: {
-                        if is_safe_nav && safe_nav_receiver_type == Type::Bot {
+                        if nil_safe_dispatch && safe_nav_receiver_type == Type::Bot {
                             break 'recv Type::Nil;
                         }
                         if let Some(local_result) = self.resolve_local_singleton_method_call(
@@ -24372,7 +24383,7 @@ impl<'a> InferenceEngine<'a> {
                 let right_type =
                     self.infer_node_type(class_name, &and_node.right(), parse_result, &right_scope);
                 let mut result_types = Vec::new();
-                if let Some(falsy) = Self::falsy_only(&left_type) {
+                if let Some(falsy) = Self::deferred_falsy_only(&left_type) {
                     result_types.push(falsy);
                 }
                 result_types.push(right_type);
@@ -24395,7 +24406,7 @@ impl<'a> InferenceEngine<'a> {
                 let right_type =
                     self.infer_node_type(class_name, &or_node.right(), parse_result, &right_scope);
                 let mut result_types = Vec::new();
-                if let Some(truthy) = Self::truthy_only(&left_type) {
+                if let Some(truthy) = Self::deferred_truthy_only(&left_type) {
                     result_types.push(truthy);
                 }
                 result_types.push(right_type);
@@ -47759,10 +47770,45 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn falsy_only(ty: &Type) -> Option<Type> {
-        Type::project_falsy(ty)
+        match ty {
+            Type::Nil => Some(Type::Nil),
+            Type::False => Some(Type::False),
+            Type::Bool => Some(Type::False),
+            Type::Untyped | Type::Todo | Type::Top => Some(ty.clone()),
+            Type::Union(parts) => {
+                let filtered: Vec<Type> = parts.iter().filter_map(Self::falsy_only).collect();
+                match filtered.len() {
+                    0 => None,
+                    1 => filtered.into_iter().next(),
+                    _ => Some(Type::from_type_vec_preserve_untyped(filtered)),
+                }
+            }
+            _ => None,
+        }
     }
 
     fn truthy_only(ty: &Type) -> Option<Type> {
+        match ty {
+            Type::Nil | Type::False | Type::Void | Type::Bot => None,
+            Type::Bool => Some(Type::True),
+            Type::Untyped | Type::Todo | Type::Top => Some(ty.clone()),
+            Type::Union(parts) => {
+                let filtered: Vec<Type> = parts.iter().filter_map(Self::truthy_only).collect();
+                match filtered.len() {
+                    0 => None,
+                    1 => filtered.into_iter().next(),
+                    _ => Some(Type::from_type_vec_preserve_untyped(filtered)),
+                }
+            }
+            _ => Some(ty.clone()),
+        }
+    }
+
+    fn deferred_falsy_only(ty: &Type) -> Option<Type> {
+        Type::project_falsy(ty)
+    }
+
+    fn deferred_truthy_only(ty: &Type) -> Option<Type> {
         Type::project_truthy(ty)
     }
 
@@ -47922,6 +47968,11 @@ impl<'a> InferenceEngine<'a> {
             Some(class_name),
         );
         scope.self_override = Some(ty);
+    }
+
+    fn can_track_ivar_write_locally(value: &Node<'_>, ty: &Type) -> bool {
+        // Method return summaries may include branches excluded by this call's arguments.
+        !matches!(value, Node::CallNode { .. }) && !Self::type_contains_receiver_resolution_ref(ty)
     }
 
     fn current_ivar_type(&self, class_name: &str, scope: &Scope, ivar_name: &str) -> Option<Type> {
@@ -48934,6 +48985,34 @@ mod tests {
         assert!(!has_disjoint_primitive_flow_types(
             &Type::Class(Sym::new("Parent")),
             &Type::Class(Sym::new("Child")),
+        ));
+    }
+
+    #[test]
+    fn method_call_results_are_not_tracked_as_exact_local_ivar_facts() {
+        let source = "@value = Factory.build\n@value = nil\n";
+        let parse_result = ruby_prism::parse(source.as_bytes());
+        let program = parse_result.node().as_program_node().expect("program");
+        let mut nodes = program.statements().body().iter();
+        let call_assignment = nodes.next().expect("call assignment");
+        let call_value = call_assignment
+            .as_instance_variable_write_node()
+            .expect("instance variable write")
+            .value();
+        let literal_assignment = nodes.next().expect("literal assignment");
+        let literal_value = literal_assignment
+            .as_instance_variable_write_node()
+            .expect("instance variable write")
+            .value();
+
+        assert!(matches!(call_value, Node::CallNode { .. }));
+        assert!(!InferenceEngine::can_track_ivar_write_locally(
+            &call_value,
+            &Type::Class(Sym::new("Factory")),
+        ));
+        assert!(InferenceEngine::can_track_ivar_write_locally(
+            &literal_value,
+            &Type::Nil,
         ));
     }
 

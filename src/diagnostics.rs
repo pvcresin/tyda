@@ -868,6 +868,7 @@ fn starts_block(trimmed: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::AnalysisOptions;
     use crate::registry::{MethodDef, ParamInfo};
     use crate::types::{ParamKind, SourceLocation, Sym};
 
@@ -917,7 +918,14 @@ mod tests {
     }
 
     fn union_member_missing_methods(source: &str) -> Vec<String> {
-        use crate::analysis::{AnalysisOptions, analyze_cached_file_with_deps};
+        union_member_missing_methods_with_options(source, AnalysisOptions::default())
+    }
+
+    fn union_member_missing_methods_with_options(
+        source: &str,
+        options: AnalysisOptions,
+    ) -> Vec<String> {
+        use crate::analysis::analyze_cached_file_with_deps;
         let core_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs/core");
         let loader = LazyRbsLoader::new(core_dir);
         let (analysis, _) = analyze_cached_file_with_deps(
@@ -925,7 +933,7 @@ mod tests {
             None,
             Some(&loader),
             Some("union_member.rb"),
-            AnalysisOptions::default(),
+            options,
         );
         analysis
             .method_call_diagnostics(&loader, None, None)
@@ -933,6 +941,54 @@ mod tests {
             .into_iter()
             .map(|call| call.unresolved_method)
             .collect()
+    }
+
+    #[test]
+    fn active_support_try_is_available_on_any_object() {
+        let source = concat!(
+            "class MergeRequest\n",
+            "  def resource_parent = Object.new\n",
+            "end\n",
+            "class WorkItem\n",
+            "  def resource_parent = Object.new\n",
+            "end\n",
+            "\n",
+            "#: ((MergeRequest | WorkItem)?) -> void\n",
+            "def process(issuable)\n",
+            "  issuable.try(:resource_parent)\n",
+            "  issuable.try!(:resource_parent)\n",
+            "end\n",
+        );
+        let options = AnalysisOptions {
+            rails_mode: true,
+            ..AnalysisOptions::default()
+        };
+
+        let methods = union_member_missing_methods_with_options(source, options);
+        assert!(
+            methods.is_empty(),
+            "Rails Object#try is available: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn non_rails_try_does_not_hide_nil_receiver_diagnostic() {
+        let source = concat!(
+            "class Resource\n",
+            "  def try = true\n",
+            "end\n",
+            "\n",
+            "#: ((Resource | nil)) -> void\n",
+            "def process(resource)\n",
+            "  resource.try\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.contains(&"NilClass#try".to_string()),
+            "non-Rails try must not be treated as nil-safe: {methods:?}"
+        );
     }
 
     #[test]
