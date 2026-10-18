@@ -113,6 +113,8 @@ pub enum Type {
         param_count: usize,
     },
     Tuple(Vec<Type>),
+    TruthyProjection(Box<Type>),
+    FalsyProjection(Box<Type>),
     // `args` is stored as `Box<[Type]>` rather than `Vec` for a narrower slot.
     Generic {
         base: Sym,
@@ -166,8 +168,56 @@ impl Type {
                     + keys.iter().map(RecordKey::deep_extra_bytes).sum::<usize>()
             }
             Type::ReceiverMethodRef(receiver, _) => SLOT + receiver.deep_extra_bytes(),
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+                SLOT + inner.deep_extra_bytes()
+            }
             Type::Proc { return_type, .. } => SLOT + return_type.deep_extra_bytes(),
             _ => 0,
+        }
+    }
+
+    pub(crate) fn project_truthy(ty: &Type) -> Option<Type> {
+        match ty {
+            Type::Nil | Type::False | Type::Void | Type::Bot => None,
+            Type::Bool => Some(Type::True),
+            Type::Untyped | Type::Todo | Type::Top => Some(ty.clone()),
+            Type::Union(parts) => {
+                let projected: Vec<Type> = parts.iter().filter_map(Self::project_truthy).collect();
+                match projected.len() {
+                    0 => None,
+                    1 => projected.into_iter().next(),
+                    _ => Some(Type::from_type_vec_preserve_untyped(projected)),
+                }
+            }
+            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) => {
+                Some(Type::TruthyProjection(Box::new(ty.clone())))
+            }
+            Type::TruthyProjection(_) => Some(ty.clone()),
+            Type::FalsyProjection(_) => None,
+            _ => Some(ty.clone()),
+        }
+    }
+
+    pub(crate) fn project_falsy(ty: &Type) -> Option<Type> {
+        match ty {
+            Type::Nil => Some(Type::Nil),
+            Type::False => Some(Type::False),
+            Type::Bool => Some(Type::False),
+            Type::Untyped | Type::Todo | Type::Top => Some(ty.clone()),
+            Type::Union(parts) => {
+                let projected: Vec<Type> = parts.iter().filter_map(Self::project_falsy).collect();
+                match projected.len() {
+                    0 => None,
+                    1 => projected.into_iter().next(),
+                    _ => Some(Type::from_type_vec_preserve_untyped(projected)),
+                }
+            }
+            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) => {
+                Some(Type::FalsyProjection(Box::new(ty.clone())))
+            }
+            Type::TruthyProjection(_) => None,
+            Type::FalsyProjection(_) => Some(ty.clone()),
+            _ => None,
         }
     }
 }
@@ -224,6 +274,8 @@ impl PartialEq for Type {
             (Type::ReceiverMethodRef(t1, m1), Type::ReceiverMethodRef(t2, m2)) => {
                 t1 == t2 && m1 == m2
             }
+            (Type::TruthyProjection(t1), Type::TruthyProjection(t2))
+            | (Type::FalsyProjection(t1), Type::FalsyProjection(t2)) => t1 == t2,
             (
                 Type::Proc {
                     return_type: r1,
@@ -290,6 +342,7 @@ impl std::hash::Hash for Type {
                 t.hash(state);
                 m.hash(state);
             }
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => inner.hash(state),
             Type::Proc {
                 return_type,
                 param_count,
@@ -359,6 +412,8 @@ impl Type {
             Type::PatternKeyRef(_, _) => 28,
             Type::PatternKeyRestRef(_, _) => 29,
             Type::ReceiverMethodRef(_, _) => 30,
+            Type::TruthyProjection(_) => 40,
+            Type::FalsyProjection(_) => 41,
             Type::SelfType => 31,
             Type::InstanceType => 38,
             Type::Proc { .. } => 32,
@@ -415,6 +470,8 @@ impl Type {
             (Type::ReceiverMethodRef(t1, m1), Type::ReceiverMethodRef(t2, m2)) => {
                 t1.cmp(t2).then(m1.cmp(m2))
             }
+            (Type::TruthyProjection(t1), Type::TruthyProjection(t2))
+            | (Type::FalsyProjection(t1), Type::FalsyProjection(t2)) => t1.cmp(t2),
             (
                 Type::Proc {
                     return_type: a,
@@ -482,6 +539,12 @@ impl Type {
                 return_type: Box::new(return_type.replace_self_type(self_type)),
                 param_count: *param_count,
             },
+            Type::TruthyProjection(inner) => {
+                Type::TruthyProjection(Box::new(inner.replace_self_type(self_type)))
+            }
+            Type::FalsyProjection(inner) => {
+                Type::FalsyProjection(Box::new(inner.replace_self_type(self_type)))
+            }
             Type::Tuple(types) => Type::Tuple(
                 types
                     .iter()
@@ -513,6 +576,9 @@ impl Type {
                     || value.as_deref().is_some_and(Type::contains_instance_type)
             }
             Type::Record(fields) => fields.iter().any(|f| f.value.contains_instance_type()),
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+                inner.contains_instance_type()
+            }
             Type::Proc { return_type, .. } => return_type.contains_instance_type(),
             _ => false,
         }
@@ -563,6 +629,12 @@ impl Type {
                 return_type: Box::new(return_type.replace_instance_type(instance_type)),
                 param_count: *param_count,
             },
+            Type::TruthyProjection(inner) => {
+                Type::TruthyProjection(Box::new(inner.replace_instance_type(instance_type)))
+            }
+            Type::FalsyProjection(inner) => {
+                Type::FalsyProjection(Box::new(inner.replace_instance_type(instance_type)))
+            }
             Type::Tuple(types) => Type::Tuple(
                 types
                     .iter()
@@ -1090,6 +1162,7 @@ impl fmt::Display for Type {
             Type::PatternKeyRef(_, _) => write!(f, "untyped"),
             Type::PatternKeyRestRef(_, _) => write!(f, "untyped"),
             Type::ReceiverMethodRef(_, _) => write!(f, "untyped"),
+            Type::TruthyProjection(_) | Type::FalsyProjection(_) => write!(f, "untyped"),
             Type::SelfType => write!(f, "self"),
             Type::InstanceType => write!(f, "instance"),
             Type::Proc { .. } => write!(f, "Proc"),

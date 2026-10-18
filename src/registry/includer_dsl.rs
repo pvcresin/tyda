@@ -66,6 +66,16 @@ impl TypeRegistry {
                     }
                 }
             }
+            IncluderBoundDsl::ActiveRecordEnumStatuses { name, loc } => {
+                if self.inherits_any(includer, &["ActiveRecord::Base", "ApplicationRecord"]) {
+                    self.add_simple_singleton_reader(
+                        includer,
+                        name,
+                        Type::Hash(Some(Box::new(Type::String)), Some(Box::new(Type::Untyped))),
+                        *loc,
+                    );
+                }
+            }
         }
     }
 
@@ -121,6 +131,34 @@ impl TypeRegistry {
                 sig_annotated: false,
                 attr_ivar: None,
                 is_singleton: false,
+                rbs_file_source: false,
+                synthetic_dsl_source: false,
+                rbs_method_types: Default::default(),
+                extra_overloads: Vec::new(),
+                loc: Some(loc),
+            },
+        );
+    }
+
+    fn add_simple_singleton_reader(
+        &mut self,
+        class_name: &str,
+        name: &str,
+        return_type: Type,
+        loc: SourceLocation,
+    ) {
+        self.add_method_def_if_missing(
+            class_name,
+            MethodDef {
+                name: Sym::new(name),
+                param_infos: Vec::new(),
+                raw_return_type: return_type,
+                sorbet_modifier_comments: Vec::new(),
+                rbs_annotated: true,
+                rbs_inline_annotated: false,
+                sig_annotated: false,
+                attr_ivar: None,
+                is_singleton: true,
                 rbs_file_source: false,
                 synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),

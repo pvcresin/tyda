@@ -1020,6 +1020,39 @@ mod tests {
     }
 
     #[test]
+    fn self_method_truthiness_guard_narrows_a_repeated_call() {
+        let source = concat!(
+            "class Project\n",
+            "  #: () -> String\n",
+            "  def name\n",
+            "    \"project\"\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "class Finder\n",
+            "  #: () -> Project?\n",
+            "  def project\n",
+            "    @project\n",
+            "  end\n",
+            "\n",
+            "  def project_name\n",
+            "    if project\n",
+            "      project.name\n",
+            "    else\n",
+            "      \"none\"\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "the truthy guard applies to the repeated reader call: {methods:?}"
+        );
+    }
+
+    #[test]
     fn scenario_seed_extracts_enclosing_block() {
         let source = concat!(
             "class Probe\n",

@@ -44654,6 +44654,24 @@ impl<'a> InferenceEngine<'a> {
                     Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
                 }
             }
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+                let resolved_inner =
+                    self.resolve_receiver_method_refs_depth(inner, depth + 1, memo, visiting);
+                if Self::type_contains_receiver_resolution_ref(&resolved_inner) {
+                    if matches!(ty, Type::TruthyProjection(_)) {
+                        Type::TruthyProjection(Box::new(resolved_inner))
+                    } else {
+                        Type::FalsyProjection(Box::new(resolved_inner))
+                    }
+                } else {
+                    let projected = if matches!(ty, Type::TruthyProjection(_)) {
+                        Type::project_truthy(&resolved_inner)
+                    } else {
+                        Type::project_falsy(&resolved_inner)
+                    };
+                    projected.unwrap_or(Type::Bot)
+                }
+            }
             Type::Union(parts) => {
                 let resolved: Vec<Type> = parts
                     .iter()
@@ -45023,6 +45041,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::GlobalVariableRef(_)
             | Type::MethodReturnRef(_, _)
             | Type::ReceiverMethodRef(_, _)
+            | Type::TruthyProjection(_)
+            | Type::FalsyProjection(_)
             | Type::SelfType
             | Type::InstanceType => false,
             Type::Union(parts) => parts.iter().all(Self::is_concrete),
@@ -45063,7 +45083,9 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
-            | Type::PatternKeyRestRef(subject, _) => {
+            | Type::PatternKeyRestRef(subject, _)
+            | Type::TruthyProjection(subject)
+            | Type::FalsyProjection(subject) => {
                 Self::type_contains_receiver_resolution_ref(subject)
             }
             _ => false,
@@ -46017,7 +46039,20 @@ impl<'a> InferenceEngine<'a> {
             Node::CallNode { .. } => {
                 let call = predicate.as_call_node()?;
                 let method = String::from_utf8_lossy(call.name().as_slice()).to_string();
-                let receiver = call.receiver()?;
+                let Some(receiver) = call.receiver() else {
+                    if call.arguments().is_some()
+                        || call.block().is_some()
+                        || !self.is_pure_ivar_reader(class_name, scope.singleton_dispatch, &method)
+                    {
+                        return None;
+                    }
+                    let subject = NarrowSubject::SelfMethod(method);
+                    let current = self.resolve_subject_input_type(class_name, scope, &subject)?;
+                    let truthy = Self::truthy_only(&current)?;
+                    return Some(
+                        self.narrowing_with_default_negation(class_name, scope, subject, truthy),
+                    );
+                };
 
                 if method == "!" {
                     let inner = self.extract_condition_narrowing(
@@ -46521,7 +46556,9 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternTrailingRef(_, _)
             | Type::PatternKeyRef(_, _)
             | Type::PatternKeyRestRef(_, _)
-            | Type::ReceiverMethodRef(_, _) => true,
+            | Type::ReceiverMethodRef(_, _)
+            | Type::TruthyProjection(_)
+            | Type::FalsyProjection(_) => true,
             _ => false,
         }
     }
@@ -47722,38 +47759,11 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn falsy_only(ty: &Type) -> Option<Type> {
-        match ty {
-            Type::Nil => Some(Type::Nil),
-            Type::False => Some(Type::False),
-            Type::Bool => Some(Type::False),
-            Type::Untyped | Type::Todo | Type::Top => Some(ty.clone()),
-            Type::Union(parts) => {
-                let filtered: Vec<Type> = parts.iter().filter_map(Self::falsy_only).collect();
-                match filtered.len() {
-                    0 => None,
-                    1 => filtered.into_iter().next(),
-                    _ => Some(Type::from_type_vec_preserve_untyped(filtered)),
-                }
-            }
-            _ => None,
-        }
+        Type::project_falsy(ty)
     }
 
     fn truthy_only(ty: &Type) -> Option<Type> {
-        match ty {
-            Type::Nil | Type::False | Type::Void | Type::Bot => None,
-            Type::Bool => Some(Type::True),
-            Type::Untyped | Type::Todo | Type::Top => Some(ty.clone()),
-            Type::Union(parts) => {
-                let filtered: Vec<Type> = parts.iter().filter_map(Self::truthy_only).collect();
-                match filtered.len() {
-                    0 => None,
-                    1 => filtered.into_iter().next(),
-                    _ => Some(Type::from_type_vec_preserve_untyped(filtered)),
-                }
-            }
-            _ => Some(ty.clone()),
-        }
+        Type::project_truthy(ty)
     }
 
     fn extract_sorbet_class_modifiers(

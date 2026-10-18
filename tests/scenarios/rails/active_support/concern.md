@@ -552,6 +552,8 @@ end
 
 def item_result = Item.active
 def user_result = User.active
+def item_statuses = Item.statuses
+def user_statuses = User.statuses
 ```
 
 ### result
@@ -559,11 +561,15 @@ def user_result = User.active
 ```rbs
 class Item < ApplicationRecord
   include Statused
+
+  def self.statuses: -> Hash[String, untyped]
 end
 
 class Object < BasicObject
   def item_result: -> ActiveRecord::Relation[Item]
   def user_result: -> ActiveRecord::Relation[User]
+  def item_statuses: -> Hash[String, untyped]
+  def user_statuses: -> Hash[String, untyped]
 end
 
 module Statused
@@ -579,6 +585,8 @@ end
 
 class User < ApplicationRecord
   include Statused
+
+  def self.statuses: -> Hash[String, untyped]
 end
 ```
 

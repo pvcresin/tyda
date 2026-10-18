@@ -25,10 +25,6 @@ end
 
 ## Resolve deferred falsey returns before applying an `||` fallback
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class DeferredFalsyFallback
   def self.entries_or_empty(status)
@@ -97,10 +93,6 @@ end
 
 ## Resolve deferred falsey returns with early returns and rescue
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class DeferredFalsyFallbackWithRescue
   def self.entries_or_empty(status)
@@ -128,10 +120,6 @@ end
 ```
 
 ## Narrow container truthiness when its element type is unresolved
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class DeferredNestedElements
