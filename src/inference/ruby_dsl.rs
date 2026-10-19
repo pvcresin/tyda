@@ -2210,6 +2210,28 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    pub(super) fn class_new_has_explicit_superclass(
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+    ) -> bool {
+        let Node::CallNode { .. } = node else {
+            return false;
+        };
+        let call = node.as_call_node().expect("must be CallNode");
+        let method = String::from_utf8_lossy(call.name().as_slice());
+        if method != "new" {
+            return false;
+        }
+        let Some(receiver) = call.receiver() else {
+            return false;
+        };
+        if Self::resolve_constant_path_static(&receiver, parse_result) != "Class" {
+            return false;
+        }
+        call.arguments()
+            .is_some_and(|args| !args.arguments().is_empty())
+    }
+
     pub(super) fn resolve_constant_path_static(
         node: &Node<'_>,
         _parse_result: &ParseResult<'_>,

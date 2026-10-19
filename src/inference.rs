@@ -291,6 +291,19 @@ struct CaseWhenClassNarrowing {
     remaining_type: Option<Type>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaseWhenTypeMatch {
+    Always,
+    Possible,
+    Never,
+}
+
+#[derive(Clone, Debug)]
+struct CaseWhenClassHierarchy {
+    ancestors: FxHashSet<String>,
+    complete: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MatchDataKey {
     Index(i64),
@@ -643,7 +656,8 @@ pub struct InferenceEngine<'a> {
     standard_class_case_equality: HashMap<String, bool>,
     case_when_class_target_cache:
         FxHashMap<String, FxHashMap<String, Vec<CaseWhenClassTargetCacheEntry>>>,
-    case_when_kind_of_cache: FxHashMap<(String, String), bool>,
+    case_when_class_hierarchy_cache: FxHashMap<String, CaseWhenClassHierarchy>,
+    case_when_kind_of_cache: FxHashMap<(String, String), CaseWhenTypeMatch>,
     constant_name_sequences: HashMap<String, Vec<String>>,
     lazy_loader: Option<&'a LazyRbsLoader>,
     lazy_rbi_loader: Option<&'a LazyRbiLoader>,
@@ -1778,6 +1792,7 @@ impl<'a> InferenceEngine<'a> {
             constants: HashMap::new(),
             standard_class_case_equality: HashMap::new(),
             case_when_class_target_cache: FxHashMap::default(),
+            case_when_class_hierarchy_cache: FxHashMap::default(),
             case_when_kind_of_cache: FxHashMap::default(),
             constant_name_sequences: HashMap::new(),
             lazy_loader: Some(lazy_loader),
@@ -1843,6 +1858,7 @@ impl<'a> InferenceEngine<'a> {
             constants: HashMap::new(),
             standard_class_case_equality: HashMap::new(),
             case_when_class_target_cache: FxHashMap::default(),
+            case_when_class_hierarchy_cache: FxHashMap::default(),
             case_when_kind_of_cache: FxHashMap::default(),
             constant_name_sequences: HashMap::new(),
             lazy_loader: None,
@@ -8555,6 +8571,8 @@ impl<'a> InferenceEngine<'a> {
                                 &superclass,
                                 &superclass_name,
                             );
+                        } else {
+                            self.registry.mark_superclass_unknown(&class_name);
                         }
                     }
                 }
@@ -9518,6 +9536,7 @@ impl<'a> InferenceEngine<'a> {
     ) -> Option<(
         DynamicNamespaceKind,
         Option<String>,
+        bool,
         Option<ruby_prism::BlockNode<'b>>,
     )> {
         let Node::CallNode { .. } = node else {
@@ -9541,10 +9560,17 @@ impl<'a> InferenceEngine<'a> {
         } else {
             None
         };
+        let superclass_is_unknown = kind == DynamicNamespaceKind::Class
+            && superclass.is_none()
+            && Self::class_new_has_explicit_superclass(node, parse_result);
         let block = call.block().and_then(|block| block.as_block_node());
 
-        if kind == DynamicNamespaceKind::Module || block.is_some() || superclass.is_some() {
-            Some((kind, superclass, block))
+        if kind == DynamicNamespaceKind::Module
+            || block.is_some()
+            || superclass.is_some()
+            || superclass_is_unknown
+        {
+            Some((kind, superclass, superclass_is_unknown, block))
         } else {
             None
         }
@@ -9559,7 +9585,7 @@ impl<'a> InferenceEngine<'a> {
         comments: &[RbsComment],
         class_body_scope: Scope,
     ) -> bool {
-        let Some((kind, superclass, block)) =
+        let Some((kind, superclass, superclass_is_unknown, block)) =
             Self::dynamic_namespace_call_info(value_node, parse_result)
         else {
             return false;
@@ -9589,6 +9615,8 @@ impl<'a> InferenceEngine<'a> {
             );
             self.record_reference(&superclass);
             self.registry.set_superclass(&full_name, &superclass);
+        } else if superclass_is_unknown {
+            self.registry.mark_superclass_unknown(&full_name);
         }
         self.insert_class_body_constant(
             class_name,
@@ -9869,6 +9897,8 @@ impl<'a> InferenceEngine<'a> {
                                         &superclass,
                                         &superclass_name,
                                     );
+                                } else {
+                                    self.registry.mark_superclass_unknown(&full_name);
                                 }
                             }
                         }
@@ -9991,7 +10021,7 @@ impl<'a> InferenceEngine<'a> {
                             pending_sigs.clear();
                             continue;
                         }
-                        if let Some((_, _, block)) =
+                        if let Some((_, _, _, block)) =
                             Self::dynamic_namespace_call_info(&node, parse_result)
                             && let Some(block) = block
                             && let Some(body) = block.body()
@@ -45870,26 +45900,139 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn case_when_class_matches_kind_of_target(
+    fn case_when_class_hierarchy_matches_target(
         &mut self,
         class_name: &str,
         target_name: &str,
-    ) -> bool {
-        if class_name == target_name {
-            return true;
+    ) -> (bool, bool) {
+        if let Some(hierarchy) = self.case_when_class_hierarchy_cache.get(class_name) {
+            return (
+                hierarchy.ancestors.contains(target_name),
+                hierarchy.complete,
+            );
         }
-        let key = (class_name.to_string(), target_name.to_string());
-        if let Some(matches) = self.case_when_kind_of_cache.get(&key) {
-            return *matches;
+
+        let mut current = class_name.to_string();
+        let mut complete = true;
+        let mut matches_target = false;
+        let mut ancestors = FxHashSet::default();
+        loop {
+            if !ancestors.insert(current.clone()) {
+                complete = false;
+                break;
+            }
+            if current == target_name {
+                matches_target = true;
+            }
+            if current == "BasicObject" {
+                break;
+            }
+            if current == "Object" {
+                if self
+                    .registry
+                    .class_data_for("Object")
+                    .is_some_and(|class| class.superclass_is_unknown)
+                {
+                    complete = false;
+                    break;
+                }
+                current = self
+                    .registry
+                    .get_runtime_superclass(&current)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "BasicObject".to_string());
+                continue;
+            }
+            self.ensure_external_class(&current);
+            let Some(class) = self.registry.class_data_for(&current) else {
+                complete = false;
+                break;
+            };
+            if !class.has_type_substance() || class.superclass_is_unknown {
+                complete = false;
+                break;
+            }
+            current = self
+                .registry
+                .get_runtime_superclass(&current)
+                .map(str::to_string)
+                .unwrap_or_else(|| "Object".to_string());
         }
-        let matches = self.class_matches_kind_of_target(class_name, target_name);
-        self.case_when_kind_of_cache.insert(key, matches);
-        matches
+        self.case_when_class_hierarchy_cache.insert(
+            class_name.to_string(),
+            CaseWhenClassHierarchy {
+                ancestors,
+                complete,
+            },
+        );
+        (matches_target, complete)
     }
 
-    fn case_when_type_matches_kind_of_target(&mut self, ty: &Type, target_name: &str) -> bool {
+    fn case_when_class_match_relation(
+        &mut self,
+        class_name: &str,
+        target_name: &str,
+    ) -> CaseWhenTypeMatch {
+        if class_name == target_name {
+            return CaseWhenTypeMatch::Always;
+        }
+        let key = (class_name.to_string(), target_name.to_string());
+        if let Some(relation) = self.case_when_kind_of_cache.get(&key) {
+            return *relation;
+        }
+
+        self.ensure_external_class(class_name);
+        self.ensure_external_class(target_name);
+
+        let target_is_module = self
+            .registry
+            .class_data_for(target_name)
+            .is_some_and(|data| data.is_module);
+        let source_is_module = self
+            .registry
+            .class_data_for(class_name)
+            .is_some_and(|data| data.is_module);
+        let relation = if target_is_module {
+            if self.class_includes_module_target(class_name, target_name, &mut HashSet::new()) {
+                CaseWhenTypeMatch::Always
+            } else {
+                CaseWhenTypeMatch::Possible
+            }
+        } else if source_is_module {
+            if target_name == "BasicObject" {
+                CaseWhenTypeMatch::Always
+            } else {
+                CaseWhenTypeMatch::Possible
+            }
+        } else {
+            let (class_matches, class_hierarchy_complete) =
+                self.case_when_class_hierarchy_matches_target(class_name, target_name);
+            if class_matches {
+                CaseWhenTypeMatch::Always
+            } else {
+                let (target_matches, target_hierarchy_complete) =
+                    self.case_when_class_hierarchy_matches_target(target_name, class_name);
+                if target_matches {
+                    CaseWhenTypeMatch::Possible
+                } else if class_hierarchy_complete && target_hierarchy_complete {
+                    CaseWhenTypeMatch::Never
+                } else {
+                    CaseWhenTypeMatch::Possible
+                }
+            }
+        };
+
+        self.case_when_kind_of_cache.insert(key, relation);
+        relation
+    }
+
+    fn case_when_type_matches_kind_of_target(
+        &mut self,
+        ty: &Type,
+        target_name: &str,
+    ) -> CaseWhenTypeMatch {
         match ty {
-            Type::Untyped | Type::Top => true,
+            Type::Untyped | Type::Top => CaseWhenTypeMatch::Possible,
             Type::Singleton(owner) => {
                 self.ensure_class_available(owner);
                 let object_class = if self
@@ -45901,11 +46044,12 @@ impl<'a> InferenceEngine<'a> {
                 } else {
                     "Class"
                 };
-                self.case_when_class_matches_kind_of_target(object_class, target_name)
+                self.case_when_class_match_relation(object_class, target_name)
             }
-            _ => self.type_to_class_name(ty).is_some_and(|class_name| {
-                self.case_when_class_matches_kind_of_target(&class_name, target_name)
-            }),
+            _ => self
+                .type_to_class_name(ty)
+                .map(|class_name| self.case_when_class_match_relation(&class_name, target_name))
+                .unwrap_or(CaseWhenTypeMatch::Possible),
         }
     }
 
@@ -45933,42 +46077,35 @@ impl<'a> InferenceEngine<'a> {
         };
         let mut branch_types = Vec::new();
         let mut remaining_types = Vec::new();
-        let mut unknown_remaining = false;
         for part in current_parts {
             if part == Type::Bot {
                 continue;
             }
             if matches!(part, Type::Untyped | Type::Top) {
                 branch_types.extend(target_types.iter().cloned());
-                unknown_remaining = true;
-                continue;
-            }
-
-            if targets
-                .iter()
-                .any(|target| self.case_when_type_matches_kind_of_target(&part, target))
-            {
-                branch_types.push(part);
-                continue;
-            }
-
-            if matches!(part, Type::Singleton(_)) {
                 remaining_types.push(part);
                 continue;
             }
 
-            let Some(part_class) = self.type_to_class_name(&part) else {
-                branch_types.extend(target_types.iter().cloned());
-                unknown_remaining = true;
-                continue;
-            };
-            if let Some(target) = targets
-                .iter()
-                .find(|target| self.case_when_class_matches_kind_of_target(target, &part_class))
-            {
-                branch_types.push(Self::class_name_to_type(target));
-                unknown_remaining = true;
+            let mut possible_target_types = Vec::new();
+            let mut always_matches = false;
+            for (target, target_type) in targets.iter().zip(&target_types) {
+                match self.case_when_type_matches_kind_of_target(&part, target) {
+                    CaseWhenTypeMatch::Always => {
+                        always_matches = true;
+                        break;
+                    }
+                    CaseWhenTypeMatch::Possible => {
+                        possible_target_types.push(target_type.clone());
+                    }
+                    CaseWhenTypeMatch::Never => {}
+                }
+            }
+
+            if always_matches {
+                branch_types.push(part);
             } else {
+                branch_types.extend(possible_target_types);
                 remaining_types.push(part);
             }
         }
@@ -45976,8 +46113,7 @@ impl<'a> InferenceEngine<'a> {
         CaseWhenClassNarrowing {
             branch_type: (!branch_types.is_empty())
                 .then(|| Self::case_when_type_union(branch_types)),
-            remaining_type: (!unknown_remaining)
-                .then(|| Self::case_when_type_union(remaining_types)),
+            remaining_type: Some(Self::case_when_type_union(remaining_types)),
         }
     }
 

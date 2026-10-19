@@ -1939,6 +1939,8 @@ pub struct ClassData {
     pub has_pending_call_site_summary: bool,
     pub superclass: Option<SharedName>,
     pub superclass_is_absolute: bool,
+    /// A superclass was declared, but its expression could not be resolved statically.
+    pub(crate) superclass_is_unknown: bool,
     pub mixins: Vec<Mixin>,
     // boxed: `included do` / `extended do` / `prepended do` are rare, and three inline
     // vectors would cost 72B in every `ClassData`.
@@ -3301,6 +3303,25 @@ impl TypeRegistry {
         Some(self.resolve_superclass_ref_borrow(class_name, superclass))
     }
 
+    /// Return the runtime superclass, including generated `Struct` and `Data` classes.
+    /// Their inferred parent is not emitted as a source superclass declaration.
+    pub(crate) fn get_runtime_superclass(&self, class_name: &str) -> Option<&str> {
+        let data = self.class_data.get(class_name)?;
+        if data.superclass_is_unknown {
+            return None;
+        }
+        if let Some(superclass) = self.get_superclass(class_name) {
+            return Some(superclass);
+        }
+        if data.cold().struct_constructor_allows_missing_members {
+            Some("Struct")
+        } else if data.cold().data_constructor.is_some() {
+            Some("Data")
+        } else {
+            None
+        }
+    }
+
     /// Return the statically known runtime ancestor chain in Ruby's lookup order.
     ///
     /// `None` means that an edge in the chain is unknown or the bounded walk was
@@ -3336,9 +3357,14 @@ impl TypeRegistry {
         if !data.has_type_substance() {
             return false;
         }
+        if data.superclass_is_unknown {
+            return false;
+        }
 
         let is_module = data.is_module;
-        let superclass = data.superclass.clone();
+        let superclass = self
+            .get_runtime_superclass(class_name)
+            .map(|name| self.shared_name(name));
         seen.insert(name.clone());
         active.insert(name.clone());
 
@@ -9880,6 +9906,13 @@ impl TypeRegistry {
         let data = self.class_data_mut(class_name);
         data.superclass = Some(superclass);
         data.superclass_is_absolute = is_absolute;
+        data.superclass_is_unknown = false;
+        data.user_defined = true;
+    }
+
+    pub(crate) fn mark_superclass_unknown(&mut self, class_name: &str) {
+        let data = self.class_data_mut(class_name);
+        data.superclass_is_unknown = true;
         data.user_defined = true;
     }
 
@@ -10547,10 +10580,12 @@ impl TypeRegistry {
         if !data.has_type_substance() {
             return false;
         }
+        if data.superclass_is_unknown {
+            return false;
+        }
 
-        if let Some(superclass) = &data.superclass {
-            let super_ref = self.resolve_superclass_ref_borrow(class_name, superclass.as_ref());
-            let super_ref = super_ref.trim_scope_prefix().to_string();
+        if let Some(superclass) = self.get_runtime_superclass(class_name).map(str::to_string) {
+            let super_ref = superclass.trim_scope_prefix().to_string();
             if !self.ancestor_knowledge_complete_inner(&super_ref, visited, touched_framework_base)
             {
                 return false;
@@ -11592,6 +11627,29 @@ mod tests {
         registry.set_superclass("Sub", "NeverDeclaredBase");
 
         assert!(!registry.ancestor_knowledge_complete("Sub"));
+    }
+
+    #[test]
+    fn ancestor_knowledge_incomplete_when_superclass_expression_is_unresolved() {
+        let mut registry = TypeRegistry::new();
+        declare_class(&mut registry, "Sub");
+        registry.mark_superclass_unknown("Sub");
+
+        assert!(!registry.ancestor_knowledge_complete("Sub"));
+        assert!(registry.ordered_ancestor_names("Sub").is_none());
+    }
+
+    #[test]
+    fn generated_record_classes_record_runtime_superclasses() {
+        let mut registry = TypeRegistry::new();
+        registry.mark_struct_constructor("StructRecord");
+        registry.mark_data_constructor("DataRecord", None);
+
+        assert_eq!(
+            registry.get_runtime_superclass("StructRecord"),
+            Some("Struct")
+        );
+        assert_eq!(registry.get_runtime_superclass("DataRecord"), Some("Data"));
     }
 
     #[test]
