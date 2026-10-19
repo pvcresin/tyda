@@ -60,6 +60,20 @@ def module_case_equality_override(flag)
     :other
   end
 end
+
+def module_case_when_equality_override(flag)
+  value = if flag
+    1
+  else
+    "value"
+  end
+  case value
+  when String
+    value
+  else
+    :other
+  end
+end
 ```
 
 ### result
@@ -71,6 +85,7 @@ end
 
 class Object < BasicObject
   def module_case_equality_override: (untyped flag) -> (1 | :other)
+  def module_case_when_equality_override: (untyped flag) -> (1 | "value" | :other)
 end
 ```
 
@@ -106,5 +121,73 @@ end
 
 class Object < BasicObject
   def class_case_equality_override: (untyped flag) -> (1 | "value" | :other)
+end
+```
+
+## `case` with a class-specific `===` override keeps both branches
+
+### update
+
+```ruby
+class CaseWhenTarget
+  def self.===(_other) = true
+end
+
+def class_case_when_equality_override
+  value = String.new
+  case value
+  when CaseWhenTarget
+    value
+  else
+    :other
+  end
+end
+```
+
+### result
+
+```rbs
+class CaseWhenTarget
+  def self.===: (untyped _other) -> true
+end
+
+class Object < BasicObject
+  def class_case_when_equality_override: -> :other | String
+end
+```
+
+## `case` resolves class constants in the lexical namespace
+
+### update
+
+```ruby
+class CaseWhenLexicalTarget; end
+
+module CaseWhenLexical
+  class CaseWhenLexicalTarget
+    def self.===(_other) = true
+  end
+
+  def self.check
+    value = String.new
+    case value
+    when CaseWhenLexicalTarget
+      value
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+module CaseWhenLexical
+  def self.check: -> :other | String
+end
+
+class CaseWhenLexical::CaseWhenLexicalTarget
+  def self.===: (untyped _other) -> true
 end
 ```

@@ -274,6 +274,23 @@ struct CondNarrowing {
     else_ty: Option<Type>,
 }
 
+enum CaseWhenClassTargets {
+    NotApplicable,
+    Dynamic,
+    Classes(Vec<String>),
+}
+
+struct CaseWhenClassTargetCacheEntry {
+    lexical_parent_stack: Vec<String>,
+    singleton_constants_owner: Option<String>,
+    target: String,
+}
+
+struct CaseWhenClassNarrowing {
+    branch_type: Option<Type>,
+    remaining_type: Option<Type>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MatchDataKey {
     Index(i64),
@@ -623,6 +640,10 @@ struct ActiveMethodBody {
 pub struct InferenceEngine<'a> {
     registry: TypeRegistry,
     constants: HashMap<String, Type>,
+    standard_class_case_equality: HashMap<String, bool>,
+    case_when_class_target_cache:
+        FxHashMap<String, FxHashMap<String, Vec<CaseWhenClassTargetCacheEntry>>>,
+    case_when_kind_of_cache: FxHashMap<(String, String), bool>,
     constant_name_sequences: HashMap<String, Vec<String>>,
     lazy_loader: Option<&'a LazyRbsLoader>,
     lazy_rbi_loader: Option<&'a LazyRbiLoader>,
@@ -1182,6 +1203,8 @@ pub(crate) struct Scope {
     /// Bounded alternatives from the last then/else join, used for tuple shape
     /// and local correlation. Dropped on the next write to a tracked name.
     exclusive_local_alts: Option<Arc<[CorrelatedLocalAlternative]>>,
+    /// Source offset of a class case that exhausts the final method expression.
+    exhaustive_class_case_start: Option<usize>,
 }
 
 impl Scope {
@@ -1336,6 +1359,7 @@ impl Scope {
             rspec_context: self.rspec_context,
             regexp_match_captures: self.regexp_match_captures,
             exclusive_local_alts: self.exclusive_local_alts.clone(),
+            exhaustive_class_case_start: self.exhaustive_class_case_start,
         }
     }
 
@@ -1752,6 +1776,9 @@ impl<'a> InferenceEngine<'a> {
         Self {
             registry,
             constants: HashMap::new(),
+            standard_class_case_equality: HashMap::new(),
+            case_when_class_target_cache: FxHashMap::default(),
+            case_when_kind_of_cache: FxHashMap::default(),
             constant_name_sequences: HashMap::new(),
             lazy_loader: Some(lazy_loader),
             lazy_rbi_loader: None,
@@ -1814,6 +1841,9 @@ impl<'a> InferenceEngine<'a> {
         Self {
             registry: TypeRegistry::new(),
             constants: HashMap::new(),
+            standard_class_case_equality: HashMap::new(),
+            case_when_class_target_cache: FxHashMap::default(),
+            case_when_kind_of_cache: FxHashMap::default(),
             constant_name_sequences: HashMap::new(),
             lazy_loader: None,
             lazy_rbi_loader: None,
@@ -3518,6 +3548,10 @@ impl<'a> InferenceEngine<'a> {
             merged.dsl_bindings =
                 merge_identical_scope_maps(&then_scope.dsl_bindings, &else_scope.dsl_bindings);
             merged.exclusive_local_alts = None;
+            merged.exhaustive_class_case_start = base
+                .exhaustive_class_case_start
+                .or(then_scope.exhaustive_class_case_start)
+                .or(else_scope.exhaustive_class_case_start);
             return merged;
         }
         let mut merged = Scope {
@@ -3567,6 +3601,10 @@ impl<'a> InferenceEngine<'a> {
                 || else_scope.regexp_match_captures
                 || base.regexp_match_captures,
             exclusive_local_alts: None,
+            exhaustive_class_case_start: base
+                .exhaustive_class_case_start
+                .or(then_scope.exhaustive_class_case_start)
+                .or(else_scope.exhaustive_class_case_start),
             initialized_record_keys: Arc::new(
                 then_scope
                     .initialized_record_keys
@@ -3797,6 +3835,9 @@ impl<'a> InferenceEngine<'a> {
             rspec_context: base.rspec_context,
             regexp_match_captures: base.regexp_match_captures || loop_scope.regexp_match_captures,
             exclusive_local_alts: None,
+            exhaustive_class_case_start: base
+                .exhaustive_class_case_start
+                .or(loop_scope.exhaustive_class_case_start),
         };
 
         for name in names {
@@ -19639,18 +19680,60 @@ impl<'a> InferenceEngine<'a> {
                 let predicate_discriminant = predicate
                     .as_ref()
                     .and_then(|pred| Self::extract_record_index_local_target(pred, scope));
+                let mut remaining_case_type = predicate_var
+                    .as_ref()
+                    .and_then(|name| scope.get(name))
+                    .map(|ty| self.resolve_narrowing_input_type(class_name, scope, ty));
+                let mut used_class_case_narrowing = false;
 
                 let mut branch_types: Vec<Type> = Vec::new();
                 let mut merged_scope: Option<Scope> = None;
                 for condition in case_node.conditions().iter() {
                     if let Node::WhenNode { .. } = &condition {
                         let when_node = condition.as_when_node().expect("must be WhenNode");
-                        let narrowed_type = Self::extract_when_class_type(&when_node, parse_result);
+                        if remaining_case_type.as_ref() == Some(&Type::Bot) {
+                            branch_types.push(Type::Bot);
+                            continue;
+                        }
+                        let class_targets = if predicate_var.is_some() {
+                            self.extract_case_when_class_targets(class_name, &when_node)
+                        } else {
+                            CaseWhenClassTargets::NotApplicable
+                        };
+                        let use_legacy_narrowing =
+                            matches!(&class_targets, CaseWhenClassTargets::NotApplicable);
+                        let case_narrowing = match &class_targets {
+                            CaseWhenClassTargets::Classes(targets) => {
+                                used_class_case_narrowing = true;
+                                let narrowing = self.narrow_case_when_class_targets(
+                                    remaining_case_type.as_ref(),
+                                    targets,
+                                );
+                                remaining_case_type = narrowing.remaining_type.clone();
+                                Some(narrowing)
+                            }
+                            CaseWhenClassTargets::Dynamic | CaseWhenClassTargets::NotApplicable => {
+                                remaining_case_type = None;
+                                None
+                            }
+                        };
+                        let narrowed_type = use_legacy_narrowing
+                            .then(|| Self::extract_when_class_type(&when_node, parse_result))
+                            .flatten();
                         let mut branch_scope = scope.fork_for_branch();
                         if Self::when_sets_regexp_match_globals(&when_node) {
                             branch_scope.regexp_match_captures = true;
                         }
-                        if let (Some(var_name), Some(narrow_ty)) = (&predicate_var, &narrowed_type)
+                        if let Some(narrowing) = case_narrowing {
+                            let Some(branch_type) = narrowing.branch_type else {
+                                branch_types.push(Type::Bot);
+                                continue;
+                            };
+                            if let Some(var_name) = &predicate_var {
+                                branch_scope.narrow(var_name, branch_type);
+                            }
+                        } else if let (Some(var_name), Some(narrow_ty)) =
+                            (&predicate_var, &narrowed_type)
                         {
                             branch_scope.narrow(var_name, narrow_ty.clone());
                         }
@@ -19687,8 +19770,18 @@ impl<'a> InferenceEngine<'a> {
                     }
                 }
 
+                let else_reachable = !remaining_case_type
+                    .as_ref()
+                    .is_some_and(|ty| *ty == Type::Bot);
                 let mut else_scope = scope.fork_for_branch();
-                let else_type = if let Some(else_clause) = case_node.else_clause()
+                if let (Some(var_name), Some(ty)) = (&predicate_var, remaining_case_type.as_ref())
+                    && *ty != Type::Bot
+                {
+                    else_scope.narrow(var_name, ty.clone());
+                }
+                let else_type = if !else_reachable {
+                    Type::Bot
+                } else if let Some(else_clause) = case_node.else_clause()
                     && let Some(statements) = else_clause.statements()
                 {
                     self.infer_statements_return_type(
@@ -19702,11 +19795,18 @@ impl<'a> InferenceEngine<'a> {
                 };
                 branch_types.push(else_type);
 
-                *scope = if let Some(current) = merged_scope {
-                    self.merge_scope_locals(scope, &current, &else_scope)
-                } else {
-                    self.merge_scope_locals(scope, &else_scope, &scope.fork_for_branch())
-                };
+                if else_reachable {
+                    *scope = if let Some(current) = merged_scope {
+                        self.merge_scope_locals(scope, &current, &else_scope)
+                    } else {
+                        self.merge_scope_locals(scope, &else_scope, &scope.fork_for_branch())
+                    };
+                } else if let Some(current) = merged_scope {
+                    *scope = current;
+                }
+                if used_class_case_narrowing && !else_reachable {
+                    scope.exhaustive_class_case_start = Some(node.location().start_offset());
+                }
                 Self::merge_reachable_types(branch_types)
             }
             Node::CaseMatchNode { .. } => {
@@ -24207,17 +24307,57 @@ impl<'a> InferenceEngine<'a> {
                 let predicate_discriminant = predicate
                     .as_ref()
                     .and_then(|pred| Self::extract_record_index_local_target(pred, scope));
+                let mut remaining_case_type = predicate_var
+                    .as_ref()
+                    .and_then(|name| scope.get(name))
+                    .map(|ty| self.resolve_narrowing_input_type(class_name, scope, ty));
 
                 for condition in case_node.conditions().iter() {
                     if let Node::WhenNode { .. } = &condition {
                         let when_node = condition.as_when_node().expect("must be WhenNode");
+                        if remaining_case_type.as_ref() == Some(&Type::Bot) {
+                            branch_types.push(Type::Bot);
+                            continue;
+                        }
 
-                        let narrowed_type = Self::extract_when_class_type(&when_node, parse_result);
+                        let class_targets = if predicate_var.is_some() {
+                            self.extract_case_when_class_targets(class_name, &when_node)
+                        } else {
+                            CaseWhenClassTargets::NotApplicable
+                        };
+                        let use_legacy_narrowing =
+                            matches!(&class_targets, CaseWhenClassTargets::NotApplicable);
+                        let case_narrowing = match &class_targets {
+                            CaseWhenClassTargets::Classes(targets) => {
+                                let narrowing = self.narrow_case_when_class_targets(
+                                    remaining_case_type.as_ref(),
+                                    targets,
+                                );
+                                remaining_case_type = narrowing.remaining_type.clone();
+                                Some(narrowing)
+                            }
+                            CaseWhenClassTargets::Dynamic | CaseWhenClassTargets::NotApplicable => {
+                                remaining_case_type = None;
+                                None
+                            }
+                        };
+                        let narrowed_type = use_legacy_narrowing
+                            .then(|| Self::extract_when_class_type(&when_node, parse_result))
+                            .flatten();
                         let mut branch_scope = scope.fork_for_branch();
                         if Self::when_sets_regexp_match_globals(&when_node) {
                             branch_scope.regexp_match_captures = true;
                         }
-                        if let (Some(var_name), Some(narrow_ty)) = (&predicate_var, &narrowed_type)
+                        if let Some(narrowing) = case_narrowing {
+                            let Some(branch_type) = narrowing.branch_type else {
+                                branch_types.push(Type::Bot);
+                                continue;
+                            };
+                            if let Some(var_name) = &predicate_var {
+                                branch_scope.narrow(var_name, branch_type);
+                            }
+                        } else if let (Some(var_name), Some(narrow_ty)) =
+                            (&predicate_var, &narrowed_type)
                         {
                             branch_scope.narrow(var_name, narrow_ty.clone());
                         }
@@ -24249,20 +24389,32 @@ impl<'a> InferenceEngine<'a> {
                     }
                 }
 
+                let else_reachable = !remaining_case_type
+                    .as_ref()
+                    .is_some_and(|ty| *ty == Type::Bot);
                 if let Some(else_clause) = case_node.else_clause() {
-                    let else_type = if let Some(statements) = else_clause.statements() {
+                    let mut else_scope = scope.fork_for_branch();
+                    if let (Some(var_name), Some(ty)) =
+                        (&predicate_var, remaining_case_type.as_ref())
+                        && *ty != Type::Bot
+                    {
+                        else_scope.narrow(var_name, ty.clone());
+                    }
+                    let else_type = if !else_reachable {
+                        Type::Bot
+                    } else if let Some(statements) = else_clause.statements() {
                         self.infer_statements_return_type(
                             class_name,
                             &statements,
                             parse_result,
-                            &mut scope.fork_for_branch(),
+                            &mut else_scope,
                         )
                     } else {
                         Type::Nil
                     };
                     branch_types.push(else_type);
                 } else {
-                    branch_types.push(Type::Nil);
+                    branch_types.push(if else_reachable { Type::Nil } else { Type::Bot });
                 }
 
                 Self::merge_reachable_types(branch_types)
@@ -45170,6 +45322,22 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn last_statement_case_start_offset(body: &Node<'_>) -> Option<usize> {
+        match body {
+            Node::StatementsNode { .. } => body
+                .as_statements_node()
+                .expect("must be StatementsNode")
+                .body()
+                .iter()
+                .last()
+                .and_then(|node| {
+                    matches!(node, Node::CaseNode { .. }).then(|| node.location().start_offset())
+                }),
+            Node::CaseNode { .. } => Some(body.location().start_offset()),
+            _ => None,
+        }
+    }
+
     fn node_is_ivar_assign(node: &Node<'_>) -> bool {
         matches!(
             node,
@@ -45613,6 +45781,203 @@ impl<'a> InferenceEngine<'a> {
             Some(types.into_iter().next().unwrap())
         } else {
             Some(Type::from_type_vec(types))
+        }
+    }
+
+    fn extract_case_when_class_targets(
+        &mut self,
+        class_name: &str,
+        when_node: &ruby_prism::WhenNode<'_>,
+    ) -> CaseWhenClassTargets {
+        let conditions = when_node.conditions();
+        if !conditions.iter().any(|condition| {
+            matches!(
+                condition,
+                Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+            )
+        }) {
+            return CaseWhenClassTargets::NotApplicable;
+        }
+
+        let mut targets = Vec::new();
+        for condition in conditions.iter() {
+            if !matches!(
+                condition,
+                Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+            ) {
+                return CaseWhenClassTargets::Dynamic;
+            }
+
+            let name = String::from_utf8_lossy(condition.location().as_slice()).to_string();
+            let Some(target) = self.resolve_case_when_class_target(class_name, &name) else {
+                return CaseWhenClassTargets::Dynamic;
+            };
+            targets.push(target);
+        }
+
+        if targets.is_empty() {
+            CaseWhenClassTargets::NotApplicable
+        } else {
+            CaseWhenClassTargets::Classes(targets)
+        }
+    }
+
+    fn resolve_case_when_class_target(&mut self, class_name: &str, path: &str) -> Option<String> {
+        if let Some(target) = self
+            .case_when_class_target_cache
+            .get(class_name)
+            .and_then(|paths| paths.get(path))
+            .and_then(|entries| {
+                entries.iter().find(|entry| {
+                    entry.lexical_parent_stack == self.lexical_parent_stack
+                        && entry.singleton_constants_owner == self.looking_up_singleton_constants_of
+                })
+            })
+        {
+            return Some(target.target.clone());
+        }
+
+        let Type::Singleton(target) = self.resolve_constant_type_in_scope(path, class_name) else {
+            return None;
+        };
+        let target = target.to_string();
+        self.ensure_class_available(&target);
+        let is_class = self
+            .registry
+            .class_data_for(&target)
+            .is_some_and(|class| !class.is_module);
+        if !is_class || !self.uses_standard_class_case_equality(&target) {
+            return None;
+        }
+        self.case_when_class_target_cache
+            .entry(class_name.to_string())
+            .or_default()
+            .entry(path.to_string())
+            .or_default()
+            .push(CaseWhenClassTargetCacheEntry {
+                lexical_parent_stack: self.lexical_parent_stack.clone(),
+                singleton_constants_owner: self.looking_up_singleton_constants_of.clone(),
+                target: target.clone(),
+            });
+        Some(target)
+    }
+
+    fn case_when_type_union(types: Vec<Type>) -> Type {
+        match types.len() {
+            0 => Type::Bot,
+            1 => types.into_iter().next().unwrap(),
+            _ => Type::from_type_vec_preserve_untyped(types),
+        }
+    }
+
+    fn case_when_class_matches_kind_of_target(
+        &mut self,
+        class_name: &str,
+        target_name: &str,
+    ) -> bool {
+        if class_name == target_name {
+            return true;
+        }
+        let key = (class_name.to_string(), target_name.to_string());
+        if let Some(matches) = self.case_when_kind_of_cache.get(&key) {
+            return *matches;
+        }
+        let matches = self.class_matches_kind_of_target(class_name, target_name);
+        self.case_when_kind_of_cache.insert(key, matches);
+        matches
+    }
+
+    fn case_when_type_matches_kind_of_target(&mut self, ty: &Type, target_name: &str) -> bool {
+        match ty {
+            Type::Untyped | Type::Top => true,
+            Type::Singleton(owner) => {
+                self.ensure_class_available(owner);
+                let object_class = if self
+                    .registry
+                    .class_data_for(owner)
+                    .is_some_and(|data| data.is_module)
+                {
+                    "Module"
+                } else {
+                    "Class"
+                };
+                self.case_when_class_matches_kind_of_target(object_class, target_name)
+            }
+            _ => self.type_to_class_name(ty).is_some_and(|class_name| {
+                self.case_when_class_matches_kind_of_target(&class_name, target_name)
+            }),
+        }
+    }
+
+    fn narrow_case_when_class_targets(
+        &mut self,
+        current: Option<&Type>,
+        targets: &[String],
+    ) -> CaseWhenClassNarrowing {
+        let target_types: Vec<Type> = targets
+            .iter()
+            .map(|target| Self::class_name_to_type(target))
+            .collect();
+        let target_type = Self::case_when_type_union(target_types.clone());
+        let Some(current) = current else {
+            return CaseWhenClassNarrowing {
+                branch_type: Some(target_type),
+                remaining_type: None,
+            };
+        };
+
+        let current_parts = match current {
+            Type::Union(parts) => parts.clone(),
+            Type::Bool => vec![Type::True, Type::False],
+            ty => vec![ty.clone()],
+        };
+        let mut branch_types = Vec::new();
+        let mut remaining_types = Vec::new();
+        let mut unknown_remaining = false;
+        for part in current_parts {
+            if part == Type::Bot {
+                continue;
+            }
+            if matches!(part, Type::Untyped | Type::Top) {
+                branch_types.extend(target_types.iter().cloned());
+                unknown_remaining = true;
+                continue;
+            }
+
+            if targets
+                .iter()
+                .any(|target| self.case_when_type_matches_kind_of_target(&part, target))
+            {
+                branch_types.push(part);
+                continue;
+            }
+
+            if matches!(part, Type::Singleton(_)) {
+                remaining_types.push(part);
+                continue;
+            }
+
+            let Some(part_class) = self.type_to_class_name(&part) else {
+                branch_types.extend(target_types.iter().cloned());
+                unknown_remaining = true;
+                continue;
+            };
+            if let Some(target) = targets
+                .iter()
+                .find(|target| self.case_when_class_matches_kind_of_target(target, &part_class))
+            {
+                branch_types.push(Self::class_name_to_type(target));
+                unknown_remaining = true;
+            } else {
+                remaining_types.push(part);
+            }
+        }
+
+        CaseWhenClassNarrowing {
+            branch_type: (!branch_types.is_empty())
+                .then(|| Self::case_when_type_union(branch_types)),
+            remaining_type: (!unknown_remaining)
+                .then(|| Self::case_when_type_union(remaining_types)),
         }
     }
 
@@ -46450,21 +46815,27 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn uses_standard_class_case_equality(&mut self, class_name: &str) -> bool {
-        let Some((owner, is_singleton)) = self
+        if let Some(standard) = self.standard_class_case_equality.get(class_name) {
+            return *standard;
+        }
+        self.ensure_class_available("Module");
+        let owners = self
             .registry
-            .resolve_method_call_owners(class_name, "===", true)
+            .resolve_method_call_owners(class_name, "===", true);
+        let standard = owners
             .into_iter()
             .next()
-        else {
-            return false;
-        };
-        if owner != "Module" || is_singleton {
-            return false;
-        }
-        !self
-            .registry
-            .lookup_method_def("Module", "===", false)
-            .is_some_and(|method| !method.rbs_file_source)
+            .is_some_and(|(owner, is_singleton)| {
+                owner == "Module"
+                    && !is_singleton
+                    && !self
+                        .registry
+                        .lookup_method_def("Module", "===", false)
+                        .is_some_and(|method| !method.rbs_file_source)
+            });
+        self.standard_class_case_equality
+            .insert(class_name.to_string(), standard);
+        standard
     }
 
     fn extract_predicate_method_narrowing(
@@ -48779,7 +49150,14 @@ impl<'a> InferenceEngine<'a> {
 
         // Refresh the stored return unless the second pass is clearly worse
         // (untyped / pattern-ref / nil-degraded destructure slots).
-        if Self::return_reinfer_is_degraded(&method_info.raw_return_type, &new_return_type) {
+        let case_narrowed_return = scope.exhaustive_class_case_start.is_some_and(|case_start| {
+            Some(case_start) == Self::last_statement_case_start_offset(&body)
+        });
+        if Self::return_reinfer_is_degraded(
+            &method_info.raw_return_type,
+            &new_return_type,
+            case_narrowed_return,
+        ) {
             if let Some(saved) = saved_ctx {
                 self.enter_method_body_context(saved);
             }
@@ -48837,13 +49215,14 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn return_reinfer_is_degraded(old: &Type, new: &Type) -> bool {
+    fn return_reinfer_is_degraded(old: &Type, new: &Type, case_narrowed_return: bool) -> bool {
         if matches!(new, Type::Untyped) || Self::type_contains_unresolved_pattern_ref(new) {
             return true;
         }
         if matches!(new, Type::Nil)
             && !matches!(old, Type::Nil | Type::Untyped)
             && !Self::type_needs_backward_propagation(old)
+            && !case_narrowed_return
         {
             return true;
         }
@@ -48863,8 +49242,8 @@ impl<'a> InferenceEngine<'a> {
         {
             return true;
         }
-        // Safe navigation / optional chains: keep a first-pass nilable return.
-        if Self::type_contains_nil(old) && !Self::type_contains_nil(new) {
+        // Keep first-pass nilability unless a final class case proves the path exhaustive.
+        if Self::type_contains_nil(old) && !Self::type_contains_nil(new) && !case_narrowed_return {
             return true;
         }
         match (old, new) {

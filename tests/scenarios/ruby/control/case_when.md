@@ -134,10 +134,6 @@ end
 
 ## case when with class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -220,10 +216,6 @@ end
 
 ## case when narrowing changes method return
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -250,10 +242,6 @@ end
 
 ## case when with multiple conditions
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -273,6 +261,30 @@ numeric_check(42)
 ```rbs
 class Object < BasicObject
   def numeric_check: (Integer x) -> Float
+end
+```
+
+## case when return can be nil
+
+### update
+
+```ruby
+def nil_case(value)
+  case value
+  when Integer
+    nil
+  else
+    "other"
+  end
+end
+nil_case(1)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def nil_case: (Integer value) -> nil
 end
 ```
 
