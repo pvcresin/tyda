@@ -19743,10 +19743,12 @@ impl<'a> InferenceEngine<'a> {
                         {
                             branch_scope.narrow(var_name, narrow_ty.clone());
                         }
+                        let binding_subject_type = predicate_var
+                            .as_ref()
+                            .and_then(|var_name| scope.get(var_name))
+                            .or(subject_type.as_ref());
                         let binding_type = Self::pattern_binding_type(
-                            predicate_var
-                                .as_ref()
-                                .and_then(|var_name| scope.get(var_name)),
+                            binding_subject_type,
                             narrowed_type.as_ref(),
                         );
                         self.bind_pattern_locals(
@@ -24302,10 +24304,12 @@ impl<'a> InferenceEngine<'a> {
                             {
                                 branch_scope.narrow(var_name, narrow_ty.clone());
                             }
+                            let binding_subject_type = predicate_var
+                                .as_ref()
+                                .and_then(|var_name| scope.get(var_name))
+                                .or(subject_type.as_ref());
                             let binding_type = Self::pattern_binding_type(
-                                predicate_var
-                                    .as_ref()
-                                    .and_then(|var_name| scope.get(var_name)),
+                                binding_subject_type,
                                 narrowed_type.as_ref(),
                             );
                             self.bind_pattern_locals(

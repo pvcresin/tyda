@@ -2,10 +2,6 @@
 
 ## Hash pattern binding introduces local in enclosing scope
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -28,10 +24,6 @@ end
 ```
 
 ## Pattern variable shadows method and only `x()` calls method
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -58,10 +50,6 @@ end
 ```
 
 ## Array pattern introduces multiple local bindings
-
-```yaml
-known_issue: true
-```
 
 ### update
 
