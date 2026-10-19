@@ -16,7 +16,7 @@
 | 変数・flow | supported | local / ivar（method 内の再代入・分岐・複合代入） / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入を含む） / 分岐間のlocal相関 / rescue |
 | block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy |
 | collection shape | supported | Array、Hash、Set、Tuple、Record |
-| pattern matching | partial | version gate、array / hash / find binding、guard 内の capture、`case/in` の不一致は例外経路 |
+| pattern matching | partial | version gate、array / hash / find binding、literal / expression subject のcapture型維持、guard 内の capture、`case/in` の不一致は例外経路 |
 | 動的定義 | partial | 静的な名前の `define_method`、`attr_*`、`Struct.new`、`Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） |
 | runtime-only meta programming | partial | 未知の名前・object identity は `untyped` |
 | 深さ・union・shape の制限 | supported | 上限超過時は安全に `untyped` |
