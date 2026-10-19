@@ -1,6 +1,7 @@
 use super::super::InferenceEngine;
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
 use crate::project::DslLibrary;
+use crate::registry::IncluderBoundDsl;
 use crate::types::Type;
 use ruby_prism::{CallNode, ParseResult};
 
@@ -1015,6 +1016,39 @@ impl<'a> InferenceEngine<'a> {
             .as_deref()
             .and_then(|name| Self::enum_method_affix(call_node, parse_result, "suffix", name));
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
+
+        if let Some(attr_name) = enum_attr_name.as_deref() {
+            let name = Self::pluralize_name(attr_name);
+            if self.is_collecting_concern_included() {
+                self.registry.push_includer_bound_dsl(
+                    class_name,
+                    IncluderBoundDsl::ActiveRecordEnumStatuses { name, loc },
+                );
+            } else {
+                self.registry.add_method_def(
+                    class_name,
+                    MethodDef {
+                        name: Sym::new(name),
+                        param_infos: Vec::new(),
+                        raw_return_type: Type::Hash(
+                            Some(Box::new(Type::String)),
+                            Some(Box::new(Type::Untyped)),
+                        ),
+                        sorbet_modifier_comments: Vec::new(),
+                        rbs_annotated: true,
+                        rbs_inline_annotated: false,
+                        sig_annotated: false,
+                        attr_ivar: None,
+                        is_singleton: true,
+                        rbs_file_source: false,
+                        synthetic_dsl_source: false,
+                        rbs_method_types: Default::default(),
+                        extra_overloads: Vec::new(),
+                        loc: Some(loc),
+                    },
+                );
+            }
+        }
 
         for val in &value_names {
             let method_base =

@@ -35,6 +35,12 @@ pub fn load_schema(root: &Path, registry: &mut TypeRegistry) {
     let preload_timing = std::env::var_os("TYDA_PRELOAD_TIMING").is_some();
     let schema_path = root.join("db").join("schema.rb");
     let structure_path = root.join("db").join("structure.sql");
+    if !schema_path.exists() && !structure_path.exists() {
+        return;
+    }
+    let t = std::time::Instant::now();
+    let overrides = collect_table_name_overrides(root);
+    let overrides_ms = t.elapsed().as_secs_f64() * 1000.0;
     let t = std::time::Instant::now();
     let tables = if schema_path.exists() {
         let Ok(source) = std::fs::read_to_string(&schema_path) else {
@@ -45,15 +51,11 @@ pub fn load_schema(root: &Path, registry: &mut TypeRegistry) {
         let Ok(source) = std::fs::read_to_string(&structure_path) else {
             return;
         };
-        parse_structure_sql(&source, root)
+        parse_structure_sql(&source, root, &overrides)
     } else {
         return;
     };
     let parse_tables_ms = t.elapsed().as_secs_f64() * 1000.0;
-    // For namespaced models bound to a legacy table name via a `self.table_name` declaration.
-    let t = std::time::Instant::now();
-    let overrides = collect_table_name_overrides(root);
-    let overrides_ms = t.elapsed().as_secs_f64() * 1000.0;
     let t = std::time::Instant::now();
     for table in &tables {
         register_table_methods(table, registry);
@@ -203,7 +205,11 @@ fn parse_schema(source: &str, workspace_root: &Path) -> Vec<TableDef> {
     tables
 }
 
-fn parse_structure_sql(source: &str, workspace_root: &Path) -> Vec<TableDef> {
+fn parse_structure_sql(
+    source: &str,
+    workspace_root: &Path,
+    table_name_overrides: &HashMap<String, Vec<String>>,
+) -> Vec<TableDef> {
     let mut tables = Vec::new();
     let mut current_table_name: Option<String> = None;
     let mut current_columns: Vec<ColumnDef> = Vec::new();
@@ -236,7 +242,7 @@ fn parse_structure_sql(source: &str, workspace_root: &Path) -> Vec<TableDef> {
         }
     }
 
-    attach_structure_foreign_keys(source, workspace_root, &mut tables);
+    attach_structure_foreign_keys(source, workspace_root, table_name_overrides, &mut tables);
     tables
 }
 
@@ -650,7 +656,12 @@ fn parse_schema_association_call(
     })
 }
 
-fn attach_structure_foreign_keys(source: &str, workspace_root: &Path, tables: &mut [TableDef]) {
+fn attach_structure_foreign_keys(
+    source: &str,
+    workspace_root: &Path,
+    table_name_overrides: &HashMap<String, Vec<String>>,
+    tables: &mut [TableDef],
+) {
     let mut current_table: Option<String> = None;
     for line in source.lines() {
         let trimmed = line.trim();
@@ -682,12 +693,29 @@ fn attach_structure_foreign_keys(source: &str, workspace_root: &Path, tables: &m
                 .is_none_or(|column| column.nullable);
             table.associations.push(AssociationDef {
                 name: base_name.to_string(),
-                target_class: resolve_model_class_name(workspace_root, &referenced_table),
+                target_class: resolve_table_model_class_name(
+                    workspace_root,
+                    &referenced_table,
+                    table_name_overrides,
+                ),
                 nullable,
             });
         }
         current_table = None;
     }
+}
+
+fn resolve_table_model_class_name(
+    root: &Path,
+    table_name: &str,
+    table_name_overrides: &HashMap<String, Vec<String>>,
+) -> String {
+    if let Some(classes) = table_name_overrides.get(table_name)
+        && let [class_name] = classes.as_slice()
+    {
+        return class_name.clone();
+    }
+    resolve_model_class_name(root, table_name)
 }
 
 fn parse_structure_alter_table_start(line: &str) -> Option<String> {
@@ -997,7 +1025,7 @@ CREATE TABLE `shop_users` (\n\
   PRIMARY KEY (`id`),\n\
   KEY `index_shop_users_on_person_id` (`person_id`)\n\
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n";
-        let tables = parse_structure_sql(sql, Path::new("/nonexistent"));
+        let tables = parse_structure_sql(sql, Path::new("/nonexistent"), &HashMap::new());
         assert_eq!(tables.len(), 1, "one table parsed");
         let names: Vec<&str> = tables[0].columns.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"person_id"), "person_id column: {names:?}");
@@ -1005,6 +1033,31 @@ CREATE TABLE `shop_users` (\n\
         assert!(
             !names.contains(&"KEY"),
             "KEY line must not be a column: {names:?}"
+        );
+    }
+
+    #[test]
+    fn structure_foreign_keys_use_models_with_explicit_table_names() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let model_path = root.path().join("app/models/bulk_imports/tracker.rb");
+        std::fs::create_dir_all(model_path.parent().expect("model directory"))
+            .expect("create model directory");
+        std::fs::write(
+            &model_path,
+            "module BulkImports\n  class Tracker\n    self.table_name = 'bulk_import_trackers'\n  end\nend\n",
+        )
+        .expect("write model");
+
+        let overrides = collect_table_name_overrides(root.path());
+        let sql = "CREATE TABLE bulk_import_batch_trackers (\n  tracker_id bigint NOT NULL\n);\n\
+ALTER TABLE ONLY bulk_import_batch_trackers\n\
+  ADD CONSTRAINT fk_tracker FOREIGN KEY (tracker_id) REFERENCES bulk_import_trackers(id);\n";
+        let tables = parse_structure_sql(sql, root.path(), &overrides);
+
+        assert_eq!(tables.len(), 1);
+        assert_eq!(
+            tables[0].associations[0].target_class,
+            "BulkImports::Tracker"
         );
     }
 }

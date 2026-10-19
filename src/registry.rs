@@ -1878,6 +1878,10 @@ pub enum IncluderBoundDsl {
         names: Vec<String>,
         loc: SourceLocation,
     },
+    ActiveRecordEnumStatuses {
+        name: String,
+        loc: SourceLocation,
+    },
 }
 
 fn empty_class_data_cold() -> &'static ClassDataCold {
@@ -6655,7 +6659,9 @@ impl TypeRegistry {
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _)
-            | Type::ReceiverMethodRef(subject, _) => Self::type_contains_param_ref_static(subject),
+            | Type::ReceiverMethodRef(subject, _)
+            | Type::TruthyProjection(subject)
+            | Type::FalsyProjection(subject) => Self::type_contains_param_ref_static(subject),
             _ => false,
         }
     }
@@ -6917,9 +6923,9 @@ impl TypeRegistry {
             | Type::PatternTrailingRef(inner, _)
             | Type::PatternIndexRef(inner, _)
             | Type::PatternKeyRef(inner, _)
-            | Type::PatternKeyRestRef(inner, _) => {
-                Self::type_contains_subclass_ref_candidate(inner)
-            }
+            | Type::PatternKeyRestRef(inner, _)
+            | Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner) => Self::type_contains_subclass_ref_candidate(inner),
             Type::Proc { return_type, .. } => {
                 Self::type_contains_subclass_ref_candidate(return_type)
             }
@@ -6978,6 +6984,15 @@ impl TypeRegistry {
                     }
                 }
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+            }
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+                let resolved_inner = self.resolve_subclass_refs_in_type(inner);
+                let projection = if matches!(ty, Type::TruthyProjection(_)) {
+                    Type::project_truthy(&resolved_inner)
+                } else {
+                    Type::project_falsy(&resolved_inner)
+                };
+                projection.unwrap_or(Type::Bot)
             }
             Type::Union(parts) => Type::from_type_vec(
                 parts
@@ -7260,7 +7275,9 @@ impl TypeRegistry {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
-            | Type::PatternKeyRestRef(subject, _) => Self::global_type_contains_ref(subject),
+            | Type::PatternKeyRestRef(subject, _)
+            | Type::TruthyProjection(subject)
+            | Type::FalsyProjection(subject) => Self::global_type_contains_ref(subject),
             _ => false,
         }
     }
@@ -7274,6 +7291,8 @@ impl TypeRegistry {
                 | Type::ReceiverMethodRef(..)
                 | Type::ParamRef(_)
                 | Type::KeywordParamRef(_)
+                | Type::TruthyProjection(..)
+                | Type::FalsyProjection(..)
         )
     }
 
@@ -8015,7 +8034,9 @@ impl TypeRegistry {
             | Type::PatternRestRef(..)
             | Type::PatternTrailingRef(..)
             | Type::PatternKeyRef(..)
-            | Type::PatternKeyRestRef(..) => true,
+            | Type::PatternKeyRestRef(..)
+            | Type::TruthyProjection(..)
+            | Type::FalsyProjection(..) => true,
             Type::Union(parts) | Type::Intersection(parts) => parts
                 .iter()
                 .any(|part| Self::type_needs_deferred_resolution_depth(part, depth + 1)),
@@ -8272,6 +8293,22 @@ impl TypeRegistry {
                         visiting,
                     )
                 }
+            }
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+                let resolved_inner = self.resolve_deferred_refs_depth(
+                    class_name,
+                    singleton_context,
+                    inner,
+                    depth + 1,
+                    memo,
+                    visiting,
+                );
+                let projected = if matches!(ty, Type::TruthyProjection(_)) {
+                    Type::project_truthy(&resolved_inner)
+                } else {
+                    Type::project_falsy(&resolved_inner)
+                };
+                projected.unwrap_or(Type::Bot)
             }
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_deferred_refs_depth(
@@ -10617,6 +10654,9 @@ impl TypeRegistry {
             }
             Type::ReceiverMethodRef(receiver_type, _) => {
                 Self::type_contains_param_ref(receiver_type)
+            }
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+                Self::type_contains_param_ref(inner)
             }
             Type::Proc { return_type, .. } => Self::type_contains_param_ref(return_type),
             _ => false,

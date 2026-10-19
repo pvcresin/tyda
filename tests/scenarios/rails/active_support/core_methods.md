@@ -518,6 +518,27 @@ class User
 end
 ```
 
+## try and try! return nil for a nil receiver
+
+### update
+
+```ruby
+class Probe
+  def try_nil = nil.try(:missing)
+
+  def try_bang_nil = nil.try!(:missing)
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def try_nil: -> nil
+  def try_bang_nil: -> nil
+end
+```
+
 ## Array to_sentence returns String
 
 ### update

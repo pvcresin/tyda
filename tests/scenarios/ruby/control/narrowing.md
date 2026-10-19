@@ -336,10 +336,6 @@ end
 
 ## Ivar short-circuit AND keeps the narrowed return and nil branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -601,5 +597,88 @@ foo(:b)
 ```rbs
 class Object < BasicObject
   def foo: (Symbol x) -> Symbol
+end
+```
+
+## Short-circuit filters nil from a deferred method return
+
+### update
+
+```ruby
+module DeferredOr
+  class Result
+    def success? = true
+  end
+
+  class << self
+    def find(login, password, project:, request:)
+      result = first_check(login, password, project) ||
+        second_check(login, password) ||
+        third_check(login, password, request: request) ||
+        Result.new
+      result
+    end
+
+    def first_only(login, password, project)
+      result = first_check(login, password, project) && Result.new
+      result
+    end
+
+    def first_check(login, password, project) = rand < 0.5 ? Result.new : nil
+    def second_check(login, password) = rand < 0.5 ? Result.new : nil
+    def third_check(login, password, request:) = rand < 0.5 ? Result.new : nil
+  end
+end
+```
+
+### result
+
+```rbs
+module DeferredOr
+  def self.find: (untyped login, untyped password, project: untyped, request: untyped) -> DeferredOr::Result
+  def self.first_only: (untyped login, untyped password, untyped project) -> DeferredOr::Result?
+  def self.first_check: (untyped login, untyped password, untyped project) -> DeferredOr::Result?
+  def self.second_check: (untyped login, untyped password) -> DeferredOr::Result?
+  def self.third_check: (untyped login, untyped password, request: untyped) -> DeferredOr::Result?
+end
+
+class DeferredOr::Result
+  def success?: -> true
+end
+```
+
+## Truthiness narrows a repeated pure implicit self reader
+
+### update
+
+```ruby
+class ProjectTarget
+  def name = "project"
+end
+
+class ProjectFinder
+  #: () -> ProjectTarget?
+  def project = @project
+
+  def project_name
+    if project
+      project.name
+    else
+      "none"
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class ProjectFinder
+  def project: -> ProjectTarget?
+  def project_name: -> "none" | "project"
+end
+
+class ProjectTarget
+  def name: -> "project"
 end
 ```

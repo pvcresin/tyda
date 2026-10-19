@@ -37,6 +37,7 @@ class Product
   def create_detail: -> Detail
   def self.available: -> ActiveRecord::Relation[Product]
   def self.featured: -> ActiveRecord::Relation[Product]
+  def self.statuses: -> Hash[String, untyped]
   def draft?: -> bool
   def draft!: -> bool
   def self.draft: -> ActiveRecord::Relation[Product]

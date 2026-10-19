@@ -24,8 +24,8 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（遅延解決された source method return を
   block dispatch 前に反映し、tuple の要素 union とリテラル演算を block 内へ伝播）
 - Array / Hash / Set / Tuple / Record の要素型と shape
-- if / case / rescue / safe navigation / pattern matching の flow narrowing。標準の `Class#===` による postfix の local 代入条件も扱い、分岐で相関したlocalも識別可能な型で絞られた場合に反映
-- 多重代入、operator-write、文字列・シンボル補間（静的な literal / union の展開を含む）
+- if / case / rescue / safe navigation / pattern matching の flow narrowing。標準の `Class#===` による postfix の local 代入条件や、pure な no-arg ivar reader の再呼び出しも扱い、分岐で相関したlocalも識別可能な型で絞られた場合に反映
+- 多重代入、operator-write、method 内の instance variable 再代入、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播
 - 静的に名前を求められる `alias` / `define_method` / `attr_*` / `Struct.new` /
   `Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） / `Forwardable` / `send` / `const_get`
@@ -108,7 +108,7 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 個別 gem の一覧をこの文書に重複して持たない。
 
 - schema / `attribute` / relation から model の型を補う
-- Concern、association、scope、enum、delegate などの静的な DSL を展開する
+- Concern、association、scope、enum（plural map method を含む）、delegate などの静的な DSL を展開する。`structure.sql` の外部キー先は明示的な `self.table_name` も参照する
 - ActiveRecord の `find` は単一 ID、ID 配列、複数 ID の overload とモデル／配列の戻り値を出力する
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う

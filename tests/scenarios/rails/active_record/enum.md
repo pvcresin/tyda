@@ -14,6 +14,7 @@ end
 
 ```rbs
 class Order
+  def self.statuses: -> Hash[String, untyped]
   def pending?: -> bool
   def pending!: -> bool
   def self.pending: -> ActiveRecord::Relation[Order]
@@ -23,6 +24,33 @@ class Order
   def delivered?: -> bool
   def delivered!: -> bool
   def self.delivered: -> ActiveRecord::Relation[Order]
+end
+```
+
+## Expose enum values through the pluralized class method
+
+### update
+
+```ruby
+class EnumLevels
+  enum :level, { low: 0, high: 1 }
+
+  def self.level_names = levels.keys
+end
+```
+
+### result
+
+```rbs
+class EnumLevels
+  def self.levels: -> Hash[String, untyped]
+  def low?: -> bool
+  def low!: -> bool
+  def self.low: -> ActiveRecord::Relation[EnumLevels]
+  def high?: -> bool
+  def high!: -> bool
+  def self.high: -> ActiveRecord::Relation[EnumLevels]
+  def self.level_names: -> Array[String]
 end
 ```
 
@@ -41,12 +69,14 @@ end
 
 ```rbs
 class User
+  def self.statuses: -> Hash[String, untyped]
   def status_active?: -> bool
   def status_active!: -> bool
   def self.status_active: -> ActiveRecord::Relation[User]
   def status_archived?: -> bool
   def status_archived!: -> bool
   def self.status_archived: -> ActiveRecord::Relation[User]
+  def self.roles: -> Hash[String, untyped]
   def admin_role?: -> bool
   def admin_role!: -> bool
   def self.admin_role: -> ActiveRecord::Relation[User]
@@ -70,6 +100,7 @@ end
 
 ```rbs
 class A
+  def self.kinds: -> Hash[String, untyped]
   def pending?: -> bool
   def pending!: -> bool
   def self.pending: -> ActiveRecord::Relation[A]
@@ -93,6 +124,7 @@ end
 
 ```rbs
 class B
+  def self.kinds: -> Hash[String, untyped]
   def pending?: -> bool
   def pending!: -> bool
   def self.pending: -> ActiveRecord::Relation[B]
@@ -117,12 +149,14 @@ end
 
 ```rbs
 class C
+  def self.statuses: -> Hash[String, untyped]
   def status_active?: -> bool
   def status_active!: -> bool
   def self.status_active: -> ActiveRecord::Relation[C]
   def status_archived?: -> bool
   def status_archived!: -> bool
   def self.status_archived: -> ActiveRecord::Relation[C]
+  def self.roles: -> Hash[String, untyped]
   def admin_role?: -> bool
   def admin_role!: -> bool
   def self.admin_role: -> ActiveRecord::Relation[C]

@@ -378,7 +378,11 @@ fn method_call_level(
 
 fn type_level(ty: &Type, class_context: &str, method_context: Option<&str>) -> CoverageLevel {
     match ty {
-        Type::Untyped | Type::Todo | Type::BlockReturnRef => CoverageLevel::Untyped,
+        Type::Untyped
+        | Type::Todo
+        | Type::BlockReturnRef
+        | Type::TruthyProjection(_)
+        | Type::FalsyProjection(_) => CoverageLevel::Untyped,
         Type::ParamRef(_) | Type::KeywordParamRef(_) => {
             if method_context.is_some() {
                 CoverageLevel::Untyped

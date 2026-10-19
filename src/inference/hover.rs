@@ -1297,6 +1297,9 @@ impl<'a> InferenceEngine<'a> {
         else {
             return None;
         };
+        if matches!(snap.name.as_str(), "try" | "try!") && self.rails_feature_enabled() {
+            return None;
+        }
         if Self::is_universal_object_method_for_diagnostics(&snap.name)
             || !Self::receiver_may_resolve_to_union(receiver_type)
         {

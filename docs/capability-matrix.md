@@ -13,7 +13,7 @@
 | 分野 | 状態 | 代表的な範囲 |
 | --- | --- | --- |
 | 定義・dispatch・visibility | supported | class / module / mixin / constant / method / `super` |
-| 変数・flow | supported | local / ivar / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入を含む） / 分岐間のlocal相関 / rescue |
+| 変数・flow | supported | local / ivar（method 内の再代入・分岐・複合代入） / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入を含む） / 分岐間のlocal相関 / rescue |
 | block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy |
 | collection shape | supported | Array、Hash、Set、Tuple、Record |
 | pattern matching | partial | version gate、array / hash / find binding、guard 内の capture、`case/in` の不一致は例外経路 |
@@ -43,7 +43,7 @@ Sorbet は [tests/scenarios/sorbet/](https://github.com/pvcresin/tyda/tree/main/
 | 分野 | 状態 | 備考 |
 | --- | --- | --- |
 | ActiveRecord / ActiveModel | supported | association、scope、enum、attribute、schema |
-| ActiveSupport | supported | Concern、delegate、class attribute、core extension |
+| ActiveSupport | supported | Concern、delegate、class attribute、core extension、`try` / `try!` の nil-safe 呼び出し |
 | ActionController / ActionMailer / ActiveJob | supported | class-body DSL と主要 instance API |
 | routes / structure.sql | supported | Rails project fixture を含む |
 | RSpec structural DSL | supported | `let`、`subject`、`described_class` の lexical scope |
