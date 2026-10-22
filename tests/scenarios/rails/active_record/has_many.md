@@ -129,8 +129,8 @@ end
 
 ```rbs
 class A < ApplicationRecord
-  def item: -> B
-  def item=: (B item) -> B
+  def item: -> B?
+  def item=: (B? item) -> B?
   def build_item: -> B
   def create_item: -> B
 end

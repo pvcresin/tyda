@@ -535,7 +535,7 @@ impl<'a> InferenceEngine<'a> {
                     attr_ivar: None,
                     is_singleton: false,
                     rbs_file_source: false,
-                    synthetic_dsl_source: false,
+                    synthetic_dsl_source: true,
                     rbs_method_types: Default::default(),
                     extra_overloads: Vec::new(),
                     loc: Some(loc),
@@ -558,7 +558,7 @@ impl<'a> InferenceEngine<'a> {
                     attr_ivar: None,
                     is_singleton: false,
                     rbs_file_source: false,
-                    synthetic_dsl_source: false,
+                    synthetic_dsl_source: true,
                     rbs_method_types: Default::default(),
                     extra_overloads: Vec::new(),
                     loc: Some(loc),
@@ -583,7 +583,7 @@ impl<'a> InferenceEngine<'a> {
                         attr_ivar: None,
                         is_singleton: false,
                         rbs_file_source: false,
-                        synthetic_dsl_source: false,
+                        synthetic_dsl_source: true,
                         rbs_method_types: Default::default(),
                         extra_overloads: Vec::new(),
                         loc: Some(loc),
@@ -593,11 +593,8 @@ impl<'a> InferenceEngine<'a> {
             return;
         }
 
-        let ret_type = if options.optional {
-            Type::Union(vec![Type::Class(Sym::new(&target_class)), Type::Nil])
-        } else {
-            Type::Class(Sym::new(&target_class))
-        };
+        let ret_type = Type::Union(vec![Type::Class(Sym::new(&target_class)), Type::Nil]);
+        let writer_param_type = Type::Union(vec![Type::Class(Sym::new(&target_class)), Type::Nil]);
         self.record_reference(&target_class);
 
         self.registry.add_method_def(
@@ -613,7 +610,7 @@ impl<'a> InferenceEngine<'a> {
                 attr_ivar: None,
                 is_singleton: false,
                 rbs_file_source: false,
-                synthetic_dsl_source: false,
+                synthetic_dsl_source: true,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),
@@ -627,9 +624,9 @@ impl<'a> InferenceEngine<'a> {
                 param_infos: vec![ParamInfo {
                     name: assoc_name.clone(),
                     kind: ParamKind::Required,
-                    default_type: Some(Type::Class(Sym::new(&target_class))),
+                    default_type: Some(writer_param_type),
                 }],
-                raw_return_type: Type::Class(Sym::new(&target_class)),
+                raw_return_type: Type::Union(vec![Type::Class(Sym::new(&target_class)), Type::Nil]),
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: true,
                 rbs_inline_annotated: false,
@@ -637,7 +634,7 @@ impl<'a> InferenceEngine<'a> {
                 attr_ivar: None,
                 is_singleton: false,
                 rbs_file_source: false,
-                synthetic_dsl_source: false,
+                synthetic_dsl_source: true,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),
@@ -658,7 +655,7 @@ impl<'a> InferenceEngine<'a> {
                     attr_ivar: None,
                     is_singleton: false,
                     rbs_file_source: false,
-                    synthetic_dsl_source: false,
+                    synthetic_dsl_source: true,
                     rbs_method_types: Default::default(),
                     extra_overloads: Vec::new(),
                     loc: Some(loc),

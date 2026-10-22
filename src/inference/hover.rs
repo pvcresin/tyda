@@ -2366,6 +2366,7 @@ impl<'a> InferenceEngine<'a> {
                 | Type::PatternIndexRef(_, _)
                 | Type::PatternRestRef(_)
                 | Type::PatternKeyRef(_, _)
+                | Type::PatternBindingKeyRef(_, _)
                 | Type::PatternKeyRestRef(_, _)
         )
     }
@@ -3976,6 +3977,7 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(..)
             | Type::PatternTrailingRef(..)
             | Type::PatternKeyRef(..)
+            | Type::PatternBindingKeyRef(..)
             | Type::PatternKeyRestRef(..) => false,
             _ => true,
         }
@@ -4047,6 +4049,7 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(receiver)
             | Type::PatternTrailingRef(receiver, _)
             | Type::PatternKeyRef(receiver, _)
+            | Type::PatternBindingKeyRef(receiver, _)
             | Type::PatternKeyRestRef(receiver, _) => Self::type_contains_type(receiver, target),
             _ => false,
         }

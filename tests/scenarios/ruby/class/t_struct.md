@@ -191,3 +191,23 @@ class A::Foo < T::Struct
   def x: -> Integer
 end
 ```
+
+## Keep an explicit untyped Struct prop contract
+
+### update
+
+```ruby
+class UnknownValue < T::Struct
+  const :value, T.untyped
+end
+
+UnknownValue.new(value: "known").value
+```
+
+### result
+
+```rbs
+class UnknownValue < T::Struct
+  def value: -> untyped
+end
+```

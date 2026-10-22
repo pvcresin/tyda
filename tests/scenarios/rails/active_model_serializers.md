@@ -75,7 +75,7 @@ class A::B < ActiveModelSerializers::Model
   def item: -> untyped
   def item=: (untyped item) -> untyped
   def initialize: (untyped item, untyped attrs) -> void
-  def foo: ((untyped) s) -> untyped
+  def foo: (untyped s) -> untyped
 end
 ```
 
@@ -122,7 +122,7 @@ class A::B < ActiveModelSerializers::Model
   def item=: (untyped item) -> untyped
   def initialize: (untyped item, untyped attrs) -> void
   def mark!: -> Time
-  def foo: ((untyped) s) -> untyped
+  def foo: (untyped s) -> untyped
 end
 ```
 
@@ -281,8 +281,8 @@ end
 module ItemAssociations
   extend ActiveSupport::Concern
 
-  def item: -> Item
-  def item=: (Item item) -> Item
+  def item: -> Item?
+  def item=: (Item? item) -> Item?
   def build_item: -> Item
   def create_item: -> Item
   def items: -> ActiveRecord::Associations::CollectionProxy[Item]

@@ -591,3 +591,89 @@ class Object < BasicObject
   def store_direct: -> 1
 end
 ```
+
+## Keep observed unknown writes in an attr_reader result
+
+### update
+
+```ruby
+class MixedValue
+  attr_reader :value
+
+  def initialize
+    @value = "known"
+    @value = dynamic_value
+  end
+end
+
+MixedValue.new.value
+```
+
+### result
+
+```rbs
+class MixedValue
+  def value: -> "known" | untyped
+  def initialize: -> void
+end
+```
+
+## Keep an unknown receiver arm when resolving an attr_reader
+
+### update
+
+```ruby
+class KnownValue
+  attr_reader :value
+
+  def initialize
+    @value = "known"
+  end
+end
+
+class ValueReader
+  def self.read(value) = value.value
+end
+
+ValueReader.read(KnownValue.new)
+ValueReader.read(dynamic_value)
+```
+
+### result
+
+```rbs
+class KnownValue
+  def value: -> "known"
+  def initialize: -> void
+end
+
+class ValueReader
+  def self.read: ((KnownValue | untyped) value) -> (untyped | "known")
+end
+```
+
+## Keep an explicit untyped attr_reader contract
+
+### update
+
+```ruby
+class ExplicitlyUntypedValue
+  #: String
+  attr_reader :value
+
+  def initialize
+    @value = 42
+  end
+end
+
+ExplicitlyUntypedValue.new.value
+```
+
+### result
+
+```rbs
+class ExplicitlyUntypedValue
+  def value: -> String
+  def initialize: -> void
+end
+```

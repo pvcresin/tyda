@@ -591,6 +591,10 @@ impl DisplayResultCache {
         self.entries.truncate(DISPLAY_RESULT_CACHE_LIMIT);
     }
 
+    fn remove(&mut self, file_path: &str) {
+        self.entries.retain(|cached| cached.file_path != file_path);
+    }
+
     fn clear(&mut self) {
         self.entries.clear();
     }
@@ -977,6 +981,7 @@ impl TydaLsp {
         state
             .workspace_state
             .upsert_file(file_path.to_string(), content_hash, analysis, file_deps);
+        Self::invalidate_display_analysis_for_file(state, file_path);
         Self::debug_log(&format!(
             "ensure_base_analysis_cached: {:.1}ms for {}",
             t0.elapsed().as_secs_f64() * 1000.0,
@@ -1367,6 +1372,11 @@ impl TydaLsp {
         let file_path = uri_to_path(uri);
         let mut state = self.state.lock().unwrap();
         state.workspace_state.mark_file_dirty(&file_path);
+        Self::invalidate_display_analysis_for_file(&mut state, &file_path);
+    }
+
+    fn invalidate_display_analysis_for_file(state: &mut LspState, file_path: &str) {
+        state.cached_display.remove(file_path);
     }
 
     fn workspace_scan_ready(&self) -> bool {
@@ -1526,6 +1536,7 @@ impl TydaLsp {
             state
                 .workspace_state
                 .upsert_file(file_path.clone(), content_hash, analysis, file_deps);
+            Self::invalidate_display_analysis_for_file(&mut state, &file_path);
             state.document_cache_updates_in_progress.remove(&file_path);
         });
     }
@@ -1641,7 +1652,8 @@ impl TydaLsp {
             let mut state = self.state.lock().unwrap();
             state
                 .workspace_state
-                .upsert_file(file_path, content_hash, analysis, file_deps);
+                .upsert_file(file_path.clone(), content_hash, analysis, file_deps);
+            Self::invalidate_display_analysis_for_file(&mut state, &file_path);
         }
     }
 

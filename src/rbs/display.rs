@@ -4,7 +4,7 @@ use crate::types::{
 
 pub fn user_facing_type(ty: &Type) -> Type {
     match ty {
-        Type::Todo => Type::Untyped,
+        Type::Todo | Type::ParamPending => Type::Untyped,
         Type::Union(parts) => {
             Type::from_type_vec_preserve_untyped(parts.iter().map(user_facing_type).collect())
         }
@@ -36,6 +36,9 @@ pub fn user_facing_type(ty: &Type) -> Type {
             return_type: Box::new(user_facing_type(return_type)),
             param_count: *param_count,
         },
+        Type::Generic { base, args } => {
+            Type::generic(*base, args.iter().map(user_facing_type).collect::<Vec<_>>())
+        }
         _ => ty.clone(),
     }
 }
@@ -222,7 +225,7 @@ fn format_overload_signature(overload: &OverloadSig) -> String {
 
 fn format_param(param: &Param, output_parameter_names: bool, widen_param: bool) -> String {
     let param_type = if widen_param {
-        param.param_type.widen()
+        param.param_type.clone().widen_param_type()
     } else {
         param.param_type.clone()
     };

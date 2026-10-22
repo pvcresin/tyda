@@ -20,8 +20,8 @@ def f = fact(5)
 
 ```rbs
 class Object < BasicObject
-  def fact: (Integer n) -> (Float | 1)
-  def f: -> Float | 1
+  def fact: (Integer n) -> Integer
+  def f: -> Integer
 end
 ```
 
@@ -90,5 +90,35 @@ end
 
 class ReceiverB
   def call: (ReceiverA other) -> untyped
+end
+```
+
+## Recursive constructor returns preserve the base case
+
+### update
+
+```ruby
+class RecursiveArrayResult
+  def build_nested(depth)
+    if depth <= 0
+      0
+    else
+      [build_nested(depth - 1)]
+    end
+  end
+end
+
+def nested_result = RecursiveArrayResult.new.build_nested(2)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def nested_result: -> 0 | [untyped]
+end
+
+class RecursiveArrayResult
+  def build_nested: (Integer depth) -> (0 | [untyped])
 end
 ```

@@ -472,6 +472,20 @@ mastodon full）と mastodon/app/models の `--diagnostics` は byte-identical�
   ただし cache が効く経路（`PARAM_TABLE_MODE`）の deep clone は窓内 6 sample しかなく、
   実費は `visiting` 依存で cache できない再計算側にある。
 
+### freeze 済み parameter cache の caller-context lookup（2026-10-23）
+
+`PARAM_TABLE_MODE` の外では、引数 fixpoint 完了後も freeze 済み parameter cache を見ず、caller-context
+の call site を再走査していた。freeze 後は registry が不変なので、cache hit を使って再帰集約を省く。
+cache が未確定の通常推論経路は従来どおり再計算する。
+
+変更前の PR commit `36cc04e` と比較した 3-run local matrix（同じ pinned subject、CLI / LSP と max RSS）は、
+10 subject すべてで performance gate を通過した。CLI elapsed は `rubygems.org` が +15.1%（+47ms）で
+最も大きい比率だが、gate の最低差分 50ms に届かない。LSP scan は `conference-app` が +10.2%
+（+10ms）、`rubygems` が +8.0%（+76ms）で、いずれも gate 条件未満。GitLab は CLI -15.3%、
+LSP scan +4.1%、CLI RSS -1.3%、LSP RSS +1.5%。この比較は branch 上の commit 間であり、main に対する
+新しい基準値ではない。
+cache 修正前後の RBS snapshot は 6 subject で byte-identical。
+
 ## 記録ルール
 
 - 現在の基準を上書きし、履歴表を増やさない。

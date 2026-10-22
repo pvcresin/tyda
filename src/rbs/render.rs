@@ -360,7 +360,7 @@ fn write_signature<W: Write>(
 
 fn write_param<W: Write>(writer: &mut W, param: &Param, widen_param: bool) -> io::Result<()> {
     let param_type = if widen_param {
-        param.param_type.widen()
+        param.param_type.clone().widen_param_type()
     } else {
         param.param_type.clone()
     };

@@ -562,6 +562,9 @@ impl WorkspaceState {
                 let run = |registry: &mut TypeRegistry| {
                     registry.apply_cli_resolution();
                     registry.prewarm_and_freeze_resolve_params();
+                    crate::inference::InferenceEngine::resolve_deferred_calls_after_param_fixpoint(
+                        registry,
+                    );
                     registry.compact_after_batch_freeze();
                 };
                 match pool {
@@ -1604,6 +1607,44 @@ mod tests {
             fp_excluding_callsite_before,
             db.excluding_fingerprint("callsite.rb"),
             "excluded file body-only changes should not invalidate the excluding view"
+        );
+    }
+
+    #[test]
+    fn display_scope_key_tracks_current_file_registry_changes() {
+        use crate::analysis::{AnalysisOptions, analyze_file_facts_with_deps};
+
+        let source_v1 = "def foo(x)\n  x\nend\n\nfoo(1)\n";
+        let source_comment_edit = format!("{source_v1}# edit\n");
+        let source_v2 = "def foo(x)\n  x\nend\n\nfoo(1.0)\n";
+        let mut db = WorkspaceState::new();
+
+        let upsert_source = |db: &mut WorkspaceState, source: &str| {
+            let (analysis, deps) = analyze_file_facts_with_deps(
+                source,
+                None,
+                None,
+                Some("sample.rb"),
+                AnalysisOptions::default(),
+            );
+            db.upsert_file("sample.rb".into(), hash_content(source), analysis, deps);
+        };
+
+        upsert_source(&mut db, source_v1);
+        let key_v1 = db.display_scope_key("sample.rb");
+
+        upsert_source(&mut db, &source_comment_edit);
+        assert_eq!(
+            key_v1,
+            db.display_scope_key("sample.rb"),
+            "content-only edits should keep the registry cache reusable"
+        );
+
+        upsert_source(&mut db, source_v2);
+        assert_ne!(
+            key_v1,
+            db.display_scope_key("sample.rb"),
+            "current-file call sites contribute to the shared display registry"
         );
     }
 

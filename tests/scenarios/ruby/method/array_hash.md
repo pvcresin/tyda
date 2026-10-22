@@ -1044,6 +1044,12 @@ def project_flat_hash
 end
 
 def flat_pairs = [:enabled, true, :archived, false]
+
+def maybe_flat_pairs(flag)
+  flag ? [:maybe_enabled, true] : T.unsafe([])
+end
+
+def maybe_flat_hash = Hash[*maybe_flat_pairs(true)]
 ```
 
 ### result
@@ -1057,6 +1063,8 @@ class Object < BasicObject
   def flat_map_hash: -> Hash[:count | :name, 1 | "a"]
   def project_flat_hash: -> Hash[:archived | :enabled, bool]
   def flat_pairs: -> [:enabled, true, :archived, false]
+  def maybe_flat_pairs: (bool flag) -> (untyped | [:maybe_enabled, true])
+  def maybe_flat_hash: -> Hash[untyped | [:maybe_enabled, true], untyped | [:maybe_enabled, true]]
 end
 ```
 

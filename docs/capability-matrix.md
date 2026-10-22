@@ -13,7 +13,7 @@
 | 分野 | 状態 | 代表的な範囲 |
 | --- | --- | --- |
 | 定義・dispatch・visibility | supported | class / module / mixin / constant / method / `super` |
-| 変数・flow | supported | local / ivar（method 内の再代入・分岐・複合代入） / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入と `case/when` の class 分岐。クラス継承やモジュールの `include` が不確かな残余型を保持） / 分岐間のlocal相関 / rescue |
+| 変数・flow | supported | local / ivar（method 内の再代入・分岐・複合代入） / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入と `case/when` の class 分岐。ジェネリックclass targetの型引数は不明として保持。クラス継承やモジュールの `include` が不確かな残余型も保持） / 分岐間のlocal相関 / rescue |
 | block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy |
 | collection shape | supported | Array、Hash、Set、Tuple、Record |
 | pattern matching | partial | version gate、array / hash / find binding、literal / expression subject のcapture型維持、guard 内の capture、`case/in` の不一致は例外経路 |

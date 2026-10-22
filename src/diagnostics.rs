@@ -32,6 +32,7 @@ pub enum TypeHoleReason {
     MissingMethod,
     MissingInstanceVariable,
     DeferredType,
+    RecursiveTypeGrowth,
     Unknown,
 }
 
@@ -43,6 +44,7 @@ impl TypeHoleReason {
             TypeHoleReason::MissingMethod => "method_unresolved",
             TypeHoleReason::MissingInstanceVariable => "ivar_unresolved",
             TypeHoleReason::DeferredType => "deferred_type",
+            TypeHoleReason::RecursiveTypeGrowth => "recursive_type_growth",
             TypeHoleReason::Unknown => "unknown",
         }
     }
@@ -582,7 +584,7 @@ fn user_facing_type_string(ty: &Type) -> String {
 
 fn user_facing_type(ty: &Type) -> Type {
     match ty {
-        Type::Todo => Type::Untyped,
+        Type::Todo | Type::ParamPending => Type::Untyped,
         Type::Union(parts) => {
             Type::from_type_vec_preserve_untyped(parts.iter().map(user_facing_type).collect())
         }
@@ -614,6 +616,9 @@ fn user_facing_type(ty: &Type) -> Type {
             return_type: Box::new(user_facing_type(return_type)),
             param_count: *param_count,
         },
+        Type::Generic { base, args } => {
+            Type::generic(*base, args.iter().map(user_facing_type).collect::<Vec<_>>())
+        }
         _ => ty.clone(),
     }
 }
@@ -697,7 +702,15 @@ fn collect_return_hole(
         slot_name: "return".to_string(),
         kind: TypeHoleKind::Return,
         rendered_type: user_facing_type_string(&sig.return_type),
-        reason: reason_from_type(&method.raw_return_type, method.has_annotation()),
+        reason: if data
+            .cold()
+            .recursive_type_growth_returns
+            .contains(&(method.name, method.is_singleton))
+        {
+            TypeHoleReason::RecursiveTypeGrowth
+        } else {
+            reason_from_type(&method.raw_return_type, method.has_annotation())
+        },
         line: method.loc.map(|loc| loc.line),
     });
 }
@@ -725,7 +738,7 @@ fn reason_from_type(ty: &Type, annotated: bool) -> TypeHoleReason {
         return TypeHoleReason::ExplicitUntyped;
     }
     match ty {
-        Type::Untyped | Type::Todo => TypeHoleReason::Unknown,
+        Type::Untyped | Type::Todo | Type::ParamPending => TypeHoleReason::Unknown,
         Type::ParamRef(_) | Type::KeywordParamRef(_) => TypeHoleReason::MissingCallSite,
         Type::MethodReturnRef(_, _) | Type::ReceiverMethodRef(_, _) => {
             TypeHoleReason::MissingMethod
@@ -770,7 +783,7 @@ fn reason_from_type(ty: &Type, annotated: bool) -> TypeHoleReason {
 
 fn type_contains_hole(ty: &Type) -> bool {
     match ty {
-        Type::Untyped | Type::Todo => true,
+        Type::Untyped | Type::Todo | Type::ParamPending => true,
         Type::ParamRef(_)
         | Type::KeywordParamRef(_)
         | Type::IvarRef(_)
@@ -913,6 +926,49 @@ mod tests {
         );
         assert_eq!(
             summary.counts_by_reason().get("method_unresolved").copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn summarize_reports_recursive_type_growth_returns() {
+        let mut registry = TypeRegistry::new();
+        registry.mark_user_defined("RecursiveResult");
+        registry.set_file_path("RecursiveResult", "recursive_result.rb");
+        registry.set_class_location("RecursiveResult", SourceLocation { line: 1, column: 0 });
+        registry.add_method_def(
+            "RecursiveResult",
+            MethodDef {
+                name: Sym::new("build_nested"),
+                param_infos: Vec::new(),
+                raw_return_type: Type::Tuple(vec![Type::Untyped]),
+                sorbet_modifier_comments: Vec::new(),
+                rbs_annotated: false,
+                rbs_inline_annotated: false,
+                sig_annotated: false,
+                attr_ivar: None,
+                is_singleton: false,
+                rbs_file_source: false,
+                synthetic_dsl_source: false,
+                rbs_method_types: Default::default(),
+                extra_overloads: Vec::new(),
+                loc: Some(SourceLocation { line: 2, column: 2 }),
+            },
+        );
+        registry.mark_recursive_type_growth_return(
+            "RecursiveResult",
+            Sym::new("build_nested"),
+            false,
+        );
+
+        let summary = summarize_type_holes(&registry);
+
+        assert_eq!(summary.total_count(), 1);
+        assert_eq!(
+            summary
+                .counts_by_reason()
+                .get("recursive_type_growth")
+                .copied(),
             Some(1)
         );
     }

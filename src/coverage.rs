@@ -379,6 +379,7 @@ fn method_call_level(
 fn type_level(ty: &Type, class_context: &str, method_context: Option<&str>) -> CoverageLevel {
     match ty {
         Type::Untyped
+        | Type::ParamPending
         | Type::Todo
         | Type::BlockReturnRef
         | Type::TruthyProjection(_)
@@ -410,6 +411,11 @@ fn type_level(ty: &Type, class_context: &str, method_context: Option<&str>) -> C
                 CoverageLevel::Untyped | CoverageLevel::Typed => CoverageLevel::Untyped,
             }
         }
+        Type::DeferredCallRef { receiver, call } => [receiver.as_ref()]
+            .into_iter()
+            .chain(call.args.iter())
+            .map(|part| type_level(part, class_context, method_context))
+            .fold(CoverageLevel::Untyped, merge_levels),
         Type::Class(name) | Type::Singleton(name) => {
             if name.is_empty() || is_unknown_name(name.as_ref()) {
                 CoverageLevel::Unknown
@@ -446,6 +452,7 @@ fn type_level(ty: &Type, class_context: &str, method_context: Option<&str>) -> C
         | Type::PatternRestRef(subject)
         | Type::PatternTrailingRef(subject, _)
         | Type::PatternKeyRef(subject, _)
+        | Type::PatternBindingKeyRef(subject, _)
         | Type::PatternKeyRestRef(subject, _) => {
             match type_level(subject, class_context, method_context) {
                 CoverageLevel::Unknown => CoverageLevel::Unknown,

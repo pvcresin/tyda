@@ -25,7 +25,6 @@ class Object < BasicObject
   def check: (Integer x) -> ("one" | "other" | "two")
 end
 ```
-
 ## case when with range
 
 ### update
@@ -160,6 +159,95 @@ class Object < BasicObject
 end
 ```
 
+## An assigned local keeps its concrete domain
+
+### update
+
+```ruby
+def case_local_assignment(value)
+  value = "local"
+  case value
+  when String
+    :local
+  else
+    :unreachable
+  end
+end
+
+def case_open_alias(value)
+  candidate = value
+  case candidate
+  when Integer
+    :integer
+  else
+    :other
+  end
+end
+
+case_local_assignment(:unused)
+case_open_alias(1)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_local_assignment: (Symbol value) -> :local
+  def case_open_alias: (Integer value) -> :integer
+end
+```
+
+## An optional default does not close the input domain
+
+### update
+
+```ruby
+def case_optional_default_domain(value = "default")
+  case value
+  when String
+    :text
+  else
+    :other
+  end
+end
+
+case_optional_default_domain
+case_optional_default_domain(1)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_optional_default_domain: (?(Integer | String) value) -> (:other | :text)
+end
+```
+
+## An omitted optional argument narrows to its default
+
+### update
+
+```ruby
+def case_optional_default_only(value = "default")
+  case value
+  when String
+    :text
+  else
+    :other
+  end
+end
+
+case_optional_default_only
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_optional_default_only: (?String value) -> :text
+end
+```
+
 ## case without expression
 
 ### update
@@ -211,6 +299,32 @@ end
 ```rbs
 class Formatter
   def format: (untyped x) -> String
+end
+```
+
+## Explicit parameter contracts remain closed during case narrowing
+
+### update
+
+```ruby
+class CaseWhenExplicitContract
+  #: (String) -> Symbol
+  def classify(value)
+    case value
+    when String
+      :text
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class CaseWhenExplicitContract
+  def classify: (String value) -> Symbol
 end
 ```
 
@@ -754,5 +868,226 @@ foo(:a)
 ```rbs
 class Object < BasicObject
   def foo: ((Integer | String | Symbol) x) -> (Integer | String | :other)
+end
+```
+
+## Case when keeps sibling branch types separate
+
+### update
+
+```ruby
+def case_when_time_like(value)
+  value
+end
+
+def case_when_scalar(value)
+  value
+end
+
+def case_when_sibling_types(value)
+  case value
+  when Array
+    :array
+  when Time, String
+    case_when_time_like(value)
+  when Integer, TrueClass, FalseClass
+    case_when_scalar(value)
+  else
+    :other
+  end
+end
+
+case_when_sibling_types([])
+case_when_sibling_types(Time.now)
+case_when_sibling_types("time-like")
+case_when_sibling_types(1)
+case_when_sibling_types(true)
+case_when_sibling_types(:other)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_when_time_like: ((String | Time) value) -> (String | Time)
+  def case_when_scalar: ((Integer | bool) value) -> (Integer | bool)
+  def case_when_sibling_types: ((Integer | String | Symbol | bool | Time | [ ]) value) -> (Integer | String | bool | :array | :other | Time)
+end
+```
+
+## Case when keeps values returned by an optional block
+
+### update
+
+```ruby
+def case_when_block_time(value)
+  value
+end
+
+def case_when_block_integer(value)
+  value
+end
+
+def case_when_optional_block(value, &block)
+  value = yield value if block
+  case value
+  when Time
+    case_when_block_time(value)
+  when Integer
+    case_when_block_integer(value)
+  else
+    :other
+  end
+end
+
+case_when_optional_block(Time.now)
+case_when_optional_block(Time.now) { |time| time.to_i }
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def case_when_block_time: (Time value) -> Time
+  def case_when_block_integer: (Integer value) -> Integer
+  def case_when_optional_block: (Time value, ?untyped &block) -> (Integer | :other | Time)
+end
+```
+
+## Case when keeps unresolved yielded values reachable
+
+### update
+
+```ruby
+class CaseWhenItem
+  def name
+    "item"
+  end
+end
+
+class CaseWhenUnknownBlockArg
+  def search(query)
+    local_search(query)
+  end
+
+  def local_search(query)
+    case query
+    when CaseWhenItem
+      search_by_name(query)
+    else
+      :other
+    end
+  end
+
+  def search_by_name(value)
+    value
+  end
+
+end
+
+CaseWhenUnknownBlockArg.new.search(T.unsafe("query"))
+```
+
+### result
+
+```rbs
+class CaseWhenItem
+  def name: -> "item"
+end
+
+class CaseWhenUnknownBlockArg
+  def search: (untyped query) -> (:other | CaseWhenItem)
+  def local_search: (untyped query) -> (:other | CaseWhenItem)
+  def search_by_name: (CaseWhenItem value) -> CaseWhenItem
+end
+```
+
+## Case when Array preserves unknown element types
+
+### update
+
+```ruby
+class CaseWhenArrayContents
+  def first(value)
+    case value
+    when Array
+      value[0]
+    end
+  end
+
+  def hash_value(value)
+    case value
+    when Hash
+      value[:key]
+    end
+  end
+end
+
+class CaseWhenArrayFields
+  def initialize(value)
+    case value
+    when Array
+      @field, = value
+    when String
+      @field = value
+    end
+  end
+
+  attr_reader :field
+end
+```
+
+### result
+
+```rbs
+class CaseWhenArrayContents
+  def first: (untyped value) -> (nil | untyped)
+  def hash_value: (untyped value) -> (nil | untyped)
+end
+
+class CaseWhenArrayFields
+  def initialize: (untyped value) -> void
+  def field: -> String | nil | untyped
+end
+```
+
+## Preserve observed nil setter calls after class equality
+
+### update
+
+```ruby
+class OpenCaseNilSetterTarget
+  def self.===(_other) = _other.is_a?(self)
+end
+
+class OpenCaseNilSetter
+  def value=(value)
+    @value = value
+  end
+
+  def assign(value)
+    case value
+    when OpenCaseNilSetterTarget
+      :other
+    when NilClass
+      self.value = nil
+    end
+  end
+end
+
+OpenCaseNilSetter.new.assign("known")
+OpenCaseNilSetter.new.assign(nil)
+```
+
+### result
+
+```rbs
+class OpenCaseNilSetter
+  def value=: (nil value) -> nil
+  def assign: (String? value) -> :other?
+end
+
+class OpenCaseNilSetterTarget
+  def self.===: (untyped _other) -> bool
 end
 ```

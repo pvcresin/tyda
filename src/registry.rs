@@ -113,6 +113,12 @@ type DeferredHopMemo = FxHashMap<Arc<DeferredKey>, Type>;
 type DeferredMemo = FxHashMap<Arc<DeferredKey>, Type>;
 type DeferredVisiting = FxHashSet<Arc<DeferredKey>>;
 
+enum CallerParamLookup {
+    Ready(Vec<Param>),
+    Pending,
+    Missing,
+}
+
 /// Key for the deferred-ref memo and its `visiting` set. Both maps are probed with the
 /// same key, and the `Type` component is a whole subtree, so the hash is computed once
 /// at construction and each map op only walks the type when hashes collide. `Arc` keeps
@@ -363,6 +369,7 @@ type GroupedCallSites = HashMap<CallSiteSummaryKey, CallSiteSummaryAccumulator>;
 #[derive(Default)]
 struct TypeSlotAccumulator {
     parts: rustc_hash::FxHashSet<Type>,
+    has_untyped: bool,
     // exceeding the union cap sticks to untyped regardless of merge order.
     saturated: bool,
 }
@@ -378,8 +385,7 @@ impl TypeSlotAccumulator {
         if self.saturated {
             return;
         }
-        // append_union_parts flattens nested unions and drops Untyped
-        // (but keeps the empty signal meaning "call site told us nothing").
+        self.has_untyped |= Self::contains_top_level_untyped(&ty);
         let mut flattened = Vec::new();
         Type::append_union_parts(&mut flattened, ty);
         for part in flattened {
@@ -391,11 +397,22 @@ impl TypeSlotAccumulator {
         }
     }
 
-    fn finish(self) -> Type {
+    fn finish(mut self) -> Type {
         if self.saturated {
             return Type::Untyped;
         }
-        Type::from_type_vec(self.parts.into_iter().collect())
+        if self.has_untyped {
+            self.parts.insert(Type::Untyped);
+        }
+        Type::merge_param_arg_vec(self.parts.into_iter().collect())
+    }
+
+    fn contains_top_level_untyped(ty: &Type) -> bool {
+        match ty {
+            Type::Untyped => true,
+            Type::Union(parts) => parts.iter().any(Self::contains_top_level_untyped),
+            _ => false,
+        }
     }
 }
 
@@ -1855,6 +1872,7 @@ pub struct ClassDataCold {
     pub data_constructor: Option<DataConstructor>,
     // set of bare ivar readers (used only for self-fact narrowing).
     pub bare_ivar_readers: FxHashSet<(Sym, bool)>,
+    pub(crate) recursive_type_growth_returns: FxHashSet<(Sym, bool)>,
     /// DSL recorded in a concern `included do` that must run against each includer
     /// (resource name / serializer owner), not the concern module itself.
     pub includer_bound_dsl: Vec<IncluderBoundDsl>,
@@ -2221,7 +2239,7 @@ pub struct RegistryMemoryBreakdown {
     pub name_pool_entries: usize,
 }
 
-type ParamCacheKey = (SharedName, SharedName, bool);
+pub(crate) type ParamCacheKey = (SharedName, SharedName, bool);
 
 // the param cache is sharded with lazy init (avoids mutex transport during prewarm and dead weight in per-file snapshots).
 type ParamCacheShard = Mutex<FxHashMap<ParamCacheKey, Arc<Vec<Param>>>>;
@@ -2271,7 +2289,6 @@ impl ParamCache {
             })
             .unwrap_or(0)
     }
-
     fn shard_index(key: &ParamCacheKey) -> usize {
         use std::hash::{Hash, Hasher};
         let mut hasher = rustc_hash::FxHasher::default();
@@ -2296,6 +2313,30 @@ impl ParamCache {
         // deep-cloning inside the lock serializes prewarm workers via the shard mutex, so `Arc` clone happens inside the lock and Vec materialization happens outside.
         let shared = self.shard(key)?.lock().ok()?.get(key).cloned()?;
         Some((*shared).clone())
+    }
+
+    fn keys_containing_deferred_calls(&self) -> Vec<ParamCacheKey> {
+        self.shards
+            .get()
+            .into_iter()
+            .flatten()
+            .flat_map(|shard| {
+                shard
+                    .lock()
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .filter(|(_, params)| {
+                                params
+                                    .iter()
+                                    .any(|param| param.param_type.contains_deferred_call_ref())
+                            })
+                            .map(|(key, _)| key.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     // when a shard exceeds its limit, clear it per-shard (bounds long-lived LSP sessions).
@@ -3141,10 +3182,62 @@ impl TypeRegistry {
         Self::merge_resolved_positional_arg_types(param_types, &arg_types, param_infos);
     }
 
+    pub(crate) fn merge_call_site_positional_types_with_flags(
+        param_types: &mut [Vec<Type>],
+        call_site: &CallSite,
+        param_infos: &[ParamInfo],
+        provided: &mut [bool],
+    ) {
+        let arg_types = Self::synthesize_keyword_hash_arg(call_site, param_infos);
+        Self::merge_resolved_positional_arg_types_with_flags(
+            param_types,
+            &arg_types,
+            param_infos,
+            Some(provided),
+        );
+    }
+
     fn merge_resolved_positional_arg_types(
         param_types: &mut [Vec<Type>],
         arg_types: &[Type],
         param_infos: &[ParamInfo],
+    ) {
+        Self::merge_resolved_positional_arg_types_with_flags(
+            param_types,
+            arg_types,
+            param_infos,
+            None,
+        );
+    }
+
+    fn merge_resolved_positional_arg_types_with_flags(
+        param_types: &mut [Vec<Type>],
+        arg_types: &[Type],
+        param_infos: &[ParamInfo],
+        provided: Option<&mut [bool]>,
+    ) {
+        let mut provided = provided;
+        Self::for_each_resolved_positional_arg(
+            arg_types.len(),
+            param_infos,
+            |param_index, arg_index| {
+                let arg_type = &arg_types[arg_index];
+                if let Some(flags) = provided.as_deref_mut()
+                    && let Some(flag) = flags.get_mut(param_index)
+                {
+                    *flag = true;
+                }
+                if let Some(types) = param_types.get_mut(param_index) {
+                    Type::append_param_arg_parts(types, arg_type.clone());
+                }
+            },
+        );
+    }
+
+    fn for_each_resolved_positional_arg(
+        arg_count: usize,
+        param_infos: &[ParamInfo],
+        mut visit: impl FnMut(usize, usize),
     ) {
         let positional_infos: Vec<_> = param_infos
             .iter()
@@ -3159,37 +3252,29 @@ impl TypeRegistry {
             .iter()
             .position(|pi| matches!(pi.kind, ParamKind::Rest))
         else {
-            for (i, arg_type) in arg_types.iter().enumerate() {
-                if i < param_types.len() {
-                    Type::append_union_parts(&mut param_types[i], arg_type.clone());
-                }
+            for index in 0..arg_count.min(positional_infos.len()) {
+                visit(index, index);
             }
             return;
         };
 
         let trailing_count = positional_infos.len().saturating_sub(rest_index + 1);
-        for (i, arg_type) in arg_types.iter().take(rest_index).enumerate() {
-            if i < param_types.len() {
-                Type::append_union_parts(&mut param_types[i], arg_type.clone());
-            }
+        for index in 0..arg_count.min(rest_index) {
+            visit(index, index);
         }
 
-        let trailing_start = arg_types.len().saturating_sub(trailing_count);
-        for (offset, arg_type) in arg_types.iter().skip(trailing_start).enumerate() {
+        let trailing_start = arg_count.saturating_sub(trailing_count);
+        for (offset, arg_index) in (trailing_start..arg_count).enumerate() {
             let param_index = rest_index + 1 + offset;
-            if param_index < param_types.len() {
-                Type::append_union_parts(&mut param_types[param_index], arg_type.clone());
+            if param_index < positional_infos.len() {
+                visit(param_index, arg_index);
             }
         }
 
         let middle_end = trailing_start.max(rest_index);
-        for arg_type in arg_types
-            .iter()
-            .skip(rest_index)
-            .take(middle_end - rest_index)
-        {
-            if rest_index < param_types.len() {
-                Type::append_union_parts(&mut param_types[rest_index], arg_type.clone());
+        for arg_index in rest_index..middle_end {
+            if rest_index < positional_infos.len() {
+                visit(rest_index, arg_index);
             }
         }
     }
@@ -3473,7 +3558,7 @@ impl TypeRegistry {
             existing.name == method.name && existing.is_singleton == method.is_singleton
         }) {
             let existing = &data.methods[existing_idx];
-            if existing.rbs_file_source && !method.rbs_file_source {
+            if existing.rbs_file_source && !method.rbs_file_source && !method.synthetic_dsl_source {
                 let next_idx = data.methods.len();
                 data.methods.push(Arc::new(method));
                 let method_name = data.methods[next_idx].name;
@@ -4349,10 +4434,12 @@ impl TypeRegistry {
         if let Some(types) = types
             && !types.is_empty()
         {
-            let ivar_ty = if types.len() == 1 {
+            let ivar_ty = if is_singleton {
+                Type::from_type_vec(types.clone())
+            } else if types.len() == 1 {
                 types[0].clone()
             } else {
-                Type::from_type_vec(types.clone())
+                Type::merge_param_arg_vec(types.clone())
             };
             if !matches!(
                 ivar_ty,
@@ -4384,8 +4471,18 @@ impl TypeRegistry {
         let (owner, owner_is_singleton) =
             self.resolve_method_call_owner_ref(class_name, method_name, is_singleton)?;
         let data = self.class_data.get(owner)?;
-        Self::method_for_lookup_kind(data, method_name, Some(owner_is_singleton))
-            .and_then(|method| method.attr_ivar.clone())
+        Self::method_for_lookup_kind(data, method_name, Some(owner_is_singleton)).and_then(
+            |method| {
+                if method.param_infos.is_empty()
+                    && !method.has_annotation()
+                    && !method.rbs_inline_annotated
+                {
+                    method.attr_ivar.clone()
+                } else {
+                    None
+                }
+            },
+        )
     }
 
     /// determines whether a method is a pure reader (attr/ivar/AR column reader, excluding associations): used for self-fact narrowing. Also walks the mixin chain.
@@ -4838,7 +4935,19 @@ impl TypeRegistry {
         self.mark_class_has_method_body_facts(class_name);
         let data = self.class_data_mut(class_name);
         let types = data.ivars.entry(Sym::new(ivar_name)).or_default();
-        Type::merge_into_vec(types, ty);
+        let preserve_unknown = Self::has_explicit_unknown_alternative(&ty)
+            || types.iter().any(Self::has_explicit_unknown_alternative)
+            || (types.contains(&Type::Untyped)
+                && types.iter().any(|existing| *existing != Type::Untyped));
+        if preserve_unknown {
+            Type::append_param_arg_parts(types, ty);
+        } else {
+            Type::merge_into_vec(types, ty);
+        }
+    }
+
+    fn has_explicit_unknown_alternative(ty: &Type) -> bool {
+        matches!(ty, Type::Union(parts) if parts.len() > 1 && parts.contains(&Type::Untyped))
     }
 
     pub fn replace_ivar_type(&mut self, class_name: &str, ivar_name: &str, ty: Type) {
@@ -4857,7 +4966,7 @@ impl TypeRegistry {
                 if types.is_empty() {
                     None
                 } else {
-                    Some((name.to_string(), Type::from_type_vec(types.clone())))
+                    Some((name.to_string(), Type::merge_param_arg_vec(types.clone())))
                 }
             })
             .collect()
@@ -4886,7 +4995,7 @@ impl TypeRegistry {
         if types.is_empty() {
             return None;
         }
-        Some(Type::from_type_vec(types.clone()))
+        Some(Type::from_type_vec_preserve_untyped(types.clone()))
     }
 
     pub fn replace_class_variable_type(&mut self, class_name: &str, var_name: &str, ty: Type) {
@@ -6132,7 +6241,7 @@ impl TypeRegistry {
         if types.is_empty() {
             return None;
         }
-        Some(Type::from_type_vec(types.clone()))
+        Some(Type::merge_param_arg_vec(types.clone()))
     }
 
     /// ivar lookup also walks the superclass chain (a child may reference an ivar set by the parent's `initialize`). Has a depth guard.
@@ -6378,8 +6487,38 @@ impl TypeRegistry {
                 .and_then(|slots| slots.get(is_singleton))
             && let Some(method) = data.methods.get_mut(method_idx)
         {
+            if let Some(cold) = data.cold.as_mut() {
+                cold.recursive_type_growth_returns
+                    .remove(&(method.name, is_singleton));
+            }
             Arc::make_mut(method).raw_return_type = return_type;
         }
+    }
+
+    pub(crate) fn mark_recursive_type_growth_return(
+        &mut self,
+        class_name: &str,
+        method_name: Sym,
+        is_singleton: bool,
+    ) {
+        if let Some(data) = self.class_data.get_mut(class_name) {
+            data.cold_mut()
+                .recursive_type_growth_returns
+                .insert((method_name, is_singleton));
+        }
+    }
+
+    pub(crate) fn is_recursive_type_growth_return(
+        &self,
+        class_name: &str,
+        method_name: Sym,
+        is_singleton: bool,
+    ) -> bool {
+        self.class_data_for(class_name).is_some_and(|data| {
+            data.cold()
+                .recursive_type_growth_returns
+                .contains(&(method_name, is_singleton))
+        })
     }
 
     pub fn update_instance_method_return_type(
@@ -6492,21 +6631,13 @@ impl TypeRegistry {
                             &method.param_infos,
                         );
                     }
-                    // if any argument position is untyped, treat the whole thing as Untyped (a partially-untyped union would get incorrectly narrowed to e.g. `nil` downstream).
-                    let finalize = |ty: Type| -> Type {
-                        if Self::type_contains_untyped_member(&ty) {
-                            Type::Untyped
-                        } else {
-                            ty
-                        }
-                    };
                     let resolved_params: Vec<Type> = param_types
                         .into_iter()
                         .map(|types| {
                             if types.is_empty() {
                                 Type::Untyped
                             } else {
-                                finalize(Type::from_type_vec(types).widen_arg_for_param())
+                                Type::merge_param_arg_vec(types).widen_arg_for_param()
                             }
                         })
                         .collect();
@@ -6522,10 +6653,7 @@ impl TypeRegistry {
                     let keyword_types: HashMap<String, Type> = keyword_merged
                         .into_iter()
                         .map(|(name, types)| {
-                            (
-                                name,
-                                finalize(Type::from_type_vec(types).widen_arg_for_param()),
-                            )
+                            (name, Type::merge_param_arg_vec(types).widen_arg_for_param())
                         })
                         .collect();
                     let resolved = Self::substitute_param_refs_static_with_keywords(
@@ -6643,26 +6771,6 @@ impl TypeRegistry {
         }
     }
 
-    /// checks whether a literal Untyped is present: decides if a call-site type can be written to the method (an untyped union would be incorrectly narrowed downstream).
-    fn type_contains_untyped_member(ty: &Type) -> bool {
-        match ty {
-            Type::Untyped => true,
-            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
-                parts.iter().any(Self::type_contains_untyped_member)
-            }
-            Type::Array(Some(inner)) => Self::type_contains_untyped_member(inner),
-            Type::Hash(k, v) => {
-                k.as_deref().is_some_and(Self::type_contains_untyped_member)
-                    || v.as_deref().is_some_and(Self::type_contains_untyped_member)
-            }
-            Type::Record(fields) => fields
-                .iter()
-                .any(|field| Self::type_contains_untyped_member(&field.value)),
-            Type::Proc { return_type, .. } => Self::type_contains_untyped_member(return_type),
-            _ => false,
-        }
-    }
-
     fn type_contains_param_ref_static(ty: &Type) -> bool {
         match ty {
             Type::ParamRef(_) | Type::KeywordParamRef(_) => true,
@@ -6684,10 +6792,15 @@ impl TypeRegistry {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
+            | Type::PatternBindingKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _)
             | Type::ReceiverMethodRef(subject, _)
             | Type::TruthyProjection(subject)
             | Type::FalsyProjection(subject) => Self::type_contains_param_ref_static(subject),
+            Type::DeferredCallRef { receiver, call } => {
+                Self::type_contains_param_ref_static(receiver)
+                    || call.args.iter().any(Self::type_contains_param_ref_static)
+            }
             _ => false,
         }
     }
@@ -6949,6 +7062,7 @@ impl TypeRegistry {
             | Type::PatternTrailingRef(inner, _)
             | Type::PatternIndexRef(inner, _)
             | Type::PatternKeyRef(inner, _)
+            | Type::PatternBindingKeyRef(inner, _)
             | Type::PatternKeyRestRef(inner, _)
             | Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner) => Self::type_contains_subclass_ref_candidate(inner),
@@ -7100,6 +7214,14 @@ impl TypeRegistry {
                     Type::PatternKeyRef(Box::new(resolved_subject), key.clone())
                 } else {
                     Self::resolve_pattern_key_ref(&resolved_subject, key)
+                }
+            }
+            Type::PatternBindingKeyRef(subject, key) => {
+                let resolved_subject = self.resolve_subclass_refs_in_type(subject);
+                if Self::type_contains_subclass_ref_candidate(&resolved_subject) {
+                    Type::PatternBindingKeyRef(Box::new(resolved_subject), key.clone())
+                } else {
+                    Self::resolve_pattern_binding_key_ref(&resolved_subject, key)
                 }
             }
             Type::PatternKeyRestRef(subject, matched_keys) => {
@@ -7301,9 +7423,14 @@ impl TypeRegistry {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
+            | Type::PatternBindingKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _)
             | Type::TruthyProjection(subject)
             | Type::FalsyProjection(subject) => Self::global_type_contains_ref(subject),
+            Type::DeferredCallRef { receiver, call } => {
+                Self::global_type_contains_ref(receiver)
+                    || call.args.iter().any(Self::global_type_contains_ref)
+            }
             _ => false,
         }
     }
@@ -7854,6 +7981,24 @@ impl TypeRegistry {
                     Self::resolve_pattern_key_ref(&resolved_subject, key)
                 }
             }
+            Type::PatternBindingKeyRef(subject, key) => {
+                let resolved_subject = self.resolve_global_refs(
+                    context_class,
+                    subject,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
+                if Self::global_type_contains_ref(&resolved_subject) {
+                    Type::PatternBindingKeyRef(Box::new(resolved_subject), key.clone())
+                } else {
+                    Self::resolve_pattern_binding_key_ref(&resolved_subject, key)
+                }
+            }
             Type::PatternKeyRestRef(subject, matched_keys) => {
                 let resolved_subject = self.resolve_global_refs(
                     context_class,
@@ -7870,6 +8015,39 @@ impl TypeRegistry {
                     Type::PatternKeyRestRef(Box::new(resolved_subject), matched_keys.clone())
                 } else {
                     Self::resolve_pattern_key_rest_ref(&resolved_subject, matched_keys)
+                }
+            }
+            Type::DeferredCallRef { receiver, call } => {
+                let resolved_receiver = self.resolve_global_refs(
+                    context_class,
+                    receiver,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
+                let mut resolved_args = Vec::with_capacity(call.args.len());
+                for arg in &call.args {
+                    resolved_args.push(self.resolve_global_refs(
+                        context_class,
+                        arg,
+                        visiting,
+                        memo,
+                        depth + 1,
+                        budget,
+                    ));
+                    if budget.is_exhausted() {
+                        return Type::Untyped;
+                    }
+                }
+                if resolved_receiver == **receiver && resolved_args.as_slice() == call.args.as_ref()
+                {
+                    ty.clone()
+                } else {
+                    Type::deferred_call_ref(resolved_receiver, call.method, resolved_args)
                 }
             }
             _ => ty.clone(),
@@ -7893,7 +8071,7 @@ impl TypeRegistry {
             Type::KeywordParamRef(name) => params
                 .iter()
                 .find(|p| &p.name == name)
-                .map(|p| p.param_type.clone().widen())
+                .map(|p| p.param_type.clone().widen_param_type())
                 .unwrap_or(Type::Untyped),
             Type::ParamRef(idx) => {
                 let mut pos_idx = 0;
@@ -7903,7 +8081,7 @@ impl TypeRegistry {
                         ParamKind::Required | ParamKind::Optional | ParamKind::Rest
                     ) {
                         if pos_idx == *idx {
-                            return p.param_type.clone().widen();
+                            return p.param_type.clone().widen_param_type();
                         }
                         pos_idx += 1;
                     }
@@ -7913,6 +8091,9 @@ impl TypeRegistry {
             Type::ReceiverMethodRef(receiver_type, method_name) => {
                 let resolved_receiver =
                     self.resolve_param_refs_from_resolved(receiver_type, params);
+                if resolved_receiver == Type::ParamPending {
+                    return Type::ParamPending;
+                }
                 if let Some(cls) = Self::type_to_class_name(&resolved_receiver) {
                     let prefer_singleton = matches!(resolved_receiver, Type::Singleton(_));
                     let ret = self
@@ -7923,33 +8104,50 @@ impl TypeRegistry {
                 } else if let Type::Union(parts) = &resolved_receiver {
                     let mut resolved_parts: Vec<Type> = Vec::new();
                     for part in parts {
+                        if *part == Type::ParamPending {
+                            resolved_parts.push(Type::ParamPending);
+                            continue;
+                        }
+                        if matches!(part, Type::Untyped | Type::Todo | Type::Top) {
+                            resolved_parts.push(Type::Untyped);
+                            continue;
+                        }
+                        if *part == Type::Bot {
+                            continue;
+                        }
                         if let Some(cls) = Self::type_to_class_name(part) {
                             let prefer_singleton = matches!(part, Type::Singleton(_));
-                            let ret = self
-                                .lookup_method_return_type_with_hint(
-                                    &cls,
-                                    method_name,
-                                    prefer_singleton,
-                                )
-                                .unwrap_or(Type::Untyped);
-                            let ret = Self::substitute_self_type(&ret, part);
-                            let resolved = self.resolve_deferred_refs(&cls, &ret);
-                            if resolved != Type::Untyped {
-                                resolved_parts.push(resolved);
+                            if let Some(ret) = self.lookup_method_return_type_with_hint(
+                                &cls,
+                                method_name,
+                                prefer_singleton,
+                            ) {
+                                let ret = Self::substitute_self_type(&ret, part);
+                                resolved_parts.push(self.resolve_deferred_refs(&cls, &ret));
                             }
+                        } else {
+                            resolved_parts.push(Type::Untyped);
                         }
                     }
                     if resolved_parts.is_empty() {
                         Type::Untyped
                     } else {
-                        // don't drop untyped contained in a member's resolution result
-                        // (otherwise `nil | untyped` narrows to `nil`, giving the wrong concrete type).
+                        // Keep unknown receiver and return alternatives beside known members.
                         Type::from_type_vec_preserve_untyped(resolved_parts)
                     }
                 } else {
                     Type::Untyped
                 }
             }
+            Type::DeferredCallRef { receiver, call } => Type::deferred_call_ref(
+                self.resolve_param_refs_from_resolved(receiver, params),
+                call.method,
+                call.args
+                    .iter()
+                    .map(|arg| self.resolve_param_refs_from_resolved(arg, params))
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
                 Self::resolve_pattern_index_ref(&resolved_subject, *index)
@@ -7965,6 +8163,10 @@ impl TypeRegistry {
             Type::PatternKeyRef(subject, key) => {
                 let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
                 Self::resolve_pattern_key_ref(&resolved_subject, key)
+            }
+            Type::PatternBindingKeyRef(subject, key) => {
+                let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
+                Self::resolve_pattern_binding_key_ref(&resolved_subject, key)
             }
             Type::PatternKeyRestRef(subject, matched_keys) => {
                 let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
@@ -8060,6 +8262,7 @@ impl TypeRegistry {
             | Type::PatternRestRef(..)
             | Type::PatternTrailingRef(..)
             | Type::PatternKeyRef(..)
+            | Type::PatternBindingKeyRef(..)
             | Type::PatternKeyRestRef(..)
             | Type::TruthyProjection(..)
             | Type::FalsyProjection(..) => true,
@@ -8170,6 +8373,7 @@ impl TypeRegistry {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
+            | Type::PatternBindingKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _) => Self::type_is_memo_small(subject, budget),
             _ => true,
         }
@@ -8380,6 +8584,17 @@ impl TypeRegistry {
                 );
                 Self::resolve_pattern_key_ref(&resolved_subject, key)
             }
+            Type::PatternBindingKeyRef(subject, key) => {
+                let resolved_subject = self.resolve_deferred_refs_depth(
+                    class_name,
+                    singleton_context,
+                    subject,
+                    depth + 1,
+                    memo,
+                    visiting,
+                );
+                Self::resolve_pattern_binding_key_ref(&resolved_subject, key)
+            }
             Type::PatternKeyRestRef(subject, matched_keys) => {
                 let resolved_subject = self.resolve_deferred_refs_depth(
                     class_name,
@@ -8555,6 +8770,15 @@ impl TypeRegistry {
         memo: &mut DeferredMemo,
         visiting: &mut DeferredVisiting,
     ) -> Type {
+        if *resolved_receiver == Type::ParamPending {
+            return Type::ParamPending;
+        }
+        if *resolved_receiver == Type::Bot {
+            return Type::Bot;
+        }
+        if *resolved_receiver == Type::Untyped {
+            return Type::Untyped;
+        }
         if let Some(ivar_name) = Self::receiver_ivar_reflection_name(method_name) {
             return self.resolve_receiver_ivar_reflection(
                 resolved_receiver,
@@ -8580,9 +8804,9 @@ impl TypeRegistry {
         }
         if let Some(cls) = Self::type_to_class_name(resolved_receiver) {
             let prefer_singleton = matches!(resolved_receiver, Type::Singleton(_));
-            let ret = self
-                .lookup_method_return_type_with_hint(&cls, method_name, prefer_singleton)
-                .unwrap_or(Type::Untyped);
+            let method_return =
+                self.lookup_method_return_type_with_hint(&cls, method_name, prefer_singleton);
+            let ret = method_return.clone().unwrap_or(Type::Untyped);
             let ret = Self::substitute_self_type(&ret, resolved_receiver);
             let resolved = self.resolve_deferred_refs_depth(
                 &cls,
@@ -8605,11 +8829,25 @@ impl TypeRegistry {
         if let Type::Union(parts) = resolved_receiver {
             let mut resolved_parts: Vec<Type> = Vec::new();
             for part in parts {
+                if matches!(part, Type::Untyped) {
+                    resolved_parts.push(self.resolve_method_on_resolved_receiver(
+                        _class_name,
+                        part,
+                        method_name,
+                        depth,
+                        memo,
+                        visiting,
+                    ));
+                    continue;
+                }
                 if let Some(cls) = Self::type_to_class_name(part) {
                     let prefer_singleton = matches!(part, Type::Singleton(_));
-                    let ret = self
-                        .lookup_method_return_type_with_hint(&cls, method_name, prefer_singleton)
-                        .unwrap_or(Type::Untyped);
+                    let method_return = self.lookup_method_return_type_with_hint(
+                        &cls,
+                        method_name,
+                        prefer_singleton,
+                    );
+                    let ret = method_return.clone().unwrap_or(Type::Untyped);
                     let ret = Self::substitute_self_type(&ret, part);
                     let resolved = self.resolve_deferred_refs_depth(
                         &cls,
@@ -8625,7 +8863,18 @@ impl TypeRegistry {
                         self.resolve_attr_reader_return_type(&cls, method_name, prefer_singleton)
                     {
                         resolved_parts.push(ivar_ty);
+                    } else if method_return == Some(Type::Untyped) {
+                        resolved_parts.push(Type::Untyped);
                     }
+                } else if !matches!(part, Type::Bot | Type::ParamPending) {
+                    resolved_parts.push(match part {
+                        Type::ReceiverMethodRef(_, existing_method)
+                            if existing_method.as_str() == method_name =>
+                        {
+                            part.clone()
+                        }
+                        _ => Type::ReceiverMethodRef(Box::new(part.clone()), Sym::new(method_name)),
+                    });
                 }
             }
             if !resolved_parts.is_empty() {
@@ -8845,7 +9094,7 @@ impl TypeRegistry {
                     .iter()
                     .map(|t| Self::substitute_self_type(t, receiver_type))
                     .collect();
-                Type::from_type_vec(resolved)
+                Type::from_type_vec_preserve_untyped(resolved)
             }
             Type::Intersection(parts) => Type::Intersection(
                 parts
@@ -8905,8 +9154,13 @@ impl TypeRegistry {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
+            | Type::PatternBindingKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _)
             | Type::ReceiverMethodRef(subject, _) => Self::call_site_walk_is_identity(subject),
+            Type::DeferredCallRef { receiver, call } => {
+                Self::call_site_walk_is_identity(receiver)
+                    && call.args.iter().all(Self::call_site_walk_is_identity)
+            }
             Type::Proc { return_type, .. } => Self::call_site_walk_is_identity(return_type),
             _ => true,
         }
@@ -8949,6 +9203,17 @@ impl TypeRegistry {
             });
         }
         resolved
+    }
+
+    fn resolve_call_site_deferred_ref(&self, call_site: &CallSite, ty: &Type) -> Type {
+        let Some(context) = call_site.caller_context.as_deref() else {
+            return ty.clone();
+        };
+        self.resolve_deferred_refs_for_context(
+            context.class_name.as_ref(),
+            context.method_is_singleton,
+            ty,
+        )
     }
 
     fn resolve_call_site_type_from_caller_context_uncached(
@@ -9040,25 +9305,69 @@ impl TypeRegistry {
                 ),
                 *from_end,
             ),
-            Type::PatternKeyRef(subject, key) => Type::PatternKeyRef(
-                Box::new(
-                    self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
-                ),
-                key.clone(),
-            ),
+            Type::PatternKeyRef(subject, key) => {
+                let resolved_subject =
+                    self.resolve_call_site_type_from_caller_context(call_site, subject, visiting);
+                let subject_has_global_ref = Self::global_type_contains_ref(&resolved_subject);
+                let subject_has_param_ref = Self::type_contains_param_ref(&resolved_subject);
+                let resolved = Type::PatternKeyRef(Box::new(resolved_subject), key.clone());
+                if Self::type_contains_param_ref(subject)
+                    && !subject_has_param_ref
+                    && !subject_has_global_ref
+                {
+                    self.resolve_call_site_deferred_ref(call_site, &resolved)
+                } else {
+                    resolved
+                }
+            }
+            Type::PatternBindingKeyRef(subject, key) => {
+                let resolved_subject =
+                    self.resolve_call_site_type_from_caller_context(call_site, subject, visiting);
+                let subject_has_global_ref = Self::global_type_contains_ref(&resolved_subject);
+                let subject_has_param_ref = Self::type_contains_param_ref(&resolved_subject);
+                let resolved = Type::PatternBindingKeyRef(Box::new(resolved_subject), key.clone());
+                if Self::type_contains_param_ref(subject)
+                    && !subject_has_param_ref
+                    && !subject_has_global_ref
+                {
+                    self.resolve_call_site_deferred_ref(call_site, &resolved)
+                } else {
+                    resolved
+                }
+            }
             Type::PatternKeyRestRef(subject, keys) => Type::PatternKeyRestRef(
                 Box::new(
                     self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
                 ),
                 keys.clone(),
             ),
-            Type::ReceiverMethodRef(receiver_type, method_name) => Type::ReceiverMethodRef(
-                Box::new(self.resolve_call_site_type_from_caller_context(
+            Type::ReceiverMethodRef(receiver_type, method_name) => {
+                let resolved_receiver = self.resolve_call_site_type_from_caller_context(
                     call_site,
                     receiver_type,
                     visiting,
-                )),
-                *method_name,
+                );
+                let receiver_has_global_ref = Self::global_type_contains_ref(&resolved_receiver);
+                let receiver_has_param_ref = Self::type_contains_param_ref(&resolved_receiver);
+                let resolved = Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name);
+                if Self::type_contains_param_ref(receiver_type)
+                    && !receiver_has_param_ref
+                    && !receiver_has_global_ref
+                {
+                    self.resolve_call_site_deferred_ref(call_site, &resolved)
+                } else {
+                    resolved
+                }
+            }
+            Type::DeferredCallRef { receiver, call } => Type::deferred_call_ref(
+                self.resolve_call_site_type_from_caller_context(call_site, receiver, visiting),
+                call.method,
+                call.args
+                    .iter()
+                    .map(|arg| {
+                        self.resolve_call_site_type_from_caller_context(call_site, arg, visiting)
+                    })
+                    .collect::<Vec<_>>(),
             ),
             Type::Proc {
                 return_type,
@@ -9087,7 +9396,12 @@ impl TypeRegistry {
             context.method_name.as_ref(),
             context.method_is_singleton,
             visiting,
-        )?;
+        );
+        let params = match params {
+            CallerParamLookup::Ready(params) => params,
+            CallerParamLookup::Pending => return Some(Type::ParamPending),
+            CallerParamLookup::Missing => return None,
+        };
         params
             .into_iter()
             .filter(|param| {
@@ -9112,7 +9426,12 @@ impl TypeRegistry {
             context.method_name.as_ref(),
             context.method_is_singleton,
             visiting,
-        )?;
+        );
+        let params = match params {
+            CallerParamLookup::Ready(params) => params,
+            CallerParamLookup::Pending => return Some(Type::ParamPending),
+            CallerParamLookup::Missing => return None,
+        };
         params
             .into_iter()
             .find(|param| {
@@ -9131,8 +9450,10 @@ impl TypeRegistry {
         method_name: &str,
         is_singleton: bool,
         visiting: &mut FxHashSet<(String, String, bool)>,
-    ) -> Option<Vec<Param>> {
-        let _guard = ResolveDepthGuard::enter()?;
+    ) -> CallerParamLookup {
+        let Some(_guard) = ResolveDepthGuard::enter() else {
+            return CallerParamLookup::Missing;
+        };
         if PARAM_TABLE_MODE.with(|cell| cell.get()) {
             let table_key = (
                 self.shared_name(class_name),
@@ -9140,7 +9461,29 @@ impl TypeRegistry {
                 is_singleton,
             );
             note_param_table_read(table_key.clone());
-            return self.resolve_params_cache.get(&table_key);
+            return match self.resolve_params_cache.get(&table_key) {
+                Some(params) => CallerParamLookup::Ready(params),
+                None if self
+                    .lookup_method_def(class_name, method_name, is_singleton)
+                    .is_some() =>
+                {
+                    CallerParamLookup::Pending
+                }
+                None => CallerParamLookup::Missing,
+            };
+        }
+        if self
+            .resolve_params_cache_frozen
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let cache_key = (
+                self.shared_name(class_name),
+                self.shared_name(method_name),
+                is_singleton,
+            );
+            if let Some(params) = self.resolve_params_cache.get(&cache_key) {
+                return CallerParamLookup::Ready(params);
+            }
         }
         let key = (
             class_name.to_string(),
@@ -9148,13 +9491,15 @@ impl TypeRegistry {
             is_singleton,
         );
         if !visiting.insert(key.clone()) {
-            return None;
+            return CallerParamLookup::Missing;
         }
         let params = self
             .lookup_method_def(class_name, method_name, is_singleton)
             .map(|method| self.resolve_params_inner(class_name, method, visiting));
         visiting.remove(&key);
         params
+            .map(CallerParamLookup::Ready)
+            .unwrap_or(CallerParamLookup::Missing)
     }
 
     /// consults the call-site index (classes below the threshold return `None`->linear scan).
@@ -9252,6 +9597,58 @@ impl TypeRegistry {
     }
 
     // CLI batch: prewarm the param cache in a pure context, then freeze it (prevents nondeterminism in parallel render).
+    pub(crate) fn deferred_param_cache_keys(&self) -> Vec<ParamCacheKey> {
+        self.resolve_params_cache.keys_containing_deferred_calls()
+    }
+
+    pub(crate) fn cached_resolved_params(&self, key: &ParamCacheKey) -> Option<Vec<Param>> {
+        self.resolve_params_cache.get(key)
+    }
+
+    pub(crate) fn substitute_method_param_refs_from_cache(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        ty: &Type,
+    ) -> Option<Type> {
+        let key = (
+            self.shared_name(class_name),
+            self.shared_name(method_name),
+            is_singleton,
+        );
+        let params = self.resolve_params_cache.get(&key)?;
+        let positional_types = params
+            .iter()
+            .filter(|param| {
+                matches!(
+                    param.kind,
+                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                )
+            })
+            .map(|param| param.param_type.clone())
+            .collect::<Vec<_>>();
+        let keyword_types = params
+            .iter()
+            .filter(|param| {
+                matches!(
+                    param.kind,
+                    ParamKind::KeywordRequired | ParamKind::KeywordOptional
+                )
+            })
+            .map(|param| (param.name.clone(), param.param_type.clone()))
+            .collect::<HashMap<_, _>>();
+        Some(Self::substitute_param_refs_static_with_keywords(
+            ty,
+            &positional_types,
+            &keyword_types,
+        ))
+    }
+
+    pub(crate) fn update_cached_resolved_params(&self, key: ParamCacheKey, params: Vec<Param>) {
+        self.resolve_params_cache.insert_uncapped(key, params);
+    }
+
     pub fn prewarm_and_freeze_resolve_params(&self) {
         use rayon::prelude::*;
 
@@ -9280,7 +9677,6 @@ impl TypeRegistry {
         });
         let job_timing = std::env::var_os("TYDA_PREWARM_JOB_TIMING").is_some();
         let round_timing = std::env::var_os("TYDA_RESOLUTION_TIMING").is_some();
-
         // param table Jacobi: evaluate in table mode, write in bulk at round end, re-evaluate only when a read entry changed.
         type SolverResult = (
             usize,
@@ -9419,6 +9815,7 @@ impl TypeRegistry {
                 })
                 .collect();
         }
+        self.finalize_pending_param_types();
         self.resolve_params_cache_frozen
             .store(true, std::sync::atomic::Ordering::Relaxed);
         if round_timing {
@@ -9427,6 +9824,160 @@ impl TypeRegistry {
                 jobs.len(),
                 prewarm_start.elapsed().as_secs_f64()
             );
+        }
+    }
+
+    fn finalize_pending_param_types(&self) {
+        let Some(shards) = self.resolve_params_cache.shards.get() else {
+            return;
+        };
+        for shard in shards {
+            let Ok(mut entries) = shard.lock() else {
+                continue;
+            };
+            for params in entries.values_mut() {
+                let mut finalized = (**params).clone();
+                let mut changed = false;
+                for param in &mut finalized {
+                    if Self::type_contains_pending_param(&param.param_type) {
+                        param.param_type = Self::finalize_pending_param(param.param_type.clone());
+                        changed = true;
+                    }
+                }
+                if changed {
+                    *params = std::sync::Arc::new(finalized);
+                }
+            }
+        }
+    }
+
+    fn type_contains_pending_param(ty: &Type) -> bool {
+        match ty {
+            Type::ParamPending => true,
+            Type::Intersection(parts) | Type::Union(parts) | Type::Tuple(parts) => {
+                parts.iter().any(Self::type_contains_pending_param)
+            }
+            Type::Array(Some(inner))
+            | Type::PatternIndexRef(inner, _)
+            | Type::PatternRestRef(inner)
+            | Type::PatternTrailingRef(inner, _)
+            | Type::PatternKeyRef(inner, _)
+            | Type::PatternBindingKeyRef(inner, _)
+            | Type::PatternKeyRestRef(inner, _)
+            | Type::ReceiverMethodRef(inner, _)
+            | Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner) => Self::type_contains_pending_param(inner),
+            Type::DeferredCallRef { receiver, call } => {
+                Self::type_contains_pending_param(receiver)
+                    || call.args.iter().any(Self::type_contains_pending_param)
+            }
+            Type::Hash(key, value) => {
+                key.as_deref()
+                    .is_some_and(Self::type_contains_pending_param)
+                    || value
+                        .as_deref()
+                        .is_some_and(Self::type_contains_pending_param)
+            }
+            Type::Record(fields) => fields
+                .iter()
+                .any(|field| Self::type_contains_pending_param(&field.value)),
+            Type::Generic { args, .. } => args.iter().any(Self::type_contains_pending_param),
+            Type::Proc { return_type, .. } => Self::type_contains_pending_param(return_type),
+            _ => false,
+        }
+    }
+
+    fn finalize_pending_param(ty: Type) -> Type {
+        match ty {
+            Type::ParamPending => Type::Untyped,
+            Type::Intersection(parts) => Type::Intersection(
+                parts
+                    .into_iter()
+                    .map(Self::finalize_pending_param)
+                    .collect(),
+            ),
+            Type::Union(parts) => Type::merge_param_arg_vec(
+                parts
+                    .into_iter()
+                    .map(Self::finalize_pending_param)
+                    .collect(),
+            ),
+            Type::Array(Some(inner)) => {
+                Type::Array(Some(Box::new(Self::finalize_pending_param(*inner))))
+            }
+            Type::Hash(key, value) => Type::Hash(
+                key.map(|inner| Box::new(Self::finalize_pending_param(*inner))),
+                value.map(|inner| Box::new(Self::finalize_pending_param(*inner))),
+            ),
+            Type::Record(fields) => Type::Record(
+                fields
+                    .into_iter()
+                    .map(|field| RecordField {
+                        value: Self::finalize_pending_param(field.value),
+                        ..field
+                    })
+                    .collect(),
+            ),
+            Type::PatternIndexRef(inner, index) => {
+                Type::PatternIndexRef(Box::new(Self::finalize_pending_param(*inner)), index)
+            }
+            Type::PatternRestRef(inner) => {
+                Type::PatternRestRef(Box::new(Self::finalize_pending_param(*inner)))
+            }
+            Type::PatternTrailingRef(inner, index) => {
+                Type::PatternTrailingRef(Box::new(Self::finalize_pending_param(*inner)), index)
+            }
+            Type::PatternKeyRef(inner, key) => {
+                Type::PatternKeyRef(Box::new(Self::finalize_pending_param(*inner)), key)
+            }
+            Type::PatternBindingKeyRef(inner, key) => {
+                Type::PatternBindingKeyRef(Box::new(Self::finalize_pending_param(*inner)), key)
+            }
+            Type::PatternKeyRestRef(inner, keys) => {
+                Type::PatternKeyRestRef(Box::new(Self::finalize_pending_param(*inner)), keys)
+            }
+            Type::ReceiverMethodRef(inner, method) => {
+                Type::ReceiverMethodRef(Box::new(Self::finalize_pending_param(*inner)), method)
+            }
+            Type::DeferredCallRef { receiver, call } => Type::deferred_call_ref(
+                Self::finalize_pending_param(*receiver),
+                call.method,
+                call.args
+                    .into_vec()
+                    .into_iter()
+                    .map(Self::finalize_pending_param)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
+            Type::TruthyProjection(inner) => {
+                Type::TruthyProjection(Box::new(Self::finalize_pending_param(*inner)))
+            }
+            Type::FalsyProjection(inner) => {
+                Type::FalsyProjection(Box::new(Self::finalize_pending_param(*inner)))
+            }
+            Type::Tuple(parts) => Type::Tuple(
+                parts
+                    .into_iter()
+                    .map(Self::finalize_pending_param)
+                    .collect(),
+            ),
+            Type::Generic { base, args } => Type::Generic {
+                base,
+                args: args
+                    .into_vec()
+                    .into_iter()
+                    .map(Self::finalize_pending_param)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            },
+            Type::Proc {
+                return_type,
+                param_count,
+            } => Type::Proc {
+                return_type: Box::new(Self::finalize_pending_param(*return_type)),
+                param_count,
+            },
+            other => other,
         }
     }
 
@@ -9507,6 +10058,7 @@ impl TypeRegistry {
 
         let positional_count = Self::positional_param_count(&method.param_infos);
         let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
+        let mut positional_provided = vec![false; positional_count];
         let indexed = self.matching_call_site_indices(
             class_name,
             data,
@@ -9546,14 +10098,14 @@ impl TypeRegistry {
                             )
                         })
                         .collect::<Vec<_>>();
-                Self::merge_resolved_positional_arg_types(
+                Self::merge_resolved_positional_arg_types_with_flags(
                     &mut param_types,
                     &resolved_arg_types,
                     &method.param_infos,
+                    Some(&mut positional_provided),
                 );
             }
         }
-
         let mut positional_idx = 0;
         let mut resolved_positional_types = Vec::new();
         method
@@ -9569,20 +10121,26 @@ impl TypeRegistry {
                     .map(|ty| Self::substitute_param_refs_static(ty, &resolved_positional_types));
                 let (ty, kind) = match pi.kind {
                     ParamKind::Required => {
+                        let was_provided = positional_provided
+                            .get(positional_idx)
+                            .copied()
+                            .unwrap_or(false);
                         let mut ty = if positional_idx < param_types.len()
                             && !param_types[positional_idx].is_empty()
                         {
                             Type::merge_param_arg_vec(param_types[positional_idx].clone())
-                                .widen_arg_for_param()
+                                .widen_param_type()
                         } else {
                             Type::Untyped
                         };
                         if ty == Type::Untyped
+                            && !was_provided
                             && let Some(ref passthrough_ty) = passthrough_type
                         {
                             ty = passthrough_ty.clone();
                         }
                         if ty == Type::Untyped
+                            && !was_provided
                             && let Some(ref default_ty) = pi.default_type
                         {
                             ty = default_ty.clone();
@@ -9591,44 +10149,57 @@ impl TypeRegistry {
                         (ty, ParamKind::Required)
                     }
                     ParamKind::Optional => {
+                        let was_provided = positional_provided
+                            .get(positional_idx)
+                            .copied()
+                            .unwrap_or(false);
                         let mut ty = if positional_idx < param_types.len()
                             && !param_types[positional_idx].is_empty()
                         {
                             Type::merge_param_arg_vec(param_types[positional_idx].clone())
-                                .widen_arg_for_param()
+                                .widen_param_type()
                         } else {
                             Type::Untyped
                         };
                         positional_idx += 1;
                         if ty == Type::Untyped
+                            && !was_provided
                             && let Some(ref passthrough_ty) = passthrough_type
                         {
                             ty = passthrough_ty.clone();
                         }
                         if let Some(ref default_ty) = resolved_default_type {
                             let default_ty = default_ty.clone().widen_arg_for_param();
-                            if ty == Type::Untyped {
+                            if ty == Type::Untyped && !was_provided {
                                 ty = default_ty;
-                            } else {
-                                ty = ty.union_with(default_ty);
+                            } else if ty != Type::Untyped {
+                                ty = Type::merge_param_arg_vec(vec![ty, default_ty]);
                             }
                         }
                         (ty, ParamKind::Optional)
                     }
                     ParamKind::Rest => {
+                        let was_provided = positional_provided
+                            .get(positional_idx)
+                            .copied()
+                            .unwrap_or(false);
                         let ty = if positional_idx < param_types.len()
                             && !param_types[positional_idx].is_empty()
                         {
                             Type::merge_param_arg_vec(param_types[positional_idx].clone())
-                                .widen_arg_for_param()
+                                .widen_param_type()
                         } else {
-                            passthrough_type.clone().unwrap_or(Type::Untyped)
+                            if was_provided {
+                                Type::Untyped
+                            } else {
+                                passthrough_type.clone().unwrap_or(Type::Untyped)
+                            }
                         };
                         positional_idx += 1;
                         (ty, ParamKind::Rest)
                     }
                     ParamKind::KeywordRequired => {
-                        let mut ty = self.resolve_keyword_param_type(
+                        let (mut ty, was_provided) = self.resolve_keyword_param_type(
                             class_name,
                             data,
                             &method.name,
@@ -9637,6 +10208,7 @@ impl TypeRegistry {
                             visiting,
                         );
                         if ty == Type::Untyped
+                            && !was_provided
                             && let Some(ref passthrough_ty) = passthrough_type
                         {
                             ty = passthrough_ty.clone();
@@ -9644,7 +10216,7 @@ impl TypeRegistry {
                         (ty, ParamKind::KeywordRequired)
                     }
                     ParamKind::KeywordOptional => {
-                        let call_ty = self.resolve_keyword_param_type(
+                        let (call_ty, was_provided) = self.resolve_keyword_param_type(
                             class_name,
                             data,
                             &method.name,
@@ -9653,16 +10225,24 @@ impl TypeRegistry {
                             visiting,
                         );
                         let ty = if call_ty == Type::Untyped {
-                            let passthrough_ty = passthrough_type.clone().unwrap_or(Type::Untyped);
-                            if passthrough_ty == Type::Untyped {
-                                resolved_default_type.clone().unwrap_or(Type::Untyped)
-                            } else if let Some(ref default_ty) = resolved_default_type {
-                                passthrough_ty.union_with(default_ty.clone())
+                            if was_provided {
+                                Type::Untyped
                             } else {
-                                passthrough_ty
+                                let passthrough_ty =
+                                    passthrough_type.clone().unwrap_or(Type::Untyped);
+                                if passthrough_ty == Type::Untyped {
+                                    resolved_default_type.clone().unwrap_or(Type::Untyped)
+                                } else if let Some(ref default_ty) = resolved_default_type {
+                                    Type::merge_param_arg_vec(vec![
+                                        passthrough_ty,
+                                        default_ty.clone(),
+                                    ])
+                                } else {
+                                    passthrough_ty
+                                }
                             }
                         } else if let Some(ref default_ty) = resolved_default_type {
-                            call_ty.union_with(default_ty.clone())
+                            Type::merge_param_arg_vec(vec![call_ty, default_ty.clone()])
                         } else {
                             call_ty
                         };
@@ -9695,7 +10275,7 @@ impl TypeRegistry {
                         let ty = if values.is_empty() {
                             Type::Untyped
                         } else {
-                            Type::from_type_vec(values).widen_arg_for_param()
+                            Type::merge_param_arg_vec(values).widen_param_type()
                         };
                         (ty, ParamKind::DoubleRest)
                     }
@@ -9750,8 +10330,9 @@ impl TypeRegistry {
         method_is_singleton: bool,
         kw_name: &str,
         visiting: &mut FxHashSet<(String, String, bool)>,
-    ) -> Type {
+    ) -> (Type, bool) {
         let mut types = Vec::new();
+        let mut provided = false;
         let indexed =
             self.matching_call_site_indices(class_name, data, method_name, method_is_singleton);
         let site_iter: Box<dyn Iterator<Item = &CallSite>> = match &indexed {
@@ -9763,15 +10344,16 @@ impl TypeRegistry {
                 && call_site.method_is_singleton == method_is_singleton
                 && let Some(ty) = call_site.keyword_arg_types.get(kw_name)
             {
+                provided = true;
                 let resolved =
                     self.resolve_call_site_type_from_caller_context(call_site, ty, visiting);
-                Type::append_union_parts(&mut types, resolved);
+                Type::append_param_arg_parts(&mut types, resolved);
             }
         }
         if types.is_empty() {
-            Type::Untyped
+            (Type::Untyped, provided)
         } else {
-            Type::from_type_vec(types)
+            (Type::merge_param_arg_vec(types), provided)
         }
     }
 
@@ -9882,6 +10464,18 @@ impl TypeRegistry {
         if data.file_path.is_none() {
             data.file_path = Some(SharedPath::from(file_path));
         }
+    }
+
+    pub(crate) fn set_method_file_path(
+        &mut self,
+        class_name: &str,
+        method_name: Sym,
+        is_singleton: bool,
+        file_path: &str,
+    ) {
+        self.class_data_mut(class_name)
+            .method_file_paths
+            .insert((method_name, is_singleton), SharedPath::from(file_path));
     }
 
     pub(crate) fn file_contribution_names(&self) -> &HashSet<String> {
@@ -10440,18 +11034,29 @@ impl TypeRegistry {
                 }
             }
 
-            if class_name != "Object"
-                && let Some(owners) =
-                    self.resolve_method_call_owners_inner_refs("Object", method_name, false, seen)
-            {
-                return Some(owners);
-            }
-
-            for fallback in ["Kernel", "Comparable", "BasicObject"] {
-                if let Some(owners) =
-                    self.resolve_method_call_owners_inner_refs(fallback, method_name, false, seen)
+            // Modules contribute methods to the classes that include them;
+            // they do not inherit Object's instance methods themselves.
+            if !data.is_module {
+                if class_name != "Object"
+                    && let Some(owners) = self.resolve_method_call_owners_inner_refs(
+                        "Object",
+                        method_name,
+                        false,
+                        seen,
+                    )
                 {
                     return Some(owners);
+                }
+
+                for fallback in ["Kernel", "Comparable", "BasicObject"] {
+                    if let Some(owners) = self.resolve_method_call_owners_inner_refs(
+                        fallback,
+                        method_name,
+                        false,
+                        seen,
+                    ) {
+                        return Some(owners);
+                    }
                 }
             }
         }
@@ -10466,6 +11071,92 @@ impl TypeRegistry {
             &mut visited,
             &mut touched_framework_base,
         )
+    }
+
+    /// Whether a class object's singleton method lookup has a complete ancestor surface.
+    /// `extend` affects singleton lookup, unlike the instance ancestor chain above.
+    pub fn singleton_method_lookup_knowledge_complete(&self, class_name: &str) -> bool {
+        let mut current = class_name.trim_scope_prefix().to_string();
+        let mut visited = Vec::new();
+        loop {
+            if visited.iter().any(|seen| seen == &current) {
+                return false;
+            }
+            visited.push(current.clone());
+
+            let Some(data) = self.class_data.get(current.as_str()) else {
+                return Self::is_universal_ancestor_root(&current);
+            };
+            for mixin in data
+                .mixins
+                .iter()
+                .filter(|mixin| mixin.kind == MixinKind::Extend)
+            {
+                let module_ref =
+                    self.resolve_scoped_class_ref_borrow(&current, mixin.module_name.as_ref());
+                let mut module_visited = Vec::new();
+                if !self.singleton_extended_method_ancestors_complete(
+                    module_ref.trim_scope_prefix(),
+                    &mut module_visited,
+                ) {
+                    return false;
+                }
+            }
+
+            if Self::is_universal_ancestor_root(&current) {
+                return true;
+            }
+            if !data.has_type_substance() || data.superclass_is_unknown {
+                return false;
+            }
+            current = self
+                .get_runtime_superclass(&current)
+                .map(|superclass| {
+                    self.resolve_superclass_ref_borrow(&current, superclass)
+                        .trim_scope_prefix()
+                        .to_string()
+                })
+                .unwrap_or_else(|| {
+                    if data.is_module {
+                        "Module".to_string()
+                    } else {
+                        "Object".to_string()
+                    }
+                });
+        }
+    }
+
+    fn singleton_extended_method_ancestors_complete(
+        &self,
+        module_name: &str,
+        visited: &mut Vec<String>,
+    ) -> bool {
+        if visited.iter().any(|seen| seen == module_name) {
+            return false;
+        }
+        visited.push(module_name.to_string());
+
+        let Some(data) = self.class_data.get(module_name) else {
+            return false;
+        };
+        if !data.is_module || !data.has_type_substance() || data.superclass_is_unknown {
+            return false;
+        }
+
+        for mixin in data
+            .mixins
+            .iter()
+            .filter(|mixin| matches!(mixin.kind, MixinKind::Include | MixinKind::Prepend))
+        {
+            let ancestor =
+                self.resolve_scoped_class_ref_borrow(module_name, mixin.module_name.as_ref());
+            if !self
+                .singleton_extended_method_ancestors_complete(ancestor.trim_scope_prefix(), visited)
+            {
+                return false;
+            }
+        }
+        true
     }
 
     // determines method-surface completeness: dynamic surfaces like AR and `method_missing` can't be proven absent.
@@ -10684,11 +11375,15 @@ impl TypeRegistry {
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _) => Self::type_contains_param_ref(subject),
-            Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
-                Self::type_contains_param_ref(subject)
-            }
+            Type::PatternKeyRef(subject, _)
+            | Type::PatternBindingKeyRef(subject, _)
+            | Type::PatternKeyRestRef(subject, _) => Self::type_contains_param_ref(subject),
             Type::ReceiverMethodRef(receiver_type, _) => {
                 Self::type_contains_param_ref(receiver_type)
+            }
+            Type::DeferredCallRef { receiver, call } => {
+                Self::type_contains_param_ref(receiver)
+                    || call.args.iter().any(Self::type_contains_param_ref)
             }
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 Self::type_contains_param_ref(inner)
@@ -10731,7 +11426,10 @@ impl TypeRegistry {
             {
                 continue;
             }
-            let priority = if !method.rbs_file_source && method.has_annotation() {
+            let priority = if !method.rbs_file_source
+                && !method.synthetic_dsl_source
+                && method.has_annotation()
+            {
                 1
             } else if method.rbs_file_source {
                 2
@@ -10964,6 +11662,15 @@ impl TypeRegistry {
                 let resolved_receiver = recur(receiver_type);
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
             }
+            Type::DeferredCallRef { receiver, call } => Type::deferred_call_ref(
+                recur(receiver),
+                call.method,
+                call.args
+                    .iter()
+                    .map(&recur)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
             Type::Proc {
                 return_type,
                 param_count,
@@ -11004,6 +11711,14 @@ impl TypeRegistry {
                     Self::resolve_pattern_key_ref(&resolved_subject, key)
                 }
             }
+            Type::PatternBindingKeyRef(subject, key) => {
+                let resolved_subject = recur(subject);
+                if Self::type_contains_param_ref_static(&resolved_subject) {
+                    Type::PatternBindingKeyRef(Box::new(resolved_subject), key.clone())
+                } else {
+                    Self::resolve_pattern_binding_key_ref(&resolved_subject, key)
+                }
+            }
             Type::PatternKeyRestRef(subject, matched_keys) => {
                 let resolved_subject = recur(subject);
                 if Self::type_contains_param_ref_static(&resolved_subject) {
@@ -11018,14 +11733,12 @@ impl TypeRegistry {
 
     pub(crate) fn resolve_pattern_index_ref(subject: &Type, index: usize) -> Type {
         match subject {
+            Type::ParamPending => Type::ParamPending,
             Type::Union(parts) => {
-                let mut resolved: Vec<Type> = parts
+                let resolved: Vec<Type> = parts
                     .iter()
                     .map(|part| Self::resolve_pattern_index_ref(part, index))
                     .collect();
-                if resolved.iter().any(|ty| *ty != Type::Untyped) {
-                    resolved.retain(|ty| *ty != Type::Untyped);
-                }
                 Type::from_type_vec_preserve_untyped(resolved)
             }
             Type::Tuple(elems) => elems.get(index).cloned().unwrap_or(Type::Untyped),
@@ -11036,18 +11749,15 @@ impl TypeRegistry {
 
     pub(crate) fn resolve_pattern_rest_ref(subject: &Type) -> Type {
         match subject {
+            Type::ParamPending => Type::ParamPending,
             Type::Union(parts) => {
-                let mut resolved: Vec<Type> =
+                let resolved: Vec<Type> =
                     parts.iter().map(Self::resolve_pattern_rest_ref).collect();
-                if resolved
-                    .iter()
-                    .any(|ty| !Self::is_generic_pattern_placeholder(ty))
-                {
-                    resolved.retain(|ty| !Self::is_generic_pattern_placeholder(ty));
-                }
                 Type::from_type_vec_preserve_untyped(resolved)
             }
-            Type::Tuple(elems) => Type::Array(Some(Box::new(Type::from_type_vec(elems.clone())))),
+            Type::Tuple(elems) => Type::Array(Some(Box::new(
+                Type::from_type_vec_preserve_untyped(elems.clone()),
+            ))),
             Type::Array(Some(elem)) => Type::Array(Some(Box::new(*elem.clone()))),
             _ => Type::Array(Some(Box::new(Type::Untyped))),
         }
@@ -11055,14 +11765,12 @@ impl TypeRegistry {
 
     pub(crate) fn resolve_pattern_trailing_ref(subject: &Type, from_end: usize) -> Type {
         match subject {
+            Type::ParamPending => Type::ParamPending,
             Type::Union(parts) => {
-                let mut resolved: Vec<Type> = parts
+                let resolved: Vec<Type> = parts
                     .iter()
                     .map(|part| Self::resolve_pattern_trailing_ref(part, from_end))
                     .collect();
-                if resolved.iter().any(|ty| *ty != Type::Untyped) {
-                    resolved.retain(|ty| *ty != Type::Untyped);
-                }
                 Type::from_type_vec_preserve_untyped(resolved)
             }
             Type::Tuple(elems) => elems
@@ -11077,46 +11785,83 @@ impl TypeRegistry {
 
     pub(crate) fn resolve_pattern_key_ref(subject: &Type, key: &RecordKey) -> Type {
         match subject {
-            Type::Union(parts) => {
-                let mut resolved: Vec<Type> = parts
+            Type::ParamPending => Type::ParamPending,
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
+                parts
                     .iter()
                     .map(|part| Self::resolve_pattern_key_ref(part, key))
-                    .collect();
-                if resolved.iter().any(|ty| *ty != Type::Untyped) {
-                    resolved.retain(|ty| *ty != Type::Untyped);
+                    .collect(),
+            ),
+            Type::Record(fields) => fields
+                .iter()
+                .find(|field| field.key == *key)
+                .map(|field| {
+                    if field.optional {
+                        Type::from_type_vec_preserve_untyped(vec![field.value.clone(), Type::Nil])
+                    } else {
+                        field.value.clone()
+                    }
+                })
+                .unwrap_or(Type::Nil),
+            Type::Hash(key_type, Some(value_type)) => {
+                if key_type
+                    .as_deref()
+                    .is_some_and(|key_type| !Self::pattern_hash_key_type_matches(key_type, key))
+                {
+                    Type::Nil
+                } else {
+                    Type::from_type_vec_preserve_untyped(vec![*value_type.clone(), Type::Nil])
                 }
-                Type::from_type_vec_preserve_untyped(resolved)
             }
+            Type::Hash(_, None) => Type::Untyped,
+            _ => Type::Untyped,
+        }
+    }
+
+    pub(crate) fn resolve_pattern_binding_key_ref(subject: &Type, key: &RecordKey) -> Type {
+        match subject {
+            Type::ParamPending => Type::ParamPending,
+            Type::Union(parts) => {
+                let matched: Vec<Type> = parts
+                    .iter()
+                    .map(|part| Self::resolve_pattern_binding_key_ref(part, key))
+                    .filter(|ty| *ty != Type::Bot)
+                    .collect();
+                if matched.is_empty() {
+                    Type::Bot
+                } else {
+                    Type::from_type_vec_preserve_untyped(matched)
+                }
+            }
+            Type::Untyped => Type::Untyped,
             Type::Record(fields) => fields
                 .iter()
                 .find(|field| field.key == *key)
                 .map(|field| field.value.clone())
-                .unwrap_or(Type::Untyped),
-            Type::Hash(key_type, Some(value_type))
+                .unwrap_or(Type::Bot),
+            Type::Hash(key_type, Some(value_type)) => {
                 if key_type
                     .as_deref()
-                    .map(|key_type| Self::pattern_hash_key_type_matches(key_type, key))
-                    .unwrap_or(true) =>
-            {
-                *value_type.clone()
+                    .is_some_and(|key_type| !Self::pattern_hash_key_type_matches(key_type, key))
+                {
+                    Type::Bot
+                } else {
+                    *value_type.clone()
+                }
             }
+            Type::Hash(_, None) => Type::Untyped,
             _ => Type::Untyped,
         }
     }
 
     pub(crate) fn resolve_pattern_key_rest_ref(subject: &Type, matched_keys: &[RecordKey]) -> Type {
         match subject {
+            Type::ParamPending => Type::ParamPending,
             Type::Union(parts) => {
-                let mut resolved: Vec<Type> = parts
+                let resolved: Vec<Type> = parts
                     .iter()
                     .map(|part| Self::resolve_pattern_key_rest_ref(part, matched_keys))
                     .collect();
-                if resolved
-                    .iter()
-                    .any(|ty| !Self::is_generic_pattern_placeholder(ty))
-                {
-                    resolved.retain(|ty| !Self::is_generic_pattern_placeholder(ty));
-                }
                 Type::from_type_vec_preserve_untyped(resolved)
             }
             Type::Record(fields) => Type::Record(
@@ -11131,16 +11876,6 @@ impl TypeRegistry {
             }
             _ => Type::Hash(Some(Box::new(Type::Untyped)), Some(Box::new(Type::Untyped))),
         }
-    }
-
-    fn is_generic_pattern_placeholder(ty: &Type) -> bool {
-        matches!(ty, Type::Untyped)
-            || matches!(ty, Type::Array(Some(inner)) if **inner == Type::Untyped)
-            || matches!(
-                ty,
-                Type::Hash(Some(key), Some(value))
-                    if **key == Type::Untyped && **value == Type::Untyped
-            )
     }
 
     fn pattern_hash_key_type_matches(key_type: &Type, key: &RecordKey) -> bool {
@@ -11182,6 +11917,100 @@ mod tests {
             std::mem::size_of::<ClassData>() <= 272,
             "ClassData = {}B (> 272B)",
             std::mem::size_of::<ClassData>()
+        );
+    }
+
+    #[test]
+    fn ivar_writes_preserve_observed_unknown_values() {
+        let mut registry = TypeRegistry::new();
+        registry.add_ivar_type("A", "value", Type::Union(vec![Type::Untyped, Type::Nil]));
+        registry.add_ivar_type("A", "value", Type::String);
+
+        let expected =
+            Type::from_type_vec_preserve_untyped(vec![Type::Untyped, Type::Nil, Type::String]);
+        assert_eq!(
+            registry.lookup_ivar_type("A", "value"),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            registry.snapshot_ivar_types("A"),
+            vec![("value".to_string(), expected)]
+        );
+
+        registry.add_ivar_type("B", "value", Type::Untyped);
+        registry.add_ivar_type("B", "value", Type::LiteralString("item".to_owned()));
+        assert_eq!(
+            registry.lookup_ivar_type("B", "value"),
+            Some(Type::LiteralString("item".to_owned()))
+        );
+
+        registry.add_ivar_type("A", "items", Type::Array(Some(Box::new(Type::String))));
+        registry.add_ivar_type("A", "items", Type::Array(Some(Box::new(Type::Untyped))));
+        let expected_items = Type::Array(Some(Box::new(Type::Union(vec![
+            Type::String,
+            Type::Untyped,
+        ]))));
+        assert_eq!(
+            registry.lookup_ivar_type("A", "items"),
+            Some(expected_items.clone())
+        );
+        assert!(
+            registry
+                .snapshot_ivar_types("A")
+                .contains(&("items".to_string(), expected_items))
+        );
+    }
+
+    #[test]
+    fn receiver_method_ref_keeps_unknown_receiver_union_members() {
+        let mut registry = TypeRegistry::new();
+        registry.mark_user_defined("A");
+        registry.add_method_def("A", test_method("value", Type::String));
+        let receiver = Type::Union(vec![Type::Class(Sym::new("A")), Type::Untyped]);
+        let reference = Type::ReceiverMethodRef(Box::new(receiver), Sym::new("value"));
+
+        let resolved = registry.resolve_param_refs_from_resolved(&reference, &[]);
+
+        assert_eq!(
+            resolved,
+            Type::from_type_vec_preserve_untyped(vec![Type::String, Type::Untyped])
+        );
+    }
+
+    #[test]
+    fn pending_param_finalization_only_rewrites_pending_values() {
+        let pending = Type::generic(
+            Sym::new("Box"),
+            [Type::Union(vec![Type::Bot, Type::ParamPending])],
+        );
+        assert!(TypeRegistry::type_contains_pending_param(&pending));
+
+        let finalized = TypeRegistry::finalize_pending_param(pending);
+        assert_eq!(finalized, Type::generic(Sym::new("Box"), [Type::Untyped]));
+        assert!(!TypeRegistry::type_contains_pending_param(&finalized));
+        assert_eq!(TypeRegistry::finalize_pending_param(Type::Bot), Type::Bot);
+        assert_eq!(
+            TypeRegistry::finalize_pending_param(Type::generic(Sym::new("Box"), [Type::Bot])),
+            Type::generic(Sym::new("Box"), [Type::Bot])
+        );
+    }
+
+    #[test]
+    fn pending_param_pattern_projection_stays_pending_until_finalization() {
+        assert_eq!(
+            TypeRegistry::resolve_pattern_index_ref(&Type::ParamPending, 0),
+            Type::ParamPending
+        );
+        assert_eq!(
+            TypeRegistry::resolve_pattern_rest_ref(&Type::ParamPending),
+            Type::ParamPending
+        );
+        assert_eq!(
+            TypeRegistry::resolve_pattern_binding_key_ref(
+                &Type::ParamPending,
+                &RecordKey::Symbol("value".to_string()),
+            ),
+            Type::ParamPending
         );
     }
 
@@ -11314,6 +12143,283 @@ mod tests {
             block: None,
             caller_context: None,
         }
+    }
+
+    fn param_ref_call_site() -> CallSite {
+        let mut call_site = test_call_site("target");
+        call_site.caller_context = Some(Box::new(CallSiteCallerContext {
+            class_name: "Caller".into(),
+            method_name: "emit".into(),
+            method_is_singleton: false,
+        }));
+        call_site
+    }
+
+    fn insert_caller_param(registry: &TypeRegistry, param_type: Type) {
+        registry.resolve_params_cache.insert_uncapped(
+            (
+                registry.shared_name("Caller"),
+                registry.shared_name("emit"),
+                false,
+            ),
+            vec![Param {
+                name: "value".to_string(),
+                param_type,
+                kind: ParamKind::Required,
+            }],
+        );
+    }
+
+    #[test]
+    fn callsite_param_substitution_defers_nested_receiver_method_refs() {
+        let mut registry = TypeRegistry::new();
+        registry.add_method_def("Integer", test_method("+", Type::Integer));
+        let nested = Type::ReceiverMethodRef(Box::new(Type::Integer), Sym::new("+"));
+        insert_caller_param(
+            &registry,
+            Type::from_type_vec_preserve_untyped(vec![Type::Integer, nested.clone()]),
+        );
+
+        let _table_scope = ParamTableScope::enter();
+        let _memo_scope = CallerCtxMemoScope::enter();
+        let call_site = param_ref_call_site();
+        let argument = Type::ReceiverMethodRef(Box::new(Type::ParamRef(0)), Sym::new("+"));
+        let actual = registry.resolve_call_site_type_from_caller_context(
+            &call_site,
+            &argument,
+            &mut FxHashSet::default(),
+        );
+
+        assert_eq!(
+            actual,
+            Type::ReceiverMethodRef(
+                Box::new(Type::from_type_vec_preserve_untyped(vec![
+                    Type::Integer,
+                    nested,
+                ])),
+                Sym::new("+")
+            )
+        );
+        assert_eq!(
+            registry.resolve_deferred_refs_for_context("Caller", false, &actual),
+            Type::Integer
+        );
+    }
+
+    #[test]
+    fn callsite_param_substitution_keeps_unresolved_param_refs() {
+        let registry = TypeRegistry::new();
+        insert_caller_param(&registry, Type::ParamRef(1));
+
+        let _table_scope = ParamTableScope::enter();
+        let _memo_scope = CallerCtxMemoScope::enter();
+        let call_site = param_ref_call_site();
+        let argument = Type::ReceiverMethodRef(Box::new(Type::ParamRef(0)), Sym::new("+"));
+        let actual = registry.resolve_call_site_type_from_caller_context(
+            &call_site,
+            &argument,
+            &mut FxHashSet::default(),
+        );
+
+        assert_eq!(
+            actual,
+            Type::ReceiverMethodRef(Box::new(Type::ParamRef(1)), Sym::new("+"))
+        );
+    }
+
+    #[test]
+    fn callsite_param_substitution_keeps_unknown_receiver_alternatives() {
+        let mut registry = TypeRegistry::new();
+        registry.add_method_def("Integer", test_method("+", Type::Integer));
+        insert_caller_param(
+            &registry,
+            Type::from_type_vec_preserve_untyped(vec![Type::Integer, Type::Untyped]),
+        );
+
+        let _table_scope = ParamTableScope::enter();
+        let _memo_scope = CallerCtxMemoScope::enter();
+        let call_site = param_ref_call_site();
+        let argument = Type::ReceiverMethodRef(Box::new(Type::ParamRef(0)), Sym::new("+"));
+        let actual = registry.resolve_call_site_type_from_caller_context(
+            &call_site,
+            &argument,
+            &mut FxHashSet::default(),
+        );
+
+        assert_eq!(
+            actual,
+            Type::from_type_vec_preserve_untyped(vec![Type::Integer, Type::Untyped])
+        );
+    }
+
+    #[test]
+    fn callsite_pattern_binding_key_keeps_unknown_and_ignores_missing_record_keys() {
+        let registry = TypeRegistry::new();
+        let key = RecordKey::Symbol("value".to_string());
+        let record_with_key = Type::Record(vec![RecordField {
+            key: key.clone(),
+            value: Type::String,
+            optional: false,
+        }]);
+        let record_without_key = Type::Record(vec![RecordField {
+            key: RecordKey::Symbol("other".to_string()),
+            value: Type::Integer,
+            optional: false,
+        }]);
+
+        insert_caller_param(
+            &registry,
+            Type::from_type_vec_preserve_untyped(vec![
+                record_with_key.clone(),
+                record_without_key.clone(),
+                Type::Untyped,
+            ]),
+        );
+
+        let _table_scope = ParamTableScope::enter();
+        let _memo_scope = CallerCtxMemoScope::enter();
+        let call_site = param_ref_call_site();
+        let argument =
+            Type::PatternBindingKeyRef(Box::new(Type::ParamRef(0)), Box::new(key.clone()));
+        let actual = registry.resolve_call_site_type_from_caller_context(
+            &call_site,
+            &argument,
+            &mut FxHashSet::default(),
+        );
+
+        assert_eq!(
+            actual,
+            Type::from_type_vec_preserve_untyped(vec![Type::String, Type::Untyped])
+        );
+        assert_eq!(
+            TypeRegistry::resolve_pattern_binding_key_ref(
+                &Type::from_type_vec_preserve_untyped(vec![
+                    record_with_key,
+                    record_without_key.clone(),
+                ]),
+                &key,
+            ),
+            Type::String
+        );
+        assert_eq!(
+            TypeRegistry::resolve_pattern_binding_key_ref(&record_without_key, &key),
+            Type::Bot
+        );
+    }
+
+    #[test]
+    fn callsite_index_key_keeps_unknown_and_returns_nil_for_missing_record_keys() {
+        let registry = TypeRegistry::new();
+        let key = RecordKey::Symbol("value".to_string());
+        let record_with_key = Type::Record(vec![RecordField {
+            key: key.clone(),
+            value: Type::String,
+            optional: false,
+        }]);
+        let record_without_key = Type::Record(vec![RecordField {
+            key: RecordKey::Symbol("other".to_string()),
+            value: Type::Integer,
+            optional: false,
+        }]);
+
+        insert_caller_param(
+            &registry,
+            Type::from_type_vec_preserve_untyped(vec![
+                record_with_key,
+                record_without_key.clone(),
+                Type::Untyped,
+            ]),
+        );
+
+        let _table_scope = ParamTableScope::enter();
+        let _memo_scope = CallerCtxMemoScope::enter();
+        let call_site = param_ref_call_site();
+        let argument = Type::PatternKeyRef(Box::new(Type::ParamRef(0)), Box::new(key.clone()));
+        let actual = registry.resolve_call_site_type_from_caller_context(
+            &call_site,
+            &argument,
+            &mut FxHashSet::default(),
+        );
+
+        assert_eq!(
+            actual,
+            Type::from_type_vec_preserve_untyped(vec![Type::String, Type::Nil, Type::Untyped])
+        );
+        assert_eq!(
+            TypeRegistry::resolve_pattern_key_ref(&record_without_key, &key),
+            Type::Nil
+        );
+    }
+
+    #[test]
+    fn pattern_projections_preserve_unknown_candidates() {
+        let array = Type::from_type_vec_preserve_untyped(vec![
+            Type::Array(Some(Box::new(Type::Integer))),
+            Type::Untyped,
+        ]);
+        let expected_element =
+            Type::from_type_vec_preserve_untyped(vec![Type::Integer, Type::Untyped]);
+        assert_eq!(
+            TypeRegistry::resolve_pattern_index_ref(&array, 0),
+            expected_element
+        );
+        assert_eq!(
+            TypeRegistry::resolve_pattern_trailing_ref(&array, 0),
+            Type::from_type_vec_preserve_untyped(vec![Type::Integer, Type::Untyped])
+        );
+        assert_eq!(
+            TypeRegistry::resolve_pattern_rest_ref(&array),
+            Type::Array(Some(Box::new(Type::from_type_vec_preserve_untyped(vec![
+                Type::Integer,
+                Type::Untyped,
+            ]))))
+        );
+
+        let tuple = Type::Tuple(vec![Type::Integer, Type::Untyped]);
+        assert_eq!(
+            TypeRegistry::resolve_pattern_rest_ref(&tuple),
+            Type::Array(Some(Box::new(Type::from_type_vec_preserve_untyped(vec![
+                Type::Integer,
+                Type::Untyped,
+            ]))))
+        );
+        let known_tuple = Type::Tuple(vec![Type::Integer, Type::String, Type::True]);
+        assert_eq!(
+            TypeRegistry::resolve_pattern_trailing_ref(&known_tuple, 0),
+            Type::True
+        );
+        assert_eq!(
+            TypeRegistry::resolve_pattern_trailing_ref(&known_tuple, 1),
+            Type::String
+        );
+
+        let key = RecordKey::Symbol("payload".to_string());
+        let hash = Type::from_type_vec_preserve_untyped(vec![
+            Type::Hash(Some(Box::new(Type::Symbol)), Some(Box::new(Type::String))),
+            Type::Untyped,
+        ]);
+        assert_eq!(
+            TypeRegistry::resolve_pattern_key_ref(&hash, &key),
+            Type::from_type_vec_preserve_untyped(vec![Type::String, Type::Nil, Type::Untyped])
+        );
+        assert_eq!(
+            TypeRegistry::resolve_pattern_key_rest_ref(&hash, std::slice::from_ref(&key)),
+            Type::from_type_vec_preserve_untyped(vec![
+                Type::Hash(Some(Box::new(Type::Symbol)), Some(Box::new(Type::String)),),
+                Type::Hash(Some(Box::new(Type::Untyped)), Some(Box::new(Type::Untyped)),),
+            ])
+        );
+    }
+
+    #[test]
+    fn self_type_substitution_preserves_unknown_union_alternatives() {
+        let ty = Type::from_type_vec_preserve_untyped(vec![Type::SelfType, Type::Untyped]);
+        let receiver = Type::Class(Sym::new("PatternIndexResolution"));
+
+        assert_eq!(
+            TypeRegistry::substitute_self_type_pub(&ty, &receiver),
+            Type::from_type_vec_preserve_untyped(vec![receiver, Type::Untyped])
+        );
     }
 
     /// finalize also resolves nominals inside compound types in lexical order (unresolved ones stay pending -> cross-file finalize).
@@ -11449,6 +12555,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolve_param_refs_inside_deferred_call_ref() {
+        let registry = TypeRegistry::new();
+        let deferred =
+            Type::deferred_call_ref(Type::ParamRef(0), Sym::new("+"), vec![Type::ParamRef(1)]);
+        let params = vec![
+            Param {
+                name: "receiver".to_string(),
+                param_type: Type::Integer,
+                kind: ParamKind::Required,
+            },
+            Param {
+                name: "argument".to_string(),
+                param_type: Type::Float,
+                kind: ParamKind::Required,
+            },
+        ];
+
+        assert_eq!(
+            registry.resolve_param_refs_from_resolved(&deferred, &params),
+            Type::deferred_call_ref(Type::Integer, Sym::new("+"), vec![Type::Float])
+        );
+    }
+
+    #[test]
+    fn param_ref_substitution_keeps_unknown_alternatives() {
+        let registry = TypeRegistry::new();
+        let argument_type =
+            Type::from_type_vec_preserve_untyped(vec![Type::String, Type::Nil, Type::Untyped]);
+        let params = vec![Param {
+            name: "value".to_string(),
+            param_type: argument_type.clone(),
+            kind: ParamKind::Required,
+        }];
+
+        assert_eq!(
+            registry.resolve_param_refs_from_resolved(&Type::ParamRef(0), &params),
+            argument_type
+        );
+        assert_eq!(
+            registry.resolve_param_refs_from_resolved(
+                &Type::KeywordParamRef(Sym::new("value")),
+                &params,
+            ),
+            argument_type
+        );
+    }
+
     fn declare_class(registry: &mut TypeRegistry, name: &str) {
         registry.set_class_location(name, SourceLocation { line: 1, column: 0 });
     }
@@ -11561,6 +12715,42 @@ mod tests {
                 "Kernel",
                 "BasicObject",
             ]
+        );
+    }
+
+    #[test]
+    fn module_instance_lookup_does_not_inherit_object_methods() {
+        let mut registry = TypeRegistry::new();
+        declare_class(&mut registry, "BasicObject");
+        declare_class(&mut registry, "Kernel");
+        registry.set_is_module("Kernel", true);
+        registry.add_method_def("Kernel", test_method("===", Type::Bool));
+        declare_class(&mut registry, "Object");
+        registry.set_superclass("Object", "BasicObject");
+        registry.add_mixin("Object", "Kernel", MixinKind::Include);
+        declare_class(&mut registry, "Module");
+        registry.set_superclass("Module", "Object");
+        registry.add_method_def("Module", test_method("===", Type::Bool));
+        declare_class(&mut registry, "Class");
+        registry.set_superclass("Class", "Module");
+
+        declare_class(&mut registry, "ExtendedMixin");
+        registry.set_is_module("ExtendedMixin", true);
+        declare_class(&mut registry, "ExtendedHost");
+        registry.add_mixin("ExtendedHost", "ExtendedMixin", MixinKind::Extend);
+
+        assert!(
+            registry
+                .resolve_instance_method_call_owners("ExtendedMixin", "===")
+                .is_empty()
+        );
+        assert_eq!(
+            registry.resolve_instance_method_call_owners("ExtendedHost", "==="),
+            vec!["Kernel"]
+        );
+        assert_eq!(
+            registry.resolve_method_call_owners("ExtendedHost", "===", true),
+            vec![("Module".to_string(), false)]
         );
     }
 
@@ -11997,10 +13187,9 @@ mod tests {
         assert!(!bar.has_pending_call_site_summary);
     }
 
-    /// accumulation during grouping (unnormalized union buildup) gets canonicalized on write-back,
-    /// guaranteeing the same normal form as per-merge sort+dedup.
+    /// accumulation during grouping preserves unknown arguments and canonicalizes observed types.
     #[test]
-    fn finalize_call_site_summaries_canonicalizes_accumulated_unions() {
+    fn finalize_call_site_summaries_preserves_unknown_accumulated_unions() {
         let mut registry = TypeRegistry::new();
         let with_arg = |ty: Type| {
             let mut site = test_call_site("call");
@@ -12020,8 +13209,37 @@ mod tests {
         let summary = foo.call_sites.iter().next().expect("summary site");
         assert_eq!(
             summary.arg_types[0],
-            Type::from_type_vec(vec![Type::String, Type::Integer, Type::Nil]),
-            "accumulated slot must be canonical (sorted / deduped / untyped dropped)"
+            Type::from_type_vec_preserve_untyped(vec![
+                Type::String,
+                Type::Integer,
+                Type::Nil,
+                Type::Untyped,
+            ]),
+            "accumulated call-site slot must retain explicitly observed unknown inputs"
+        );
+    }
+
+    #[test]
+    fn finalize_call_site_summaries_preserves_unknown_inside_array_arguments() {
+        let mut registry = TypeRegistry::new();
+        let with_array_item = |item_type| {
+            let mut site = test_call_site("call");
+            site.arg_types = vec![Type::Array(Some(Box::new(item_type)))];
+            site
+        };
+        registry.add_call_site("Foo", with_array_item(Type::String));
+        registry.add_call_site("Foo", with_array_item(Type::Untyped));
+
+        registry.finalize_pending_call_site_summaries();
+
+        let foo = registry.class_data_for("Foo").expect("foo data");
+        let summary = foo.call_sites.iter().next().expect("summary site");
+        assert_eq!(
+            summary.arg_types[0],
+            Type::Array(Some(Box::new(Type::Union(vec![
+                Type::String,
+                Type::Untyped,
+            ])))),
         );
     }
 
@@ -12204,6 +13422,51 @@ mod tests {
 
         assert_eq!(instance.raw_return_type, Type::Integer);
         assert_eq!(singleton.raw_return_type, Type::Bool);
+    }
+
+    #[test]
+    fn param_ref_substitution_preserves_known_and_unknown_callsite_arguments() {
+        let mut registry = TypeRegistry::new();
+        let mut method = test_method(
+            "add",
+            Type::deferred_call_ref(Type::ParamRef(0), Sym::new("+"), vec![Type::ParamRef(1)]),
+        );
+        method.param_infos = vec![
+            ParamInfo {
+                name: "left".to_string(),
+                kind: ParamKind::Required,
+                default_type: None,
+            },
+            ParamInfo {
+                name: "right".to_string(),
+                kind: ParamKind::Required,
+                default_type: None,
+            },
+        ];
+        registry.add_method_def("MaybeAdder", method);
+
+        let mut call_site = test_call_site("add");
+        call_site.arg_types = vec![
+            Type::Integer,
+            Type::from_type_vec_preserve_untyped(vec![Type::Integer, Type::Untyped]),
+        ];
+        registry.add_call_site("MaybeAdder", call_site);
+        registry.resolve_method_param_refs_from_call_sites();
+
+        let method = registry
+            .lookup_method_def("MaybeAdder", "add", false)
+            .expect("method should exist");
+        assert_eq!(
+            method.raw_return_type,
+            Type::deferred_call_ref(
+                Type::Integer,
+                Sym::new("+"),
+                vec![Type::from_type_vec_preserve_untyped(vec![
+                    Type::Integer,
+                    Type::Untyped,
+                ])],
+            ),
+        );
     }
 
     #[test]
