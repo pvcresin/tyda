@@ -486,6 +486,32 @@ LSP scan +4.1%、CLI RSS -1.3%、LSP RSS +1.5%。この比較は branch 上の c
 新しい基準値ではない。
 cache 修正前後の RBS snapshot は 6 subject で byte-identical。
 
+### unknown を保つ parameter merge の重複走査を削減（2026-10-23）
+
+`merge_param_arg_vec` は引数型の union 展開前に nested `untyped` を再帰走査し、その後同じ union を
+もう一度平坦化していた。展開と unknown 検出を同じ traversal にまとめ、merge path の選択と推論結果を保つ。
+RBS snapshot は sample / rack / rake / rubygems / mastodon / gitlab の 6 subject で byte-identical。
+
+macOS release の最新 main (`8f814d1`) と PR head (`685d1c0`) の paired measurement:
+
+| Subject | Runs | CLI time | LSP scan | CLI RSS | LSP RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| rack | 3 | -12.03% | +8.70% | +8.54% | -0.81% |
+| rake | 3 | -16.98% | +2.63% | -11.41% | -2.23% |
+| optcarrot | 11 | +2.80% | +9.65% | +6.67% | +6.77% |
+| typeprof | 3 | +0.76% | -2.70% | +2.75% | -8.19% |
+| rubygems | 11 | -3.34% | +7.35% | -4.62% | +1.14% |
+| conference-app | 3 | -2.34% | +11.00% | +1.73% | -0.35% |
+| redmine | 3 | -26.66% | -1.65% | -1.20% | -4.52% |
+| rubygems.org | 11 | +8.64% | +8.29% | +2.36% | -1.37% |
+| mastodon | 3 | -9.71% | -0.99% | -8.37% | -8.58% |
+| gitlab | 1 | -14.19% | +2.49% | +3.08% | +5.46% |
+
+全subjectの比較結果はpass。初回3-run測定ではrubygemsとrubygems.orgに時間の閾値超過、optcarrotにRSSの閾値に
+近い値が出たため、これらは11-runで再計測した。再計測の最大増加はrubygems LSPの+72ms / +7.35%で、警告域だが
+10% の失敗閾値未満。conference-app LSP の+11%は+11ms、rack CLI RSSの+8.54%は+3.1MiBで、いずれも絶対差分の
+最小閾値未満。測定値はmacOS上のローカル結果であり、CI runnerでの再計測を最終確認とする。
+
 ## 記録ルール
 
 - 現在の基準を上書きし、履歴表を増やさない。

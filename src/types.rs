@@ -1156,22 +1156,36 @@ impl Type {
         if types.is_empty() {
             return Type::Untyped;
         }
-        if !types.iter().any(Self::contains_untyped_leaf) {
-            return Self::merge_param_arg_vec_without_untyped(types);
+        let mut flat = Vec::new();
+        let mut has_untyped = false;
+        for ty in types {
+            Self::collect_param_arg_parts(ty, &mut flat, &mut has_untyped);
         }
-        let mut flat: Vec<Type> = Vec::new();
-        for t in types {
-            Self::collect_union_parts(t, &mut flat);
+
+        if has_untyped {
+            Self::merge_param_arg_parts(flat)
+        } else {
+            Self::merge_param_arg_parts_without_untyped(flat)
         }
-        Self::merge_param_arg_parts(flat)
     }
 
-    fn merge_param_arg_vec_without_untyped(types: Vec<Type>) -> Type {
-        let mut flat: Vec<Type> = Vec::new();
-        for ty in types {
-            Self::collect_union_parts(ty, &mut flat);
+    fn collect_param_arg_parts(ty: Type, parts: &mut Vec<Type>, has_untyped: &mut bool) {
+        match ty {
+            Type::Union(inner) => {
+                for ty in inner {
+                    Self::collect_param_arg_parts(ty, parts, has_untyped);
+                }
+            }
+            other => {
+                if !*has_untyped {
+                    *has_untyped = Self::contains_untyped_leaf(&other);
+                }
+                parts.push(other);
+            }
         }
+    }
 
+    fn merge_param_arg_parts_without_untyped(flat: Vec<Type>) -> Type {
         let mut tuple_groups = Vec::new();
         let mut has_plain_array = false;
         let mut others = Vec::new();
