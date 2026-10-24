@@ -116,6 +116,28 @@ class Object < BasicObject
 end
 ```
 
+## chained assignment on both branches assigns every local
+
+```ruby
+def chained_branch_local(flag)
+  if flag
+    value = :then
+    nested = :then
+  else
+    value = nested = "else"
+  end
+  [value, nested]
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def chained_branch_local: (untyped flag) -> (["else", "else"] | [:then, :then])
+end
+```
+
 ## assignment on an exiting branch does not reach the following read
 
 ### update

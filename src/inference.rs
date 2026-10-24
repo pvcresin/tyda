@@ -18319,9 +18319,54 @@ impl<'a> InferenceEngine<'a> {
                     .expect("must be LocalVariableWriteNode");
                 let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
                 let value_node = write_node.value();
-                let runtime_fact =
-                    self.runtime_fact_from_value(class_name, &value_node, parse_result, scope);
-                let value_type = self.infer_node_type(class_name, node, parse_result, scope);
+                let chained_local = value_node
+                    .as_local_variable_write_node()
+                    .map(|nested| String::from_utf8_lossy(nested.name().as_slice()).to_string());
+                if chained_local.is_some() {
+                    self.process_statement(class_name, &value_node, parse_result, scope);
+                }
+                let runtime_fact = if let Some(name) = &chained_local {
+                    scope.runtime_fact(name).cloned()
+                } else {
+                    self.runtime_fact_from_value(class_name, &value_node, parse_result, scope)
+                };
+                let value_type = if let Some(name) = &chained_local {
+                    scope
+                        .get(name)
+                        .cloned()
+                        .map(|ty| {
+                            self.apply_inline_assertion_for_node(node, parse_result.source(), ty)
+                        })
+                        .unwrap_or_else(|| {
+                            self.infer_node_type(class_name, node, parse_result, scope)
+                        })
+                } else {
+                    self.infer_node_type(class_name, node, parse_result, scope)
+                };
+                if chained_local.is_some() {
+                    self.push_hover_snapshot(HoverSnapshot {
+                        start: write_node.location().start_offset(),
+                        end: write_node.location().start_offset()
+                            + write_node.name().as_slice().len(),
+                        name: var_name.clone(),
+                        target: HoverTarget::Value(value_type.clone()),
+                        class_context: class_name.to_string(),
+                        method_context: scope.method_name.clone(),
+                    });
+                }
+                let alias_source = if let Some(name) = &chained_local {
+                    scope
+                        .get(name)
+                        .cloned()
+                        .map(|ty| (scope.resolve_alias_target(name), ty))
+                } else {
+                    self.resolve_alias_assignment_source(
+                        class_name,
+                        &value_node,
+                        parse_result,
+                        scope,
+                    )
+                };
                 if let Some(call_node) = value_node.as_call_node() {
                     self.apply_receiver_mutating_call_side_effect(
                         class_name,
@@ -18350,12 +18395,7 @@ impl<'a> InferenceEngine<'a> {
                         write_node.location().start_offset() + write_node.name().as_slice().len(),
                         loc,
                     );
-                } else if let Some((target, ty)) = self.resolve_alias_assignment_source(
-                    class_name,
-                    &value_node,
-                    parse_result,
-                    scope,
-                ) {
+                } else if let Some((target, ty)) = alias_source {
                     let loc = offset_to_location(
                         parse_result.source(),
                         write_node.location().start_offset(),
