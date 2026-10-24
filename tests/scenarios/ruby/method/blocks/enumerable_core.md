@@ -1382,10 +1382,6 @@ end
 
 ## Unknown reverse_each receivers keep block arguments untyped
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

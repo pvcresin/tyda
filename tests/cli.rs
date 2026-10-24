@@ -485,6 +485,252 @@ fn diagnostics_flag_outputs_json_lines() {
 }
 
 #[test]
+fn repeated_stable_comparison_refines_branch_local_diagnostics() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("repeated_condition.rb");
+    fs::write(
+        &rb_file,
+        r#"def repeated_condition
+  frame = "frame".length
+  if frame == 3000
+    value = 1
+  end
+  if frame == 180
+    frame.to_i
+  end
+  if frame == 3000
+    frame.to_i
+  end
+  if frame == 3000
+    result = value + 1
+  else
+    result = :other
+  end
+  result
+end
+
+def repeated_unless_condition
+  frame = "frame".length
+  unless frame == 3000
+    value = "other"
+  end
+  unless frame == 3000
+    result = value.upcase
+  else
+    result = :other
+  end
+  result
+end
+
+def repeated_not_equal_condition
+  frame = "frame".length
+  if frame != 3000
+    value = 1
+  end
+  if frame != 3000
+    result = value + 1
+  else
+    result = :other
+  end
+  result
+end
+
+def repeated_condition_in_nested_block
+  [180, 3000].each do |frame|
+    [true, false].each do |_summary|
+      if frame == 3000
+        value = 1
+      end
+      if frame == 3000
+        frame.to_i
+      end
+      if frame == 180
+        frame.to_i
+      end
+      if frame == 3000
+        value + 1
+      end
+    end
+  end
+end
+
+def changed_condition
+  frame = "frame".length
+  if frame == 3000
+    value = 1
+  end
+  frame += 1
+  if frame == 3000
+    value + 1
+  end
+end
+
+def mutated_string_condition
+  frame = +"frame"
+  if frame == "frame"
+    value = 1
+  end
+  frame.replace("other")
+  if frame == "frame"
+    value + 1
+  end
+end
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    let nil_method_diagnostics: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic["code"] == "missing_method"
+                && (diagnostic["unresolved_method"] == "NilClass#+"
+                    || diagnostic["unresolved_method"] == "NilClass#upcase")
+        })
+        .collect();
+    assert_eq!(
+        nil_method_diagnostics.len(),
+        2,
+        "rechecking an unchanged immutable comparison should restore branch-local types, while changing the comparison value or mutating a string must keep the nil path: {stdout}"
+    );
+    assert_eq!(
+        nil_method_diagnostics[0]["unresolved_method"], "NilClass#+",
+        "only the reassigned condition should retain its nil diagnostic: {stdout}"
+    );
+}
+
+#[test]
+fn unknown_yield_block_preserves_missing_method_diagnostics() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("unknown_yield.rb");
+    fs::write(
+        &rb_file,
+        r#"def run_untyped_callback
+  yield
+end
+
+def missing_method_inside_untyped_block
+  run_untyped_callback do
+    String.new.tyda_missing_method
+  end
+end
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "missing_method"
+                && diagnostic["unresolved_method"] == "String#tyda_missing_method"
+        }),
+        "a missing-method diagnostic inside a user-defined block must not be skipped: {stdout}"
+    );
+}
+
+#[test]
+fn yield_after_branch_local_assignment_keeps_its_non_nil_type() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("yield_flow.rb");
+    fs::write(
+        &rb_file,
+        r#"def emit(flag)
+  if flag
+    error = StandardError.new("failure")
+    yield error
+  end
+  self
+end
+
+def use_emit
+  emit(true) { |error| error.backtrace }
+end
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic["unresolved_method"] == "NilClass#backtrace" }),
+        "yield should use the type at the yield site, not the post-join local type: {stdout}"
+    );
+}
+
+#[test]
+fn block_params_shadow_outer_locals_before_conditional_assignment() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("block_param_shadowing.rb");
+    fs::write(
+        &rb_file,
+        r#"class Spec
+  def version = "1"
+end
+
+def block_param_shadowing(flag)
+  specs = "outer"
+  [["source", [Spec.new]]].each do |source, specs|
+    specs = [] if flag
+    specs.select { |spec| spec.version }
+  end
+  specs.upcase
+end
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    assert!(
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic["unresolved_method"] == "String#select"
+                || diagnostic["unresolved_method"] == "NilClass#select"
+        }),
+        "block parameter should shadow the outer String local: {stdout}"
+    );
+}
+
+#[test]
 fn diagnostics_flag_honors_line_ignore_comments() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("ignored.rb");

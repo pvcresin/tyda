@@ -66,15 +66,18 @@ end
 
 ## local assigned on one branch is nilable after the branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
 def conditional_local(flag)
   if flag
+    value = :present
+  end
+  value
+end
+
+def unless_conditional_local(flag)
+  unless flag
     value = :present
   end
   value
@@ -86,6 +89,7 @@ end
 ```rbs
 class Object < BasicObject
   def conditional_local: (untyped flag) -> :present?
+  def unless_conditional_local: (untyped flag) -> :present?
 end
 ```
 
@@ -109,6 +113,28 @@ end
 ```rbs
 class Object < BasicObject
   def complete_branch_local: (untyped flag) -> (1 | "other")
+end
+```
+
+## chained assignment on both branches assigns every local
+
+```ruby
+def chained_branch_local(flag)
+  if flag
+    value = :then
+    nested = :then
+  else
+    value = nested = "else"
+  end
+  [value, nested]
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def chained_branch_local: (untyped flag) -> (["else", "else"] | [:then, :then])
 end
 ```
 
@@ -253,6 +279,25 @@ def first_generic_array_after_clear
   values[0]
 end
 
+def repeated_comparison_branch_local
+  frame = "frame".length
+  if frame == 3000
+    value = 1
+  end
+  if frame == 180
+    frame.to_i
+  end
+  if frame == 3000
+    frame.to_i
+  end
+  if frame == 3000
+    result = value + 1
+  else
+    result = :other
+  end
+  result
+end
+
 first_generic_array_after_clear
 ```
 
@@ -267,6 +312,7 @@ class Object < BasicObject
   def iterator_body_after_typed_range_branches: (untyped flag, untyped head) -> (:full | RangeResponseIterator | [ ])
   def first_range_after_empty_guard: -> Range[Integer]
   def first_generic_array_after_clear: -> nil
+  def repeated_comparison_branch_local: -> (Integer | :other)
 end
 
 class RangeResponseIterator
