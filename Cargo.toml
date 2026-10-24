@@ -24,7 +24,7 @@ mcp = ["dep:rmcp", "dep:schemars", "dep:tokio"]
 wasm = []
 
 [dependencies]
-ruby-prism = "1.9.0"
+ruby-prism = "2.0.0"
 rbs-sys = { path = "crates/rbs-sys" }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }

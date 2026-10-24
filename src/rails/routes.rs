@@ -1,3 +1,4 @@
+use crate::prism_compat::LocationExt;
 use std::path::Path;
 
 use ruby_prism::{Node, ParseResult};

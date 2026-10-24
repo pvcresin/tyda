@@ -1,4 +1,5 @@
 use super::*;
+use crate::prism_compat::LocationExt;
 use crate::types::Sym;
 
 struct AttrMethodName {
@@ -1469,7 +1470,10 @@ impl<'a> InferenceEngine<'a> {
                 param_names.push(name);
             }
         }
-        if let Some(block_param) = inner_params.block() {
+        if let Some(block_param) = inner_params
+            .block()
+            .and_then(|node| node.as_block_parameter_node())
+        {
             let name = block_param
                 .name()
                 .map(|name| String::from_utf8_lossy(name.as_slice()).to_string())

@@ -1,3 +1,4 @@
+use crate::prism_compat::LocationExt;
 use crate::rbs::ir as rbs_ir;
 use crate::sym::NamePath;
 use crate::types::Sym;
@@ -7610,10 +7611,10 @@ impl<'a> InferenceEngine<'a> {
         let range = range_node.as_range_node()?;
         let left = range
             .left()
-            .filter(|left| !matches!(left, Node::MissingNode { .. }))?;
+            .filter(|left| !matches!(left, Node::ErrorRecoveryNode { .. }))?;
         let right = range
             .right()
-            .filter(|right| !matches!(right, Node::MissingNode { .. }))?;
+            .filter(|right| !matches!(right, Node::ErrorRecoveryNode { .. }))?;
         let start = self.literal_integer_from_node(class_name, &left, parse_result, scope)?;
         let end = self.literal_integer_from_node(class_name, &right, parse_result, scope)?;
         Some((start, end, range.is_exclude_end()))
@@ -13833,7 +13834,9 @@ impl<'a> InferenceEngine<'a> {
                 offset_to_location_from(source, def_start, method_loc, start),
             );
         }
-        if let Some(block) = params.block()
+        if let Some(block) = params
+            .block()
+            .and_then(|node| node.as_block_parameter_node())
             && let Some(name_raw) = block.name()
         {
             let name = String::from_utf8_lossy(name_raw.as_slice()).to_string();
@@ -13945,7 +13948,9 @@ impl<'a> InferenceEngine<'a> {
                 offset_to_location_from(source, def_start, method_loc, start),
             );
         }
-        if let Some(block) = params.block()
+        if let Some(block) = params
+            .block()
+            .and_then(|node| node.as_block_parameter_node())
             && let Some(name_raw) = block.name()
         {
             let name = String::from_utf8_lossy(name_raw.as_slice()).to_string();
@@ -14335,7 +14340,10 @@ impl<'a> InferenceEngine<'a> {
                     _ => {}
                 }
             }
-            if let Some(block) = params.block() {
+            if let Some(block) = params
+                .block()
+                .and_then(|node| node.as_block_parameter_node())
+            {
                 let name = block
                     .name()
                     .map(|name| String::from_utf8_lossy(name.as_slice()).to_string())
@@ -24917,7 +24925,7 @@ impl<'a> InferenceEngine<'a> {
             | Node::RescueNode { .. }
             | Node::EnsureNode { .. }
             | Node::BlockNode { .. }
-            | Node::MissingNode { .. } => Type::Untyped,
+            | Node::ErrorRecoveryNode { .. } => Type::Untyped,
 
             Node::ClassVariableReadNode { .. } => {
                 let read = node
@@ -25248,11 +25256,11 @@ impl<'a> InferenceEngine<'a> {
         let range_node = node.as_range_node().expect("must be RangeNode");
         let left_ty = range_node
             .left()
-            .filter(|left| !matches!(left, Node::MissingNode { .. }))
+            .filter(|left| !matches!(left, Node::ErrorRecoveryNode { .. }))
             .map(|left| self.infer_node_type(class_name, &left, parse_result, scope));
         let right_ty = range_node
             .right()
-            .filter(|right| !matches!(right, Node::MissingNode { .. }))
+            .filter(|right| !matches!(right, Node::ErrorRecoveryNode { .. }))
             .map(|right| self.infer_node_type(class_name, &right, parse_result, scope));
 
         let inner = match (left_ty.as_ref(), right_ty.as_ref()) {
@@ -31219,11 +31227,11 @@ impl<'a> InferenceEngine<'a> {
         };
         let left_ok = range
             .left()
-            .filter(|left| !matches!(left, Node::MissingNode { .. }))
+            .filter(|left| !matches!(left, Node::ErrorRecoveryNode { .. }))
             .is_none_or(|left| self.node_is_integer_like(class_name, &left, parse_result, scope));
         let right_ok = range
             .right()
-            .filter(|right| !matches!(right, Node::MissingNode { .. }))
+            .filter(|right| !matches!(right, Node::ErrorRecoveryNode { .. }))
             .is_none_or(|right| self.node_is_integer_like(class_name, &right, parse_result, scope));
         left_ok && right_ok
     }
@@ -31837,7 +31845,7 @@ impl<'a> InferenceEngine<'a> {
         let range = range_node.as_range_node()?;
         let start = if let Some(left) = range
             .left()
-            .filter(|left| !matches!(left, Node::MissingNode { .. }))
+            .filter(|left| !matches!(left, Node::ErrorRecoveryNode { .. }))
         {
             let start = self.literal_integer_from_node(class_name, &left, parse_result, scope)?;
             let Some(start) = Self::slice_start_index(start, len) else {
@@ -31849,7 +31857,7 @@ impl<'a> InferenceEngine<'a> {
         };
         let mut end = if let Some(right) = range
             .right()
-            .filter(|right| !matches!(right, Node::MissingNode { .. }))
+            .filter(|right| !matches!(right, Node::ErrorRecoveryNode { .. }))
         {
             let end = self.literal_integer_from_node(class_name, &right, parse_result, scope)?;
             if end < 0
@@ -31913,10 +31921,10 @@ impl<'a> InferenceEngine<'a> {
         let range = range_node.as_range_node()?;
         let left = range
             .left()
-            .filter(|left| !matches!(left, Node::MissingNode { .. }))?;
+            .filter(|left| !matches!(left, Node::ErrorRecoveryNode { .. }))?;
         let right = range
             .right()
-            .filter(|right| !matches!(right, Node::MissingNode { .. }))?;
+            .filter(|right| !matches!(right, Node::ErrorRecoveryNode { .. }))?;
         let start = self.literal_integer_from_node(class_name, &left, parse_result, scope)?;
         let end = self.literal_integer_from_node(class_name, &right, parse_result, scope)?;
 
@@ -32025,7 +32033,7 @@ impl<'a> InferenceEngine<'a> {
             if let Some(range) = arg.as_range_node() {
                 let left_ok = range
                     .left()
-                    .filter(|left| !matches!(left, Node::MissingNode { .. }))
+                    .filter(|left| !matches!(left, Node::ErrorRecoveryNode { .. }))
                     .is_none_or(|left| {
                         let ty = self.infer_node_type(class_name, &left, parse_result, scope);
                         saw_float |= Self::type_has_literal_float_integer_conversion(&ty);
@@ -32033,7 +32041,7 @@ impl<'a> InferenceEngine<'a> {
                     });
                 let right_ok = range
                     .right()
-                    .filter(|right| !matches!(right, Node::MissingNode { .. }))
+                    .filter(|right| !matches!(right, Node::ErrorRecoveryNode { .. }))
                     .is_none_or(|right| {
                         let ty = self.infer_node_type(class_name, &right, parse_result, scope);
                         saw_float |= Self::type_has_literal_float_integer_conversion(&ty);
@@ -47735,7 +47743,7 @@ impl<'a> InferenceEngine<'a> {
                 }
                 let right = find.right();
                 self.bind_pattern_locals(
-                    &right,
+                    &right.as_node(),
                     &Self::pattern_array_rest_binding_type(matched_type, 0, 0),
                     scope,
                 );

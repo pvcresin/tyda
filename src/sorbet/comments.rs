@@ -1,3 +1,4 @@
+use crate::prism_compat::LocationExt;
 use ruby_prism::ParseResult;
 
 use crate::rbs::inline::{RbsComment, is_standard_rbs_inline_comment};

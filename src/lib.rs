@@ -32,6 +32,7 @@ pub mod lsp;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod parser;
+mod prism_compat;
 pub mod project;
 pub mod project_markers;
 pub mod query;
