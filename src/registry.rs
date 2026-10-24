@@ -3431,7 +3431,16 @@ impl TypeRegistry {
         }
     }
 
-    pub fn add_method_def(&mut self, class_name: &str, mut method: MethodDef) {
+    pub fn add_method_def(&mut self, class_name: &str, method: MethodDef) {
+        self.add_method_def_with_file_path(class_name, method, None);
+    }
+
+    pub fn add_method_def_with_file_path(
+        &mut self,
+        class_name: &str,
+        mut method: MethodDef,
+        file_path: Option<&str>,
+    ) {
         method.shrink_to_fit_after_collect();
         if Self::method_needs_mixin_hook_call_site(&method) {
             self.has_mixin_hook_methods = true;
@@ -3443,7 +3452,12 @@ impl TypeRegistry {
             self.file_contribution_method_names.insert(method.name);
         }
         let data = self.class_data_mut(class_name);
-        let method_file_path = method.loc.and_then(|_| data.file_path.clone());
+        let method_file_path = method.loc.and_then(|_| {
+            file_path
+                .filter(|path| Some(*path) != data.file_path.as_deref())
+                .map(SharedPath::from)
+                .or_else(|| data.file_path.clone())
+        });
         if is_user {
             data.user_defined = true;
         }

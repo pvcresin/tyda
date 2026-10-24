@@ -301,12 +301,31 @@ impl TypeRegistry {
                 .constants
                 .values()
                 .any(|constant| constant.file_path.as_deref() == Some(file_path));
-            if !has_constants_in_file && data.file_path.as_deref() != Some(file_path) {
+            let class_in_file =
+                has_constants_in_file || data.file_path.as_deref() == Some(file_path);
+            if !class_in_file && !self.file_contribution_names.contains(class_name.as_str()) {
                 continue;
             }
-            for method in self.build_method_sigs_for_class(class_name, data) {
+            if !class_in_file
+                && !data
+                    .method_file_paths
+                    .iter()
+                    .any(|(_, path)| path.as_ref() == file_path)
+            {
+                continue;
+            }
+            let method_sigs = self.build_method_sigs_for_class(class_name, data);
+            for (method_def, method) in data.methods.iter().zip(method_sigs) {
                 if method.rbs_file_source {
                     continue;
+                }
+                if !class_in_file {
+                    let method_file_path = data
+                        .method_file_paths
+                        .get(&(method_def.name, method_def.is_singleton));
+                    if method_file_path.is_none_or(|path| path.as_ref() != file_path) {
+                        continue;
+                    }
                 }
                 let key: MethodKey = (
                     class_name.to_string(),

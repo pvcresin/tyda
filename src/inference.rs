@@ -12323,7 +12323,11 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &method_def.param_infos,
                 );
-                self.registry.add_method_def(class_name, method_def);
+                self.registry.add_method_def_with_file_path(
+                    class_name,
+                    method_def,
+                    self.file_path.as_deref(),
+                );
                 let declared_returns = explicit_return_contract.as_ref().map(|fallback| {
                     self.declared_method_return_types(
                         class_name,
@@ -12417,7 +12421,11 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &method_def.param_infos,
                 );
-                self.registry.add_method_def(class_name, method_def);
+                self.registry.add_method_def_with_file_path(
+                    class_name,
+                    method_def,
+                    self.file_path.as_deref(),
+                );
                 let declared_returns = explicit_return_contract.as_ref().map(|fallback| {
                     self.declared_method_return_types(
                         class_name,
@@ -12707,7 +12715,7 @@ impl<'a> InferenceEngine<'a> {
             is_singleton,
             &rbs_param_annotations,
         );
-        self.registry.add_method_def(
+        self.registry.add_method_def_with_file_path(
             class_name,
             MethodDef {
                 name: Sym::new(&method_name),
@@ -12725,6 +12733,7 @@ impl<'a> InferenceEngine<'a> {
                 extra_overloads: Vec::new(),
                 loc: Some(method_loc),
             },
+            self.file_path.as_deref(),
         );
 
         if method_name == "initialize" && !is_singleton {
