@@ -1,3 +1,4 @@
+use crate::prism_compat::LocationExt;
 use std::collections::HashSet;
 
 use ruby_prism::Node;

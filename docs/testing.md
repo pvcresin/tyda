@@ -153,7 +153,7 @@ OSS を解析対象として扱う。
 
 | 素材 | 収集するパターン |
 | --- | --- |
-| Ruby / Prism | 構文、AST 境界、壊れた入力、version gate |
+| Ruby / Prism | Prism 2.x の構文、AST 境界、壊れた入力、エラー回復、version gate |
 | Ruby LSP | workspace、document change、definition、completion |
 | Tapioca / RBS | generated RBI、schema、relation、宣言の合成 |
 | Steep / Sorbet / TypeProf | comment、signature、generic、LSP の入口 |

@@ -1,3 +1,4 @@
+use crate::prism_compat::LocationExt;
 use ruby_prism::{self as prism, Node};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -950,8 +951,15 @@ impl SyntaxErrorSuppressor {
     }
 
     /// Structural errors that don't break the value, e.g. an unclosed `def` / EOF.
-    fn is_incremental_structural_error(message: &str) -> bool {
-        message.contains("expected an `end`") || message.contains("unexpected end-of-input")
+    fn is_incremental_structural_error(message: &[u8]) -> bool {
+        const EXPECTED_END: &[u8] = b"expected an `end`";
+        const UNEXPECTED_EOF: &[u8] = b"unexpected end-of-input";
+        message
+            .windows(EXPECTED_END.len())
+            .any(|window| window == EXPECTED_END)
+            || message
+                .windows(UNEXPECTED_EOF.len())
+                .any(|window| window == UNEXPECTED_EOF)
     }
 
     pub fn is_active(&self) -> bool {

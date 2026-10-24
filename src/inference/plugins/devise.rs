@@ -2,6 +2,7 @@
 //! ! ! `devise_for :users` defines, for each scope, `current_user`, ! `user_signed_in?`, `authenticate_user!`, `user_session` on every ! controller and view helper.
 
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
+use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
 use crate::types::Type;
 use ruby_prism::{CallNode, ParseResult};

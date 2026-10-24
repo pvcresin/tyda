@@ -1,3 +1,4 @@
+use crate::prism_compat::LocationExt;
 use crate::rbs::ir as rbs_ir;
 use std::collections::HashMap;
 

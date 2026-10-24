@@ -69,6 +69,10 @@ fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
+fn prism_offset_to_usize(offset: u32) -> usize {
+    usize::try_from(offset).expect("Prism offsets fit the target pointer width")
+}
+
 struct Ctx<'a> {
     source: &'a str,
     loader: &'a LazyRbsLoader,
@@ -78,7 +82,7 @@ struct Ctx<'a> {
 }
 
 fn probe(ctx: &Ctx<'_>, loc: &Location<'_>, kind: &'static str, stats: &mut Stats) {
-    let (line, col) = offset_to_line_col(ctx.source, loc.start_offset());
+    let (line, col) = offset_to_line_col(ctx.source, prism_offset_to_usize(loc.start()));
     let b = stats.per_kind.entry(kind).or_default();
     let r = hover_at_with_analysis_options(
         ctx.source,
@@ -99,7 +103,10 @@ fn probe(ctx: &Ctx<'_>, loc: &Location<'_>, kind: &'static str, stats: &mut Stat
                     if std::env::var("DUMP_UNRESOLVED").is_ok() {
                         let snippet = ctx
                             .source
-                            .get(loc.start_offset()..loc.end_offset().min(ctx.source.len()))
+                            .get(
+                                prism_offset_to_usize(loc.start())
+                                    ..prism_offset_to_usize(loc.end()).min(ctx.source.len()),
+                            )
                             .unwrap_or("")
                             .chars()
                             .take(60)
@@ -114,7 +121,10 @@ fn probe(ctx: &Ctx<'_>, loc: &Location<'_>, kind: &'static str, stats: &mut Stat
                     if std::env::var("DUMP_UNTYPED").is_ok() {
                         let snippet = ctx
                             .source
-                            .get(loc.start_offset()..loc.end_offset().min(ctx.source.len()))
+                            .get(
+                                prism_offset_to_usize(loc.start())
+                                    ..prism_offset_to_usize(loc.end()).min(ctx.source.len()),
+                            )
                             .unwrap_or("")
                             .chars()
                             .take(60)

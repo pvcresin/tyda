@@ -1,4 +1,5 @@
 use super::*;
+use crate::prism_compat::LocationExt;
 use crate::rbs::ir as rbs_ir;
 use crate::types::{SharedName, Sym};
 use std::sync::Arc;

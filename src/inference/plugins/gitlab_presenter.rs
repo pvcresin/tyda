@@ -3,6 +3,7 @@
 
 use super::super::InferenceEngine;
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
+use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
 use crate::types::Type;
 use ruby_prism::{Node, ParseResult};

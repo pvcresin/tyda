@@ -2,6 +2,7 @@
 //! ! ! Two receiver shapes matter: ! - Schema classes (`< GraphQL::Schema`): class-body singleton DSL such as !   `use`, `query`, `lazy_resolve`, `max_complexity`.
 
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
+use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
 use crate::types::Type;
 use ruby_prism::{CallNode, ParseResult};

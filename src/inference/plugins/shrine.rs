@@ -1,4 +1,5 @@
 use super::{DslFeature, MixinKind, Node, ParseResult, Plugin, PluginCx, PluginManifest};
+use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
 
 pub(super) struct Shrine;

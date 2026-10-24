@@ -1,4 +1,5 @@
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
+use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
 use crate::types::{SourceLocation, Sym, Type};
 use ruby_prism::{CallNode, ParseResult};

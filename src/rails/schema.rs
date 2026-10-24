@@ -1,3 +1,4 @@
+use crate::prism_compat::LocationExt;
 use crate::types::Sym;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
