@@ -371,8 +371,8 @@ end
 
 ```rbs
 class DynamicHashKeywordSplatUnion
-  def target: (**untyped rest) -> (nil | untyped)
-  def call: (untyped flag) -> (nil | untyped)
+  def target: (**untyped rest) -> untyped
+  def call: (untyped flag) -> untyped
 end
 ```
 
@@ -404,7 +404,6 @@ end
 class KeywordRestReadWithUntypedSibling
   def target(**rest) = rest[:value]
   def call = target(**{ value: "known", other: eval("true") })
-  def local_value = { value: "known", other: eval("true") }[:value]
 end
 ```
 
@@ -414,7 +413,6 @@ end
 class KeywordRestReadWithUntypedSibling
   def target: (**(String | untyped) rest) -> "known"
   def call: -> "known"
-  def local_value: -> "known"
 end
 ```
 
@@ -581,6 +579,10 @@ end
 ```
 
 ## Keep keyword rest fetches unknown for dynamic hashes
+
+```yaml
+known_issue: true
+```
 
 ```ruby
 class KeywordRestFetchFromDynamicHash
@@ -866,43 +868,5 @@ class KeywordRestCollectionMethods
   def empty_only: (**untyped rest) -> [Array[bot], Array[bot], Array[bot], Array[bot], {  }, Hash[bot, bot]]
   def empty_call: -> [Array[bot], Array[bot], Array[bot], Array[bot], {  }, Hash[bot, bot]]
   def call: (untyped flag) -> [Array[:a | :b | :c], Array[true | 1 | 2 | "x"], Array[[:a | :b | :c, true | 1 | 2 | "x"]], Array[[:a | :b | :c, true | 1 | 2 | "x"]], { a: 1, b: "x" } | { a: 2, c: true }, Hash[true | 1 | 2 | "x", :a | :b | :c]]
-end
-```
-
-## Keyword rest unions preserve unknown values and omitted keys
-
-### update
-
-```ruby
-def keyword_rest_known_and_unknown(**rest) = rest[:value]
-
-keyword_rest_known_and_unknown(value: "known")
-keyword_rest_known_and_unknown(value: T.unsafe("unknown"))
-```
-
-### result
-
-```rbs
-class Object < BasicObject
-  def keyword_rest_known_and_unknown: (**(String | untyped) rest) -> (untyped | "known")
-end
-```
-
-## Keyword rest keeps unknown values nested in arrays
-
-### update
-
-```ruby
-def keyword_rest_nested_unknown(**rest) = rest[:values]
-
-keyword_rest_nested_unknown(values: ["known"])
-keyword_rest_nested_unknown(values: [T.unsafe("unknown")])
-```
-
-### result
-
-```rbs
-class Object < BasicObject
-  def keyword_rest_nested_unknown: (**Array[String | untyped] rest) -> [untyped | "known"]
 end
 ```

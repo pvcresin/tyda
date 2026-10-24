@@ -65,8 +65,8 @@ end
 
 ```rbs
 class Project < ApplicationRecord
-  def namespace: -> Namespace?
-  def namespace=: (Namespace? namespace) -> Namespace?
+  def namespace: -> Namespace
+  def namespace=: (Namespace namespace) -> Namespace
   def build_namespace: -> Namespace
   def create_namespace: -> Namespace
   def parent_id: -> Integer

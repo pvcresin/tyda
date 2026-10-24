@@ -23,8 +23,8 @@ end
 
 ```rbs
 class Product
-  def category: -> Category?
-  def category=: (Category? category) -> Category?
+  def category: -> Category
+  def category=: (Category category) -> Category
   def build_category: -> Category
   def create_category: -> Category
   def reviews: -> ActiveRecord::Associations::CollectionProxy[Review]
@@ -69,8 +69,8 @@ end
 
 ```rbs
 class Post
-  def author: -> User?
-  def author=: (User? author) -> User?
+  def author: -> User
+  def author=: (User author) -> User
   def build_author: -> User
   def create_author: -> User
   def comments: -> ActiveRecord::Associations::CollectionProxy[Comment]
@@ -110,8 +110,8 @@ end
 
 ```rbs
 class Invoice
-  def customer: -> Customer?
-  def customer=: (Customer? customer) -> Customer?
+  def customer: -> Customer
+  def customer=: (Customer customer) -> Customer
   def build_customer: -> Customer
   def create_customer: -> Customer
   def line_items: -> ActiveRecord::Associations::CollectionProxy[LineItem]
@@ -625,15 +625,15 @@ end
 
 ```rbs
 class Post < ApplicationRecord
-  def author: -> User?
-  def author=: (User? author) -> User?
+  def author: -> User
+  def author=: (User author) -> User
   def build_author: -> User
   def create_author: -> User
 end
 
 class PostManager
   def recent_posts: -> ActiveRecord::Relation[Post]
-  def find_post: (untyped id) -> (Post | Array[Post])
+  def find_post: (untyped id) -> Post
   def first_post: -> Post?
   def post_count: -> Integer
   def any_posts?: -> bool
@@ -686,11 +686,11 @@ end
 ```rbs
 class Appeal < ApplicationRecord
   def approved_by_account: -> Account?
-  def approved_by_account=: (Account? approved_by_account) -> Account?
+  def approved_by_account=: (Account approved_by_account) -> Account
   def build_approved_by_account: -> Account
   def create_approved_by_account: -> Account
   def rejected_by_account: -> Account?
-  def rejected_by_account=: (Account? rejected_by_account) -> Account?
+  def rejected_by_account=: (Account rejected_by_account) -> Account
   def build_rejected_by_account: -> Account
   def create_rejected_by_account: -> Account
 end

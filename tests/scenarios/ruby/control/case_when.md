@@ -25,6 +25,7 @@ class Object < BasicObject
   def check: (Integer x) -> ("one" | "other" | "two")
 end
 ```
+
 ## case when with range
 
 ### update
@@ -133,6 +134,10 @@ end
 
 ## case when with class
 
+```yaml
+known_issue: false
+```
+
 ### update
 
 ```ruby
@@ -156,95 +161,6 @@ class_case(42)
 ```rbs
 class Object < BasicObject
   def class_case: (Integer x) -> "integer"
-end
-```
-
-## An assigned local keeps its concrete domain
-
-### update
-
-```ruby
-def case_local_assignment(value)
-  value = "local"
-  case value
-  when String
-    :local
-  else
-    :unreachable
-  end
-end
-
-def case_open_alias(value)
-  candidate = value
-  case candidate
-  when Integer
-    :integer
-  else
-    :other
-  end
-end
-
-case_local_assignment(:unused)
-case_open_alias(1)
-```
-
-### result
-
-```rbs
-class Object < BasicObject
-  def case_local_assignment: (Symbol value) -> :local
-  def case_open_alias: (Integer value) -> :integer
-end
-```
-
-## An optional default does not close the input domain
-
-### update
-
-```ruby
-def case_optional_default_domain(value = "default")
-  case value
-  when String
-    :text
-  else
-    :other
-  end
-end
-
-case_optional_default_domain
-case_optional_default_domain(1)
-```
-
-### result
-
-```rbs
-class Object < BasicObject
-  def case_optional_default_domain: (?(Integer | String) value) -> (:other | :text)
-end
-```
-
-## An omitted optional argument narrows to its default
-
-### update
-
-```ruby
-def case_optional_default_only(value = "default")
-  case value
-  when String
-    :text
-  else
-    :other
-  end
-end
-
-case_optional_default_only
-```
-
-### result
-
-```rbs
-class Object < BasicObject
-  def case_optional_default_only: (?String value) -> :text
 end
 ```
 
@@ -302,307 +218,11 @@ class Formatter
 end
 ```
 
-## Explicit parameter contracts remain closed during case narrowing
-
-### update
-
-```ruby
-class CaseWhenExplicitContract
-  #: (String) -> Symbol
-  def classify(value)
-    case value
-    when String
-      :text
-    else
-      :other
-    end
-  end
-end
-```
-
-### result
-
-```rbs
-class CaseWhenExplicitContract
-  def classify: (String value) -> Symbol
-end
-```
-
-## case narrowing keeps possible descendant matches
-
-### update
-
-```rbs
-module CaseWhenMarker
-end
-
-class CaseWhenBase
-end
-
-class CaseWhenChild < CaseWhenBase
-  include CaseWhenMarker
-  def child_value: -> Integer
-end
-
-class CaseWhenOther
-end
-
-class CaseWhenFactory
-  def self.base_value: -> CaseWhenBase
-  def self.basic_object_value: -> BasicObject
-  def self.mixed_value: -> (CaseWhenBase | CaseWhenOther)
-  def self.marker_value: -> CaseWhenMarker
-end
-```
-
-```ruby
-module CaseWhenMarker
-end
-
-class CaseWhenBase
-end
-
-class CaseWhenChild < CaseWhenBase
-  include CaseWhenMarker
-
-  def child_value = 1
-end
-
-class CaseWhenOther
-end
-
-def possible_module_case(value)
-  case value
-  when CaseWhenMarker
-    :matched
-  else
-    :other
-  end
-end
-
-def preserve_residual_after_subclass_case(value)
-  case value
-  when CaseWhenChild
-    value.child_value
-  when CaseWhenOther
-    :unreachable
-  else
-    "base"
-  end
-end
-
-def assigned_case_preserves_residual(value)
-  result = case value
-  when CaseWhenChild
-    value.child_value
-  when CaseWhenOther
-    :unreachable
-  else
-    "base"
-  end
-  result
-end
-
-def implicit_object_case_matches(value)
-  case value
-  when Object
-    value
-  else
-    :unreachable
-  end
-end
-
-def implicit_basic_object_case_matches(value)
-  case value
-  when BasicObject
-    value
-  else
-    :unreachable
-  end
-end
-
-def object_case_keeps_basic_object_residual(value)
-  case value
-  when Object
-    :object
-  else
-    :basic_object
-  end
-end
-
-def module_case_may_match_class(value)
-  case value
-  when CaseWhenBase
-    :base
-  else
-    :other
-  end
-end
-
-def matched_class_value(value)
-  value
-end
-
-def residual_union_value(value)
-  case value
-  when CaseWhenChild
-    :child
-  else
-    case_when_residual(value)
-  end
-end
-
-def case_when_residual(value)
-  value
-end
-
-def multiple_class_targets(value)
-  case value
-  when CaseWhenChild, CaseWhenOther
-    matched_class_value(value)
-  else
-    :base
-  end
-end
-
-possible_module_case(CaseWhenFactory.base_value)
-preserve_residual_after_subclass_case(CaseWhenFactory.base_value)
-assigned_case_preserves_residual(CaseWhenFactory.base_value)
-implicit_object_case_matches(CaseWhenFactory.base_value)
-implicit_basic_object_case_matches(CaseWhenFactory.base_value)
-object_case_keeps_basic_object_residual(CaseWhenFactory.basic_object_value)
-module_case_may_match_class(CaseWhenFactory.marker_value)
-residual_union_value(CaseWhenFactory.mixed_value)
-multiple_class_targets(CaseWhenFactory.mixed_value)
-```
-
-### result
-
-```rbs
-class CaseWhenChild < CaseWhenBase
-  include CaseWhenMarker
-
-  def child_value: -> Integer
-end
-
-class Object < BasicObject
-  def possible_module_case: (CaseWhenBase value) -> (:matched | :other)
-  def preserve_residual_after_subclass_case: (CaseWhenBase value) -> (Integer | "base")
-  def assigned_case_preserves_residual: (CaseWhenBase value) -> (Integer | "base")
-  def implicit_object_case_matches: (CaseWhenBase value) -> CaseWhenBase
-  def implicit_basic_object_case_matches: (CaseWhenBase value) -> CaseWhenBase
-  def object_case_keeps_basic_object_residual: (BasicObject value) -> (:basic_object | :object)
-  def module_case_may_match_class: (CaseWhenMarker value) -> (:base | :other)
-  def matched_class_value: ((CaseWhenChild | CaseWhenOther) value) -> (CaseWhenChild | CaseWhenOther)
-  def residual_union_value: ((CaseWhenBase | CaseWhenOther) value) -> (:child | CaseWhenBase | CaseWhenOther)
-  def case_when_residual: ((CaseWhenBase | CaseWhenOther) value) -> (CaseWhenBase | CaseWhenOther)
-  def multiple_class_targets: ((CaseWhenBase | CaseWhenOther) value) -> (:base | CaseWhenChild | CaseWhenOther)
-end
-```
-
-## unresolved dynamic superclass keeps class case reachable
-
-### update
-
-```ruby
-class DynamicCaseBase
-end
-
-class DynamicCaseAlternate
-end
-
-class DynamicCaseChild < (true ? DynamicCaseBase : DynamicCaseAlternate)
-end
-
-def dynamic_superclass_case(value)
-  case value
-  when DynamicCaseBase
-    :matched
-  else
-    :other
-  end
-end
-
-dynamic_superclass_case(DynamicCaseChild.new)
-```
-
-### result
-
-```rbs
-class Object < BasicObject
-  def dynamic_superclass_case: (DynamicCaseChild value) -> (:matched | :other)
-end
-```
-
-## unresolved Class.new superclass keeps class case reachable
-
-### update
-
-```ruby
-class DynamicNewCaseBase
-end
-
-class DynamicNewCaseAlternate
-end
-
-DynamicNewCaseChild = Class.new(true ? DynamicNewCaseBase : DynamicNewCaseAlternate)
-
-def dynamic_new_superclass_case(value)
-  case value
-  when DynamicNewCaseBase
-    :matched
-  else
-    :other
-  end
-end
-
-dynamic_new_superclass_case(DynamicNewCaseChild.new)
-```
-
-### result
-
-```rbs
-class Object < BasicObject
-  def dynamic_new_superclass_case: (DynamicNewCaseChild value) -> (:matched | :other)
-end
-```
-
-## Struct.new classes keep the Struct ancestor
-
-### update
-
-```ruby
-class StructCaseChild < Struct.new(:value)
-end
-
-def struct_parent_case(value)
-  case value
-  when Struct
-    :matched
-  else
-    :other
-  end
-end
-
-struct_parent_case(StructCaseChild.new(1))
-```
-
-### result
-
-```rbs
-class Object < BasicObject
-  def struct_parent_case: (StructCaseChild value) -> :matched
-end
-
-class StructCaseChild
-  def value: -> Integer
-  def value=: (Integer value) -> Integer
-  def initialize: (Integer value) -> void
-  def self.members: -> Array[:value]
-end
-```
-
 ## case when narrowing changes method return
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -630,6 +250,10 @@ end
 
 ## case when with multiple conditions
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -649,30 +273,6 @@ numeric_check(42)
 ```rbs
 class Object < BasicObject
   def numeric_check: (Integer x) -> Float
-end
-```
-
-## case when return can be nil
-
-### update
-
-```ruby
-def nil_case(value)
-  case value
-  when Integer
-    nil
-  else
-    "other"
-  end
-end
-nil_case(1)
-```
-
-### result
-
-```rbs
-class Object < BasicObject
-  def nil_case: (Integer value) -> nil
 end
 ```
 
@@ -871,223 +471,376 @@ class Object < BasicObject
 end
 ```
 
-## Case when keeps sibling branch types separate
+## class case keeps an unknown subject open
 
 ### update
 
 ```ruby
-def case_when_time_like(value)
-  value
-end
-
-def case_when_scalar(value)
-  value
-end
-
-def case_when_sibling_types(value)
+def unknown_class_case(value)
   case value
-  when Array
-    :array
-  when Time, String
-    case_when_time_like(value)
-  when Integer, TrueClass, FalseClass
-    case_when_scalar(value)
-  else
-    :other
-  end
-end
-
-case_when_sibling_types([])
-case_when_sibling_types(Time.now)
-case_when_sibling_types("time-like")
-case_when_sibling_types(1)
-case_when_sibling_types(true)
-case_when_sibling_types(:other)
-```
-
-### result
-
-```rbs
-class Object < BasicObject
-  def case_when_time_like: ((String | Time) value) -> (String | Time)
-  def case_when_scalar: ((Integer | bool) value) -> (Integer | bool)
-  def case_when_sibling_types: ((Integer | String | Symbol | bool | Time | [ ]) value) -> (Integer | String | bool | :array | :other | Time)
-end
-```
-
-## Case when keeps values returned by an optional block
-
-### update
-
-```ruby
-def case_when_block_time(value)
-  value
-end
-
-def case_when_block_integer(value)
-  value
-end
-
-def case_when_optional_block(value, &block)
-  value = yield value if block
-  case value
-  when Time
-    case_when_block_time(value)
   when Integer
-    case_when_block_integer(value)
+    value
   else
-    :other
+    "other"
   end
 end
-
-case_when_optional_block(Time.now)
-case_when_optional_block(Time.now) { |time| time.to_i }
 ```
 
 ### result
 
 ```rbs
 class Object < BasicObject
-  def case_when_block_time: (Time value) -> Time
-  def case_when_block_integer: (Integer value) -> Integer
-  def case_when_optional_block: (Time value, ?untyped &block) -> (Integer | :other | Time)
+  def unknown_class_case: (untyped value) -> ("other" | Integer)
 end
 ```
 
-## Case when keeps unresolved yielded values reachable
+## class case includes a later unrelated caller
 
 ### update
 
 ```ruby
-class CaseWhenItem
-  def name
-    "item"
+def later_class_case(value)
+  case value
+  when Integer
+    :number
+  else
+    :other
   end
 end
 
-class CaseWhenUnknownBlockArg
-  def search(query)
-    local_search(query)
-  end
+later_class_case(1)
+later_class_case("text")
+```
 
-  def local_search(query)
-    case query
-    when CaseWhenItem
-      search_by_name(query)
+### result
+
+```rbs
+class Object < BasicObject
+  def later_class_case: ((Integer | String) value) -> (:number | :other)
+end
+```
+
+## class case keeps custom class equality possible
+
+### update
+
+```ruby
+class CaseWhenMatcher
+  def self.===(_value)
+    true
+  end
+end
+
+def custom_class_case(value)
+  case value
+  when CaseWhenMatcher
+    :matched
+  else
+    value
+  end
+end
+
+custom_class_case("text")
+```
+
+### result
+
+```rbs
+class CaseWhenMatcher
+  def self.===: (untyped _value) -> true
+end
+
+class Object < BasicObject
+  def custom_class_case: (String value) -> (String | :matched)
+end
+```
+
+## class case keeps unknown superclass matches possible
+
+### update
+
+```ruby
+def runtime_case_parent
+  Class.new
+end
+
+class DynamicCaseChild < runtime_case_parent
+end
+
+def dynamic_parent_case(value)
+  case value
+  when DynamicCaseChild
+    :matched
+  else
+    value
+  end
+end
+
+dynamic_parent_case("text")
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def runtime_case_parent: -> singleton(Object)
+  def dynamic_parent_case: (String value) -> (String | :matched)
+end
+```
+
+## class case keeps anonymous Struct parent possible
+
+### update
+
+```ruby
+class Person < Struct.new(:name)
+end
+
+class StructParentMatcher
+  def match(value)
+    case value
+    when Struct
+      :struct
     else
       :other
     end
   end
-
-  def search_by_name(value)
-    value
-  end
-
 end
 
-CaseWhenUnknownBlockArg.new.search(T.unsafe("query"))
+StructParentMatcher.new.match(Person.new("Ada"))
 ```
 
 ### result
 
 ```rbs
-class CaseWhenItem
-  def name: -> "item"
+class Person
+  def name: -> String
+  def name=: (String name) -> String
+  def initialize: (String name) -> void
+  def self.members: -> Array[:name]
 end
 
-class CaseWhenUnknownBlockArg
-  def search: (untyped query) -> (:other | CaseWhenItem)
-  def local_search: (untyped query) -> (:other | CaseWhenItem)
-  def search_by_name: (CaseWhenItem value) -> CaseWhenItem
+class StructParentMatcher
+  def match: (Person value) -> (:other | :struct)
 end
 ```
 
-## Case when Array preserves unknown element types
+## class case keeps anonymous Data parent possible
 
 ### update
 
 ```ruby
-class CaseWhenArrayContents
-  def first(value)
+class Point < Data.define(:x)
+end
+
+class DataParentMatcher
+  def match(value)
     case value
-    when Array
-      value[0]
-    end
-  end
-
-  def hash_value(value)
-    case value
-    when Hash
-      value[:key]
-    end
-  end
-end
-
-class CaseWhenArrayFields
-  def initialize(value)
-    case value
-    when Array
-      @field, = value
-    when String
-      @field = value
-    end
-  end
-
-  attr_reader :field
-end
-```
-
-### result
-
-```rbs
-class CaseWhenArrayContents
-  def first: (untyped value) -> (nil | untyped)
-  def hash_value: (untyped value) -> (nil | untyped)
-end
-
-class CaseWhenArrayFields
-  def initialize: (untyped value) -> void
-  def field: -> String | nil | untyped
-end
-```
-
-## Preserve observed nil setter calls after class equality
-
-### update
-
-```ruby
-class OpenCaseNilSetterTarget
-  def self.===(_other) = _other.is_a?(self)
-end
-
-class OpenCaseNilSetter
-  def value=(value)
-    @value = value
-  end
-
-  def assign(value)
-    case value
-    when OpenCaseNilSetterTarget
+    when Data
+      :data
+    else
       :other
-    when NilClass
-      self.value = nil
     end
   end
 end
 
-OpenCaseNilSetter.new.assign("known")
-OpenCaseNilSetter.new.assign(nil)
+DataParentMatcher.new.match(Point.new(x: 1))
 ```
 
 ### result
 
 ```rbs
-class OpenCaseNilSetter
-  def value=: (nil value) -> nil
-  def assign: (String? value) -> :other?
+class DataParentMatcher
+  def match: (Point value) -> (:data | :other)
 end
 
-class OpenCaseNilSetterTarget
-  def self.===: (untyped _other) -> bool
+class Point
+  def x: -> Integer
+  def initialize: (x: Integer) -> void
+  def self.members: -> Array[:x]
+  def with: (?x: Integer) -> Point
+end
+```
+
+## class case keeps subclass matches possible
+
+### update
+
+```ruby
+class CaseWhenBase
+end
+
+class CaseWhenChild < CaseWhenBase
+end
+
+def subclass_class_case(value)
+  case value
+  when CaseWhenChild
+    :child
+  else
+    :base
+  end
+end
+
+subclass_class_case(CaseWhenBase.new)
+subclass_class_case(CaseWhenChild.new)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def subclass_class_case: ((CaseWhenBase | CaseWhenChild) value) -> (:base | :child)
+end
+```
+
+## class case accounts for later equality definitions
+
+### update
+
+```ruby
+def case_before_equality_override
+  value = "text"
+  case value
+  when Integer
+    :matched
+  else
+    :other
+  end
+end
+
+class Integer
+  def self.===(_value)
+    true
+  end
+end
+
+case_before_equality_override
+```
+
+### result
+
+```rbs
+class Integer < Numeric
+  def self.===: (untyped _value) -> bool
+end
+
+class Object < BasicObject
+  def case_before_equality_override: -> :matched | :other
+end
+```
+
+## class case sees later equality definitions with prior call sites
+
+### update
+
+```ruby
+def invoke_later_equality_case
+  later_equality_case("text")
+end
+
+def later_equality_case(value)
+  case value
+  when Integer
+    :matched
+  else
+    :other
+  end
+end
+
+class Integer
+  def self.===(_value)
+    true
+  end
+end
+
+invoke_later_equality_case
+```
+
+### result
+
+```rbs
+class Integer < Numeric
+  def self.===: (untyped _value) -> bool
+end
+
+class Object < BasicObject
+  def invoke_later_equality_case: -> :matched | :other
+  def later_equality_case: (String value) -> (:matched | :other)
+end
+```
+
+## class case preserves the local subject after a later Module equality override
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def module_override_class_case
+  value = "text"
+  case value
+  when Integer
+    value
+  else
+    "other"
+  end
+end
+
+module Module
+  def ===(_value)
+    true
+  end
+end
+
+module_override_class_case
+```
+
+### result
+
+```rbs
+module Module
+  def ===: (untyped other) -> bool
+end
+
+class Object < BasicObject
+  def module_override_class_case: -> "other" | "text"
+end
+```
+
+## class case replays a parameter after a later Module equality override
+
+### update
+
+```ruby
+def module_override_unknown_case(value)
+  case value
+  when Integer
+    value
+  else
+    "other"
+  end
+end
+
+module Module
+  def ===(_value)
+    true
+  end
+end
+
+module_override_unknown_case
+```
+
+### result
+
+```rbs
+module Module
+  def ===: (untyped other) -> bool
+end
+
+class Object < BasicObject
+  def module_override_unknown_case: (untyped value) -> (untyped | "other")
 end
 ```

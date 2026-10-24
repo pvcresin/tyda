@@ -1,10 +1,5 @@
 use super::*;
 
-pub(super) struct ResolvedParamCallSites {
-    pub types: Vec<Type>,
-    pub provided: Vec<bool>,
-}
-
 impl<'a> InferenceEngine<'a> {
     fn class_needs_parameter_reference_resolution(data: &ClassData) -> bool {
         data.methods
@@ -206,8 +201,7 @@ impl<'a> InferenceEngine<'a> {
                 continue;
             };
             let grouped_call_sites = Self::group_call_sites_by_method(&data.call_sites);
-            let mut all_param_types: Vec<ResolvedParamCallSites> =
-                Vec::with_capacity(data.methods.len());
+            let mut all_param_types: Vec<Vec<Type>> = Vec::with_capacity(data.methods.len());
             for method in &data.methods {
                 let empty: [&CallSite; 0] = [];
                 let method_call_sites = grouped_call_sites
@@ -227,7 +221,6 @@ impl<'a> InferenceEngine<'a> {
                 .and_then(|init_idx| {
                     let init_param_types: Vec<Type> = all_param_types
                         .get(init_idx)?
-                        .types
                         .iter()
                         .cloned()
                         .map(Type::widen_arg_for_param)
@@ -251,7 +244,7 @@ impl<'a> InferenceEngine<'a> {
                     if !Self::method_needs_parameter_reference_resolution(method) {
                         return None;
                     }
-                    let mut param_types_with_defaults = all_param_types[idx].types.clone();
+                    let mut param_types_with_defaults = all_param_types[idx].clone();
                     let mut positional_index = 0;
                     for param in &method.param_infos {
                         if matches!(
@@ -265,18 +258,11 @@ impl<'a> InferenceEngine<'a> {
                                     &mut param_types_with_defaults[positional_index],
                                     Type::Untyped,
                                 );
-                                let was_provided = all_param_types[idx]
-                                    .provided
-                                    .get(positional_index)
-                                    .copied()
-                                    .unwrap_or(false);
                                 param_types_with_defaults[positional_index] =
-                                    if current == Type::Untyped && !was_provided {
+                                    if current == Type::Untyped {
                                         default_ty.clone()
-                                    } else if current == Type::Untyped {
-                                        Type::Untyped
                                     } else if matches!(param.kind, ParamKind::Optional) {
-                                        Type::merge_param_arg_vec(vec![current, default_ty.clone()])
+                                        current.union_with(default_ty.clone())
                                     } else {
                                         current
                                     };
@@ -286,7 +272,7 @@ impl<'a> InferenceEngine<'a> {
                     }
                     let param_types_with_defaults: Vec<Type> = param_types_with_defaults
                         .into_iter()
-                        .map(Type::widen_param_type)
+                        .map(Type::widen_arg_for_param)
                         .collect();
                     let keyword_types = Self::resolve_keyword_param_types_from_call_sites(
                         &method.param_infos,
@@ -297,7 +283,7 @@ impl<'a> InferenceEngine<'a> {
                     );
                     let keyword_types: std::collections::HashMap<String, Type> = keyword_types
                         .into_iter()
-                        .map(|(name, ty)| (name, ty.widen_param_type()))
+                        .map(|(name, ty)| (name, ty.widen_arg_for_param()))
                         .collect();
                     if param_types_with_defaults
                         .iter()
@@ -343,7 +329,16 @@ impl<'a> InferenceEngine<'a> {
         self.merge_external_rbs_for_resolution();
         const MAX_ITERATIONS: usize = 8;
         let class_names: Vec<Sym> = if let Some(ref fp) = self.file_path {
-            self.method_owner_names_defined_in_file(fp.as_ref())
+            self.registry
+                .user_defined_class_names_unsorted()
+                .into_iter()
+                .filter(|name| {
+                    self.registry
+                        .class_data_for(name)
+                        .and_then(|d| d.file_path.as_deref())
+                        == Some(fp.as_ref())
+                })
+                .collect()
         } else {
             self.registry.user_defined_class_names_unsorted()
         };
@@ -394,1308 +389,15 @@ impl<'a> InferenceEngine<'a> {
                 break;
             }
         }
-
-        self.resolve_recursive_deferred_method_returns(&class_names);
     }
 
-    fn resolve_recursive_deferred_method_returns(&mut self, class_names: &[Sym]) {
-        struct ReturnSlot {
-            owner: Sym,
-            name: Sym,
-            is_singleton: bool,
-            raw: Type,
-        }
-
-        let mut slots = Vec::new();
-        for &owner in class_names {
-            let Some(data) = self.registry.class_data_for(&owner) else {
-                continue;
-            };
-            for method in &data.methods {
-                if self.file_path.as_ref().is_some_and(|file_path| {
-                    !data
-                        .method_file_paths
-                        .get(&(method.name, method.is_singleton))
-                        .is_some_and(|path| path.as_ref() == file_path.as_ref())
-                }) {
-                    continue;
-                }
-                slots.push(ReturnSlot {
-                    owner,
-                    name: method.name,
-                    is_singleton: method.is_singleton,
-                    raw: method.raw_return_type.clone(),
-                });
-            }
-        }
-        if slots.is_empty() {
-            return;
-        }
-
-        let mut slot_by_ref = HashMap::new();
-        for (index, slot) in slots.iter().enumerate() {
-            if !slot.is_singleton {
-                slot_by_ref.entry((slot.owner, slot.name)).or_insert(index);
-            }
-        }
-
-        let mut dependencies = vec![Vec::new(); slots.len()];
-        let mut guarded_dependencies = vec![Vec::new(); slots.len()];
-        let mut worklist = Vec::new();
-        for (index, slot) in slots.iter().enumerate() {
-            let mut refs = Vec::new();
-            Self::collect_method_return_dependencies(
-                &self.registry,
-                &slot.raw,
-                false,
-                true,
-                &mut refs,
-            );
-            let Some(dependencies_for_slot) = dependencies.get_mut(index) else {
-                continue;
-            };
-            *dependencies_for_slot = refs
-                .iter()
-                .filter_map(|(key, _)| slot_by_ref.get(key).copied())
-                .collect();
-            let Some(guarded_dependencies_for_slot) = guarded_dependencies.get_mut(index) else {
-                continue;
-            };
-            *guarded_dependencies_for_slot = refs
-                .into_iter()
-                .filter_map(|(key, is_guarded)| {
-                    is_guarded.then(|| slot_by_ref.get(&key).copied()).flatten()
-                })
-                .collect();
-            dependencies_for_slot.sort_unstable();
-            dependencies_for_slot.dedup();
-            let has_dependencies = !dependencies_for_slot.is_empty();
-            guarded_dependencies_for_slot.sort_unstable();
-            guarded_dependencies_for_slot.dedup();
-            let has_guarded_dependencies = !guarded_dependencies_for_slot.is_empty();
-            if !slot.is_singleton
-                && has_dependencies
-                && (slot.raw.contains_deferred_call_ref() || has_guarded_dependencies)
-            {
-                worklist.push(index);
-            }
-        }
-        if worklist.is_empty() {
-            return;
-        }
-
-        let mut active = vec![false; slots.len()];
-        while let Some(index) = worklist.pop() {
-            let Some(is_active) = active.get_mut(index) else {
-                continue;
-            };
-            if *is_active {
-                continue;
-            }
-            *is_active = true;
-            if let Some(dependencies) = dependencies.get(index) {
-                worklist.extend(dependencies.iter().copied());
-            }
-        }
-        let active_slots: Vec<_> = active
-            .iter()
-            .enumerate()
-            .filter_map(|(index, is_active)| is_active.then_some(index))
-            .collect();
-
-        let mut dependents = vec![Vec::new(); slots.len()];
-        for (index, dependencies) in dependencies.iter().enumerate() {
-            for &dependency in dependencies {
-                if let Some(dependents) = dependents.get_mut(dependency) {
-                    dependents.push(index);
-                }
-            }
-        }
-
-        let cyclic_components = Self::cyclic_method_return_components(&dependencies, &active);
-        let mut recursive_constructor_targets: Vec<FxHashSet<(String, Sym)>> =
-            vec![FxHashSet::default(); slots.len()];
-        for &index in &active_slots {
-            let Some(component) = cyclic_components.get(index).copied().flatten() else {
-                continue;
-            };
-            for &dependency in guarded_dependencies.get(index).into_iter().flatten() {
-                if cyclic_components.get(dependency).copied().flatten() == Some(component)
-                    && let Some(slot) = slots.get(dependency)
-                    && let Some(targets) = recursive_constructor_targets.get_mut(index)
-                {
-                    targets.insert((slot.owner.to_string(), slot.name));
-                }
-            }
-        }
-
-        let mut approximations: HashMap<(String, Sym), Type> = active_slots
-            .iter()
-            .filter_map(|&index| {
-                slots
-                    .get(index)
-                    .map(|slot| ((slot.owner.to_string(), slot.name), Type::Bot))
-            })
-            .collect();
-
-        let recompute =
-            |engine: &mut Self, index: usize, approximations: &HashMap<(String, Sym), Type>| {
-                let Some(slot) = slots.get(index) else {
-                    return Type::Untyped;
-                };
-                let recursive_refs = recursive_constructor_targets
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_default();
-                let recursive_methods: FxHashSet<_> = dependencies
-                    .get(index)
-                    .into_iter()
-                    .flatten()
-                    .filter(|&&dependency| {
-                        cyclic_components.get(dependency).copied().flatten()
-                            == cyclic_components.get(index).copied().flatten()
-                    })
-                    .filter_map(|&dependency| {
-                        slots
-                            .get(dependency)
-                            .map(|slot| (slot.owner.to_string(), slot.name))
-                    })
-                    .collect();
-                let recursive_calls = Self::replace_recursive_deferred_calls(
-                    &engine.registry,
-                    &slot.raw,
-                    &recursive_methods,
-                );
-                let structurally_widened = Self::replace_recursive_constructor_refs(
-                    &recursive_calls,
-                    &recursive_refs,
-                    false,
-                    true,
-                );
-                let substituted = Self::substitute_method_return_approximations(
-                    &structurally_widened,
-                    approximations,
-                    &recursive_methods,
-                );
-                let mut visiting = FxHashSet::default();
-                visiting.insert((slot.owner.to_string(), slot.name));
-                let resolved_refs = Self::resolve_general_method_refs(
-                    &engine.registry,
-                    slot.owner.as_str(),
-                    &substituted,
-                    &mut visiting,
-                );
-                let resolved = engine.resolve_deferred_call_refs_depth(&resolved_refs);
-                let key = (slot.owner.to_string(), slot.name);
-                let current = approximations.get(&key).cloned().unwrap_or(Type::Bot);
-                Type::from_type_vec_preserve_untyped(vec![current, resolved])
-            };
-
-        // Recompute only methods that depend on a return slot that changed.
-        let mut queued = active.clone();
-        let mut pending = active_slots.clone();
-        while let Some(index) = pending.pop() {
-            if let Some(is_queued) = queued.get_mut(index) {
-                *is_queued = false;
-            }
-            let Some(slot) = slots.get(index) else {
-                continue;
-            };
-            let key = (slot.owner.to_string(), slot.name);
-            let current = approximations.get(&key).cloned().unwrap_or(Type::Bot);
-            let widened = recompute(self, index, &approximations);
-            if widened == current {
-                continue;
-            }
-            approximations.insert(key, widened);
-            if let Some(slot_dependents) = dependents.get(index) {
-                for &dependent in slot_dependents {
-                    if active.get(dependent).copied().unwrap_or(false)
-                        && let Some(is_queued) = queued.get_mut(dependent)
-                        && !*is_queued
-                    {
-                        *is_queued = true;
-                        pending.push(dependent);
-                    }
-                }
-            }
-        }
-
-        for &index in &active_slots {
-            if cyclic_components.get(index).copied().flatten().is_none() {
-                continue;
-            }
-            let Some(slot) = slots.get(index) else {
-                continue;
-            };
-            let key = (slot.owner.to_string(), slot.name);
-            if approximations.get(&key) != Some(&Type::Bot) {
-                continue;
-            }
-            approximations.insert(key, Type::Untyped);
-            for &dependent in dependents.get(index).into_iter().flatten() {
-                if active.get(dependent).copied().unwrap_or(false)
-                    && let Some(is_queued) = queued.get_mut(dependent)
-                    && !*is_queued
-                {
-                    *is_queued = true;
-                    pending.push(dependent);
-                }
-            }
-        }
-        while let Some(index) = pending.pop() {
-            if let Some(is_queued) = queued.get_mut(index) {
-                *is_queued = false;
-            }
-            let Some(slot) = slots.get(index) else {
-                continue;
-            };
-            let key = (slot.owner.to_string(), slot.name);
-            let current = approximations.get(&key).cloned().unwrap_or(Type::Bot);
-            let widened = recompute(self, index, &approximations);
-            if widened == current {
-                continue;
-            }
-            approximations.insert(key, widened);
-            if let Some(slot_dependents) = dependents.get(index) {
-                for &dependent in slot_dependents {
-                    if active.get(dependent).copied().unwrap_or(false)
-                        && let Some(is_queued) = queued.get_mut(dependent)
-                        && !*is_queued
-                    {
-                        *is_queued = true;
-                        pending.push(dependent);
-                    }
-                }
-            }
-        }
-
-        for &index in &active_slots {
-            let Some(slot) = slots.get(index) else {
-                continue;
-            };
-            let key = (slot.owner.to_string(), slot.name);
-            if let Some(resolved) = approximations.get(&key)
-                && resolved != &slot.raw
-            {
-                if resolved == &Type::Bot
-                    && cyclic_components.get(index).copied().flatten().is_none()
-                {
-                    continue;
-                }
-                self.registry.update_method_return_type_variant(
-                    slot.owner.as_str(),
-                    &slot.name,
-                    slot.is_singleton,
-                    resolved.clone(),
-                );
-                if recursive_constructor_targets
-                    .get(index)
-                    .is_some_and(|targets| !targets.is_empty())
-                {
-                    self.registry.mark_recursive_type_growth_return(
-                        slot.owner.as_str(),
-                        slot.name,
-                        slot.is_singleton,
-                    );
-                }
-            }
-        }
-    }
-
-    fn cyclic_method_return_components(
-        dependencies: &[Vec<usize>],
-        active: &[bool],
-    ) -> Vec<Option<usize>> {
-        let mut visited = vec![false; dependencies.len()];
-        let mut finish_order = Vec::with_capacity(dependencies.len());
-        for start in 0..dependencies.len() {
-            if !active.get(start).copied().unwrap_or(false)
-                || visited.get(start).copied().unwrap_or(true)
-            {
-                continue;
-            }
-            let mut stack = vec![(start, false)];
-            while let Some((node, expanded)) = stack.pop() {
-                if expanded {
-                    finish_order.push(node);
-                    continue;
-                }
-                if visited.get(node).copied().unwrap_or(true) {
-                    continue;
-                }
-                let Some(seen) = visited.get_mut(node) else {
-                    continue;
-                };
-                *seen = true;
-                stack.push((node, true));
-                if let Some(next_nodes) = dependencies.get(node) {
-                    for &next in next_nodes.iter().rev() {
-                        if active.get(next).copied().unwrap_or(false)
-                            && !visited.get(next).copied().unwrap_or(true)
-                        {
-                            stack.push((next, false));
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut reverse_dependencies = vec![Vec::new(); dependencies.len()];
-        for (node, next_nodes) in dependencies.iter().enumerate() {
-            for &next in next_nodes {
-                if let Some(reverse) = reverse_dependencies.get_mut(next) {
-                    reverse.push(node);
-                }
-            }
-        }
-
-        visited.fill(false);
-        let mut components = vec![None; dependencies.len()];
-        for start in finish_order.into_iter().rev() {
-            if !active.get(start).copied().unwrap_or(false)
-                || visited.get(start).copied().unwrap_or(true)
-            {
-                continue;
-            }
-            let mut component = Vec::new();
-            let mut stack = vec![start];
-            while let Some(node) = stack.pop() {
-                if visited.get(node).copied().unwrap_or(true) {
-                    continue;
-                }
-                let Some(seen) = visited.get_mut(node) else {
-                    continue;
-                };
-                *seen = true;
-                component.push(node);
-                if let Some(next_nodes) = reverse_dependencies.get(node) {
-                    for &next in next_nodes {
-                        if active.get(next).copied().unwrap_or(false)
-                            && !visited.get(next).copied().unwrap_or(true)
-                        {
-                            stack.push(next);
-                        }
-                    }
-                }
-            }
-            let has_self_loop = component.len() == 1
-                && component.first().is_some_and(|node| {
-                    dependencies
-                        .get(*node)
-                        .is_some_and(|next_nodes| next_nodes.contains(node))
-                });
-            if component.len() > 1 || has_self_loop {
-                for node in component {
-                    if let Some(component_id) = components.get_mut(node) {
-                        *component_id = Some(start);
-                    }
-                }
-            }
-        }
-        components
-    }
-
-    fn collect_method_return_dependencies(
-        registry: &TypeRegistry,
-        ty: &Type,
-        under_constructor: bool,
-        allow_guarded_dependency: bool,
-        refs: &mut Vec<((Sym, Sym), bool)>,
-    ) {
-        match ty {
-            Type::MethodReturnRef(owner, name) => {
-                refs.push((
-                    (*owner, *name),
-                    under_constructor && allow_guarded_dependency,
-                ));
-            }
-            Type::Union(parts) | Type::Intersection(parts) => {
-                for part in parts {
-                    Self::collect_method_return_dependencies(
-                        registry,
-                        part,
-                        under_constructor,
-                        allow_guarded_dependency,
-                        refs,
-                    );
-                }
-            }
-            Type::Tuple(parts) => {
-                for part in parts {
-                    Self::collect_method_return_dependencies(
-                        registry,
-                        part,
-                        true,
-                        allow_guarded_dependency,
-                        refs,
-                    );
-                }
-            }
-            Type::Array(Some(inner)) => Self::collect_method_return_dependencies(
-                registry,
-                inner,
-                true,
-                allow_guarded_dependency,
-                refs,
-            ),
-            Type::Hash(key, value) => {
-                if let Some(key) = key {
-                    Self::collect_method_return_dependencies(
-                        registry,
-                        key,
-                        true,
-                        allow_guarded_dependency,
-                        refs,
-                    );
-                }
-                if let Some(value) = value {
-                    Self::collect_method_return_dependencies(
-                        registry,
-                        value,
-                        true,
-                        allow_guarded_dependency,
-                        refs,
-                    );
-                }
-            }
-            Type::Record(fields) => {
-                for field in fields {
-                    Self::collect_method_return_dependencies(
-                        registry,
-                        &field.value,
-                        true,
-                        allow_guarded_dependency,
-                        refs,
-                    );
-                }
-            }
-            Type::Generic { args, .. } => {
-                for arg in args.iter() {
-                    Self::collect_method_return_dependencies(
-                        registry,
-                        arg,
-                        true,
-                        allow_guarded_dependency,
-                        refs,
-                    );
-                }
-            }
-            Type::Proc { return_type, .. } => Self::collect_method_return_dependencies(
-                registry,
-                return_type,
-                true,
-                allow_guarded_dependency,
-                refs,
-            ),
-            Type::PatternIndexRef(inner, _)
-            | Type::PatternRestRef(inner)
-            | Type::PatternTrailingRef(inner, _)
-            | Type::PatternKeyRef(inner, _)
-            | Type::PatternBindingKeyRef(inner, _)
-            | Type::PatternKeyRestRef(inner, _)
-            | Type::TruthyProjection(inner)
-            | Type::FalsyProjection(inner) => Self::collect_method_return_dependencies(
-                registry,
-                inner,
-                under_constructor,
-                allow_guarded_dependency,
-                refs,
-            ),
-            Type::ReceiverMethodRef(receiver, _) => {
-                Self::collect_method_return_dependencies(registry, receiver, false, false, refs)
-            }
-            Type::DeferredCallRef { receiver, call } => {
-                for receiver in Self::type_union_alternatives(receiver) {
-                    if let Some((owner, is_singleton)) =
-                        Self::source_method_call_owner(registry, &receiver, call.method)
-                        && !is_singleton
-                    {
-                        refs.push((
-                            (owner, call.method),
-                            under_constructor && allow_guarded_dependency,
-                        ));
-                    }
-                }
-                Self::collect_method_return_dependencies(registry, receiver, false, false, refs);
-                for arg in call.args.iter() {
-                    Self::collect_method_return_dependencies(registry, arg, false, false, refs);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn source_method_call_owner(
-        registry: &TypeRegistry,
-        receiver: &Type,
-        method_name: Sym,
-    ) -> Option<(Sym, bool)> {
-        let (class_name, prefer_singleton) = match receiver {
-            Type::Singleton(name) => (name.as_str().to_string(), true),
-            Type::Generic { base, .. } => (base.as_str().to_string(), false),
-            _ => (Self::static_type_to_class_name(receiver)?, false),
-        };
-        let (owner, is_singleton) = registry
-            .resolve_method_call_owners(&class_name, method_name.as_str(), prefer_singleton)
-            .into_iter()
-            .next()?;
-        let method = registry.lookup_method_def(&owner, method_name.as_str(), is_singleton)?;
-        let has_rbs_contract = !registry
-            .lookup_rbs_method_types_with_hint(&class_name, method_name.as_str(), is_singleton)
-            .is_empty();
-        (method.loc.is_some()
-            && !method.rbs_file_source
-            && !method.synthetic_dsl_source
-            && method.rbs_method_types.is_empty()
-            && !has_rbs_contract)
-            .then(|| (Sym::new(owner), is_singleton))
-    }
-
-    fn replace_recursive_deferred_calls(
-        registry: &TypeRegistry,
-        ty: &Type,
-        recursive_methods: &FxHashSet<(String, Sym)>,
-    ) -> Type {
-        match ty {
-            Type::DeferredCallRef { receiver, call } => {
-                let receiver =
-                    Self::replace_recursive_deferred_calls(registry, receiver, recursive_methods);
-                let args: Vec<_> = call
-                    .args
-                    .iter()
-                    .map(|arg| {
-                        Self::replace_recursive_deferred_calls(registry, arg, recursive_methods)
-                    })
-                    .collect();
-                let alternatives = Self::type_union_alternatives(&receiver);
-                if alternatives.is_empty() {
-                    return Type::deferred_call_ref(receiver, call.method, args);
-                }
-                let mut results = Vec::with_capacity(alternatives.len());
-                for alternative in alternatives {
-                    if let Some((owner, is_singleton)) =
-                        Self::source_method_call_owner(registry, &alternative, call.method)
-                        && !is_singleton
-                        && recursive_methods.contains(&(owner.as_str().to_string(), call.method))
-                    {
-                        results.push(Type::MethodReturnRef(owner, call.method));
-                    } else {
-                        results.push(Type::deferred_call_ref(
-                            alternative,
-                            call.method,
-                            args.clone(),
-                        ));
-                    }
-                }
-                Type::from_type_vec_preserve_untyped(results)
-            }
-            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
-                parts
-                    .iter()
-                    .map(|part| {
-                        Self::replace_recursive_deferred_calls(registry, part, recursive_methods)
-                    })
-                    .collect(),
-            ),
-            Type::Intersection(parts) => Type::Intersection(
-                parts
-                    .iter()
-                    .map(|part| {
-                        Self::replace_recursive_deferred_calls(registry, part, recursive_methods)
-                    })
-                    .collect(),
-            ),
-            Type::Array(Some(inner)) => Type::Array(Some(Box::new(
-                Self::replace_recursive_deferred_calls(registry, inner, recursive_methods),
-            ))),
-            Type::Hash(key, value) => Type::Hash(
-                key.as_ref().map(|key| {
-                    Box::new(Self::replace_recursive_deferred_calls(
-                        registry,
-                        key,
-                        recursive_methods,
-                    ))
-                }),
-                value.as_ref().map(|value| {
-                    Box::new(Self::replace_recursive_deferred_calls(
-                        registry,
-                        value,
-                        recursive_methods,
-                    ))
-                }),
-            ),
-            Type::Record(fields) => Type::Record(
-                fields
-                    .iter()
-                    .map(|field| RecordField {
-                        key: field.key.clone(),
-                        value: Self::replace_recursive_deferred_calls(
-                            registry,
-                            &field.value,
-                            recursive_methods,
-                        ),
-                        optional: field.optional,
-                    })
-                    .collect(),
-            ),
-            Type::Tuple(parts) => Type::Tuple(
-                parts
-                    .iter()
-                    .map(|part| {
-                        Self::replace_recursive_deferred_calls(registry, part, recursive_methods)
-                    })
-                    .collect(),
-            ),
-            Type::Generic { base, args } => Type::Generic {
-                base: *base,
-                args: args
-                    .iter()
-                    .map(|arg| {
-                        Self::replace_recursive_deferred_calls(registry, arg, recursive_methods)
-                    })
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            },
-            Type::ReceiverMethodRef(receiver, method) => Type::ReceiverMethodRef(
-                Box::new(Self::replace_recursive_deferred_calls(
-                    registry,
-                    receiver,
-                    recursive_methods,
-                )),
-                *method,
-            ),
-            Type::PatternIndexRef(inner, index) => Type::PatternIndexRef(
-                Box::new(Self::replace_recursive_deferred_calls(
-                    registry,
-                    inner,
-                    recursive_methods,
-                )),
-                *index,
-            ),
-            Type::PatternRestRef(inner) => Type::PatternRestRef(Box::new(
-                Self::replace_recursive_deferred_calls(registry, inner, recursive_methods),
-            )),
-            Type::PatternTrailingRef(inner, index) => Type::PatternTrailingRef(
-                Box::new(Self::replace_recursive_deferred_calls(
-                    registry,
-                    inner,
-                    recursive_methods,
-                )),
-                *index,
-            ),
-            Type::PatternKeyRef(inner, key) => Type::PatternKeyRef(
-                Box::new(Self::replace_recursive_deferred_calls(
-                    registry,
-                    inner,
-                    recursive_methods,
-                )),
-                key.clone(),
-            ),
-            Type::PatternBindingKeyRef(inner, key) => Type::PatternBindingKeyRef(
-                Box::new(Self::replace_recursive_deferred_calls(
-                    registry,
-                    inner,
-                    recursive_methods,
-                )),
-                key.clone(),
-            ),
-            Type::PatternKeyRestRef(inner, keys) => Type::PatternKeyRestRef(
-                Box::new(Self::replace_recursive_deferred_calls(
-                    registry,
-                    inner,
-                    recursive_methods,
-                )),
-                keys.clone(),
-            ),
-            Type::TruthyProjection(inner) => Type::TruthyProjection(Box::new(
-                Self::replace_recursive_deferred_calls(registry, inner, recursive_methods),
-            )),
-            Type::FalsyProjection(inner) => Type::FalsyProjection(Box::new(
-                Self::replace_recursive_deferred_calls(registry, inner, recursive_methods),
-            )),
-            Type::Proc {
-                return_type,
-                param_count,
-            } => Type::Proc {
-                return_type: Box::new(Self::replace_recursive_deferred_calls(
-                    registry,
-                    return_type,
-                    recursive_methods,
-                )),
-                param_count: *param_count,
-            },
-            _ => ty.clone(),
-        }
-    }
-
-    fn replace_recursive_constructor_refs(
-        ty: &Type,
-        targets: &FxHashSet<(String, Sym)>,
-        under_constructor: bool,
-        allow_guarded_dependency: bool,
-    ) -> Type {
-        match ty {
-            Type::MethodReturnRef(owner, name)
-                if under_constructor
-                    && allow_guarded_dependency
-                    && targets.contains(&(owner.to_string(), *name)) =>
-            {
-                Type::Untyped
-            }
-            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
-                parts
-                    .iter()
-                    .map(|part| {
-                        Self::replace_recursive_constructor_refs(
-                            part,
-                            targets,
-                            under_constructor,
-                            allow_guarded_dependency,
-                        )
-                    })
-                    .collect(),
-            ),
-            Type::Intersection(parts) => Type::Intersection(
-                parts
-                    .iter()
-                    .map(|part| {
-                        Self::replace_recursive_constructor_refs(
-                            part,
-                            targets,
-                            under_constructor,
-                            allow_guarded_dependency,
-                        )
-                    })
-                    .collect(),
-            ),
-            Type::Array(Some(inner)) => {
-                Type::Array(Some(Box::new(Self::replace_recursive_constructor_refs(
-                    inner,
-                    targets,
-                    true,
-                    allow_guarded_dependency,
-                ))))
-            }
-            Type::Hash(key, value) => Type::Hash(
-                key.as_ref().map(|key| {
-                    Box::new(Self::replace_recursive_constructor_refs(
-                        key,
-                        targets,
-                        true,
-                        allow_guarded_dependency,
-                    ))
-                }),
-                value.as_ref().map(|value| {
-                    Box::new(Self::replace_recursive_constructor_refs(
-                        value,
-                        targets,
-                        true,
-                        allow_guarded_dependency,
-                    ))
-                }),
-            ),
-            Type::Record(fields) => Type::Record(
-                fields
-                    .iter()
-                    .map(|field| RecordField {
-                        key: field.key.clone(),
-                        value: Self::replace_recursive_constructor_refs(
-                            &field.value,
-                            targets,
-                            true,
-                            allow_guarded_dependency,
-                        ),
-                        optional: field.optional,
-                    })
-                    .collect(),
-            ),
-            Type::Tuple(parts) => Type::Tuple(
-                parts
-                    .iter()
-                    .map(|part| {
-                        Self::replace_recursive_constructor_refs(
-                            part,
-                            targets,
-                            true,
-                            allow_guarded_dependency,
-                        )
-                    })
-                    .collect(),
-            ),
-            Type::Generic { base, args } => Type::Generic {
-                base: *base,
-                args: args
-                    .iter()
-                    .map(|arg| {
-                        Self::replace_recursive_constructor_refs(
-                            arg,
-                            targets,
-                            true,
-                            allow_guarded_dependency,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            },
-            Type::Proc {
-                return_type,
-                param_count,
-            } => Type::Proc {
-                return_type: Box::new(Self::replace_recursive_constructor_refs(
-                    return_type,
-                    targets,
-                    true,
-                    allow_guarded_dependency,
-                )),
-                param_count: *param_count,
-            },
-            Type::PatternIndexRef(inner, index) => Type::PatternIndexRef(
-                Box::new(Self::replace_recursive_constructor_refs(
-                    inner,
-                    targets,
-                    under_constructor,
-                    allow_guarded_dependency,
-                )),
-                *index,
-            ),
-            Type::PatternRestRef(inner) => {
-                Type::PatternRestRef(Box::new(Self::replace_recursive_constructor_refs(
-                    inner,
-                    targets,
-                    under_constructor,
-                    allow_guarded_dependency,
-                )))
-            }
-            Type::PatternTrailingRef(inner, index) => Type::PatternTrailingRef(
-                Box::new(Self::replace_recursive_constructor_refs(
-                    inner,
-                    targets,
-                    under_constructor,
-                    allow_guarded_dependency,
-                )),
-                *index,
-            ),
-            Type::PatternKeyRef(inner, key) => Type::PatternKeyRef(
-                Box::new(Self::replace_recursive_constructor_refs(
-                    inner,
-                    targets,
-                    under_constructor,
-                    allow_guarded_dependency,
-                )),
-                key.clone(),
-            ),
-            Type::PatternBindingKeyRef(inner, key) => Type::PatternBindingKeyRef(
-                Box::new(Self::replace_recursive_constructor_refs(
-                    inner,
-                    targets,
-                    under_constructor,
-                    allow_guarded_dependency,
-                )),
-                key.clone(),
-            ),
-            Type::PatternKeyRestRef(inner, keys) => Type::PatternKeyRestRef(
-                Box::new(Self::replace_recursive_constructor_refs(
-                    inner,
-                    targets,
-                    under_constructor,
-                    allow_guarded_dependency,
-                )),
-                keys.clone(),
-            ),
-            Type::ReceiverMethodRef(receiver, method) => Type::ReceiverMethodRef(
-                Box::new(Self::replace_recursive_constructor_refs(
-                    receiver, targets, false, false,
-                )),
-                *method,
-            ),
-            Type::DeferredCallRef { receiver, call } => Type::deferred_call_ref(
-                Self::replace_recursive_constructor_refs(receiver, targets, false, false),
-                call.method,
-                call.args
-                    .iter()
-                    .map(|arg| Self::replace_recursive_constructor_refs(arg, targets, false, false))
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            ),
-            Type::TruthyProjection(inner) => {
-                Type::TruthyProjection(Box::new(Self::replace_recursive_constructor_refs(
-                    inner,
-                    targets,
-                    under_constructor,
-                    allow_guarded_dependency,
-                )))
-            }
-            Type::FalsyProjection(inner) => {
-                Type::FalsyProjection(Box::new(Self::replace_recursive_constructor_refs(
-                    inner,
-                    targets,
-                    under_constructor,
-                    allow_guarded_dependency,
-                )))
-            }
-            _ => ty.clone(),
-        }
-    }
-
-    pub(super) fn preserve_recursive_type_growth_return(old: &Type, new: &Type) -> Type {
-        let mut merged = match old {
-            Type::Union(parts) => parts.clone(),
-            _ => vec![old.clone()],
-        };
-        let candidates = match new {
-            Type::Union(parts) => parts.clone(),
-            _ => vec![new.clone()],
-        };
-        for candidate in candidates {
-            if !merged
-                .iter()
-                .any(|existing| Self::recursive_growth_shape_covers(existing, &candidate))
-            {
-                merged.push(candidate);
-            }
-        }
-        Type::from_type_vec_preserve_untyped(merged)
-    }
-
-    fn recursive_growth_shape_covers(old: &Type, candidate: &Type) -> bool {
-        if old == candidate {
-            return true;
-        }
-        match (old, candidate) {
-            (Type::Tuple(old_parts), Type::Tuple(candidate_parts))
-                if old_parts.len() == candidate_parts.len() =>
-            {
-                old_parts
-                    .iter()
-                    .zip(candidate_parts)
-                    .all(|(old, candidate)| Self::recursive_growth_shape_covers(old, candidate))
-            }
-            (Type::Array(old_inner), Type::Array(candidate_inner)) => {
-                match (old_inner, candidate_inner) {
-                    (None, None) => true,
-                    (Some(old_inner), Some(candidate_inner)) => {
-                        Self::recursive_growth_shape_covers(old_inner, candidate_inner)
-                    }
-                    _ => false,
-                }
-            }
-            (Type::Hash(old_key, old_value), Type::Hash(candidate_key, candidate_value)) => {
-                let key_covers = match (old_key, candidate_key) {
-                    (None, None) => true,
-                    (Some(old_key), Some(candidate_key)) => {
-                        Self::recursive_growth_shape_covers(old_key, candidate_key)
-                    }
-                    _ => false,
-                };
-                let value_covers = match (old_value, candidate_value) {
-                    (None, None) => true,
-                    (Some(old_value), Some(candidate_value)) => {
-                        Self::recursive_growth_shape_covers(old_value, candidate_value)
-                    }
-                    _ => false,
-                };
-                key_covers && value_covers
-            }
-            (Type::Record(old_fields), Type::Record(candidate_fields))
-                if old_fields.len() == candidate_fields.len() =>
-            {
-                old_fields
-                    .iter()
-                    .zip(candidate_fields)
-                    .all(|(old, candidate)| {
-                        old.key == candidate.key
-                            && old.optional == candidate.optional
-                            && Self::recursive_growth_shape_covers(&old.value, &candidate.value)
-                    })
-            }
-            (
-                Type::Generic {
-                    base: old_base,
-                    args: old_args,
-                },
-                Type::Generic {
-                    base: candidate_base,
-                    args: candidate_args,
-                },
-            ) if old_base == candidate_base && old_args.len() == candidate_args.len() => old_args
-                .iter()
-                .zip(candidate_args.iter())
-                .all(|(old, candidate)| Self::recursive_growth_shape_covers(old, candidate)),
-            (
-                Type::Proc {
-                    return_type: old_return,
-                    param_count: old_param_count,
-                },
-                Type::Proc {
-                    return_type: candidate_return,
-                    param_count: candidate_param_count,
-                },
-            ) if old_param_count == candidate_param_count => {
-                Self::recursive_growth_shape_covers(old_return, candidate_return)
-            }
-            (Type::Union(parts), candidate) => parts.iter().any(|part| {
-                *part == Type::Untyped || Self::recursive_growth_shape_covers(part, candidate)
-            }),
-            (Type::Untyped, _) => true,
-            _ => false,
-        }
-    }
-
-    fn substitute_method_return_approximations(
-        ty: &Type,
-        approximations: &HashMap<(String, Sym), Type>,
-        recursive_methods: &FxHashSet<(String, Sym)>,
-    ) -> Type {
-        Self::substitute_method_return_approximations_depth(
-            ty,
-            approximations,
-            recursive_methods,
-            false,
-        )
-    }
-
-    fn substitute_method_return_approximations_depth(
-        ty: &Type,
-        approximations: &HashMap<(String, Sym), Type>,
-        recursive_methods: &FxHashSet<(String, Sym)>,
-        inside_unresolved_call: bool,
-    ) -> Type {
-        match ty {
-            Type::MethodReturnRef(owner, name) => {
-                let key = (owner.to_string(), *name);
-                if inside_unresolved_call && recursive_methods.contains(&key) {
-                    Type::Untyped
-                } else {
-                    approximations
-                        .get(&key)
-                        .cloned()
-                        .unwrap_or_else(|| ty.clone())
-                }
-            }
-            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
-                parts
-                    .iter()
-                    .map(|part| {
-                        Self::substitute_method_return_approximations_depth(
-                            part,
-                            approximations,
-                            recursive_methods,
-                            inside_unresolved_call,
-                        )
-                    })
-                    .collect(),
-            ),
-            Type::Intersection(parts) => Type::Intersection(
-                parts
-                    .iter()
-                    .map(|part| {
-                        Self::substitute_method_return_approximations_depth(
-                            part,
-                            approximations,
-                            recursive_methods,
-                            inside_unresolved_call,
-                        )
-                    })
-                    .collect(),
-            ),
-            Type::Array(Some(inner)) => Type::Array(Some(Box::new(
-                Self::substitute_method_return_approximations_depth(
-                    inner,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                ),
-            ))),
-            Type::Hash(key, value) => Type::Hash(
-                key.as_ref().map(|key| {
-                    Box::new(Self::substitute_method_return_approximations_depth(
-                        key,
-                        approximations,
-                        recursive_methods,
-                        inside_unresolved_call,
-                    ))
-                }),
-                value.as_ref().map(|value| {
-                    Box::new(Self::substitute_method_return_approximations_depth(
-                        value,
-                        approximations,
-                        recursive_methods,
-                        inside_unresolved_call,
-                    ))
-                }),
-            ),
-            Type::Record(fields) => Type::Record(
-                fields
-                    .iter()
-                    .map(|field| RecordField {
-                        key: field.key.clone(),
-                        value: Self::substitute_method_return_approximations_depth(
-                            &field.value,
-                            approximations,
-                            recursive_methods,
-                            inside_unresolved_call,
-                        ),
-                        optional: field.optional,
-                    })
-                    .collect(),
-            ),
-            Type::Tuple(parts) => Type::Tuple(
-                parts
-                    .iter()
-                    .map(|part| {
-                        Self::substitute_method_return_approximations_depth(
-                            part,
-                            approximations,
-                            recursive_methods,
-                            inside_unresolved_call,
-                        )
-                    })
-                    .collect(),
-            ),
-            Type::Generic { base, args } => Type::Generic {
-                base: *base,
-                args: args
-                    .iter()
-                    .map(|arg| {
-                        Self::substitute_method_return_approximations_depth(
-                            arg,
-                            approximations,
-                            recursive_methods,
-                            inside_unresolved_call,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            },
-            Type::Proc {
-                return_type,
-                param_count,
-            } => Type::Proc {
-                return_type: Box::new(Self::substitute_method_return_approximations_depth(
-                    return_type,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                )),
-                param_count: *param_count,
-            },
-            Type::PatternIndexRef(subject, index) => Type::PatternIndexRef(
-                Box::new(Self::substitute_method_return_approximations_depth(
-                    subject,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                )),
-                *index,
-            ),
-            Type::PatternRestRef(subject) => Type::PatternRestRef(Box::new(
-                Self::substitute_method_return_approximations_depth(
-                    subject,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                ),
-            )),
-            Type::PatternTrailingRef(subject, index) => Type::PatternTrailingRef(
-                Box::new(Self::substitute_method_return_approximations_depth(
-                    subject,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                )),
-                *index,
-            ),
-            Type::PatternKeyRef(subject, key) => Type::PatternKeyRef(
-                Box::new(Self::substitute_method_return_approximations_depth(
-                    subject,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                )),
-                key.clone(),
-            ),
-            Type::PatternBindingKeyRef(subject, key) => Type::PatternBindingKeyRef(
-                Box::new(Self::substitute_method_return_approximations_depth(
-                    subject,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                )),
-                key.clone(),
-            ),
-            Type::PatternKeyRestRef(subject, keys) => Type::PatternKeyRestRef(
-                Box::new(Self::substitute_method_return_approximations_depth(
-                    subject,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                )),
-                keys.clone(),
-            ),
-            Type::ReceiverMethodRef(receiver, method) => Type::ReceiverMethodRef(
-                Box::new(Self::substitute_method_return_approximations_depth(
-                    receiver,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                )),
-                *method,
-            ),
-            Type::DeferredCallRef { receiver, call } => {
-                let unresolved_call = inside_unresolved_call
-                    || Self::type_contains_param_ref(ty)
-                    || ty.contains_param_pending();
-                Type::deferred_call_ref(
-                    Self::substitute_method_return_approximations_depth(
-                        receiver,
-                        approximations,
-                        recursive_methods,
-                        unresolved_call,
-                    ),
-                    call.method,
-                    call.args
-                        .iter()
-                        .map(|arg| {
-                            Self::substitute_method_return_approximations_depth(
-                                arg,
-                                approximations,
-                                recursive_methods,
-                                unresolved_call,
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice(),
-                )
-            }
-            Type::TruthyProjection(inner) => Type::TruthyProjection(Box::new(
-                Self::substitute_method_return_approximations_depth(
-                    inner,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                ),
-            )),
-            Type::FalsyProjection(inner) => Type::FalsyProjection(Box::new(
-                Self::substitute_method_return_approximations_depth(
-                    inner,
-                    approximations,
-                    recursive_methods,
-                    inside_unresolved_call,
-                ),
-            )),
-            _ => ty.clone(),
-        }
-    }
-
-    pub(crate) fn resolve_general_method_refs(
+    fn resolve_general_method_refs(
         registry: &TypeRegistry,
         context_class: &str,
         ty: &Type,
         visiting: &mut FxHashSet<(String, Sym)>,
     ) -> Type {
         Self::resolve_general_method_refs_depth(registry, context_class, ty, visiting, 0)
-            .unwrap_or_else(|| ty.clone())
     }
 
     fn resolve_general_method_refs_depth(
@@ -1704,15 +406,15 @@ impl<'a> InferenceEngine<'a> {
         ty: &Type,
         visiting: &mut FxHashSet<(String, Sym)>,
         depth: usize,
-    ) -> Option<Type> {
+    ) -> Type {
         if depth >= 12 {
-            return Some(ty.clone());
+            return ty.clone();
         }
         match ty {
             Type::IvarRef(ivar_name) => {
                 let key = (context_class.to_string(), *ivar_name);
                 if visiting.contains(&key) {
-                    return Some(ty.clone());
+                    return ty.clone();
                 }
                 visiting.insert(key.clone());
                 let ivar_type = registry.lookup_ivar_type(context_class, ivar_name);
@@ -1722,10 +424,9 @@ impl<'a> InferenceEngine<'a> {
                     | Some(Type::ParamRef(_))
                     | Some(Type::KeywordParamRef(_)) => registry
                         .infer_attr_type_from_initialize(context_class, ivar_name)
-                        .unwrap_or_else(|| ty.clone())
-                        .into(),
+                        .unwrap_or_else(|| ty.clone()),
                     Some(resolved) if Self::is_concrete_for_method_ref_resolve(&resolved) => {
-                        Some(resolved)
+                        resolved
                     }
                     Some(resolved) => Self::resolve_general_method_refs_depth(
                         registry,
@@ -1740,12 +441,14 @@ impl<'a> InferenceEngine<'a> {
             }
             Type::MethodReturnRef(class_name, method_name) => {
                 if visiting.contains(&(class_name.to_string(), *method_name)) {
-                    return None;
+                    return ty.clone();
                 }
                 let ret = registry
                     .lookup_method_return_type_direct(class_name, method_name)
                     .or_else(|| registry.lookup_method_return_type(class_name, method_name));
-                if let Some(ret) = ret {
+                if let Some(ret) = ret
+                    && Self::is_concrete_for_method_ref_resolve(&ret)
+                {
                     visiting.insert((class_name.to_string(), *method_name));
                     let resolved = Self::resolve_general_method_refs_depth(
                         registry,
@@ -1755,17 +458,9 @@ impl<'a> InferenceEngine<'a> {
                         depth + 1,
                     );
                     visiting.remove(&(class_name.to_string(), *method_name));
-                    return resolved.map(|resolved| {
-                        if resolved == Type::Untyped
-                            || InferenceEngine::type_contains_unresolved_dependency(&resolved)
-                        {
-                            ty.clone()
-                        } else {
-                            resolved
-                        }
-                    });
+                    return resolved;
                 }
-                Some(ty.clone())
+                ty.clone()
             }
             Type::ReceiverMethodRef(receiver_type, method_name) => {
                 let resolved_receiver = Self::resolve_general_method_refs_depth(
@@ -1774,259 +469,66 @@ impl<'a> InferenceEngine<'a> {
                     receiver_type,
                     visiting,
                     depth + 1,
-                )?;
+                );
                 if let Some(receiver_class) = Self::static_type_to_class_name(&resolved_receiver) {
                     let ret = registry
                         .lookup_method_return_type_direct(&receiver_class, method_name)
                         .or_else(|| {
                             registry.lookup_method_return_type(&receiver_class, method_name)
                         });
-                    if let Some(ret) = ret {
-                        return Self::resolve_general_method_refs_depth(
+                    if let Some(ret) = ret
+                        && Self::is_concrete_for_method_ref_resolve(&ret)
+                    {
+                        let resolved = Self::resolve_general_method_refs_depth(
                             registry,
                             &receiver_class,
                             &ret,
                             visiting,
                             depth + 1,
                         );
+                        return resolved;
                     }
                 }
-                Some(Type::ReceiverMethodRef(
-                    Box::new(resolved_receiver),
-                    *method_name,
-                ))
+                Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
             }
-            Type::Union(parts) => {
-                let resolved: Vec<Type> = parts
-                    .iter()
-                    .map(|part| {
-                        Self::resolve_general_method_refs_depth(
-                            registry,
-                            context_class,
-                            part,
-                            visiting,
-                            depth + 1,
-                        )
-                        .unwrap_or_else(|| part.clone())
-                    })
-                    .collect();
-                Some(Type::from_type_vec_preserve_untyped(resolved))
-            }
-            Type::Array(Some(inner)) => Some(Type::Array(Some(Box::new(
-                Self::resolve_general_method_refs_depth(
-                    registry,
-                    context_class,
-                    inner,
-                    visiting,
-                    depth + 1,
-                )?,
-            )))),
-            Type::Tuple(elems) => Some(Type::Tuple(
-                elems
-                    .iter()
-                    .map(|part| {
-                        Self::resolve_general_method_refs_depth(
-                            registry,
-                            context_class,
-                            part,
-                            visiting,
-                            depth + 1,
-                        )
-                    })
-                    .collect::<Option<Vec<Type>>>()?,
-            )),
-            Type::Intersection(parts) => Some(Type::Intersection(
+            Type::Union(parts) => Type::from_type_vec(
                 parts
                     .iter()
-                    .map(|part| {
+                    .map(|t| {
                         Self::resolve_general_method_refs_depth(
                             registry,
                             context_class,
-                            part,
+                            t,
                             visiting,
                             depth + 1,
                         )
                     })
-                    .collect::<Option<Vec<Type>>>()?,
-            )),
-            Type::Hash(key, value) => Some(Type::Hash(
-                match key.as_ref() {
-                    Some(inner) => Some(Box::new(Self::resolve_general_method_refs_depth(
-                        registry,
-                        context_class,
-                        inner,
-                        visiting,
-                        depth + 1,
-                    )?)),
-                    None => None,
-                },
-                match value.as_ref() {
-                    Some(inner) => Some(Box::new(Self::resolve_general_method_refs_depth(
-                        registry,
-                        context_class,
-                        inner,
-                        visiting,
-                        depth + 1,
-                    )?)),
-                    None => None,
-                },
-            )),
-            Type::Record(fields) => Some(Type::Record(
-                fields
-                    .iter()
-                    .map(|field| {
-                        Some(RecordField {
-                            key: field.key.clone(),
-                            value: Self::resolve_general_method_refs_depth(
-                                registry,
-                                context_class,
-                                &field.value,
-                                visiting,
-                                depth + 1,
-                            )?,
-                            optional: field.optional,
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>()?,
-            )),
-            Type::Generic { base, args } => Some(Type::Generic {
-                base: *base,
-                args: args
-                    .iter()
-                    .map(|arg| {
-                        Self::resolve_general_method_refs_depth(
-                            registry,
-                            context_class,
-                            arg,
-                            visiting,
-                            depth + 1,
-                        )
-                    })
-                    .collect::<Option<Vec<_>>>()?
-                    .into_boxed_slice(),
-            }),
-            Type::Proc {
-                return_type,
-                param_count,
-            } => Some(Type::Proc {
-                return_type: Box::new(Self::resolve_general_method_refs_depth(
+                    .collect(),
+            ),
+            Type::Array(Some(inner)) => {
+                Type::Array(Some(Box::new(Self::resolve_general_method_refs_depth(
                     registry,
                     context_class,
-                    return_type,
+                    inner,
                     visiting,
                     depth + 1,
-                )?),
-                param_count: *param_count,
-            }),
-            Type::PatternIndexRef(subject, index) => Some(Type::PatternIndexRef(
-                Box::new(Self::resolve_general_method_refs_depth(
-                    registry,
-                    context_class,
-                    subject,
-                    visiting,
-                    depth + 1,
-                )?),
-                *index,
-            )),
-            Type::PatternRestRef(subject) => Some(Type::PatternRestRef(Box::new(
-                Self::resolve_general_method_refs_depth(
-                    registry,
-                    context_class,
-                    subject,
-                    visiting,
-                    depth + 1,
-                )?,
-            ))),
-            Type::PatternTrailingRef(subject, index) => Some(Type::PatternTrailingRef(
-                Box::new(Self::resolve_general_method_refs_depth(
-                    registry,
-                    context_class,
-                    subject,
-                    visiting,
-                    depth + 1,
-                )?),
-                *index,
-            )),
-            Type::PatternKeyRef(subject, key) => Some(Type::PatternKeyRef(
-                Box::new(Self::resolve_general_method_refs_depth(
-                    registry,
-                    context_class,
-                    subject,
-                    visiting,
-                    depth + 1,
-                )?),
-                key.clone(),
-            )),
-            Type::PatternBindingKeyRef(subject, key) => Some(Type::PatternBindingKeyRef(
-                Box::new(Self::resolve_general_method_refs_depth(
-                    registry,
-                    context_class,
-                    subject,
-                    visiting,
-                    depth + 1,
-                )?),
-                key.clone(),
-            )),
-            Type::PatternKeyRestRef(subject, keys) => Some(Type::PatternKeyRestRef(
-                Box::new(Self::resolve_general_method_refs_depth(
-                    registry,
-                    context_class,
-                    subject,
-                    visiting,
-                    depth + 1,
-                )?),
-                keys.clone(),
-            )),
-            Type::DeferredCallRef { receiver, call } => {
-                let receiver = Self::resolve_general_method_refs_depth(
-                    registry,
-                    context_class,
-                    receiver,
-                    visiting,
-                    depth + 1,
-                )?;
-                let args = call
-                    .args
-                    .iter()
-                    .map(|arg| {
-                        Self::resolve_general_method_refs_depth(
-                            registry,
-                            context_class,
-                            arg,
-                            visiting,
-                            depth + 1,
-                        )
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                if matches!(&receiver, Type::Singleton(name) if name.as_str() == "Hash")
-                    && call.method.as_str() == HASH_SPLAT_DEFERRED_METHOD
-                    && let [splat_type] = args.as_slice()
-                    && let Some(hash_type) = InferenceEngine::resolve_hash_splat_type(splat_type)
-                {
-                    Some(hash_type)
-                } else {
-                    Some(Type::deferred_call_ref(receiver, call.method, args))
-                }
+                ))))
             }
-            Type::TruthyProjection(inner) => Some(Type::TruthyProjection(Box::new(
-                Self::resolve_general_method_refs_depth(
-                    registry,
-                    context_class,
-                    inner,
-                    visiting,
-                    depth + 1,
-                )?,
-            ))),
-            Type::FalsyProjection(inner) => Some(Type::FalsyProjection(Box::new(
-                Self::resolve_general_method_refs_depth(
-                    registry,
-                    context_class,
-                    inner,
-                    visiting,
-                    depth + 1,
-                )?,
-            ))),
-            _ => Some(ty.clone()),
+            Type::Tuple(elems) => Type::Tuple(
+                elems
+                    .iter()
+                    .map(|t| {
+                        Self::resolve_general_method_refs_depth(
+                            registry,
+                            context_class,
+                            t,
+                            visiting,
+                            depth + 1,
+                        )
+                    })
+                    .collect(),
+            ),
+            _ => ty.clone(),
         }
     }
 
@@ -2041,25 +543,6 @@ impl<'a> InferenceEngine<'a> {
             Type::Hash(Some(k), Some(v)) => {
                 Self::type_contains_method_ref(k) || Self::type_contains_method_ref(v)
             }
-            Type::Hash(Some(k), None) => Self::type_contains_method_ref(k),
-            Type::Hash(None, Some(v)) => Self::type_contains_method_ref(v),
-            Type::Record(fields) => fields
-                .iter()
-                .any(|field| Self::type_contains_method_ref(&field.value)),
-            Type::Generic { args, .. } => args.iter().any(Self::type_contains_method_ref),
-            Type::Proc { return_type, .. } => Self::type_contains_method_ref(return_type),
-            Type::DeferredCallRef { receiver, call } => {
-                Self::type_contains_method_ref(receiver)
-                    || call.args.iter().any(Self::type_contains_method_ref)
-            }
-            Type::PatternIndexRef(subject, _)
-            | Type::PatternRestRef(subject)
-            | Type::PatternTrailingRef(subject, _)
-            | Type::PatternKeyRef(subject, _)
-            | Type::PatternBindingKeyRef(subject, _)
-            | Type::PatternKeyRestRef(subject, _)
-            | Type::TruthyProjection(subject)
-            | Type::FalsyProjection(subject) => Self::type_contains_method_ref(subject),
             _ => false,
         }
     }
@@ -2085,7 +568,7 @@ impl<'a> InferenceEngine<'a> {
             | Type::Singleton(_)
             | Type::SelfType
             | Type::InstanceType => true,
-            Type::Generic { args, .. } => args.iter().all(Self::is_concrete_for_method_ref_resolve),
+            Type::Generic { .. } => true,
             Type::Array(None) | Type::Hash(None, None) => true,
             Type::Array(Some(inner)) => Self::is_concrete_for_method_ref_resolve(inner),
             Type::Hash(Some(k), Some(v)) => {
@@ -2226,9 +709,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Array(Some(inner))
             | Type::PatternRestRef(inner)
             | Type::PatternIndexRef(inner, _)
-            | Type::PatternTrailingRef(inner, _)
             | Type::PatternKeyRef(inner, _)
-            | Type::PatternBindingKeyRef(inner, _)
             | Type::PatternKeyRestRef(inner, _) => {
                 Self::type_contains_subclass_ref_candidate(inner)
             }
@@ -2318,18 +799,14 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_contains_param_ref(&field.value)),
-            Type::PatternIndexRef(subject, _)
-            | Type::PatternRestRef(subject)
-            | Type::PatternTrailingRef(subject, _) => Self::type_contains_param_ref(subject),
-            Type::PatternKeyRef(subject, _)
-            | Type::PatternBindingKeyRef(subject, _)
-            | Type::PatternKeyRestRef(subject, _) => Self::type_contains_param_ref(subject),
+            Type::PatternIndexRef(subject, _) | Type::PatternRestRef(subject) => {
+                Self::type_contains_param_ref(subject)
+            }
+            Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
+                Self::type_contains_param_ref(subject)
+            }
             Type::ReceiverMethodRef(receiver_type, _) => {
                 Self::type_contains_param_ref(receiver_type)
-            }
-            Type::DeferredCallRef { receiver, call } => {
-                Self::type_contains_param_ref(receiver)
-                    || call.args.iter().any(Self::type_contains_param_ref)
             }
             Type::Proc { return_type, .. } => Self::type_contains_param_ref(return_type),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref),
@@ -2953,15 +1430,11 @@ impl<'a> InferenceEngine<'a> {
         let mut result = std::collections::HashMap::new();
         for (kw_name, default_type) in kw_params {
             if let Some(types) = kw_types.remove(kw_name) {
-                let inferred = Type::merge_param_arg_vec(types);
-                let ty = if inferred == Type::Untyped {
-                    inferred
-                } else if let Some(default_type) = default_type {
-                    Type::merge_param_arg_vec(vec![inferred, default_type.clone()])
-                } else {
-                    inferred
-                };
-                result.insert(kw_name.to_string(), ty);
+                let mut merged = types;
+                if let Some(dt) = default_type {
+                    merged.push(dt.clone());
+                }
+                result.insert(kw_name.to_string(), Type::from_type_vec(merged));
             } else if let Some(dt) = default_type {
                 result.insert(kw_name.to_string(), dt.clone());
             }
@@ -2972,7 +1445,7 @@ impl<'a> InferenceEngine<'a> {
     pub(super) fn resolve_param_types_from_grouped_call_sites(
         param_infos: &[ParamInfo],
         call_sites: &[&CallSite],
-    ) -> ResolvedParamCallSites {
+    ) -> Vec<Type> {
         let param_count = param_infos
             .iter()
             .filter(|pi| {
@@ -2983,21 +1456,14 @@ impl<'a> InferenceEngine<'a> {
             })
             .count();
         let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); param_count];
-        let mut provided = vec![false; param_count];
         for site in call_sites {
-            TypeRegistry::merge_call_site_positional_types_with_flags(
-                &mut param_types,
-                site,
-                param_infos,
-                &mut provided,
-            );
+            TypeRegistry::merge_call_site_positional_types(&mut param_types, site, param_infos);
         }
 
-        let types = param_types
+        param_types
             .into_iter()
             .map(Type::merge_param_arg_vec)
-            .collect();
-        ResolvedParamCallSites { types, provided }
+            .collect()
     }
 
     pub(super) fn substitute_param_refs(ty: &Type, param_types: &[Type]) -> Type {
@@ -3066,17 +1532,6 @@ impl<'a> InferenceEngine<'a> {
                 );
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
             }
-            Type::DeferredCallRef { receiver, call } => Type::deferred_call_ref(
-                Self::substitute_param_refs_with_keywords(receiver, param_types, keyword_types),
-                call.method,
-                call.args
-                    .iter()
-                    .map(|arg| {
-                        Self::substitute_param_refs_with_keywords(arg, param_types, keyword_types)
-                    })
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            ),
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject =
                     Self::substitute_param_refs_with_keywords(subject, param_types, keyword_types);
@@ -3095,15 +1550,6 @@ impl<'a> InferenceEngine<'a> {
                     Self::resolve_pattern_rest_ref(&resolved_subject)
                 }
             }
-            Type::PatternTrailingRef(subject, from_end) => {
-                let resolved_subject =
-                    Self::substitute_param_refs_with_keywords(subject, param_types, keyword_types);
-                if Self::type_contains_param_ref(&resolved_subject) {
-                    Type::PatternTrailingRef(Box::new(resolved_subject), *from_end)
-                } else {
-                    TypeRegistry::resolve_pattern_trailing_ref(&resolved_subject, *from_end)
-                }
-            }
             Type::PatternKeyRef(subject, key) => {
                 let resolved_subject =
                     Self::substitute_param_refs_with_keywords(subject, param_types, keyword_types);
@@ -3111,15 +1557,6 @@ impl<'a> InferenceEngine<'a> {
                     Type::PatternKeyRef(Box::new(resolved_subject), key.clone())
                 } else {
                     Self::resolve_pattern_key_ref(&resolved_subject, key)
-                }
-            }
-            Type::PatternBindingKeyRef(subject, key) => {
-                let resolved_subject =
-                    Self::substitute_param_refs_with_keywords(subject, param_types, keyword_types);
-                if Self::type_contains_param_ref(&resolved_subject) {
-                    Type::PatternBindingKeyRef(Box::new(resolved_subject), key.clone())
-                } else {
-                    TypeRegistry::resolve_pattern_binding_key_ref(&resolved_subject, key)
                 }
             }
             Type::PatternKeyRestRef(subject, matched_keys) => {
@@ -3155,172 +1592,128 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn resolve_pattern_index_ref(subject: &Type, index: usize) -> Type {
-        TypeRegistry::resolve_pattern_index_ref(subject, index)
+        match subject {
+            Type::Union(parts) => {
+                let mut resolved: Vec<Type> = parts
+                    .iter()
+                    .map(|part| Self::resolve_pattern_index_ref(part, index))
+                    .collect();
+                if resolved.iter().any(|ty| *ty != Type::Untyped) {
+                    resolved.retain(|ty| *ty != Type::Untyped);
+                }
+                Type::from_type_vec_preserve_untyped(resolved)
+            }
+            Type::Tuple(elems) => elems.get(index).cloned().unwrap_or(Type::Untyped),
+            Type::Array(Some(elem)) => *elem.clone(),
+            _ => Type::Untyped,
+        }
     }
 
     fn resolve_pattern_rest_ref(subject: &Type) -> Type {
-        TypeRegistry::resolve_pattern_rest_ref(subject)
+        match subject {
+            Type::Union(parts) => {
+                let mut resolved: Vec<Type> =
+                    parts.iter().map(Self::resolve_pattern_rest_ref).collect();
+                if resolved
+                    .iter()
+                    .any(|ty| !Self::is_generic_pattern_placeholder(ty))
+                {
+                    resolved.retain(|ty| !Self::is_generic_pattern_placeholder(ty));
+                }
+                Type::from_type_vec_preserve_untyped(resolved)
+            }
+            Type::Tuple(elems) => Type::Array(Some(Box::new(Type::from_type_vec(elems.clone())))),
+            Type::Array(Some(elem)) => Type::Array(Some(Box::new(*elem.clone()))),
+            _ => Type::Array(Some(Box::new(Type::Untyped))),
+        }
     }
 
     fn resolve_pattern_key_ref(subject: &Type, key: &RecordKey) -> Type {
-        TypeRegistry::resolve_pattern_key_ref(subject, key)
+        match subject {
+            Type::Union(parts) => {
+                let mut resolved: Vec<Type> = parts
+                    .iter()
+                    .map(|part| Self::resolve_pattern_key_ref(part, key))
+                    .collect();
+                if resolved.iter().any(|ty| *ty != Type::Untyped) {
+                    resolved.retain(|ty| *ty != Type::Untyped);
+                }
+                Type::from_type_vec_preserve_untyped(resolved)
+            }
+            Type::Record(fields) => fields
+                .iter()
+                .find(|field| field.key == *key)
+                .map(|field| field.value.clone())
+                .unwrap_or(Type::Untyped),
+            Type::Hash(key_type, Some(value_type))
+                if key_type
+                    .as_deref()
+                    .map(|key_type| Self::pattern_hash_key_type_matches_for_pass(key_type, key))
+                    .unwrap_or(true) =>
+            {
+                *value_type.clone()
+            }
+            _ => Type::Untyped,
+        }
     }
 
     fn resolve_pattern_key_rest_ref(subject: &Type, matched_keys: &[RecordKey]) -> Type {
-        TypeRegistry::resolve_pattern_key_rest_ref(subject, matched_keys)
+        match subject {
+            Type::Union(parts) => {
+                let mut resolved: Vec<Type> = parts
+                    .iter()
+                    .map(|part| Self::resolve_pattern_key_rest_ref(part, matched_keys))
+                    .collect();
+                if resolved
+                    .iter()
+                    .any(|ty| !Self::is_generic_pattern_placeholder(ty))
+                {
+                    resolved.retain(|ty| !Self::is_generic_pattern_placeholder(ty));
+                }
+                Type::from_type_vec_preserve_untyped(resolved)
+            }
+            Type::Record(fields) => Type::Record(
+                fields
+                    .iter()
+                    .filter(|field| !matched_keys.contains(&field.key))
+                    .cloned()
+                    .collect(),
+            ),
+            Type::Hash(Some(key), Some(value)) => {
+                Type::Hash(Some(Box::new(*key.clone())), Some(Box::new(*value.clone())))
+            }
+            _ => Type::Hash(Some(Box::new(Type::Untyped)), Some(Box::new(Type::Untyped))),
+        }
+    }
+
+    fn is_generic_pattern_placeholder(ty: &Type) -> bool {
+        matches!(ty, Type::Untyped)
+            || matches!(ty, Type::Array(Some(inner)) if **inner == Type::Untyped)
+            || matches!(
+                ty,
+                Type::Hash(Some(key), Some(value))
+                    if **key == Type::Untyped && **value == Type::Untyped
+            )
+    }
+
+    fn pattern_hash_key_type_matches_for_pass(key_type: &Type, key: &RecordKey) -> bool {
+        match (key_type, key) {
+            (Type::Untyped | Type::Top, _) => true,
+            (Type::Symbol, RecordKey::Symbol(_)) => true,
+            (Type::String, RecordKey::String(_)) => true,
+            (Type::LiteralSymbol(expected), RecordKey::Symbol(actual)) => expected == actual,
+            (Type::LiteralString(expected), RecordKey::String(actual)) => expected == actual,
+            (Type::Union(parts), _) => parts
+                .iter()
+                .any(|part| Self::pattern_hash_key_type_matches_for_pass(part, key)),
+            _ => false,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recursive_constructor_widening_preserves_known_return_arms() {
-        let target = ("RecursiveResult".to_string(), Sym::new("grow"));
-        let targets = FxHashSet::from_iter([target]);
-        let raw = Type::from_type_vec_preserve_untyped(vec![
-            Type::Integer,
-            Type::Array(Some(Box::new(Type::MethodReturnRef(
-                Sym::new("RecursiveResult"),
-                Sym::new("grow"),
-            )))),
-        ]);
-
-        let widened =
-            InferenceEngine::replace_recursive_constructor_refs(&raw, &targets, false, true);
-
-        assert_eq!(
-            widened,
-            Type::from_type_vec_preserve_untyped(vec![
-                Type::Integer,
-                Type::Array(Some(Box::new(Type::Untyped))),
-            ])
-        );
-    }
-
-    #[test]
-    fn recursive_constructor_widening_covers_structural_type_forms() {
-        let recursive_ref = || Type::MethodReturnRef(Sym::new("RecursiveResult"), Sym::new("grow"));
-        let targets = FxHashSet::from_iter([("RecursiveResult".to_string(), Sym::new("grow"))]);
-        let cases = vec![
-            (
-                Type::Hash(
-                    Some(Box::new(recursive_ref())),
-                    Some(Box::new(recursive_ref())),
-                ),
-                Type::Hash(Some(Box::new(Type::Untyped)), Some(Box::new(Type::Untyped))),
-            ),
-            (
-                Type::Record(vec![RecordField {
-                    key: RecordKey::Symbol("value".to_string()),
-                    value: recursive_ref(),
-                    optional: false,
-                }]),
-                Type::Record(vec![RecordField {
-                    key: RecordKey::Symbol("value".to_string()),
-                    value: Type::Untyped,
-                    optional: false,
-                }]),
-            ),
-            (
-                Type::generic(Sym::new("Box"), [recursive_ref()]),
-                Type::generic(Sym::new("Box"), [Type::Untyped]),
-            ),
-            (
-                Type::Proc {
-                    return_type: Box::new(recursive_ref()),
-                    param_count: 0,
-                },
-                Type::Proc {
-                    return_type: Box::new(Type::Untyped),
-                    param_count: 0,
-                },
-            ),
-        ];
-
-        for (raw, expected) in cases {
-            assert_eq!(
-                InferenceEngine::replace_recursive_constructor_refs(&raw, &targets, false, true,),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn recursive_constructor_widening_does_not_treat_call_arguments_as_return_shapes() {
-        let target = ("RecursiveResult".to_string(), Sym::new("grow"));
-        let targets = FxHashSet::from_iter([target]);
-        let recursive_ref = Type::MethodReturnRef(Sym::new("RecursiveResult"), Sym::new("grow"));
-        let raw = Type::deferred_call_ref(
-            Type::Class(Sym::new("Array")),
-            Sym::new("[]"),
-            vec![recursive_ref.clone()],
-        );
-
-        let widened =
-            InferenceEngine::replace_recursive_constructor_refs(&raw, &targets, false, true);
-        let mut dependencies = Vec::new();
-        InferenceEngine::collect_method_return_dependencies(
-            &TypeRegistry::new(),
-            &raw,
-            false,
-            true,
-            &mut dependencies,
-        );
-
-        assert_eq!(widened, raw);
-        assert_eq!(
-            dependencies,
-            vec![((Sym::new("RecursiveResult"), Sym::new("grow")), false)]
-        );
-    }
-
-    #[test]
-    fn recursive_growth_return_keeps_new_base_arms_without_finite_unrolls() {
-        let old = Type::from_type_vec_preserve_untyped(vec![
-            Type::LiteralInteger(0),
-            Type::Tuple(vec![Type::Untyped]),
-        ]);
-        let new = Type::from_type_vec_preserve_untyped(vec![
-            Type::LiteralInteger(0),
-            Type::LiteralInteger(1),
-            Type::Tuple(vec![Type::from_type_vec_preserve_untyped(vec![
-                Type::LiteralInteger(0),
-                Type::Tuple(vec![Type::Untyped]),
-            ])]),
-        ]);
-
-        assert_eq!(
-            InferenceEngine::preserve_recursive_type_growth_return(&old, &new),
-            Type::from_type_vec_preserve_untyped(vec![
-                Type::LiteralInteger(0),
-                Type::LiteralInteger(1),
-                Type::Tuple(vec![Type::Untyped]),
-            ])
-        );
-    }
-
-    #[test]
-    fn recursive_method_refs_inside_pending_calls_widen_the_recursive_operand() {
-        let key = ("Object".to_string(), Sym::new("fact"));
-        let recursive_methods = FxHashSet::from_iter([key.clone()]);
-        let approximations = HashMap::from([(key, Type::LiteralInteger(1))]);
-        let raw = Type::deferred_call_ref(
-            Type::ParamRef(0),
-            Sym::new("*"),
-            vec![Type::MethodReturnRef(Sym::new("Object"), Sym::new("fact"))],
-        );
-
-        assert_eq!(
-            InferenceEngine::substitute_method_return_approximations(
-                &raw,
-                &approximations,
-                &recursive_methods,
-            ),
-            Type::deferred_call_ref(Type::ParamRef(0), Sym::new("*"), vec![Type::Untyped]),
-        );
-    }
 
     #[test]
     fn method_needs_parameter_reference_resolution_only_for_param_refs() {
@@ -3429,361 +1822,5 @@ mod tests {
             &mut classes,
         );
         assert_eq!(classes, vec!["Array".to_string()]);
-    }
-
-    #[test]
-    fn general_method_ref_resolution_keeps_unknown_and_recursive_union_arms() {
-        let registry = TypeRegistry::new();
-        let recursive_ref = Type::MethodReturnRef("A".into(), Sym::new("recursive"));
-        let input = Type::Union(vec![Type::Integer, Type::Untyped, recursive_ref.clone()]);
-        let mut visiting = FxHashSet::default();
-        visiting.insert(("A".to_string(), Sym::new("recursive")));
-
-        let resolved =
-            InferenceEngine::resolve_general_method_refs(&registry, "A", &input, &mut visiting);
-
-        assert_eq!(
-            resolved,
-            Type::from_type_vec_preserve_untyped(
-                vec![Type::Integer, Type::Untyped, recursive_ref,]
-            )
-        );
-    }
-
-    #[test]
-    fn general_method_ref_resolution_keeps_callee_dependency_until_concrete() {
-        let mut registry = TypeRegistry::new();
-        registry.add_method_def(
-            "Provider",
-            MethodDef {
-                name: Sym::new("value"),
-                param_infos: Vec::new(),
-                raw_return_type: Type::ReceiverMethodRef(
-                    Box::new(Type::String),
-                    Sym::new("refined_value"),
-                ),
-                sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: false,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
-                attr_ivar: None,
-                is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
-                rbs_method_types: Default::default(),
-                extra_overloads: Vec::new(),
-                loc: None,
-            },
-        );
-        let return_ref = Type::MethodReturnRef("Provider".into(), Sym::new("value"));
-        let mut visiting = FxHashSet::default();
-
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &return_ref,
-                &mut visiting,
-            ),
-            return_ref
-        );
-
-        registry.update_method_return_type_variant("Provider", "value", false, Type::String);
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &Type::MethodReturnRef("Provider".into(), Sym::new("value")),
-                &mut visiting,
-            ),
-            Type::String
-        );
-    }
-
-    #[test]
-    fn general_method_ref_resolution_keeps_untyped_callee_until_concrete() {
-        let mut registry = TypeRegistry::new();
-        registry.add_method_def(
-            "Provider",
-            MethodDef {
-                name: Sym::new("value"),
-                param_infos: Vec::new(),
-                raw_return_type: Type::Untyped,
-                sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: false,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
-                attr_ivar: None,
-                is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
-                rbs_method_types: Default::default(),
-                extra_overloads: Vec::new(),
-                loc: None,
-            },
-        );
-        let return_ref = Type::MethodReturnRef("Provider".into(), Sym::new("value"));
-        let mut visiting = FxHashSet::default();
-
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &return_ref,
-                &mut visiting,
-            ),
-            return_ref
-        );
-
-        registry.update_method_return_type_variant("Provider", "value", false, Type::String);
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &Type::MethodReturnRef("Provider".into(), Sym::new("value")),
-                &mut visiting,
-            ),
-            Type::String
-        );
-    }
-
-    #[test]
-    fn general_method_ref_resolution_preserves_observed_unknown_arms() {
-        let mut registry = TypeRegistry::new();
-        registry.add_method_def(
-            "Provider",
-            MethodDef {
-                name: Sym::new("value"),
-                param_infos: Vec::new(),
-                raw_return_type: Type::Union(vec![Type::String, Type::Untyped]),
-                sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: false,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
-                attr_ivar: None,
-                is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
-                rbs_method_types: Default::default(),
-                extra_overloads: Vec::new(),
-                loc: None,
-            },
-        );
-        registry.add_method_def(
-            "Provider",
-            MethodDef {
-                name: Sym::new("declared_unknown"),
-                param_infos: Vec::new(),
-                raw_return_type: Type::Array(Some(Box::new(Type::Untyped))),
-                sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
-                attr_ivar: None,
-                is_singleton: false,
-                rbs_file_source: true,
-                synthetic_dsl_source: false,
-                rbs_method_types: Arc::new(vec![rbs_ir::MethodType {
-                    function_type: rbs_ir::FunctionType {
-                        required_positionals: Box::default(),
-                        optional_positionals: Box::default(),
-                        rest_positionals: None,
-                        trailing_positionals: Box::default(),
-                        required_keywords: Box::default(),
-                        optional_keywords: Box::default(),
-                        rest_keywords: None,
-                        return_type: rbs_ir::RbsType::Class(
-                            Sym::new("Array"),
-                            vec![rbs_ir::RbsType::Untyped].into_boxed_slice(),
-                        ),
-                    },
-                    block: None,
-                    self_type: None,
-                    type_params: Box::default(),
-                    type_param_bounds: Box::default(),
-                    type_param_lower_bounds: Box::default(),
-                    annotations: Box::default(),
-                }]),
-                extra_overloads: Vec::new(),
-                loc: None,
-            },
-        );
-        registry.add_method_def(
-            "Provider",
-            MethodDef {
-                name: Sym::new("parameter_annotated"),
-                param_infos: Vec::new(),
-                raw_return_type: Type::Union(vec![Type::String, Type::Untyped]),
-                sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
-                attr_ivar: None,
-                is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
-                rbs_method_types: Default::default(),
-                extra_overloads: Vec::new(),
-                loc: None,
-            },
-        );
-        registry.add_method_def(
-            "Provider",
-            MethodDef {
-                name: Sym::new("nested_value"),
-                param_infos: Vec::new(),
-                raw_return_type: Type::Array(Some(Box::new(Type::Untyped))),
-                sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: false,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
-                attr_ivar: None,
-                is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
-                rbs_method_types: Default::default(),
-                extra_overloads: Vec::new(),
-                loc: None,
-            },
-        );
-        let return_ref = Type::MethodReturnRef("Provider".into(), Sym::new("value"));
-        let declared_unknown_ref =
-            Type::MethodReturnRef("Provider".into(), Sym::new("declared_unknown"));
-        let parameter_annotated_ref =
-            Type::MethodReturnRef("Provider".into(), Sym::new("parameter_annotated"));
-        let nested_return_ref = Type::MethodReturnRef("Provider".into(), Sym::new("nested_value"));
-        let mut visiting = FxHashSet::default();
-        let known_and_unknown_return =
-            Type::from_type_vec_preserve_untyped(vec![Type::String, Type::Untyped]);
-
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &return_ref,
-                &mut visiting,
-            ),
-            known_and_unknown_return
-        );
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &Type::from_type_vec_preserve_untyped(vec![Type::Integer, return_ref.clone(),]),
-                &mut visiting,
-            ),
-            Type::from_type_vec_preserve_untyped(vec![Type::Integer, Type::String, Type::Untyped,])
-        );
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &declared_unknown_ref,
-                &mut visiting,
-            ),
-            Type::Array(Some(Box::new(Type::Untyped)))
-        );
-        assert_eq!(declared_unknown_ref.to_string(), "untyped");
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &parameter_annotated_ref,
-                &mut visiting,
-            ),
-            known_and_unknown_return
-        );
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &nested_return_ref,
-                &mut visiting,
-            ),
-            Type::Array(Some(Box::new(Type::Untyped)))
-        );
-
-        registry.update_method_return_type_variant("Provider", "value", false, Type::Integer);
-        registry.update_method_return_type_variant(
-            "Provider",
-            "nested_value",
-            false,
-            Type::Array(Some(Box::new(Type::String))),
-        );
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &Type::MethodReturnRef("Provider".into(), Sym::new("value")),
-                &mut visiting,
-            ),
-            Type::Integer
-        );
-        assert_eq!(
-            InferenceEngine::resolve_general_method_refs(
-                &registry,
-                "Consumer",
-                &nested_return_ref,
-                &mut visiting,
-            ),
-            Type::Array(Some(Box::new(Type::String)))
-        );
-    }
-
-    #[test]
-    fn general_method_ref_resolution_visits_nested_generic_and_deferred_call_types() {
-        let mut registry = TypeRegistry::new();
-        registry.add_method_def(
-            "Source",
-            MethodDef {
-                name: Sym::new("value"),
-                param_infos: Vec::new(),
-                raw_return_type: Type::String,
-                sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: false,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
-                attr_ivar: None,
-                is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
-                rbs_method_types: Default::default(),
-                extra_overloads: Vec::new(),
-                loc: None,
-            },
-        );
-        let method_ref = Type::MethodReturnRef("Source".into(), Sym::new("value"));
-        let input = Type::generic(
-            Sym::new("Box"),
-            [Type::deferred_call_ref(
-                Type::Class(Sym::new("Integer")),
-                Sym::new("+"),
-                vec![method_ref],
-            )],
-        );
-        let mut visiting = FxHashSet::default();
-
-        assert!(InferenceEngine::type_contains_method_ref(&input));
-        assert!(!InferenceEngine::is_concrete_for_method_ref_resolve(&input));
-
-        let resolved = InferenceEngine::resolve_general_method_refs(
-            &registry,
-            "Consumer",
-            &input,
-            &mut visiting,
-        );
-
-        assert_eq!(
-            resolved,
-            Type::generic(
-                Sym::new("Box"),
-                [Type::deferred_call_ref(
-                    Type::Class(Sym::new("Integer")),
-                    Sym::new("+"),
-                    vec![Type::String],
-                )],
-            )
-        );
-        assert!(!InferenceEngine::type_contains_method_ref(&resolved));
     }
 }

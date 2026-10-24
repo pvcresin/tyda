@@ -30,10 +30,6 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 重複を複製前に除外する。再推論対象の解決判定では訪問集合を再利用する。receiver が unresolved のままなら
 再走査せず、block parameter も推測で具体化しない。
 
-`Hash[*source_method]` は callee の戻り値参照が解決するまで Hash の組み立てを遅延する。配列・tuple として
-展開できない union の枝を捨てず、一般の overload 解決へ残して unknown を狭めない。クラス本体の条件分岐も
-truthiness が確定した場合だけ実行される枝の定義を収集し、未解決な qualified constant では両方の枝を保つ。
-
 ## 主要コンポーネント
 
 | 層・ファイル | 責務 |
@@ -130,26 +126,6 @@ workspace context を分ける。
    使うため、targets のソースだけ保持する。
 5. diagnostics は targets にだけ出力する。
 
-Batch では引数型の fixpoint を確定した後、receiver / argument に method parameter 参照を持つ
-deferred call だけを一度解決する。RBS overload の照合には確定した receiver と位置引数を使い、union
-の組み合わせ数が型 union の cardinality 上限を超える場合は `untyped` に縮退する。Interactive profile
-はこの後処理を行わない。
-引数 fixpoint 後の caller-context 解決は、freeze 済みの parameter cache を読む。cache が未確定な間だけ
-caller の call site を再走査するため、遅延呼び出しごとの parameter 集約を繰り返さず、並列 render の結果も変えない。
-
-遅延評価は実際の RBS overload 候補がある呼び出しに限る。source method に RBS 契約がない場合は、
-callee の call-site から解決した戻り値を使う。呼び出し先を変える lexical refinement が有効な呼び出しも、
-その文脈を失わない通常の解決経路に残す。
-
-呼び出し引数が `untyped` または未解決参照を含む場合、型の不一致を確認できない overload は候補に
-残す。引数個数や keyword などの形が合わず確実に呼べない候補だけを除外し、残った候補はそれぞれの
-型変数環境で戻り値を具体化して合流する。具体引数で判定できる呼び出しは、従来どおり適合する
-overload の戻り値を使う。Numeric receiver に未知の演算相手を渡す場合は、Ruby の `coerce`
-protocol が標準 RBS overload の外の戻り値を許すため、unknown を戻り値に残す。
-
-引数型の集約では `Array` / `Hash` / tuple / record の構造を保ちながら未知のleafも残す。varianceを
-確認できない名義genericは型引数の位置ごとに結合せず、個別のgeneric適用型をunionのまま保つ。
-
 この分離で、診断のために workspace 全体の詳細 body / call site を常駐させない。
 
 ## LSP
@@ -159,7 +135,6 @@ protocol が標準 RBS overload の外の戻り値を許すため、unknown を�
 - `initialize`、TCP 起動、full / incremental `didChange`、watched file 更新を受け付ける。
 - Hover、CodeLens、definition、typeDefinition、completion、diagnostics は共通の query 経路を使う。
 - open document は `didOpen` / `didChange` で snapshot を更新し、request 時に全ファイルを読み直さない。
-- 表示用workspace registry cacheは対象ファイルのregistry fingerprintもkeyに含め、call siteなどのfactsが変われば作り直し、コメントだけの編集では再利用する。
 - 初回 workspace scan が終わるまで、未確定の missing method / constant を早期に報告しない。
 - refresh は変更をまとめ、保存されていない入力でも CodeLens / Hover が最新 snapshot を見る。
 - `didChange` の diagnostics 発行は debounce する（CodeLens refresh の 75ms と同じ形。document

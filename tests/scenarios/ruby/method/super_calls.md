@@ -24,7 +24,7 @@ class Child < Parent
 end
 
 class Object < BasicObject
-  def read: -> "default"
+  def read: -> String
 end
 
 class Parent

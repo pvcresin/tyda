@@ -1359,7 +1359,7 @@ pub(crate) fn type_to_rbs_type(ty: &Type) -> Option<rbs_ir::RbsType> {
         Type::Symbol => Some(rbs_ir::RbsType::Symbol),
         Type::Bool | Type::True | Type::False => Some(rbs_ir::RbsType::Bool),
         Type::Nil => Some(rbs_ir::RbsType::Nil),
-        Type::Untyped | Type::ParamPending => Some(rbs_ir::RbsType::Untyped),
+        Type::Untyped => Some(rbs_ir::RbsType::Untyped),
         Type::Void => Some(rbs_ir::RbsType::Void),
         Type::Top => Some(rbs_ir::RbsType::Top),
         Type::Bot => Some(rbs_ir::RbsType::Bottom),

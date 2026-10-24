@@ -18,8 +18,6 @@ struct DisplayFileScopeKey {
 pub(crate) struct DisplayScopeKey {
     file_set: DisplayFileScopeKey,
     target_classes_fingerprint: u64,
-    // The shared base retains the target file's body facts, including call sites.
-    target_registry_fingerprint: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -60,7 +58,6 @@ impl WorkspaceState {
                 .any(|field| Self::type_needs_display_workspace(&field.value)),
             Type::PatternIndexRef(subject, _)
             | Type::PatternKeyRef(subject, _)
-            | Type::PatternBindingKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _) => Self::type_needs_display_workspace(subject),
             _ => false,
         }
@@ -199,15 +196,10 @@ impl WorkspaceState {
                     .collect()
             })
             .unwrap_or_default();
-        let target_registry_fingerprint = self
-            .workspace_file(exclude_file)
-            .map(|entry| entry.registry_fingerprint_hash)
-            .unwrap_or_default();
         let related_files = self.display_related_files(exclude_file);
         DisplayScopeKey {
             file_set: self.display_file_set_key(exclude_file_id, related_files.as_ref()),
             target_classes_fingerprint: Self::target_classes_fingerprint(&target_classes),
-            target_registry_fingerprint,
         }
     }
 

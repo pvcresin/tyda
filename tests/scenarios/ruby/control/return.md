@@ -131,7 +131,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def extract: (untyped x) -> untyped?
+  def extract: (untyped x) -> (nil | untyped)
 end
 ```
 

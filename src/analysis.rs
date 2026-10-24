@@ -1750,8 +1750,6 @@ fn build_engine_with_timings<'a>(
             engine.resolve_method_return_refs();
             timings.resolve_method_return_refs = resolve_method_return_refs_started.elapsed();
 
-            engine.resolve_deferred_calls_in_method_returns();
-
             let backward_propagate_started = Instant::now();
             engine.backward_propagate(&program, &parse_result);
             timings.backward_propagate = backward_propagate_started.elapsed();

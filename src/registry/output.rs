@@ -31,9 +31,7 @@ impl TypeRegistry {
         let locally_annotated: HashSet<&str> = data
             .methods
             .iter()
-            .filter(|method| {
-                method.has_annotation() && !method.rbs_file_source && !method.synthetic_dsl_source
-            })
+            .filter(|method| method.has_annotation() && !method.rbs_file_source)
             .map(|method| method.name.as_str())
             .collect();
         for method_index in 0..all_methods.len() {
