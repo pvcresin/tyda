@@ -55,6 +55,12 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
 `if` / `unless` の両方の分岐から後続へ到達できるとき、一方だけで初めて代入されたlocalは、
 もう一方では `nil` として結合する。
 
+IntegerやSymbolなど変更できない組み込み値のlocalとliteralを `==` / `!=` で比較する条件では、分岐で新しく代入されたlocalの型を
+保持する。同じ条件を再評価した枝の中だけでその型を戻し、比較対象か追跡localへの書き込みで該当する
+記録を破棄する。無関係なlocalの更新では記録を維持し、条件の記録は各scopeで最大64件まで
+保持する。これにより、同じ条件を後で確認するRubyコードでnilを誤って診断せず、分岐外ではnilableな
+型を保つ。
+
 ## semantic backend
 
 長寿命の `WorkspaceState` にファイルの snapshot、依存関係、推論結果を保持し、CLI / LSP / MCP /

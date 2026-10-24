@@ -122,7 +122,7 @@ impl<'a> InferenceEngine<'a> {
     }
 
     pub(super) fn unresolved_method_calls_for_snapshots(&mut self) -> Vec<UnresolvedMethodCall> {
-        let snapshots = std::mem::take(&mut self.var_snapshots);
+        let snapshots = Self::dedup_hover_snapshots(std::mem::take(&mut self.var_snapshots));
         let mut seen = BTreeSet::new();
         let mut calls = Vec::new();
         // Ancestor walks are memoized locally to this pass (a persistent memo could go stale while the replay registry is lazy-merging).

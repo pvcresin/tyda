@@ -485,6 +485,131 @@ fn diagnostics_flag_outputs_json_lines() {
 }
 
 #[test]
+fn repeated_stable_comparison_refines_branch_local_diagnostics() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("repeated_condition.rb");
+    fs::write(
+        &rb_file,
+        r#"def repeated_condition
+  frame = "frame".length
+  if frame == 3000
+    value = 1
+  end
+  if frame == 180
+    frame.to_i
+  end
+  if frame == 3000
+    frame.to_i
+  end
+  if frame == 3000
+    result = value + 1
+  else
+    result = :other
+  end
+  result
+end
+
+def repeated_unless_condition
+  frame = "frame".length
+  unless frame == 3000
+    value = "other"
+  end
+  unless frame == 3000
+    result = value.upcase
+  else
+    result = :other
+  end
+  result
+end
+
+def repeated_not_equal_condition
+  frame = "frame".length
+  if frame != 3000
+    value = 1
+  end
+  if frame != 3000
+    result = value + 1
+  else
+    result = :other
+  end
+  result
+end
+
+def repeated_condition_in_nested_block
+  [180, 3000].each do |frame|
+    [true, false].each do |_summary|
+      if frame == 3000
+        value = 1
+      end
+      if frame == 3000
+        frame.to_i
+      end
+      if frame == 180
+        frame.to_i
+      end
+      if frame == 3000
+        value + 1
+      end
+    end
+  end
+end
+
+def changed_condition
+  frame = "frame".length
+  if frame == 3000
+    value = 1
+  end
+  frame += 1
+  if frame == 3000
+    value + 1
+  end
+end
+
+def mutated_string_condition
+  frame = +"frame"
+  if frame == "frame"
+    value = 1
+  end
+  frame.replace("other")
+  if frame == "frame"
+    value + 1
+  end
+end
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    let nil_method_diagnostics: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic["code"] == "missing_method"
+                && (diagnostic["unresolved_method"] == "NilClass#+"
+                    || diagnostic["unresolved_method"] == "NilClass#upcase")
+        })
+        .collect();
+    assert_eq!(
+        nil_method_diagnostics.len(),
+        2,
+        "rechecking an unchanged immutable comparison should restore branch-local types, while changing the comparison value or mutating a string must keep the nil path: {stdout}"
+    );
+    assert_eq!(
+        nil_method_diagnostics[0]["unresolved_method"], "NilClass#+",
+        "only the reassigned condition should retain its nil diagnostic: {stdout}"
+    );
+}
+
+#[test]
 fn diagnostics_flag_honors_line_ignore_comments() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("ignored.rb");

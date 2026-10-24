@@ -279,6 +279,25 @@ def first_generic_array_after_clear
   values[0]
 end
 
+def repeated_comparison_branch_local
+  frame = "frame".length
+  if frame == 3000
+    value = 1
+  end
+  if frame == 180
+    frame.to_i
+  end
+  if frame == 3000
+    frame.to_i
+  end
+  if frame == 3000
+    result = value + 1
+  else
+    result = :other
+  end
+  result
+end
+
 first_generic_array_after_clear
 ```
 
@@ -293,6 +312,7 @@ class Object < BasicObject
   def iterator_body_after_typed_range_branches: (untyped flag, untyped head) -> (:full | RangeResponseIterator | [ ])
   def first_range_after_empty_guard: -> Range[Integer]
   def first_generic_array_after_clear: -> nil
+  def repeated_comparison_branch_local: -> (Integer | :other)
 end
 
 class RangeResponseIterator

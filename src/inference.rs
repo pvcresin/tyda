@@ -120,6 +120,32 @@ struct CorrelatedLocalAlternative {
     else_type: Type,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalComparison {
+    Equal,
+    NotEqual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConditionLocalKey {
+    name: String,
+    comparison: LocalComparison,
+    value: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConditionLocalValue {
+    name: String,
+    then_type: Type,
+    else_type: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConditionLocalAlternative {
+    key: ConditionLocalKey,
+    locals: Arc<[ConditionLocalValue]>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PrimitiveFlowKind {
     Integer,
@@ -145,6 +171,16 @@ fn primitive_flow_kind(ty: &Type) -> Option<PrimitiveFlowKind> {
 fn is_stable_primitive_flow_type(ty: &Type) -> bool {
     match ty {
         Type::Union(parts) => !parts.is_empty() && parts.iter().all(is_stable_primitive_flow_type),
+        _ => primitive_flow_kind(ty).is_some(),
+    }
+}
+
+fn is_stable_condition_comparison_type(ty: &Type) -> bool {
+    match ty {
+        Type::Union(parts) => {
+            !parts.is_empty() && parts.iter().all(is_stable_condition_comparison_type)
+        }
+        Type::String | Type::LiteralString(_) => false,
         _ => primitive_flow_kind(ty).is_some(),
     }
 }
@@ -1192,6 +1228,8 @@ pub(crate) struct Scope {
     /// Bounded alternatives from the last then/else join, used for tuple shape
     /// and local correlation. Dropped on the next write to a tracked name.
     exclusive_local_alts: Option<Arc<[CorrelatedLocalAlternative]>>,
+    /// Branch-only local values from stable local/literal comparisons.
+    condition_local_alts: Option<Arc<[ConditionLocalAlternative]>>,
 }
 
 impl Scope {
@@ -1346,6 +1384,7 @@ impl Scope {
             rspec_context: self.rspec_context,
             regexp_match_captures: self.regexp_match_captures,
             exclusive_local_alts: self.exclusive_local_alts.clone(),
+            condition_local_alts: self.condition_local_alts.clone(),
         }
     }
 
@@ -1436,7 +1475,29 @@ impl Scope {
                 } else {
                     &alternative.else_type
                 };
-                self.narrow(&alternative.name, correlated_ty.clone());
+                let preserved_condition_keys: Vec<_> = self
+                    .condition_local_alts
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|condition| {
+                        condition.key.name == name
+                            && condition.locals.iter().any(|local| {
+                                local.name == alternative.name
+                                    && (if selected_then {
+                                        &local.then_type
+                                    } else {
+                                        &local.else_type
+                                    }) == correlated_ty
+                            })
+                    })
+                    .map(|condition| condition.key.clone())
+                    .collect();
+                self.narrow_preserving_condition_local_alts(
+                    &alternative.name,
+                    correlated_ty.clone(),
+                    &preserved_condition_keys,
+                );
             }
         }
         self.narrow(name, ty);
@@ -1470,12 +1531,30 @@ impl Scope {
         Arc::make_mut(&mut self.local_singleton_methods).remove(name);
         Arc::make_mut(&mut self.callback_mutated_record_locals).remove(name);
         self.invalidate_exclusive_local_alts(name);
+        self.invalidate_condition_local_alts(name);
     }
 
     fn narrow(&mut self, name: &str, ty: Type) {
         Arc::make_mut(&mut self.locals).insert(name.to_string(), ty);
         Arc::make_mut(&mut self.aliases).remove(name);
         self.invalidate_exclusive_local_alts(name);
+        self.invalidate_condition_local_alts_for_narrow(name);
+    }
+
+    fn narrow_condition_local(&mut self, name: &str, ty: Type, key: &ConditionLocalKey) {
+        self.narrow_preserving_condition_local_alts(name, ty, std::slice::from_ref(key));
+    }
+
+    fn narrow_preserving_condition_local_alts(
+        &mut self,
+        name: &str,
+        ty: Type,
+        keep_keys: &[ConditionLocalKey],
+    ) {
+        Arc::make_mut(&mut self.locals).insert(name.to_string(), ty);
+        Arc::make_mut(&mut self.aliases).remove(name);
+        self.invalidate_exclusive_local_alts(name);
+        self.invalidate_condition_local_alts_for_narrow_except(name, keep_keys);
     }
 
     fn invalidate_exclusive_local_alts(&mut self, name: &str) {
@@ -1486,6 +1565,82 @@ impl Scope {
         {
             self.exclusive_local_alts = None;
         }
+    }
+
+    fn condition_local_alternative(
+        &self,
+        key: &ConditionLocalKey,
+    ) -> Option<&ConditionLocalAlternative> {
+        self.condition_local_alts
+            .as_deref()?
+            .iter()
+            .find(|alternative| alternative.key == *key)
+    }
+
+    fn record_condition_local_alternative(&mut self, alternative: ConditionLocalAlternative) {
+        const MAX_CONDITION_LOCAL_ALTERNATIVES: usize = 64;
+
+        let mut alternatives = self
+            .condition_local_alts
+            .as_deref()
+            .unwrap_or_default()
+            .to_vec();
+        alternatives.retain(|existing| existing.key != alternative.key);
+        alternatives.push(alternative);
+        if alternatives.len() > MAX_CONDITION_LOCAL_ALTERNATIVES {
+            alternatives.drain(..alternatives.len() - MAX_CONDITION_LOCAL_ALTERNATIVES);
+        }
+        self.condition_local_alts = Some(Arc::from(alternatives));
+    }
+
+    fn invalidate_condition_local_alts(&mut self, name: &str) {
+        let Some(alternatives) = self.condition_local_alts.as_deref() else {
+            return;
+        };
+        if !alternatives.iter().any(|alternative| {
+            alternative.key.name == name
+                || alternative.locals.iter().any(|local| local.name == name)
+        }) {
+            return;
+        }
+        let retained: Vec<_> = alternatives
+            .iter()
+            .filter(|alternative| {
+                alternative.key.name != name
+                    && !alternative.locals.iter().any(|local| local.name == name)
+            })
+            .cloned()
+            .collect();
+        self.condition_local_alts = (!retained.is_empty()).then(|| Arc::from(retained));
+    }
+
+    fn invalidate_condition_local_alts_for_narrow(&mut self, name: &str) {
+        self.invalidate_condition_local_alts_for_narrow_except(name, &[]);
+    }
+
+    fn invalidate_condition_local_alts_for_narrow_except(
+        &mut self,
+        name: &str,
+        keep_keys: &[ConditionLocalKey],
+    ) {
+        let Some(alternatives) = self.condition_local_alts.as_deref() else {
+            return;
+        };
+        if !alternatives.iter().any(|alternative| {
+            alternative.locals.iter().any(|local| local.name == name)
+                && !keep_keys.contains(&alternative.key)
+        }) {
+            return;
+        }
+        let retained: Vec<_> = alternatives
+            .iter()
+            .filter(|alternative| {
+                !alternative.locals.iter().any(|local| local.name == name)
+                    || keep_keys.contains(&alternative.key)
+            })
+            .cloned()
+            .collect();
+        self.condition_local_alts = (!retained.is_empty()).then(|| Arc::from(retained));
     }
 
     fn set_with_definition(&mut self, name: &str, ty: Type, loc: SourceLocation) {
@@ -1541,6 +1696,7 @@ impl Scope {
         Arc::make_mut(&mut self.runtime_facts).remove(name);
         Arc::make_mut(&mut self.local_singleton_methods).remove(name);
         self.invalidate_exclusive_local_alts(name);
+        self.invalidate_condition_local_alts(name);
     }
 
     fn set_alias_with_definition(
@@ -1605,6 +1761,7 @@ impl Scope {
         }
         for name in names {
             self.invalidate_exclusive_local_alts(name);
+            self.invalidate_condition_local_alts(name);
         }
         let locals = Arc::make_mut(&mut self.locals);
         for name in names {
@@ -3496,6 +3653,135 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn condition_local_key(predicate: &Node<'_>, scope: &Scope) -> Option<ConditionLocalKey> {
+        if let Node::ParenthesesNode { .. } = predicate {
+            let parentheses = predicate.as_parentheses_node()?;
+            let body = parentheses.body()?;
+            let inner = if let Some(statements) = body.as_statements_node() {
+                statements.body().iter().last()?
+            } else {
+                body
+            };
+            return Self::condition_local_key(&inner, scope);
+        }
+
+        let call = predicate.as_call_node()?;
+        if call.is_safe_navigation() || call.block().is_some() {
+            return None;
+        }
+        let comparison = match call.name().as_slice() {
+            b"==" => LocalComparison::Equal,
+            b"!=" => LocalComparison::NotEqual,
+            _ => return None,
+        };
+        let mut arguments = call.arguments()?.arguments().iter();
+        let argument = arguments.next()?;
+        if arguments.next().is_some() {
+            return None;
+        }
+        let receiver = call.receiver()?;
+        let (name, value) =
+            if let Some(name) = Self::extract_local_var_name_in_scope(&receiver, scope) {
+                (name, Self::literal_singleton_type_from_node(&argument)?)
+            } else {
+                (
+                    Self::extract_local_var_name_in_scope(&argument, scope)?,
+                    Self::literal_singleton_type_from_node(&receiver)?,
+                )
+            };
+        Some(ConditionLocalKey {
+            name,
+            comparison,
+            value,
+        })
+    }
+
+    fn apply_condition_local_alternative(
+        scope: &Scope,
+        key: Option<&ConditionLocalKey>,
+        predicate_is_true: bool,
+        branch_scope: &mut Scope,
+    ) {
+        let Some(alternative) = key.and_then(|key| scope.condition_local_alternative(key)) else {
+            return;
+        };
+        for local in alternative.locals.iter() {
+            let ty = if predicate_is_true {
+                &local.then_type
+            } else {
+                &local.else_type
+            };
+            branch_scope.narrow_condition_local(&local.name, ty.clone(), &alternative.key);
+        }
+    }
+
+    fn condition_local_alternative(
+        base: &Scope,
+        then_scope: &Scope,
+        else_scope: &Scope,
+        key: Option<ConditionLocalKey>,
+    ) -> Option<ConditionLocalAlternative> {
+        let key = key?;
+        if then_scope.definition_location(&key.name) != base.definition_location(&key.name)
+            || else_scope.definition_location(&key.name) != base.definition_location(&key.name)
+        {
+            return None;
+        }
+        let previous = base.condition_local_alternative(&key);
+        if !base
+            .get(&key.name)
+            .is_some_and(is_stable_condition_comparison_type)
+            && previous.is_none()
+        {
+            return None;
+        }
+        let previous_locals: HashSet<String> = previous
+            .into_iter()
+            .flat_map(|alternative| alternative.locals.iter().map(|local| local.name.clone()))
+            .collect();
+        let mut names: HashSet<String> = then_scope.locals.keys().cloned().collect();
+        names.extend(else_scope.locals.keys().cloned());
+        let mut locals = Vec::new();
+        for name in names {
+            if name == key.name || (base.get(&name).is_some() && !previous_locals.contains(&name)) {
+                continue;
+            }
+            let (Some(then_type), Some(else_type)) = (then_scope.get(&name), else_scope.get(&name))
+            else {
+                continue;
+            };
+            if then_type != else_type {
+                locals.push(ConditionLocalValue {
+                    name,
+                    then_type: then_type.clone(),
+                    else_type: else_type.clone(),
+                });
+                if locals.len() > Self::MAX_PRECISE_SCOPE_MERGE_LOCALS {
+                    return None;
+                }
+            }
+        }
+        locals.sort_by(|left, right| left.name.cmp(&right.name));
+        (!locals.is_empty()).then(|| ConditionLocalAlternative {
+            key,
+            locals: Arc::from(locals),
+        })
+    }
+
+    fn merge_condition_local_alts(
+        then_scope: &Scope,
+        else_scope: &Scope,
+    ) -> Option<Arc<[ConditionLocalAlternative]>> {
+        let then_alts = then_scope.condition_local_alts.as_deref()?;
+        let else_alts = else_scope.condition_local_alts.as_deref()?;
+        let common: Vec<_> = then_alts
+            .iter()
+            .filter(|alternative| else_alts.contains(alternative))
+            .cloned()
+            .collect();
+        (!common.is_empty()).then(|| Arc::from(common))
+    }
+
     fn merge_scope_locals(&self, base: &Scope, then_scope: &Scope, else_scope: &Scope) -> Scope {
         let mut names: HashSet<String> = base.locals.keys().cloned().collect();
         names.extend(then_scope.locals.keys().cloned());
@@ -3556,6 +3842,7 @@ impl<'a> InferenceEngine<'a> {
             merged.dsl_bindings =
                 merge_identical_scope_maps(&then_scope.dsl_bindings, &else_scope.dsl_bindings);
             merged.exclusive_local_alts = None;
+            merged.condition_local_alts = Self::merge_condition_local_alts(then_scope, else_scope);
             return merged;
         }
         let mut merged = Scope {
@@ -3605,6 +3892,7 @@ impl<'a> InferenceEngine<'a> {
                 || else_scope.regexp_match_captures
                 || base.regexp_match_captures,
             exclusive_local_alts: None,
+            condition_local_alts: None,
             initialized_record_keys: Arc::new(
                 then_scope
                     .initialized_record_keys
@@ -3737,6 +4025,7 @@ impl<'a> InferenceEngine<'a> {
         merged.callback_mutated_record_locals =
             Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
         Self::assign_exclusive_local_alts(&mut merged, base, alternatives, overlaps_previous);
+        merged.condition_local_alts = Self::merge_condition_local_alts(then_scope, else_scope);
         merged
     }
 
@@ -3835,6 +4124,7 @@ impl<'a> InferenceEngine<'a> {
             rspec_context: base.rspec_context,
             regexp_match_captures: base.regexp_match_captures || loop_scope.regexp_match_captures,
             exclusive_local_alts: None,
+            condition_local_alts: None,
         };
 
         for name in names {
@@ -8175,12 +8465,22 @@ impl<'a> InferenceEngine<'a> {
     fn dedup_hover_snapshots(snapshots: Vec<HoverSnapshot>) -> Vec<HoverSnapshot> {
         let mut seen: rustc_hash::FxHashMap<(usize, usize), usize> =
             rustc_hash::FxHashMap::with_capacity_and_hasher(snapshots.len(), Default::default());
-        let mut out = Vec::with_capacity(snapshots.len());
+        let mut out: Vec<HoverSnapshot> = Vec::with_capacity(snapshots.len());
         for snap in snapshots {
             let key = (snap.start, snap.end);
             if let Some(index) = seen.get(&key).copied() {
-                if Self::value_hover_snapshot_is_untyped(&out[index])
-                    && Self::value_hover_snapshot_is_typed(&snap)
+                if (out[index].name == snap.name
+                    && out[index].class_context == snap.class_context
+                    && out[index].method_context == snap.method_context
+                    && matches!(
+                        (&out[index].target, &snap.target),
+                        (
+                            HoverTarget::MethodCall { .. },
+                            HoverTarget::MethodCall { .. }
+                        )
+                    ))
+                    || (Self::value_hover_snapshot_is_untyped(&out[index])
+                        && Self::value_hover_snapshot_is_typed(&snap))
                 {
                     out[index] = snap;
                 }
@@ -19520,6 +19820,7 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::IfNode { .. } => {
                 let if_node = node.as_if_node().expect("must be IfNode");
+                let condition_local_key = Self::condition_local_key(&if_node.predicate(), scope);
                 self.infer_node_type(class_name, &if_node.predicate(), parse_result, scope);
                 self.bind_condition_assignment_target(
                     class_name,
@@ -19555,6 +19856,12 @@ impl<'a> InferenceEngine<'a> {
                     &mut then_scope,
                 );
                 self.bind_match_write_captures(class_name, &if_node.predicate(), &mut then_scope);
+                Self::apply_condition_local_alternative(
+                    scope,
+                    condition_local_key.as_ref(),
+                    true,
+                    &mut then_scope,
+                );
                 let then_type = if let Some(statements) = if_node.statements() {
                     self.infer_statements_return_type(
                         class_name,
@@ -19578,6 +19885,12 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                     &mut else_scope,
                     false,
+                );
+                Self::apply_condition_local_alternative(
+                    scope,
+                    condition_local_key.as_ref(),
+                    false,
+                    &mut else_scope,
                 );
                 let else_type = if let Some(else_clause) = if_node.subsequent() {
                     self.infer_node_type_with_scope(
@@ -19630,15 +19943,27 @@ impl<'a> InferenceEngine<'a> {
                     scope.next_types = nt;
                     scope.break_types = bt;
                 } else {
+                    let mut condition_local_alternative = None;
                     if !then_always_exits && !else_always_exits {
                         Self::nil_unassigned_branch_locals(scope, &mut then_scope, &mut else_scope);
+                        condition_local_alternative = Self::condition_local_alternative(
+                            scope,
+                            &then_scope,
+                            &else_scope,
+                            condition_local_key,
+                        );
                     }
                     *scope = self.merge_scope_locals(scope, &then_scope, &else_scope);
+                    if let Some(alternative) = condition_local_alternative {
+                        scope.record_condition_local_alternative(alternative);
+                    }
                 }
                 Self::merge_reachable_types(vec![then_type, else_type])
             }
             Node::UnlessNode { .. } => {
                 let unless_node = node.as_unless_node().expect("must be UnlessNode");
+                let condition_local_key =
+                    Self::condition_local_key(&unless_node.predicate(), scope);
                 self.infer_node_type(class_name, &unless_node.predicate(), parse_result, scope);
                 self.bind_condition_assignment_target(
                     class_name,
@@ -19668,6 +19993,12 @@ impl<'a> InferenceEngine<'a> {
                     &mut body_scope,
                     false,
                 );
+                Self::apply_condition_local_alternative(
+                    scope,
+                    condition_local_key.as_ref(),
+                    false,
+                    &mut body_scope,
+                );
                 let body_type = if let Some(statements) = unless_node.statements() {
                     self.infer_statements_return_type(
                         class_name,
@@ -19692,6 +20023,12 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                     &mut else_scope,
                     true,
+                );
+                Self::apply_condition_local_alternative(
+                    scope,
+                    condition_local_key.as_ref(),
+                    true,
+                    &mut else_scope,
                 );
                 self.bind_pattern_locals_from_condition(
                     class_name,
@@ -19751,10 +20088,20 @@ impl<'a> InferenceEngine<'a> {
                     scope.next_types = nt;
                     scope.break_types = bt;
                 } else {
+                    let mut condition_local_alternative = None;
                     if !body_always_exits && !else_always_exits {
                         Self::nil_unassigned_branch_locals(scope, &mut body_scope, &mut else_scope);
+                        condition_local_alternative = Self::condition_local_alternative(
+                            scope,
+                            &else_scope,
+                            &body_scope,
+                            condition_local_key,
+                        );
                     }
                     *scope = self.merge_scope_locals(scope, &body_scope, &else_scope);
+                    if let Some(alternative) = condition_local_alternative {
+                        scope.record_condition_local_alternative(alternative);
+                    }
                 }
                 Self::merge_reachable_types(vec![body_type, else_type])
             }
