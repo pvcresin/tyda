@@ -12323,7 +12323,15 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &method_def.param_infos,
                 );
-                self.registry.add_method_def(class_name, method_def);
+                self.registry.add_method_def_with_file_path(
+                    class_name,
+                    method_def,
+                    if class_name == "Object" {
+                        self.file_path.as_deref()
+                    } else {
+                        None
+                    },
+                );
                 let declared_returns = explicit_return_contract.as_ref().map(|fallback| {
                     self.declared_method_return_types(
                         class_name,
@@ -12417,7 +12425,15 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &method_def.param_infos,
                 );
-                self.registry.add_method_def(class_name, method_def);
+                self.registry.add_method_def_with_file_path(
+                    class_name,
+                    method_def,
+                    if class_name == "Object" {
+                        self.file_path.as_deref()
+                    } else {
+                        None
+                    },
+                );
                 let declared_returns = explicit_return_contract.as_ref().map(|fallback| {
                     self.declared_method_return_types(
                         class_name,
@@ -12707,7 +12723,7 @@ impl<'a> InferenceEngine<'a> {
             is_singleton,
             &rbs_param_annotations,
         );
-        self.registry.add_method_def(
+        self.registry.add_method_def_with_file_path(
             class_name,
             MethodDef {
                 name: Sym::new(&method_name),
@@ -12724,6 +12740,11 @@ impl<'a> InferenceEngine<'a> {
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(method_loc),
+            },
+            if class_name == "Object" {
+                self.file_path.as_deref()
+            } else {
+                None
             },
         );
 
@@ -49797,6 +49818,21 @@ end
         assert_eq!(methods[0].1.name, "foo");
         assert_eq!(methods[1].1.name, "bar");
         assert!(methods[0].1.loc.unwrap().line < methods[1].1.loc.unwrap().line);
+    }
+
+    #[test]
+    fn test_top_level_methods_are_not_retained_as_file_local_facts() {
+        let source = "def foo\n  42\nend\n";
+        let core_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs/core");
+        let loader = crate::rbs::stdlib_loader::LazyRbsLoader::new(core_dir);
+        let mut registry =
+            crate::parser::analyze_source_with_file_path(source, None, &loader, "app/foo.rb");
+
+        assert_eq!(registry.methods_for_file("app/foo.rb").len(), 1);
+
+        registry.retain_file_facts("app/foo.rb");
+
+        assert!(registry.methods_for_file("app/foo.rb").is_empty());
     }
 
     #[test]

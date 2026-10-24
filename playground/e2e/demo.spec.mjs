@@ -390,6 +390,41 @@ test("toggles selected lines with the platform comment shortcut", async ({ brows
   }
 });
 
+test("supports basic cursor and selection editing shortcuts", async ({ browser }) => {
+  const macUserAgent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const context = await browser.newContext({ userAgent: macUserAgent });
+  const page = await context.newPage();
+
+  try {
+    await page.goto(`http://localhost:8123${PLAYGROUND_PATH}`);
+    await waitForPlayground(page);
+    await page.evaluate(() => {
+      const editor = window.__editors.ruby;
+      editor.setValue("alpha = 1\nbeta = 2\n");
+      editor.setPosition({ lineNumber: 1, column: 9 });
+      editor.focus();
+    });
+
+    await page.keyboard.press("Meta+ArrowLeft");
+    await expect
+      .poll(() => page.evaluate(() => window.__editors.ruby.getPosition()?.column))
+      .toBe(1);
+
+    await page.keyboard.press("Shift+ArrowRight");
+    await expect
+      .poll(() => page.evaluate(() => window.__editors.ruby.getSelection()?.endColumn))
+      .toBe(2);
+    await page.keyboard.press("Backspace");
+    await expect
+      .poll(() => page.evaluate(() => window.__editors.ruby.getValue()))
+      .toBe("lpha = 1\nbeta = 2\n");
+  } finally {
+    await context.close();
+  }
+});
+
 test("shows annotated parameter hovers and literal interpolation", async ({ page }) => {
   await page.goto(PLAYGROUND_PATH);
   await page.waitForFunction(() => window.__tyda !== undefined, null, {

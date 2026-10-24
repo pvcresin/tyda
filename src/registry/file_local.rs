@@ -133,11 +133,14 @@ impl TypeRegistry {
     // a per-file snapshot references the external registry for accuracy, while keeping retained facts scoped to the file.
     pub fn retain_file_facts(&mut self, file_path: &str) {
         let mut removed_methods = false;
-        self.class_data.retain(|_, data| {
+        self.class_data.retain(|class_name, data| {
+            let class_is_file_local = data.file_path.as_deref() == Some(file_path);
             data.constants
                 .retain(|_, constant| constant.file_path.as_deref() == Some(file_path));
-            data.method_file_paths
-                .retain_paths(|path| path.as_ref() == file_path);
+            // Top-level methods use Object for CodeLens, but are not file-local Object facts.
+            data.method_file_paths.retain_paths(|path| {
+                path.as_ref() == file_path && (class_name != "Object" || class_is_file_local)
+            });
             if !data.methods.is_empty() {
                 // every retained path already equals `file_path`, so presence is the filter.
                 let method_file_paths = std::mem::take(&mut data.method_file_paths);
@@ -152,7 +155,7 @@ impl TypeRegistry {
                 Self::rebuild_method_index(data);
             }
 
-            data.file_path.as_deref() == Some(file_path)
+            class_is_file_local
                 || !data.constants.is_empty()
                 || !data.cold().class_variables.is_empty()
                 || !data.methods.is_empty()
@@ -301,12 +304,31 @@ impl TypeRegistry {
                 .constants
                 .values()
                 .any(|constant| constant.file_path.as_deref() == Some(file_path));
-            if !has_constants_in_file && data.file_path.as_deref() != Some(file_path) {
+            let class_in_file =
+                has_constants_in_file || data.file_path.as_deref() == Some(file_path);
+            if !class_in_file && !self.file_contribution_names.contains(class_name.as_str()) {
                 continue;
             }
-            for method in self.build_method_sigs_for_class(class_name, data) {
+            if !class_in_file
+                && !data
+                    .method_file_paths
+                    .iter()
+                    .any(|(_, path)| path.as_ref() == file_path)
+            {
+                continue;
+            }
+            let method_sigs = self.build_method_sigs_for_class(class_name, data);
+            for (method_def, method) in data.methods.iter().zip(method_sigs) {
                 if method.rbs_file_source {
                     continue;
+                }
+                if !class_in_file {
+                    let method_file_path = data
+                        .method_file_paths
+                        .get(&(method_def.name, method_def.is_singleton));
+                    if method_file_path.is_none_or(|path| path.as_ref() != file_path) {
+                        continue;
+                    }
                 }
                 let key: MethodKey = (
                     class_name.to_string(),
