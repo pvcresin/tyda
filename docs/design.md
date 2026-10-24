@@ -53,13 +53,22 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
 候補が重なる、または追跡中のlocalが再代入された場合は相関を捨て、既存のunionを維持する。
 
 `if` / `unless` の両方の分岐から後続へ到達できるとき、一方だけで初めて代入されたlocalは、
-もう一方では `nil` として結合する。
+もう一方では `nil` として結合する。`if` と `unless` は同じ分岐推論、条件の絞り込み、localのjoinを使い、
+条件の真偽だけを反転する。
 
 IntegerやSymbolなど変更できない組み込み値のlocalとliteralを `==` / `!=` で比較する条件では、分岐で新しく代入されたlocalの型を
 保持する。同じ条件を再評価した枝の中だけでその型を戻し、比較対象か追跡localへの書き込みで該当する
 記録を破棄する。無関係なlocalの更新では記録を維持し、条件の記録は各scopeで最大64件まで
 保持する。これにより、同じ条件を後で確認するRubyコードでnilを誤って診断せず、分岐外ではnilableな
 型を保つ。
+
+Block付き呼び出しは、RBSや汎用のblock resolverが型付きでbodyを解析する場合、そのresolverに解析を
+任せる。型情報がないユーザ定義callbackはfallbackでbodyを解析し、callback内の診断と外側の値への
+副作用を記録する。
+
+ユーザ定義メソッドの `yield` 引数は、yield式が実行される分岐scopeで記録する。後続の分岐joinや再代入で
+localがnilableになっても、過去のyield型には反映しない。`nil` は実際に `yield nil` する経路がある場合だけ
+block引数のunionに含める。
 
 ## semantic backend
 
