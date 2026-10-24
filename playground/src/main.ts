@@ -26,15 +26,17 @@ import {
   WASI,
 } from "@bjorn3/browser_wasi_shim";
 import LZString from "lz-string";
-// Minimal Monaco: the editor API + core keyboard commands + the editor features
-// the playground uses (CodeLens, comments, and hover) + the Ruby Monarch grammar.
+// Minimal Monaco: the editor API + core and line-editing commands + Find + the
+// editor features the playground uses (CodeLens, comments, and hover) + Ruby grammar.
 // Importing the full "monaco-editor" pulls in every editor contribution and
 // language service, which dominates the bundle.
 import * as monaco from "monaco-editor/editor/editor.api";
 import "monaco-editor/editor/browser/coreCommands.js";
 import "monaco-editor/editor/contrib/codelens/browser/codelensController.js";
 import "monaco-editor/editor/contrib/comment/browser/comment.js";
+import "monaco-editor/editor/contrib/find/browser/findController.js";
 import "monaco-editor/editor/contrib/hover/browser/hoverContribution.js";
+import "monaco-editor/editor/contrib/linesOperations/browser/linesOperations.js";
 import "monaco-editor/languages/definitions/ruby/register.js";
 import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 
