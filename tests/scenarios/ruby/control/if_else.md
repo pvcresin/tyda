@@ -66,15 +66,18 @@ end
 
 ## local assigned on one branch is nilable after the branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
 def conditional_local(flag)
   if flag
+    value = :present
+  end
+  value
+end
+
+def unless_conditional_local(flag)
+  unless flag
     value = :present
   end
   value
@@ -86,6 +89,7 @@ end
 ```rbs
 class Object < BasicObject
   def conditional_local: (untyped flag) -> :present?
+  def unless_conditional_local: (untyped flag) -> :present?
 end
 ```
 

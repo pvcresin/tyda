@@ -3470,6 +3470,32 @@ impl<'a> InferenceEngine<'a> {
         self.registry.add_call_site(class_name, call_site);
     }
 
+    fn nil_unassigned_branch_locals(base: &Scope, then_scope: &mut Scope, else_scope: &mut Scope) {
+        if then_scope.locals.len() == base.locals.len()
+            && else_scope.locals.len() == base.locals.len()
+        {
+            return;
+        }
+        let mut missing_else = Vec::new();
+        let mut missing_then = Vec::new();
+        for name in then_scope.locals.keys() {
+            if base.get(name).is_none() && else_scope.get(name).is_none() {
+                missing_else.push(name.clone());
+            }
+        }
+        for name in else_scope.locals.keys() {
+            if base.get(name).is_none() && then_scope.get(name).is_none() {
+                missing_then.push(name.clone());
+            }
+        }
+        for name in missing_else {
+            else_scope.set(&name, Type::Nil);
+        }
+        for name in missing_then {
+            then_scope.set(&name, Type::Nil);
+        }
+    }
+
     fn merge_scope_locals(&self, base: &Scope, then_scope: &Scope, else_scope: &Scope) -> Scope {
         let mut names: HashSet<String> = base.locals.keys().cloned().collect();
         names.extend(then_scope.locals.keys().cloned());
@@ -19564,6 +19590,9 @@ impl<'a> InferenceEngine<'a> {
                     scope.next_types = nt;
                     scope.break_types = bt;
                 } else {
+                    if !then_always_exits && !else_always_exits {
+                        Self::nil_unassigned_branch_locals(scope, &mut then_scope, &mut else_scope);
+                    }
                     *scope = self.merge_scope_locals(scope, &then_scope, &else_scope);
                 }
                 Self::merge_reachable_types(vec![then_type, else_type])
@@ -19682,6 +19711,9 @@ impl<'a> InferenceEngine<'a> {
                     scope.next_types = nt;
                     scope.break_types = bt;
                 } else {
+                    if !body_always_exits && !else_always_exits {
+                        Self::nil_unassigned_branch_locals(scope, &mut body_scope, &mut else_scope);
+                    }
                     *scope = self.merge_scope_locals(scope, &body_scope, &else_scope);
                 }
                 Self::merge_reachable_types(vec![body_type, else_type])

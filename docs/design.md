@@ -52,6 +52,9 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
 作らない。後続のnarrowingで一致する枝が一つに定まった場合だけ、関連localにもその枝の型を反映する。
 候補が重なる、または追跡中のlocalが再代入された場合は相関を捨て、既存のunionを維持する。
 
+`if` / `unless` の両方の分岐から後続へ到達できるとき、一方だけで初めて代入されたlocalは、
+もう一方では `nil` として結合する。
+
 ## semantic backend
 
 長寿命の `WorkspaceState` にファイルの snapshot、依存関係、推論結果を保持し、CLI / LSP / MCP /
