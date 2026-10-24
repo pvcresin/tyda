@@ -134,10 +134,6 @@ end
 
 ## case when with class
 
-```yaml
-known_issue: false
-```
-
 ### update
 
 ```ruby
