@@ -12326,7 +12326,11 @@ impl<'a> InferenceEngine<'a> {
                 self.registry.add_method_def_with_file_path(
                     class_name,
                     method_def,
-                    self.file_path.as_deref(),
+                    if class_name == "Object" {
+                        self.file_path.as_deref()
+                    } else {
+                        None
+                    },
                 );
                 let declared_returns = explicit_return_contract.as_ref().map(|fallback| {
                     self.declared_method_return_types(
@@ -12424,7 +12428,11 @@ impl<'a> InferenceEngine<'a> {
                 self.registry.add_method_def_with_file_path(
                     class_name,
                     method_def,
-                    self.file_path.as_deref(),
+                    if class_name == "Object" {
+                        self.file_path.as_deref()
+                    } else {
+                        None
+                    },
                 );
                 let declared_returns = explicit_return_contract.as_ref().map(|fallback| {
                     self.declared_method_return_types(
@@ -12733,7 +12741,11 @@ impl<'a> InferenceEngine<'a> {
                 extra_overloads: Vec::new(),
                 loc: Some(method_loc),
             },
-            self.file_path.as_deref(),
+            if class_name == "Object" {
+                self.file_path.as_deref()
+            } else {
+                None
+            },
         );
 
         if method_name == "initialize" && !is_singleton {
