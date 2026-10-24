@@ -13,7 +13,9 @@ types via a hover provider, and inferred signatures as CodeLens.
 
 CodeLens appears above inferred, unannotated `def` definitions, including
 top-level methods outside a class or module. The Ruby editor also loads Monaco's
-core cursor and editing key commands.
+core cursor commands, line operations, and Find widget. On macOS, `Command+Backspace`
+deletes from the cursor to the start of the line; `Shift+Command+K` deletes the
+whole line. `Command+F` opens Find (`Ctrl+F` on Windows/Linux).
 
 Select one or more lines in either editor and press `Ctrl+/` on Windows/Linux or
 `Command+/` on macOS to toggle Ruby line comments. Press the same shortcut again
