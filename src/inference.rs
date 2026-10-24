@@ -49809,6 +49809,21 @@ end
     }
 
     #[test]
+    fn test_top_level_methods_are_not_retained_as_file_local_facts() {
+        let source = "def foo\n  42\nend\n";
+        let core_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs/core");
+        let loader = crate::rbs::stdlib_loader::LazyRbsLoader::new(core_dir);
+        let mut registry =
+            crate::parser::analyze_source_with_file_path(source, None, &loader, "app/foo.rb");
+
+        assert_eq!(registry.methods_for_file("app/foo.rb").len(), 1);
+
+        registry.retain_file_facts("app/foo.rb");
+
+        assert!(registry.methods_for_file("app/foo.rb").is_empty());
+    }
+
+    #[test]
     fn test_methods_for_file_respects_rbs_comment_on_memoize_def() {
         let source = concat!(
             "class A\n",
