@@ -18034,23 +18034,27 @@ impl<'a> InferenceEngine<'a> {
                         scope,
                     )
                     .is_some();
-                let uses_generic_each_fallback =
-                    if let Some(receiver_class) = self.type_to_class_name(&rbs_receiver_type) {
-                        let prefer_singleton = matches!(rbs_receiver_type, Type::Singleton(_));
-                        let rbs_overloads = self.collect_owned_rbs_overloads(
-                            &receiver_class,
-                            method_name,
-                            prefer_singleton,
-                            true,
-                        );
-                        Self::generic_block_call_uses_each_fallback(
-                            method_name,
-                            rbs_overloads.is_empty(),
-                        )
-                    } else {
-                        false
-                    };
-                if has_rbs_block_seed || uses_generic_each_fallback {
+                if has_rbs_block_seed {
+                    return None;
+                }
+                let uses_generic_each_fallback = if method_name == "each"
+                    && let Some(receiver_class) = self.type_to_class_name(&rbs_receiver_type)
+                {
+                    let prefer_singleton = matches!(rbs_receiver_type, Type::Singleton(_));
+                    let rbs_overloads = self.collect_owned_rbs_overloads(
+                        &receiver_class,
+                        method_name,
+                        prefer_singleton,
+                        true,
+                    );
+                    Self::generic_block_call_uses_each_fallback(
+                        method_name,
+                        rbs_overloads.is_empty(),
+                    )
+                } else {
+                    false
+                };
+                if uses_generic_each_fallback {
                     return None;
                 }
                 Vec::new()
