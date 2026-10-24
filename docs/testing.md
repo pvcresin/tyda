@@ -103,7 +103,7 @@ case heading の直後には optional な YAML config を置ける。
 ruby_version: "3.3"
 rails_version: "7.1"
 include_synthetic_dsl_methods: false
-known_issue: false
+known_issue: true
 ~~~
 
 update section では次を使える。
@@ -191,10 +191,12 @@ mutation test は壊れた入力の graceful degradation、pathological test は
 - まだ推論できない入力も panic / hang しない結果を固定する。
 - 正しい Ruby だが未対応の期待値は `tests/scenarios/known-issues/` に置くか、case config に
   `known_issue: true` を付ける。最小の Ruby 例と Ruby semantics / RBS に基づく暫定期待値を残し、
-  推論が一致したら通常 scenario へ昇格する。
+  推論が一致したら通常 scenario へ昇格する。解決後は `known_issue` キーを削除し、
+  `known_issue: false` は残さない。他の設定もなければ YAML config ブロックごと削除する。
 - 大きな推論変更は最小例から始め、対象 scenario、全 suite、OSS subject、benchmark へ段階的に広げる。
 - flaky test は原因を再現・修正し、retry や skip で隠さない。
 - Ruby version / Rails version による意味の差だけを version case にする。
 - DSL は gem / framework ごとに分け、1 case に複数の無関係な機能を詰め込まない。
 - source 固有の名前は一般化し、API 名や DSL 名など意味に必要な固有名だけ残す。
 - scenario の意図が分からない自由文や作業履歴を追加しない。
+- 開発ドキュメントから個別 scenario のケースやファイルへリンクしない。必要ならカテゴリのディレクトリを案内する。

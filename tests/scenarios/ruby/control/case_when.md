@@ -134,10 +134,6 @@ end
 
 ## case when with class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -468,5 +464,379 @@ foo(:a)
 ```rbs
 class Object < BasicObject
   def foo: ((Integer | String | Symbol) x) -> (Integer | String | :other)
+end
+```
+
+## class case keeps an unknown subject open
+
+### update
+
+```ruby
+def unknown_class_case(value)
+  case value
+  when Integer
+    value
+  else
+    "other"
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def unknown_class_case: (untyped value) -> ("other" | Integer)
+end
+```
+
+## class case includes a later unrelated caller
+
+### update
+
+```ruby
+def later_class_case(value)
+  case value
+  when Integer
+    :number
+  else
+    :other
+  end
+end
+
+later_class_case(1)
+later_class_case("text")
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def later_class_case: ((Integer | String) value) -> (:number | :other)
+end
+```
+
+## class case keeps custom class equality possible
+
+### update
+
+```ruby
+class CaseWhenMatcher
+  def self.===(_value)
+    true
+  end
+end
+
+def custom_class_case(value)
+  case value
+  when CaseWhenMatcher
+    :matched
+  else
+    value
+  end
+end
+
+custom_class_case("text")
+```
+
+### result
+
+```rbs
+class CaseWhenMatcher
+  def self.===: (untyped _value) -> true
+end
+
+class Object < BasicObject
+  def custom_class_case: (String value) -> (String | :matched)
+end
+```
+
+## class case keeps unknown superclass matches possible
+
+### update
+
+```ruby
+def runtime_case_parent
+  Class.new
+end
+
+class DynamicCaseChild < runtime_case_parent
+end
+
+def dynamic_parent_case(value)
+  case value
+  when DynamicCaseChild
+    :matched
+  else
+    value
+  end
+end
+
+dynamic_parent_case("text")
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def runtime_case_parent: -> singleton(Object)
+  def dynamic_parent_case: (String value) -> (String | :matched)
+end
+```
+
+## class case keeps anonymous Struct parent possible
+
+### update
+
+```ruby
+class Person < Struct.new(:name)
+end
+
+class StructParentMatcher
+  def match(value)
+    case value
+    when Struct
+      :struct
+    else
+      :other
+    end
+  end
+end
+
+StructParentMatcher.new.match(Person.new("Ada"))
+```
+
+### result
+
+```rbs
+class Person
+  def name: -> String
+  def name=: (String name) -> String
+  def initialize: (String name) -> void
+  def self.members: -> Array[:name]
+end
+
+class StructParentMatcher
+  def match: (Person value) -> (:other | :struct)
+end
+```
+
+## class case keeps anonymous Data parent possible
+
+### update
+
+```ruby
+class Point < Data.define(:x)
+end
+
+class DataParentMatcher
+  def match(value)
+    case value
+    when Data
+      :data
+    else
+      :other
+    end
+  end
+end
+
+DataParentMatcher.new.match(Point.new(x: 1))
+```
+
+### result
+
+```rbs
+class DataParentMatcher
+  def match: (Point value) -> (:data | :other)
+end
+
+class Point
+  def x: -> Integer
+  def initialize: (x: Integer) -> void
+  def self.members: -> Array[:x]
+  def with: (?x: Integer) -> Point
+end
+```
+
+## class case keeps subclass matches possible
+
+### update
+
+```ruby
+class CaseWhenBase
+end
+
+class CaseWhenChild < CaseWhenBase
+end
+
+def subclass_class_case(value)
+  case value
+  when CaseWhenChild
+    :child
+  else
+    :base
+  end
+end
+
+subclass_class_case(CaseWhenBase.new)
+subclass_class_case(CaseWhenChild.new)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def subclass_class_case: ((CaseWhenBase | CaseWhenChild) value) -> (:base | :child)
+end
+```
+
+## class case accounts for later equality definitions
+
+### update
+
+```ruby
+def case_before_equality_override
+  value = "text"
+  case value
+  when Integer
+    :matched
+  else
+    :other
+  end
+end
+
+class Integer
+  def self.===(_value)
+    true
+  end
+end
+
+case_before_equality_override
+```
+
+### result
+
+```rbs
+class Integer < Numeric
+  def self.===: (untyped _value) -> bool
+end
+
+class Object < BasicObject
+  def case_before_equality_override: -> :matched | :other
+end
+```
+
+## class case sees later equality definitions with prior call sites
+
+### update
+
+```ruby
+def invoke_later_equality_case
+  later_equality_case("text")
+end
+
+def later_equality_case(value)
+  case value
+  when Integer
+    :matched
+  else
+    :other
+  end
+end
+
+class Integer
+  def self.===(_value)
+    true
+  end
+end
+
+invoke_later_equality_case
+```
+
+### result
+
+```rbs
+class Integer < Numeric
+  def self.===: (untyped _value) -> bool
+end
+
+class Object < BasicObject
+  def invoke_later_equality_case: -> :matched | :other
+  def later_equality_case: (String value) -> (:matched | :other)
+end
+```
+
+## class case preserves the local subject after a later Module equality override
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def module_override_class_case
+  value = "text"
+  case value
+  when Integer
+    value
+  else
+    "other"
+  end
+end
+
+module Module
+  def ===(_value)
+    true
+  end
+end
+
+module_override_class_case
+```
+
+### result
+
+```rbs
+module Module
+  def ===: (untyped other) -> bool
+end
+
+class Object < BasicObject
+  def module_override_class_case: -> "other" | "text"
+end
+```
+
+## class case replays a parameter after a later Module equality override
+
+### update
+
+```ruby
+def module_override_unknown_case(value)
+  case value
+  when Integer
+    value
+  else
+    "other"
+  end
+end
+
+module Module
+  def ===(_value)
+    true
+  end
+end
+
+module_override_unknown_case
+```
+
+### result
+
+```rbs
+module Module
+  def ===: (untyped other) -> bool
+end
+
+class Object < BasicObject
+  def module_override_unknown_case: (untyped value) -> (untyped | "other")
 end
 ```

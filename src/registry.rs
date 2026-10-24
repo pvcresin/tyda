@@ -1939,6 +1939,7 @@ pub struct ClassData {
     pub has_pending_call_site_summary: bool,
     pub superclass: Option<SharedName>,
     pub superclass_is_absolute: bool,
+    pub superclass_is_unknown: bool,
     pub mixins: Vec<Mixin>,
     // boxed: `included do` / `extended do` / `prepended do` are rare, and three inline
     // vectors would cost 72B in every `ClassData`.
@@ -3339,6 +3340,7 @@ impl TypeRegistry {
 
         let is_module = data.is_module;
         let superclass = data.superclass.clone();
+        let superclass_is_unknown = data.superclass_is_unknown;
         seen.insert(name.clone());
         active.insert(name.clone());
 
@@ -3366,7 +3368,9 @@ impl TypeRegistry {
             }
         }
 
-        let complete = if let Some(superclass) = superclass.as_deref() {
+        let complete = if superclass_is_unknown {
+            false
+        } else if let Some(superclass) = superclass.as_deref() {
             let superclass_name = self.resolve_superclass_ref_borrow(class_name, superclass);
             self.collect_ordered_ancestor_names(superclass_name, seen, active, names)
         } else if is_module {
@@ -9880,7 +9884,12 @@ impl TypeRegistry {
         let data = self.class_data_mut(class_name);
         data.superclass = Some(superclass);
         data.superclass_is_absolute = is_absolute;
+        data.superclass_is_unknown = false;
         data.user_defined = true;
+    }
+
+    pub fn mark_superclass_unknown(&mut self, class_name: &str) {
+        self.class_data_mut(class_name).superclass_is_unknown = true;
     }
 
     pub fn set_superclass_type_args(&mut self, class_name: &str, type_args: Vec<rbs_ir::RbsType>) {

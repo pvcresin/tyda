@@ -1970,6 +1970,7 @@ impl<'a> InferenceEngine<'a> {
         comments: &[RbsComment],
         generate_writer: bool,
     ) {
+        self.registry.mark_superclass_unknown(class_name);
         let data_constructor_members = if generate_writer {
             None
         } else {

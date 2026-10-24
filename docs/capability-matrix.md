@@ -13,13 +13,19 @@
 | 分野 | 状態 | 代表的な範囲 |
 | --- | --- | --- |
 | 定義・dispatch・visibility | supported | class / module / mixin / constant / method / `super` |
-| 変数・flow | supported | local / ivar（method 内の再代入・分岐・複合代入） / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入を含む） / 分岐間のlocal相関 / rescue |
+| 変数・flow | supported | local / ivar（method 内の再代入・分岐・複合代入） / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入と、閉じた subject の case） / 分岐間のlocal相関 / rescue |
 | block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy |
 | collection shape | supported | Array、Hash、Set、Tuple、Record |
 | pattern matching | partial | version gate、array / hash / find binding、literal / expression subject のcapture型維持、guard 内の capture、`case/in` の不一致は例外経路 |
 | 動的定義 | partial | 静的な名前の `define_method`、`attr_*`、`Struct.new`、`Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） |
 | runtime-only meta programming | partial | 未知の名前・object identity は `untyped` |
 | 深さ・union・shape の制限 | supported | 上限超過時は安全に `untyped` |
+
+`case/when` の到達不能枝除外は、Full inference の再解析で標準 `Class#===`、閉じた subject、
+完全な祖先情報を確認できた場合に限る。匿名の `Struct.new` / `Data.define` superclass は祖先情報を
+不完全として扱う。compact CLI は既存の初回解析を保ち、再解析対象外の
+method も初回解析時の推論を保つ。そのため、後置 `Module#===` override がある noarg method では
+既知の推論誤差が残る。
 
 主な scenario は [tests/scenarios/ruby/](https://github.com/pvcresin/tyda/tree/main/tests/scenarios/ruby) にある。
 

@@ -42,6 +42,8 @@ If the expected RBS is correct Ruby but Tyda does not match yet, put the case in
 `known-issues/` (or set `known_issue: true`). The runner keeps a mismatch as
 open; a sudden match fails until the case is promoted. Keep the directory even
 when empty (`.gitkeep`).
+When fixed, remove the `known_issue` key instead of setting it to `false`.
+Remove the YAML config block if it has no remaining settings.
 
 ## Verify
 
