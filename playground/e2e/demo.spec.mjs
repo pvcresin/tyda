@@ -425,6 +425,83 @@ test("supports basic cursor and selection editing shortcuts", async ({ browser }
   }
 });
 
+test("supports macOS line editing shortcuts", async ({ browser }) => {
+  const macUserAgent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const context = await browser.newContext({ userAgent: macUserAgent });
+  const page = await context.newPage();
+  const source = "alpha = 1\nbeta = 2\n";
+
+  try {
+    await page.goto(`http://localhost:8123${PLAYGROUND_PATH}`);
+    await waitForPlayground(page);
+
+    await page.evaluate((value) => {
+      const editor = window.__editors.ruby;
+      editor.setValue(value);
+      editor.setPosition({
+        lineNumber: 1,
+        column: editor.getModel().getLineMaxColumn(1),
+      });
+      editor.focus();
+    }, source);
+    await page.keyboard.press("Meta+Backspace");
+    await expect
+      .poll(() => page.evaluate(() => window.__editors.ruby.getValue()))
+      .toBe("\nbeta = 2\n");
+
+    await page.evaluate((value) => {
+      const editor = window.__editors.ruby;
+      editor.setValue(value);
+      editor.setPosition({ lineNumber: 1, column: 1 });
+      editor.focus();
+    }, source);
+    await page.keyboard.press("Meta+Shift+K");
+    await expect
+      .poll(() => page.evaluate(() => window.__editors.ruby.getValue()))
+      .toBe("beta = 2\n");
+  } finally {
+    await context.close();
+  }
+});
+
+test("opens Monaco Find with the platform shortcut", async ({ browser }) => {
+  const macUserAgent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const windowsUserAgent =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const macContext = await browser.newContext({ userAgent: macUserAgent });
+  const windowsContext = await browser.newContext({ userAgent: windowsUserAgent });
+  const macPage = await macContext.newPage();
+  const windowsPage = await windowsContext.newPage();
+
+  try {
+    await macPage.goto(`http://localhost:8123${PLAYGROUND_PATH}`);
+    await waitForPlayground(macPage);
+    await macPage.evaluate(() => window.__editors.ruby.focus());
+
+    await macPage.keyboard.press("Meta+f");
+    const macFindWidget = macPage.locator("#ruby .find-widget");
+    await expect(macFindWidget).toBeVisible();
+    await expect(macFindWidget.getByRole("textbox", { name: "Find" })).toBeFocused();
+
+    await windowsPage.goto(`http://localhost:8123${PLAYGROUND_PATH}`);
+    await waitForPlayground(windowsPage);
+    await windowsPage.evaluate(() => window.__editors.ruby.focus());
+
+    await windowsPage.keyboard.press("Control+f");
+    const windowsFindWidget = windowsPage.locator("#ruby .find-widget");
+    await expect(windowsFindWidget).toBeVisible();
+    await expect(windowsFindWidget.getByRole("textbox", { name: "Find" })).toBeFocused();
+  } finally {
+    await macContext.close();
+    await windowsContext.close();
+  }
+});
+
 test("shows annotated parameter hovers and literal interpolation", async ({ page }) => {
   await page.goto(PLAYGROUND_PATH);
   await page.waitForFunction(() => window.__tyda !== undefined, null, {
