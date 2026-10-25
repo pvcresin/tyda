@@ -485,6 +485,47 @@ fn diagnostics_flag_outputs_json_lines() {
 }
 
 #[test]
+fn diagnostics_flag_suppresses_unreachable_presence_branch_methods() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("unreachable.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "def example\n",
+            "  attachments = nil\n",
+            "  if attachments.present?\n",
+            "    attachments.values\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "value = nil\n",
+            "if value.presence\n",
+            "  value.missing_method\n",
+            "end\n",
+            "\n",
+            "blank_value = nil\n",
+            "unless blank_value.blank?\n",
+            "  blank_value.missing_method\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--dsl=+active_support_concern")
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.is_empty(),
+        "unreachable missing method should not produce a diagnostic: {stdout}"
+    );
+}
+
+#[test]
 fn diagnostics_flag_honors_line_ignore_comments() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("ignored.rb");

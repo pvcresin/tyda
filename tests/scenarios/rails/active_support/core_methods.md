@@ -574,3 +574,28 @@ class Probe
   def grouped: -> Array[Array[Integer?]]
 end
 ```
+
+## Exclude an unreachable present? branch for nil
+
+### update
+
+```ruby
+class Probe
+  def result
+    value = nil
+    if value.present?
+      value
+    else
+      "missing"
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def result: -> "missing"
+end
+```
