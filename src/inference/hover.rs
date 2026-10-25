@@ -2672,11 +2672,8 @@ impl<'a> InferenceEngine<'a> {
         match ty {
             Type::MethodReturnRef(class, method) => Some(format!("{class}#{method}")),
             Type::ReceiverMethodRef(receiver, method) => {
-                let inner = match receiver.as_ref() {
-                    Type::Class(name) | Type::Singleton(name) => name.as_str(),
-                    _ => return None,
-                };
-                Some(format!("{inner}#{method}"))
+                let owner = TypeRegistry::type_to_class_name_pub(receiver)?;
+                Some(format!("{owner}#{method}"))
             }
             _ => None,
         }
