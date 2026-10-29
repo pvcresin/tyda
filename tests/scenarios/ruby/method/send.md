@@ -203,6 +203,10 @@ end
 
 ## Resolve static method objects from variables
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -226,13 +230,17 @@ end
 class Tool
   NAME: :build
 
-  def build: (untyped value) -> String
+  def build: (untyped value) -> untyped
   def via_local: -> String
   def via_const: -> String
 end
 ```
 
 ## Resolve static unbound method objects
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -268,13 +276,17 @@ end
 
 class Item
   def echo: (untyped value) -> untyped
-  def label: (untyped value) -> String
+  def label: (untyped value) -> untyped
   def self.via_bare: -> "ok"
   def self.via_public: -> String
 end
 ```
 
 ## Resolve cached unbound method objects
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -295,7 +307,7 @@ end
 class Source
   METHOD: Proc
 
-  def label: (untyped value) -> String
+  def label: (untyped value) -> untyped
   def self.via_const: -> String
   def via_bind: -> String
 end

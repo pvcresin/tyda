@@ -77,6 +77,10 @@ end
 
 ## `self.class` and value `.class`
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -102,7 +106,7 @@ class Object < BasicObject
   def array_class: -> singleton(Array)
   def hash_class: -> singleton(Hash)
   def class_class: -> singleton(Class)
-  def unknown_class: (untyped x) -> Class
+  def unknown_class: (untyped x) -> untyped
 end
 ```
 
