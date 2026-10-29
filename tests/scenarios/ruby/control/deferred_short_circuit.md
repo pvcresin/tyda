@@ -1,5 +1,35 @@
 # Ruby / Control / Deferred Short-Circuit Values
 
+## Preserve unknown values resolved from an RBS union
+
+### update
+
+```rbs
+class DeferredUnknownSource
+  def self.value: -> (false | untyped)
+end
+```
+
+```ruby
+class DeferredUnknownConsumer
+  def self.classify
+    if DeferredUnknownSource.value
+      :truthy
+    else
+      :falsy
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class DeferredUnknownConsumer
+  def self.classify: -> :falsy | :truthy
+end
+```
+
 ## Resolve deferred method returns before truthiness filtering
 
 ```ruby
