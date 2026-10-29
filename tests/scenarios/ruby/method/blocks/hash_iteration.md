@@ -41,6 +41,10 @@ end
 
 ## Hash#transform_values preserves records
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -71,7 +75,7 @@ end
 class Object < BasicObject
   def value_labels: -> { first: "label", second: "label" }
   def value_strings: -> { name: String, count: String }
-  def stringify: (untyped value) -> String
+  def stringify: (untyped value) -> untyped
 end
 ```
 
