@@ -670,8 +670,8 @@ pub struct InferenceEngine<'a> {
     global_variables: HashMap<String, Vec<Type>>,
     singleton_ivars: HashMap<(String, String), Vec<Type>>,
     context_free_type_cache: HashMap<(usize, usize, u8), Type>,
-    receiver_ref_memo_scratch: FxHashMap<Type, Type>,
-    receiver_ref_visiting_scratch: FxHashSet<Type>,
+    receiver_ref_memo_scratch: FxHashMap<(Type, bool), Type>,
+    receiver_ref_visiting_scratch: FxHashSet<(Type, bool)>,
     class_comment_index: Option<Vec<(usize, std::string::String)>>,
     pub(crate) universal_singleton_tail_preloaded: bool,
     collecting_concern_included: bool,
@@ -44667,7 +44667,8 @@ impl<'a> InferenceEngine<'a> {
         let mut visiting = std::mem::take(&mut self.receiver_ref_visiting_scratch);
         memo.clear();
         visiting.clear();
-        let resolved = self.resolve_receiver_method_refs_depth(ty, 0, &mut memo, &mut visiting);
+        let resolved =
+            self.resolve_receiver_method_refs_depth(ty, 0, &mut memo, &mut visiting, false);
         memo.clear();
         visiting.clear();
         self.receiver_ref_memo_scratch = memo;
@@ -44735,17 +44736,19 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         ty: &Type,
         depth: usize,
-        memo: &mut FxHashMap<Type, Type>,
-        visiting: &mut FxHashSet<Type>,
+        memo: &mut FxHashMap<(Type, bool), Type>,
+        visiting: &mut FxHashSet<(Type, bool)>,
+        preserve_untyped: bool,
     ) -> Type {
         const MAX_DEPTH: usize = 32;
         if depth >= MAX_DEPTH {
             return ty.clone();
         }
-        if let Some(cached) = memo.get(ty) {
+        let key = (ty.clone(), preserve_untyped);
+        if let Some(cached) = memo.get(&key) {
             return cached.clone();
         }
-        if !visiting.insert(ty.clone()) {
+        if !visiting.insert(key.clone()) {
             return ty.clone();
         }
         let resolved = match ty {
@@ -44758,7 +44761,13 @@ impl<'a> InferenceEngine<'a> {
                 if resolved == Type::Untyped {
                     Type::MethodReturnRef(*class_name, *method_name)
                 } else {
-                    self.resolve_receiver_method_refs_depth(&resolved, depth + 1, memo, visiting)
+                    self.resolve_receiver_method_refs_depth(
+                        &resolved,
+                        depth + 1,
+                        memo,
+                        visiting,
+                        preserve_untyped,
+                    )
                 }
             }
             Type::ReceiverMethodRef(receiver_type, method_name) => {
@@ -44767,6 +44776,7 @@ impl<'a> InferenceEngine<'a> {
                     depth + 1,
                     memo,
                     visiting,
+                    preserve_untyped,
                 );
                 if let Some(result) =
                     self.resolve_receiver_ref_overloaded_return(&resolved_receiver, method_name)
@@ -44789,7 +44799,7 @@ impl<'a> InferenceEngine<'a> {
             }
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 let resolved_inner =
-                    self.resolve_receiver_method_refs_depth(inner, depth + 1, memo, visiting);
+                    self.resolve_receiver_method_refs_depth(inner, depth + 1, memo, visiting, true);
                 if Self::type_contains_receiver_resolution_ref(&resolved_inner) {
                     if matches!(ty, Type::TruthyProjection(_)) {
                         Type::TruthyProjection(Box::new(resolved_inner))
@@ -44808,31 +44818,59 @@ impl<'a> InferenceEngine<'a> {
             Type::Union(parts) => {
                 let resolved: Vec<Type> = parts
                     .iter()
-                    .map(|t| self.resolve_receiver_method_refs_depth(t, depth + 1, memo, visiting))
+                    .map(|t| {
+                        self.resolve_receiver_method_refs_depth(
+                            t,
+                            depth + 1,
+                            memo,
+                            visiting,
+                            preserve_untyped,
+                        )
+                    })
                     .collect();
-                Type::from_type_vec(resolved)
+                if preserve_untyped {
+                    Type::from_type_vec_preserve_untyped(resolved)
+                } else {
+                    Type::from_type_vec(resolved)
+                }
             }
             Type::Intersection(parts) => Type::Intersection(
                 parts
                     .iter()
-                    .map(|t| self.resolve_receiver_method_refs_depth(t, depth + 1, memo, visiting))
+                    .map(|t| {
+                        self.resolve_receiver_method_refs_depth(
+                            t,
+                            depth + 1,
+                            memo,
+                            visiting,
+                            preserve_untyped,
+                        )
+                    })
                     .collect(),
             ),
-            Type::Array(Some(inner)) => Type::Array(Some(Box::new(
-                self.resolve_receiver_method_refs_depth(inner, depth + 1, memo, visiting),
-            ))),
+            Type::Array(Some(inner)) => {
+                Type::Array(Some(Box::new(self.resolve_receiver_method_refs_depth(
+                    inner,
+                    depth + 1,
+                    memo,
+                    visiting,
+                    preserve_untyped,
+                ))))
+            }
             Type::Hash(Some(k), Some(v)) => Type::Hash(
                 Some(Box::new(self.resolve_receiver_method_refs_depth(
                     k,
                     depth + 1,
                     memo,
                     visiting,
+                    preserve_untyped,
                 ))),
                 Some(Box::new(self.resolve_receiver_method_refs_depth(
                     v,
                     depth + 1,
                     memo,
                     visiting,
+                    preserve_untyped,
                 ))),
             ),
             Type::Hash(Some(k), None) => Type::Hash(
@@ -44841,6 +44879,7 @@ impl<'a> InferenceEngine<'a> {
                     depth + 1,
                     memo,
                     visiting,
+                    preserve_untyped,
                 ))),
                 None,
             ),
@@ -44851,6 +44890,7 @@ impl<'a> InferenceEngine<'a> {
                     depth + 1,
                     memo,
                     visiting,
+                    preserve_untyped,
                 ))),
             ),
             Type::Record(fields) => Type::Record(
@@ -44863,6 +44903,7 @@ impl<'a> InferenceEngine<'a> {
                             depth + 1,
                             memo,
                             visiting,
+                            preserve_untyped,
                         ),
                         optional: field.optional,
                     })
@@ -44871,7 +44912,15 @@ impl<'a> InferenceEngine<'a> {
             Type::Tuple(elems) => {
                 let resolved: Vec<Type> = elems
                     .iter()
-                    .map(|t| self.resolve_receiver_method_refs_depth(t, depth + 1, memo, visiting))
+                    .map(|t| {
+                        self.resolve_receiver_method_refs_depth(
+                            t,
+                            depth + 1,
+                            memo,
+                            visiting,
+                            preserve_untyped,
+                        )
+                    })
                     .collect();
                 Type::Tuple(resolved)
             }
@@ -44884,12 +44933,18 @@ impl<'a> InferenceEngine<'a> {
                     depth + 1,
                     memo,
                     visiting,
+                    preserve_untyped,
                 )),
                 param_count: *param_count,
             },
             Type::PatternIndexRef(subject, index) => {
-                let resolved_subject =
-                    self.resolve_receiver_method_refs_depth(subject, depth + 1, memo, visiting);
+                let resolved_subject = self.resolve_receiver_method_refs_depth(
+                    subject,
+                    depth + 1,
+                    memo,
+                    visiting,
+                    preserve_untyped,
+                );
                 if Self::type_contains_receiver_resolution_ref(&resolved_subject) {
                     Type::PatternIndexRef(Box::new(resolved_subject), *index)
                 } else {
@@ -44897,8 +44952,13 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             Type::PatternRestRef(subject) => {
-                let resolved_subject =
-                    self.resolve_receiver_method_refs_depth(subject, depth + 1, memo, visiting);
+                let resolved_subject = self.resolve_receiver_method_refs_depth(
+                    subject,
+                    depth + 1,
+                    memo,
+                    visiting,
+                    preserve_untyped,
+                );
                 if Self::type_contains_receiver_resolution_ref(&resolved_subject) {
                     Type::PatternRestRef(Box::new(resolved_subject))
                 } else {
@@ -44906,8 +44966,13 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             Type::PatternKeyRef(subject, key) => {
-                let resolved_subject =
-                    self.resolve_receiver_method_refs_depth(subject, depth + 1, memo, visiting);
+                let resolved_subject = self.resolve_receiver_method_refs_depth(
+                    subject,
+                    depth + 1,
+                    memo,
+                    visiting,
+                    preserve_untyped,
+                );
                 if Self::type_contains_receiver_resolution_ref(&resolved_subject) {
                     Type::PatternKeyRef(Box::new(resolved_subject), key.clone())
                 } else {
@@ -44915,8 +44980,13 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             Type::PatternKeyRestRef(subject, matched_keys) => {
-                let resolved_subject =
-                    self.resolve_receiver_method_refs_depth(subject, depth + 1, memo, visiting);
+                let resolved_subject = self.resolve_receiver_method_refs_depth(
+                    subject,
+                    depth + 1,
+                    memo,
+                    visiting,
+                    preserve_untyped,
+                );
                 if Self::type_contains_receiver_resolution_ref(&resolved_subject) {
                     Type::PatternKeyRestRef(Box::new(resolved_subject), matched_keys.clone())
                 } else {
@@ -44925,8 +44995,8 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => ty.clone(),
         };
-        visiting.remove(ty);
-        memo.insert(ty.clone(), resolved.clone());
+        visiting.remove(&key);
+        memo.insert(key, resolved.clone());
         resolved
     }
 
@@ -44934,17 +45004,18 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         ty: &Type,
         depth: usize,
-        memo: &mut FxHashMap<Type, Type>,
-        visiting: &mut FxHashSet<Type>,
+        memo: &mut FxHashMap<(Type, bool), Type>,
+        visiting: &mut FxHashSet<(Type, bool)>,
     ) -> Type {
         const MAX_DEPTH: usize = 32;
         if depth >= MAX_DEPTH {
             return ty.clone();
         }
-        if let Some(cached) = memo.get(ty) {
+        let key = (ty.clone(), false);
+        if let Some(cached) = memo.get(&key) {
             return cached.clone();
         }
-        if !visiting.insert(ty.clone()) {
+        if !visiting.insert(key.clone()) {
             return ty.clone();
         }
         let resolved = match ty {
@@ -45161,8 +45232,8 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => ty.clone(),
         };
-        visiting.remove(ty);
-        memo.insert(ty.clone(), resolved.clone());
+        visiting.remove(&key);
+        memo.insert(key, resolved.clone());
         resolved
     }
 
@@ -49754,6 +49825,27 @@ end
         assert!(engine.receiver_ref_memo_scratch.capacity() > 0);
     }
 
+    #[test]
+    fn receiver_ref_resolution_preserves_untyped_union_members() {
+        let mut engine = InferenceEngine::new();
+        let union = Type::Union(vec![Type::False, Type::Untyped]);
+        let truthy = Type::TruthyProjection(Box::new(union.clone()));
+        let falsy = Type::FalsyProjection(Box::new(union.clone()));
+        let mut memo = FxHashMap::default();
+        let mut visiting = FxHashSet::default();
+
+        let resolved =
+            engine.resolve_receiver_method_refs_depth(&union, 0, &mut memo, &mut visiting, false);
+        assert_eq!(resolved, Type::False);
+
+        let resolved =
+            engine.resolve_receiver_method_refs_depth(&truthy, 0, &mut memo, &mut visiting, false);
+        assert_eq!(resolved, Type::Untyped);
+        assert_eq!(
+            engine.resolve_receiver_method_refs_depth(&falsy, 0, &mut memo, &mut visiting, false,),
+            Type::from_type_vec_preserve_untyped(vec![Type::False, Type::Untyped])
+        );
+    }
     #[test]
     fn deferred_block_receiver_tracking_requires_method_refs() {
         let method_return_ref = Type::MethodReturnRef(Sym::new("Source"), Sym::new("items"));

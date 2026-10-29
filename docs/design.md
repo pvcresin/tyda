@@ -51,6 +51,7 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
 （現在は最大64個）に従い、相関専用の件数上限は重ねない。追加状態は変更local数に比例し、分岐の直積は
 作らない。後続のnarrowingで一致する枝が一つに定まった場合だけ、関連localにもその枝の型を反映する。
 候補が重なる、または追跡中のlocalが再代入された場合は相関を捨て、既存のunionを維持する。
+遅延参照をtruthy/falsy projectionの内側で解決するときは、union中の `untyped` を保持し、不明な分岐の到達可能性を失わない。
 
 ## semantic backend
 
