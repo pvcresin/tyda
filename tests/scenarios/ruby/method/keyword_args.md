@@ -313,10 +313,6 @@ end
 
 ## Keyword splat widens the optional parameter
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -324,13 +320,18 @@ def foo(check: false) = nil
 
 opt = { check: 1 }
 foo(**opt)
+
+def earlier(check: false) = nil
+earlier(**later)
+later = { check: "assigned after the call" }
 ```
 
 ### result
 
 ```rbs
 class Object < BasicObject
-  def foo: (?check: (bool | Integer)) -> nil
+  def foo: (?check: (Integer | bool)) -> nil
+  def earlier: (?check: bool) -> nil
 end
 ```
 

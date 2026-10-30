@@ -536,3 +536,75 @@ class BranchYield
   def each_data: (untyped filename) { ((String | { name: untyped })) -> untyped } -> (nil | untyped)
 end
 ```
+
+## Substitute call arguments into source yield types
+
+### update
+
+```ruby
+class PairSource
+  def each_pair(left, right)
+    yield left, right
+  end
+end
+
+class PairSourceCaller
+  def read = PairSource.new.each_pair("name", 1) { |name, count| [name.upcase, count.to_s] }
+
+  def assigned_name
+    name = nil
+    PairSource.new.each_pair("name", 1) { |value, _count| name = value }
+    name
+  end
+end
+
+class WhileYieldSource
+  def each_value(value)
+    current = value
+    while current
+      yield current
+      current = nil
+    end
+  end
+end
+
+class WhileYieldCaller
+  def assigned_value
+    value = nil
+    WhileYieldSource.new.each_value(:item) { |item| value = item; nil }
+    value
+  end
+
+  def nullable_downcase
+    WhileYieldSource.new.each_value(maybe_string) { |value| value.downcase }
+  end
+end
+```
+
+```rbs
+class Object
+  def maybe_string: -> String?
+end
+```
+
+### result
+
+```rbs
+class PairSource
+  def each_pair: (String left, Integer right) { (untyped, untyped) -> ("name" | [String, String]) } -> ("name" | [String, String])
+end
+
+class PairSourceCaller
+  def read: -> [String, String]
+  def assigned_name: -> "name"?
+end
+
+class WhileYieldCaller
+  def assigned_value: -> :item?
+  def nullable_downcase: -> nil
+end
+
+class WhileYieldSource
+  def each_value: ((String | Symbol)? value) { (untyped) -> String? } -> nil
+end
+```

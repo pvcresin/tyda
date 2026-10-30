@@ -376,7 +376,7 @@ item.name
 
 ```rbs
 class Item
-  def name: -> "item"
+  def name: -> String
   def name=: (String name) -> String
   def initialize: -> void
 end

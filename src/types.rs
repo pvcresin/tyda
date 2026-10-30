@@ -189,9 +189,10 @@ impl Type {
                     _ => Some(Type::from_type_vec_preserve_untyped(projected)),
                 }
             }
-            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) => {
-                Some(Type::TruthyProjection(Box::new(ty.clone())))
-            }
+            Type::MethodReturnRef(..)
+            | Type::ReceiverMethodRef(..)
+            | Type::ParamRef(..)
+            | Type::KeywordParamRef(..) => Some(Type::TruthyProjection(Box::new(ty.clone()))),
             Type::TruthyProjection(_) => Some(ty.clone()),
             Type::FalsyProjection(_) => None,
             _ => Some(ty.clone()),
@@ -212,9 +213,10 @@ impl Type {
                     _ => Some(Type::from_type_vec_preserve_untyped(projected)),
                 }
             }
-            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) => {
-                Some(Type::FalsyProjection(Box::new(ty.clone())))
-            }
+            Type::MethodReturnRef(..)
+            | Type::ReceiverMethodRef(..)
+            | Type::ParamRef(..)
+            | Type::KeywordParamRef(..) => Some(Type::FalsyProjection(Box::new(ty.clone()))),
             Type::TruthyProjection(_) => None,
             Type::FalsyProjection(_) => Some(ty.clone()),
             _ => None,

@@ -20,14 +20,17 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 - class / module / method / mixin / constant / local / instance variable（LSP / Playground の定義・参照 hover を含む。宣言済み引数の定義位置も対象）
 - method dispatch、visibility、`super`、singleton method、refinement（`include` / `prepend` /
-  `extend` の適用順を反映。静的に完全な `Module#ancestors` は順序付き `Tuple`）
+  `extend` の適用順を反映。静的に完全な `Module#ancestors` は順序付き `Tuple`。トップレベルの
+  local receiver も呼び出し時点の型で解決し、method call の keyword splat から optional keyword 型を広げる）
 - block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（遅延解決された source method return を
-  block dispatch 前に反映し、tuple の要素 union とリテラル演算を block 内へ伝播。空配列リテラルの
+  block dispatch 前に反映し、source method の yield 型に呼び出し引数を代入し、tuple の要素 union とリテラル演算を block 内へ伝播。空配列リテラルの
   `map` / `collect` / `map!` は空の結果を保ち、単一要素配列リテラルを identity block で `map` / `collect`
  した場合も要素 shape を維持。source method の yield summary は early-exit guard と分岐内の local 代入を反映し、
- loop 内 yield は条件による local の絞り込みを反映。yield 型が不明な block 引数は `untyped` にする）
-- Array / Hash / Set / Tuple / Record の要素型と shape。`Array#clear` の呼び出し結果は空 Tuple にし、instance variable の共有要素型は維持
-- if / case / rescue / safe navigation / pattern matching の flow narrowing。静的に到達不能な `if` 分岐は推論せず、結果が静的に決まる no-arg `empty?` による分岐も絞り、終了分岐の local を後続へ混ぜず、片側だけで代入された local は未代入経路の `nil` を含める。標準の `Class#===` による postfix の local 代入条件や、pure な no-arg ivar reader の再呼び出しも扱い、分岐で相関したlocalも識別可能な型で絞られた場合に反映
+  loop 内 yield は条件による local の絞り込みを反映。`for` は source-defined `each` の yield 型を
+  index に反映し、全経路で yield が保証される場合だけ本体が必ず実行されると扱う。yield 型が不明な
+  block 引数は `untyped` にする）
+- Array / Hash / Set / Tuple / Record の要素型と shape。unknown な添字の Array index は `untyped` を保ち、型引数のない `Hash` の iteration も key/value を別々の `untyped` block 引数として扱い、`Array#clear` の呼び出し結果は空 Tuple にし、instance variable の共有要素型は維持
+- if / case / rescue / safe navigation / pattern matching の flow narrowing。静的に到達不能な `if` 分岐は推論せず、結果が静的に決まる no-arg `empty?` による分岐も絞り、終了分岐の local を後続へ混ぜず、片側だけで代入された local は未代入経路の `nil` を含める。標準の `Class#===` による postfix の local 代入条件や、pure な no-arg ivar reader の再呼び出しも扱い、安定した primitive 型で分岐先を区別できる場合は、片側だけで初期化された local を含む相関も反映。標準RBSの `nil` / `true` / `false` literal pattern は一致する型と残りの型を分ける
 - 多重代入、operator-write、method 内の instance variable 再代入、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播
 - 静的に名前を求められる `alias` / `define_method` / `attr_*`（推論した writer の戻り値は引数型に一致） /

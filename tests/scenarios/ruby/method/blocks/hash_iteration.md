@@ -476,3 +476,38 @@ class Object < BasicObject
   def up: -> { x: String, y: String }
 end
 ```
+
+## Bare Hash iteration supplies two unknown values
+
+### update
+
+```rbs
+class Object
+  def bare_hash: -> Hash
+end
+```
+
+```ruby
+def bare_hash_pairs = bare_hash.map { |key, value| [key, value] }
+
+class OneYieldSource
+  def each
+    yield :item
+  end
+end
+
+def one_yield_missing_second = OneYieldSource.new.each { |_item, extra| extra.to_s }
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def bare_hash_pairs: -> Array[[untyped, untyped]]
+  def one_yield_missing_second: -> String
+end
+
+class OneYieldSource
+  def each: { (Symbol) -> String } -> String
+end
+```
