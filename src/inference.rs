@@ -46658,8 +46658,8 @@ impl<'a> InferenceEngine<'a> {
                             self.resolve_subject_input_type(class_name, scope, &subject)?;
                         Some(CondNarrowing {
                             subject,
-                            then_ty: Self::truthy_only(&current),
-                            else_ty: Self::blank_only(&current),
+                            then_ty: Some(Self::truthy_only(&current).unwrap_or(Type::Bot)),
+                            else_ty: Some(Self::blank_only(&current).unwrap_or(Type::Bot)),
                         })
                     }
                     "blank?" => {
@@ -46668,8 +46668,8 @@ impl<'a> InferenceEngine<'a> {
                             self.resolve_subject_input_type(class_name, scope, &subject)?;
                         Some(CondNarrowing {
                             subject,
-                            then_ty: Self::blank_only(&current),
-                            else_ty: Self::truthy_only(&current),
+                            then_ty: Some(Self::blank_only(&current).unwrap_or(Type::Bot)),
+                            else_ty: Some(Self::truthy_only(&current).unwrap_or(Type::Bot)),
                         })
                     }
                     "respond_to?" => {

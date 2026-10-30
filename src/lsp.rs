@@ -10316,6 +10316,31 @@ end
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn lsp_publishes_warning_for_missing_method_on_nil_return() {
+        let dir = tempdir().expect("tempdir");
+        let uri = Url::from_file_path(dir.path().join("sample.rb")).expect("file uri");
+        let source = "def a = nil\n\na.foo\n";
+
+        let (mut service, mut socket) = initialize_lsp(None).await;
+        let requests = open_document(&mut service, &mut socket, &uri, source).await;
+        let diagnostics = diagnostics_notifications(&requests, &uri);
+        let published = diagnostics.last().expect("publish diagnostics");
+
+        assert_eq!(published.diagnostics.len(), 1, "{published:?}");
+        let diagnostic = &published.diagnostics[0];
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(
+            diagnostic.code,
+            Some(NumberOrString::String(
+                MISSING_METHOD_DIAGNOSTIC_CODE.to_string()
+            ))
+        );
+        assert_eq!(diagnostic.message, "Method `foo` not found for `NilClass`");
+        assert_eq!(diagnostic.range.start, Position::new(2, 2));
+        assert_eq!(diagnostic.range.end, Position::new(2, 5));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn lsp_publishes_error_diagnostic_for_argument_type_mismatch() {
         let dir = tempdir().expect("tempdir");
         let uri = Url::from_file_path(dir.path().join("sample.rb")).expect("file uri");

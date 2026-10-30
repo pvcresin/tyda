@@ -2672,11 +2672,12 @@ impl<'a> InferenceEngine<'a> {
         match ty {
             Type::MethodReturnRef(class, method) => Some(format!("{class}#{method}")),
             Type::ReceiverMethodRef(receiver, method) => {
-                let inner = match receiver.as_ref() {
+                let owner = match receiver.as_ref() {
                     Type::Class(name) | Type::Singleton(name) => name.as_str(),
+                    Type::Nil => "NilClass",
                     _ => return None,
                 };
-                Some(format!("{inner}#{method}"))
+                Some(format!("{owner}#{method}"))
             }
             _ => None,
         }
