@@ -4895,6 +4895,25 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn branch_truthiness(node: &Node<'_>, inferred_type: &Type) -> Option<bool> {
+        Self::syntactic_node_truthiness(node).or_else(|| {
+            let call = node.as_call_node()?;
+            if call.name().as_slice() != b"empty?"
+                || call.block().is_some()
+                || call
+                    .arguments()
+                    .is_some_and(|arguments| !arguments.arguments().is_empty())
+            {
+                return None;
+            }
+            match inferred_type {
+                Type::True => Some(true),
+                Type::False => Some(false),
+                _ => None,
+            }
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn infer_loop_type(
         &mut self,
@@ -13410,12 +13429,89 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::StatementsNode { .. } => {
                 let statements = body.as_statements_node().expect("must be StatementsNode");
+                let mut current_scope = scope.clone();
                 for child in statements.body().iter() {
                     self.scan_method_body_summary_node(
                         class_name,
                         &child,
                         parse_result,
-                        scope,
+                        &current_scope,
+                        summary,
+                    );
+                    if let Some(write) = child.as_local_variable_write_node() {
+                        let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+                        let value_type = self.infer_node_type(
+                            class_name,
+                            &write.value(),
+                            parse_result,
+                            &current_scope,
+                        );
+                        current_scope.set(&name, value_type);
+                    }
+                }
+            }
+            Node::WhileNode { .. } => {
+                let while_node = body.as_while_node().expect("must be WhileNode");
+                let predicate = while_node.predicate();
+                self.scan_method_body_summary_node(
+                    class_name,
+                    &predicate,
+                    parse_result,
+                    scope,
+                    summary,
+                );
+                let mut body_scope = scope.clone();
+                if let Node::LocalVariableWriteNode { .. } = &predicate {
+                    let write = predicate
+                        .as_local_variable_write_node()
+                        .expect("must be LocalVariableWriteNode");
+                    let value_type =
+                        self.infer_node_type(class_name, &write.value(), parse_result, scope);
+                    let Some(value_type) = Self::truthy_only(&value_type) else {
+                        return;
+                    };
+                    let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+                    body_scope.set(&name, value_type);
+                }
+                if let Some(statements) = while_node.statements() {
+                    self.scan_method_body_summary_node(
+                        class_name,
+                        &statements.as_node(),
+                        parse_result,
+                        &body_scope,
+                        summary,
+                    );
+                }
+            }
+            Node::UntilNode { .. } => {
+                let until_node = body.as_until_node().expect("must be UntilNode");
+                let predicate = until_node.predicate();
+                self.scan_method_body_summary_node(
+                    class_name,
+                    &predicate,
+                    parse_result,
+                    scope,
+                    summary,
+                );
+                let mut body_scope = scope.clone();
+                if let Node::LocalVariableWriteNode { .. } = &predicate {
+                    let write = predicate
+                        .as_local_variable_write_node()
+                        .expect("must be LocalVariableWriteNode");
+                    let value_type =
+                        self.infer_node_type(class_name, &write.value(), parse_result, scope);
+                    let Some(value_type) = Self::falsy_only(&value_type) else {
+                        return;
+                    };
+                    let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+                    body_scope.set(&name, value_type);
+                }
+                if let Some(statements) = until_node.statements() {
+                    self.scan_method_body_summary_node(
+                        class_name,
+                        &statements.as_node(),
+                        parse_result,
+                        &body_scope,
                         summary,
                     );
                 }
@@ -15966,7 +16062,16 @@ impl<'a> InferenceEngine<'a> {
                     _ => None,
                 }
             }
-            .or_else(|| rbs_block_seed.as_ref().map(|seed| seed.param_types.clone()));
+            .or_else(|| rbs_block_seed.as_ref().map(|seed| seed.param_types.clone()))
+            .or_else(|| {
+                let receiver_class = self.type_to_class_name(&receiver_type)?;
+                self.resolve_user_defined_block_param_types(
+                    &receiver_class,
+                    method_name.as_ref(),
+                    Self::receiver_is_singleton_dispatch(&receiver, scope.singleton_dispatch),
+                    0,
+                )
+            });
 
             if has_only_plain_required_params && !named_requireds.is_empty() {
                 if let Some(param_types) = side_effect_param_types {
@@ -15985,9 +16090,8 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             None
                         };
-                    for (idx, ((name, _, _), ty)) in
-                        named_requireds.iter().zip(param_types).enumerate()
-                    {
+                    for (idx, (name, _, _)) in named_requireds.iter().enumerate() {
+                        let ty = param_types.get(idx).cloned().unwrap_or(Type::Nil);
                         if accumulator_param_index == Some(idx) {
                             Self::set_block_param_or_alias(
                                 &mut block_scope,
@@ -16005,6 +16109,10 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             block_scope.set(name, ty);
                         }
+                    }
+                } else {
+                    for (name, _, _) in &named_requireds {
+                        block_scope.set(name, Type::Untyped);
                     }
                 }
             } else if let Some(params_node) = block.parameters()
@@ -16468,6 +16576,9 @@ impl<'a> InferenceEngine<'a> {
                     *forwarded_singleton,
                     depth + 1,
                 );
+            }
+            if meta.yields {
+                return Some(meta.yield_param_types.clone());
             }
         }
         if !method.rbs_method_types.is_empty() {
@@ -19623,8 +19734,9 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::IfNode { .. } => {
                 let if_node = node.as_if_node().expect("must be IfNode");
-                self.infer_node_type(class_name, &if_node.predicate(), parse_result, scope);
-                let truthiness = Self::syntactic_node_truthiness(&if_node.predicate());
+                let predicate_type =
+                    self.infer_node_type(class_name, &if_node.predicate(), parse_result, scope);
+                let truthiness = Self::branch_truthiness(&if_node.predicate(), &predicate_type);
                 self.bind_condition_assignment_target(
                     class_name,
                     &if_node.predicate(),
@@ -24419,8 +24531,9 @@ impl<'a> InferenceEngine<'a> {
             Node::IfNode { .. } => {
                 let if_node = node.as_if_node().expect("must be IfNode");
 
-                self.infer_node_type(class_name, &if_node.predicate(), parse_result, scope);
-                let truthiness = Self::syntactic_node_truthiness(&if_node.predicate());
+                let predicate_type =
+                    self.infer_node_type(class_name, &if_node.predicate(), parse_result, scope);
+                let truthiness = Self::branch_truthiness(&if_node.predicate(), &predicate_type);
 
                 let narrowing = self.extract_if_node_narrowing(
                     class_name,
@@ -30527,7 +30640,14 @@ impl<'a> InferenceEngine<'a> {
             return None;
         }
 
-        if method_name == "empty?" && call_node.arguments().is_none() {
+        if method_name == "empty?"
+            && call_node
+                .arguments()
+                .is_none_or(|arguments| arguments.arguments().is_empty())
+        {
+            if self.static_empty_predicate_has_source_override(receiver_type) {
+                return None;
+            }
             return Self::static_empty_predicate_type(receiver_type);
         }
 
@@ -30726,6 +30846,17 @@ impl<'a> InferenceEngine<'a> {
                 results.map(Self::predicate_result_union)
             }
             _ => None,
+        }
+    }
+
+    fn static_empty_predicate_has_source_override(&self, receiver_type: &Type) -> bool {
+        match receiver_type {
+            Type::Tuple(_) => self.instance_method_has_source_override("Array", "empty?"),
+            Type::Record(_) => self.instance_method_has_source_override("Hash", "empty?"),
+            Type::Union(parts) => parts
+                .iter()
+                .any(|part| self.static_empty_predicate_has_source_override(part)),
+            _ => false,
         }
     }
 
@@ -33356,6 +33487,21 @@ impl<'a> InferenceEngine<'a> {
         }) && matches!(method_name, "map" | "collect" | "map!" | "collect!")
         {
             return Some(Type::Tuple(Vec::new()));
+        }
+        if matches!(method_name, "map" | "collect")
+            && !self.array_map_has_ruby_override()
+            && matches!(receiver_type, Type::Tuple(elements) if elements.len() == 1)
+            && call_node.receiver().is_some_and(|receiver| {
+                receiver
+                    .as_array_node()
+                    .is_some_and(|array| array.elements().len() == 1)
+            })
+            && call_node
+                .arguments()
+                .is_none_or(|arguments| arguments.arguments().is_empty())
+            && Self::block_is_identity_of_first_param(&block, parse_result)
+        {
+            return Some(receiver_type.clone());
         }
         let block_break_type = if block_scope.break_types.is_empty() {
             None
@@ -43488,10 +43634,24 @@ impl<'a> InferenceEngine<'a> {
         ) || Self::is_array_mutating_identity_method(method_name)
     }
 
-    fn array_clear_has_ruby_override(&self) -> bool {
+    fn instance_method_has_source_override(&self, class_name: &str, method_name: &str) -> bool {
         self.registry
-            .lookup_method_def("Array", "clear", false)
+            .lookup_method_def(class_name, method_name, false)
             .is_some_and(|method| !method.rbs_file_source)
+            || self
+                .registry
+                .resolve_instance_method_call_owners(class_name, method_name)
+                .iter()
+                .filter_map(|owner| self.registry.lookup_method_def(owner, method_name, false))
+                .any(|method| !method.rbs_file_source)
+    }
+
+    fn array_clear_has_ruby_override(&self) -> bool {
+        self.instance_method_has_source_override("Array", "clear")
+    }
+
+    fn array_map_has_ruby_override(&self) -> bool {
+        self.instance_method_has_source_override("Array", "map")
     }
 
     fn array_summary_after_clear(receiver_type: &Type) -> Option<Type> {
@@ -44679,7 +44839,13 @@ impl<'a> InferenceEngine<'a> {
                 return result;
             }
         }
-        if method_tables::UNIVERSAL_BOOL_METHODS.contains(&method_name) {
+        let source_empty_override = method_name == "empty?"
+            && self
+                .type_to_class_name(receiver_type)
+                .is_some_and(|class_name| {
+                    self.instance_method_has_source_override(&class_name, "empty?")
+                });
+        if method_tables::UNIVERSAL_BOOL_METHODS.contains(&method_name) && !source_empty_override {
             return Type::Bool;
         }
         if method_tables::IDENTITY_METHODS.contains(&method_name) {

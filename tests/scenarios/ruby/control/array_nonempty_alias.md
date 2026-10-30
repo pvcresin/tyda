@@ -2,10 +2,6 @@
 
 ## Preserve nonempty knowledge through a local alias
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -29,5 +25,33 @@ end
 class Object < BasicObject
   def first_after_nonempty_guard: -> 1
   def first_after_nonempty_guard_alias: -> 1
+end
+```
+
+## Source-defined Array#empty? controls branch selection
+
+### update
+
+```ruby
+class Array
+  def empty? = true
+end
+
+class OverrideProbe
+  def empty_result = [1].empty?
+  def empty_branch = [1].empty? ? :empty : :nonempty
+end
+```
+
+### result
+
+```rbs
+class Array[E]
+  def empty?: -> true
+end
+
+class OverrideProbe
+  def empty_result: -> true
+  def empty_branch: -> :empty
 end
 ```
