@@ -47,7 +47,7 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 | `rails/` | project 検出、schema / routes / inflector、Rails 共通情報 |
 | `diagnostics.rs` | missing method、unresolved constant、argument / return type mismatch などの判定 |
 | `lsp.rs` | LSP protocol、document / file cache、CodeLens、Hover、refresh |
-| `mcp.rs` | stdio MCP transport と source-position inference tool |
+| `mcp.rs` | stdio MCP transport、位置指定推論、明示query時の型由来説明 |
 | `main.rs` | CLI 入力展開、batch projection、RBS / diagnostics の出力 |
 
 Sorbet `sig { ... }` のブロック本体は型 DSL として扱い、通常コードとして推論しない。ブロック内の
@@ -160,10 +160,11 @@ TypeProf VSCode 拡張との互換性は protocol boundary に限る。推論結
 
 ## MCP
 
-`mcp.rs` は MCP stdio transport の境界を担当し、`analysis::hover_at_with_analysis_options` を呼んで
-LSP と同じ query backend から位置指定の型情報を返す。現在は tool caller が渡した Ruby source と
-同梱 stdlib RBS だけを使い、workspace のファイル走査や project 固有 RBS の読み込みはしない。
-詳細は [mcp.md](mcp.md) を参照する。
+`mcp.rs` は MCP stdio transport の境界を担当し、`analysis` の query API を呼んで位置指定の型情報と
+説明を返す。`explain_type_at_position` は hover snapshot、引数検査site、method return siteを使い、
+同一source内の呼び出し元、宣言元、本体の戻り値と呼び出しを明示query時だけ組み立てる。
+通常のCLI/LSP解析には追加の由来記録を行わない。MCPはtool callerが渡したRuby sourceと同梱stdlib RBS
+だけを使い、workspaceのファイル走査やproject固有RBSの読み込みはしない。詳細は [mcp.md](mcp.md) を参照する。
 
 ## 有界性と拡張点
 

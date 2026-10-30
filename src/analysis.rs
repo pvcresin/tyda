@@ -4,12 +4,24 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::inference::hover::TypeExplanation;
 use crate::inference::{FileAnalysisSnapshot, InferenceEngine};
 use crate::project::{DslActivation, ProjectVersions, detect_realtime_dsl_from_source};
 use crate::rbs::display::user_facing_type;
 use crate::rbs::inline::extract_inline_assertion_comments;
 use crate::rbs::stdlib_loader::LazyRbsLoader;
 use crate::registry::TypeRegistry;
+
+pub(crate) struct AnalysisQueryLocation<'a> {
+    pub(crate) file_path: &'a str,
+    pub(crate) line: usize,
+    pub(crate) byte_column: usize,
+}
+
+pub(crate) struct TypeExplanationLimits {
+    pub(crate) max_depth: usize,
+    pub(crate) max_steps: usize,
+}
 use crate::sorbet::annotations::{
     extract_annotation_comments, extract_sig_source, extract_sorbet_comment_type_aliases,
     sorbet_comment_mode,
@@ -233,13 +245,46 @@ pub fn hover_at_with_analysis_options(
     options: AnalysisOptions,
 ) -> Option<HoverResult> {
     let offset = line_col_to_offset(source.as_bytes(), line, column)?;
-    let (mut engine, _timings) = build_engine_with_timings(AnalysisRequest {
+    let mut engine =
+        build_hover_query_engine(source, rbs_registry, lazy_loader, file_path, &options);
+    engine.resolve_pending_constant_definition_snapshots();
+    engine.find_hover_at(source, offset)
+}
+
+pub(crate) fn explain_type_at_with_analysis_options(
+    source: &str,
+    rbs_registry: Option<&TypeRegistry>,
+    lazy_loader: &LazyRbsLoader,
+    location: AnalysisQueryLocation<'_>,
+    options: AnalysisOptions,
+    limits: TypeExplanationLimits,
+) -> Option<TypeExplanation> {
+    let offset = line_col_to_offset(source.as_bytes(), location.line, location.byte_column)?;
+    let mut engine = build_hover_query_engine(
+        source,
+        rbs_registry,
+        lazy_loader,
+        location.file_path,
+        &options,
+    );
+    engine.resolve_pending_constant_definition_snapshots();
+    engine.explain_type_at(source, offset, limits.max_depth, limits.max_steps)
+}
+
+fn build_hover_query_engine<'a>(
+    source: &'a str,
+    rbs_registry: Option<&'a TypeRegistry>,
+    lazy_loader: &'a LazyRbsLoader,
+    file_path: &'a str,
+    options: &'a AnalysisOptions,
+) -> InferenceEngine<'a> {
+    let (engine, _timings) = build_engine_with_timings(AnalysisRequest {
         source,
         rbs_registry,
         lazy_loader: Some(lazy_loader),
         lazy_rbi_loader: None,
         file_path: Some(file_path),
-        options: &options,
+        options,
         dependency_collection: DependencyCollection::Disabled,
         hover_snapshot_mode: HoverSnapshotMode::Record,
         annotated_body_hover_mode: AnnotatedBodyHoverMode::Enabled,
@@ -247,8 +292,7 @@ pub fn hover_at_with_analysis_options(
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: false,
     });
-    engine.resolve_pending_constant_definition_snapshots();
-    engine.find_hover_at(source, offset)
+    engine
 }
 
 fn line_col_to_offset(source: &[u8], target_line: usize, target_col: usize) -> Option<usize> {

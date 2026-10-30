@@ -11,7 +11,7 @@ test で守る。テストの説明は現在のルールだけを置き、追加
 | unit | 型演算、名前解決、merge、diagnostic 判定、上限などの局所不変条件 |
 | CLI integration | 出力形式、file selection、diagnostics、debug、coverage option |
 | LSP integration | protocol、snapshot、cache、refresh、incremental change |
-| MCP integration | 実バイナリの起動、stdio protocol、tool discovery / call、推論結果 |
+| MCP integration | 実バイナリの起動、stdio protocol、tool discovery / call、推論と型由来説明 |
 | robustness | 壊れた入力での panic / hang がないこと |
 | performance | 速度・メモリの基準値と大規模 workspace の有界性 |
 
@@ -27,7 +27,8 @@ git diff --check
 （fail-fast で後続ターゲットの失敗が隠れないようにするため）。
 
 `tests/mcp.rs` は `tyda mcp` を子プロセスとして起動し、MCP client で stdio handshake、tool 一覧、
-`infer_type_at_position` の呼び出しと構造化された推論結果を確認する。GitHub Actions の integration shard で実行する。
+`infer_type_at_position` と `explain_type_at_position` の呼び出し、構造化された推論・説明結果を確認する。
+GitHub Actions の integration shard で実行する。
 
 通常の Ruby scenario は `analysis::analyze_source_for_display` を入口とする完全解決の snapshot
 経路を使う。この経路は LSP、playground、詳細 CLI の表示結果と共通であり、推論結果の差分を
