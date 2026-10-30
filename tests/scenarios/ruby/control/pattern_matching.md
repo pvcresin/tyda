@@ -981,10 +981,6 @@ end
 
 ## Do not merge locals from an exiting case/in branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1023,6 +1019,7 @@ def case_match_all_paths_return(value)
     return :text
   end
   selected
+  :unreachable
 end
 ```
 

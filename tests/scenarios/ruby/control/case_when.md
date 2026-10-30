@@ -52,10 +52,6 @@ end
 
 ## branch-only local is nilable after case
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -79,10 +75,6 @@ end
 ```
 
 ## assignment in an exiting case branch is not reachable afterwards
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -121,6 +113,7 @@ def case_all_paths_return(value)
     return :other
   end
   selected
+  :unreachable
 end
 ```
 

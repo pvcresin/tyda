@@ -3470,7 +3470,42 @@ impl<'a> InferenceEngine<'a> {
         self.registry.add_call_site(class_name, call_site);
     }
 
+    fn merge_terminating_branch_outputs(target: &mut Scope, branch: &Scope) {
+        target
+            .return_types
+            .extend(branch.return_types.iter().cloned());
+        target.next_types.extend(branch.next_types.iter().cloned());
+        target
+            .break_types
+            .extend(branch.break_types.iter().cloned());
+        target
+            .enumerator_yielded_types
+            .extend(branch.enumerator_yielded_types.iter().cloned());
+        if let Some(entry) = branch.exception_entry.as_deref() {
+            target.merge_exception_from_map(entry);
+        }
+    }
+
     fn merge_scope_locals(&self, base: &Scope, then_scope: &Scope, else_scope: &Scope) -> Scope {
+        self.merge_scope_locals_with_missing_local_nil(base, then_scope, else_scope, true)
+    }
+
+    fn merge_terminal_scope_locals(
+        &self,
+        base: &Scope,
+        then_scope: &Scope,
+        else_scope: &Scope,
+    ) -> Scope {
+        self.merge_scope_locals_with_missing_local_nil(base, then_scope, else_scope, false)
+    }
+
+    fn merge_scope_locals_with_missing_local_nil(
+        &self,
+        base: &Scope,
+        then_scope: &Scope,
+        else_scope: &Scope,
+        missing_local_is_nil: bool,
+    ) -> Scope {
         let mut names: HashSet<String> = base.locals.keys().cloned().collect();
         names.extend(then_scope.locals.keys().cloned());
         names.extend(else_scope.locals.keys().cloned());
@@ -3636,7 +3671,14 @@ impl<'a> InferenceEngine<'a> {
                     }
                     merged.set(name, Self::merge_branch_types(left, right))
                 }
-                (Some(only), None) | (None, Some(only)) => merged.set(name, only),
+                (Some(only), None) | (None, Some(only)) => {
+                    let ty = if missing_local_is_nil {
+                        Self::merge_branch_types(only, Type::Nil)
+                    } else {
+                        only
+                    };
+                    merged.set(name, ty)
+                }
                 (None, None) => {}
             }
             if let (Some(left), Some(right)) = (then_def, else_def)
@@ -4682,6 +4724,43 @@ impl<'a> InferenceEngine<'a> {
                     .and_then(|e| e.statements())
                     .is_some_and(|s| Self::statements_always_exit(&s));
                 body_exits && else_exits
+            }
+            Node::CaseNode { .. } => {
+                let case_node = node.as_case_node().expect("must be CaseNode");
+                let all_when_bodies_exit = case_node.conditions().iter().all(|condition| {
+                    if let Node::WhenNode { .. } = &condition {
+                        condition
+                            .as_when_node()
+                            .and_then(|when_node| when_node.statements())
+                            .is_some_and(|statements| Self::statements_always_exit(&statements))
+                    } else {
+                        false
+                    }
+                });
+                let else_exits = case_node
+                    .else_clause()
+                    .and_then(|else_clause| else_clause.statements())
+                    .is_some_and(|statements| Self::statements_always_exit(&statements));
+                case_node.else_clause().is_some() && else_exits && all_when_bodies_exit
+            }
+            Node::CaseMatchNode { .. } => {
+                let case_node = node.as_case_match_node().expect("must be CaseMatchNode");
+                let all_in_bodies_exit = case_node.conditions().iter().all(|condition| {
+                    if let Node::InNode { .. } = &condition {
+                        condition
+                            .as_in_node()
+                            .and_then(|in_node| in_node.statements())
+                            .is_some_and(|statements| Self::statements_always_exit(&statements))
+                    } else {
+                        false
+                    }
+                });
+                let else_exits = case_node.else_clause().is_none()
+                    || case_node
+                        .else_clause()
+                        .and_then(|else_clause| else_clause.statements())
+                        .is_some_and(|statements| Self::statements_always_exit(&statements));
+                all_in_bodies_exit && else_exits
             }
             _ => false,
         }
@@ -19708,6 +19787,8 @@ impl<'a> InferenceEngine<'a> {
 
                 let mut branch_types: Vec<Type> = Vec::new();
                 let mut merged_scope: Option<Scope> = None;
+                let mut terminating_scope: Option<Scope> = None;
+                let mut terminating_branch_locals = Scope::default();
                 for condition in case_node.conditions().iter() {
                     if let Node::WhenNode { .. } = &condition {
                         let when_node = condition.as_when_node().expect("must be WhenNode");
@@ -19757,13 +19838,28 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             Type::Nil
                         };
+                        let branch_always_exits = when_node
+                            .statements()
+                            .is_some_and(|statements| Self::statements_always_exit(&statements))
+                            || Self::type_never_returns(&when_type);
                         branch_types.push(when_type);
-                        merged_scope = Some(match merged_scope {
-                            Some(current) => {
-                                self.merge_scope_locals(scope, &current, &branch_scope)
-                            }
-                            None => branch_scope,
-                        });
+                        if branch_always_exits {
+                            terminating_branch_locals
+                                .merge_exception_from_map(&branch_scope.locals);
+                            terminating_scope = Some(match terminating_scope {
+                                Some(current) => {
+                                    self.merge_terminal_scope_locals(scope, &current, &branch_scope)
+                                }
+                                None => branch_scope,
+                            });
+                        } else {
+                            merged_scope = Some(match merged_scope {
+                                Some(current) => {
+                                    self.merge_scope_locals(scope, &current, &branch_scope)
+                                }
+                                None => branch_scope,
+                            });
+                        }
                     }
                 }
 
@@ -19788,18 +19884,49 @@ impl<'a> InferenceEngine<'a> {
                 } else {
                     Type::Nil
                 };
+                let else_always_exits = else_reachable
+                    && (case_node
+                        .else_clause()
+                        .and_then(|else_clause| else_clause.statements())
+                        .is_some_and(|statements| Self::statements_always_exit(&statements))
+                        || (case_node.else_clause().is_some()
+                            && Self::type_never_returns(&else_type)));
                 if else_reachable {
                     branch_types.push(else_type);
+                    if else_always_exits {
+                        terminating_scope = Some(match terminating_scope {
+                            Some(current) => {
+                                self.merge_terminal_scope_locals(scope, &current, &else_scope)
+                            }
+                            None => else_scope.clone(),
+                        });
+                    }
                 }
 
-                *scope = match (merged_scope, else_reachable) {
-                    (Some(current), true) => self.merge_scope_locals(scope, &current, &else_scope),
-                    (Some(current), false) => current,
-                    (None, true) => {
-                        self.merge_scope_locals(scope, &else_scope, &scope.fork_for_branch())
+                let (mut continuation_scope, has_continuation) =
+                    match (merged_scope, else_reachable, else_always_exits) {
+                        (Some(current), true, true) => (current, true),
+                        (Some(current), true, false) => {
+                            (self.merge_scope_locals(scope, &current, &else_scope), true)
+                        }
+                        (Some(current), false, _) => (current, true),
+                        (None, true, true) | (None, false, _) => (scope.fork_for_branch(), false),
+                        (None, true, false) => (else_scope, true),
+                    };
+                if has_continuation {
+                    if let Some(terminating_scope) = &terminating_scope {
+                        Self::merge_terminating_branch_outputs(
+                            &mut continuation_scope,
+                            terminating_scope,
+                        );
                     }
-                    (None, false) => scope.fork_for_branch(),
+                    if let Some(entry) = terminating_branch_locals.exception_entry.as_deref() {
+                        continuation_scope.merge_exception_from_map(entry);
+                    }
+                } else if let Some(terminating_scope) = terminating_scope {
+                    continuation_scope = terminating_scope;
                 };
+                *scope = continuation_scope;
                 Self::merge_reachable_types(branch_types)
             }
             Node::CaseMatchNode { .. } => {
@@ -19821,6 +19948,8 @@ impl<'a> InferenceEngine<'a> {
 
                 let mut branch_types: Vec<Type> = Vec::new();
                 let mut merged_scope: Option<Scope> = None;
+                let mut terminating_scope: Option<Scope> = None;
+                let mut terminating_branch_locals = Scope::default();
                 for condition in case_node.conditions().iter() {
                     if let Node::InNode { .. } = &condition {
                         let in_node = condition.as_in_node().expect("must be InNode");
@@ -19859,16 +19988,32 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             Type::Nil
                         };
+                        let branch_always_exits = in_node
+                            .statements()
+                            .is_some_and(|statements| Self::statements_always_exit(&statements))
+                            || Self::type_never_returns(&branch_type);
                         branch_types.push(branch_type);
-                        merged_scope = Some(match merged_scope {
-                            Some(current) => {
-                                self.merge_scope_locals(scope, &current, &branch_scope)
-                            }
-                            None => branch_scope,
-                        });
+                        if branch_always_exits {
+                            terminating_branch_locals
+                                .merge_exception_from_map(&branch_scope.locals);
+                            terminating_scope = Some(match terminating_scope {
+                                Some(current) => {
+                                    self.merge_terminal_scope_locals(scope, &current, &branch_scope)
+                                }
+                                None => branch_scope,
+                            });
+                        } else {
+                            merged_scope = Some(match merged_scope {
+                                Some(current) => {
+                                    self.merge_scope_locals(scope, &current, &branch_scope)
+                                }
+                                None => branch_scope,
+                            });
+                        }
                     }
                 }
 
+                let mut has_continuation = false;
                 if let Some(else_clause) = case_node.else_clause() {
                     let mut else_scope = scope.fork_for_branch();
                     let else_type = if let Some(statements) = else_clause.statements() {
@@ -19881,15 +20026,44 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         Type::Nil
                     };
+                    let else_always_exits = else_clause
+                        .statements()
+                        .is_some_and(|statements| Self::statements_always_exit(&statements))
+                        || Self::type_never_returns(&else_type);
                     branch_types.push(else_type);
-                    *scope = if let Some(current) = merged_scope {
-                        self.merge_scope_locals(scope, &current, &else_scope)
+                    if else_always_exits {
+                        terminating_scope = Some(match terminating_scope {
+                            Some(current) => {
+                                self.merge_terminal_scope_locals(scope, &current, &else_scope)
+                            }
+                            None => else_scope,
+                        });
+                        if let Some(current) = merged_scope {
+                            *scope = current;
+                            has_continuation = true;
+                        }
                     } else {
-                        self.merge_scope_locals(scope, &else_scope, &scope.fork_for_branch())
-                    };
+                        *scope = if let Some(current) = merged_scope {
+                            self.merge_scope_locals(scope, &current, &else_scope)
+                        } else {
+                            else_scope
+                        };
+                        has_continuation = true;
+                    }
                 } else if let Some(current) = merged_scope {
                     // An unmatched case/in raises, so only matched branches reach this point.
                     *scope = current;
+                    has_continuation = true;
+                }
+                if has_continuation {
+                    if let Some(terminating_scope) = &terminating_scope {
+                        Self::merge_terminating_branch_outputs(scope, terminating_scope);
+                    }
+                    if let Some(entry) = terminating_branch_locals.exception_entry.as_deref() {
+                        scope.merge_exception_from_map(entry);
+                    }
+                } else if let Some(terminating_scope) = terminating_scope {
+                    *scope = terminating_scope;
                 }
                 Self::merge_reachable_types(branch_types)
             }
