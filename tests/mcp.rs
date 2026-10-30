@@ -26,6 +26,12 @@ async fn mcp_stdio_server_starts_and_infers_type() {
                 .any(|tool| tool.name == "infer_type_at_position"),
             "MCP server should advertise infer_type_at_position"
         );
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.name == "explain_type_at_position"),
+            "MCP server should advertise explain_type_at_position"
+        );
 
         let result = client
             .call_tool(
@@ -49,6 +55,36 @@ async fn mcp_stdio_server_starts_and_infers_type() {
             .expect("tool result should contain structured data");
         assert_eq!(structured["found"], true);
         assert_eq!(structured["inferred_type"], "\"Tyda\"");
+
+        let explanation = client
+            .call_tool(
+                CallToolRequestParams::new("explain_type_at_position").with_arguments(
+                    json!({
+                        "source": "class Example\n  def identify(value)\n    value\n  end\nend\nExample.new.identify(\"Tyda\")",
+                        "line": 5,
+                        "character": 12,
+                    })
+                    .as_object()
+                    .expect("tool arguments are a JSON object")
+                    .clone(),
+                ),
+            )
+            .await
+            .expect("call explanation tool");
+
+        assert_ne!(
+            explanation.is_error,
+            Some(true),
+            "explanation tool call should succeed"
+        );
+        let explained = explanation
+            .structured_content
+            .expect("explanation result should contain structured data");
+        assert_eq!(explained["found"], true);
+        assert_eq!(
+            explained["explanation"]["steps"][0]["method"]["name"],
+            "identify"
+        );
 
         client.cancel().await.expect("shut down MCP server process");
     })

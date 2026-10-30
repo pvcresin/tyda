@@ -24,6 +24,101 @@ pub(crate) enum HoverTarget {
     },
 }
 
+pub(crate) struct TypeExplanation {
+    pub(crate) hover: crate::parser::HoverResult,
+    pub(crate) steps: Vec<TypeExplanationStep>,
+    pub(crate) truncated: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct TypeExplanationStep {
+    pub(crate) depth: usize,
+    pub(crate) parent: Option<usize>,
+    pub(crate) relation: String,
+    pub(crate) method: Option<TypeExplanationMethod>,
+    pub(crate) call_site: Option<TypeExplanationCallSite>,
+    pub(crate) callers: Vec<TypeExplanationCallSite>,
+    pub(crate) callers_truncated: bool,
+    pub(crate) body_returns: Vec<TypeExplanationBodyReturn>,
+    pub(crate) body_returns_truncated: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct TypeExplanationMethod {
+    pub(crate) owner: String,
+    pub(crate) name: String,
+    pub(crate) definition_name: String,
+    pub(crate) is_singleton: bool,
+    pub(crate) signature: Option<String>,
+    pub(crate) origins: Vec<String>,
+    pub(crate) declaration_path: Option<String>,
+    pub(crate) declaration_location: Option<SourceLocation>,
+}
+
+#[derive(Clone)]
+pub(crate) struct TypeExplanationCallSite {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) method_name: String,
+    pub(crate) receiver_type: Type,
+    pub(crate) inferred_type: Option<Type>,
+    pub(crate) arguments: Vec<TypeExplanationArgument>,
+}
+
+#[derive(Clone)]
+pub(crate) struct TypeExplanationArgument {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) keyword: Option<String>,
+    pub(crate) positional_index: Option<usize>,
+    pub(crate) inferred_type: Type,
+}
+
+#[derive(Clone)]
+pub(crate) struct TypeExplanationBodyReturn {
+    pub(crate) owner: String,
+    pub(crate) method_name: String,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) inferred_type: Type,
+    pub(crate) declared_types: Option<Vec<Type>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TypeExplanationMethodKey {
+    owner: String,
+    dispatch_name: String,
+    definition_name: String,
+    is_singleton: bool,
+    declaration_path: Option<String>,
+    declaration_location: Option<SourceLocation>,
+}
+
+#[derive(Clone)]
+struct ResolvedTypeExplanationMethod {
+    evidence: TypeExplanationMethod,
+    key: TypeExplanationMethodKey,
+}
+
+struct TypeExplanationTraversal<'a> {
+    source: &'a str,
+    max_depth: usize,
+    max_steps: usize,
+    steps: Vec<TypeExplanationStep>,
+    visited: HashSet<TypeExplanationMethodKey>,
+    truncated: bool,
+}
+
+#[derive(Clone, Copy)]
+struct TypeExplanationLink {
+    depth: usize,
+    parent: Option<usize>,
+    relation: &'static str,
+}
+
+const MAX_EXPLANATION_CALLERS: usize = 16;
+const MAX_EXPLANATION_BODY_RETURNS: usize = 8;
+
 #[derive(Clone)]
 pub(crate) struct HoverSnapshot {
     pub(crate) start: usize,
@@ -2614,6 +2709,562 @@ impl<'a> InferenceEngine<'a> {
             can_enrich_from_workspace,
             unresolved_method,
         })
+    }
+
+    pub(crate) fn explain_type_at(
+        &mut self,
+        source: &str,
+        byte_offset: usize,
+        max_depth: usize,
+        max_steps: usize,
+    ) -> Option<TypeExplanation> {
+        let root_snapshot = self.find_best_snapshot(byte_offset).cloned();
+        let hover = self.find_hover_at(source, byte_offset)?;
+        let Some(root_snapshot) = root_snapshot else {
+            return Some(TypeExplanation {
+                hover,
+                steps: Vec::new(),
+                truncated: false,
+            });
+        };
+
+        let mut traversal = TypeExplanationTraversal {
+            source,
+            max_depth,
+            max_steps,
+            steps: Vec::new(),
+            visited: HashSet::new(),
+            truncated: false,
+        };
+        match root_snapshot.target.clone() {
+            HoverTarget::MethodCall { .. } => {
+                let root_site = self
+                    .arg_check_sites
+                    .iter()
+                    .rev()
+                    .find(|site| {
+                        site.call_start == root_snapshot.start
+                            && site.call_end == root_snapshot.end
+                            && site.method_name == root_snapshot.name
+                    })
+                    .cloned();
+                if let Some(site) = root_site {
+                    let root_step = self.append_call_explanation(
+                        &mut traversal,
+                        &site,
+                        TypeExplanationLink {
+                            depth: 0,
+                            parent: None,
+                            relation: "queried_call",
+                        },
+                    );
+                    if let Some(parent) = root_step {
+                        let nested_calls = self.nested_call_sites(&site.args);
+                        for nested in nested_calls {
+                            self.append_call_explanation(
+                                &mut traversal,
+                                &nested,
+                                TypeExplanationLink {
+                                    depth: 1,
+                                    parent: Some(parent),
+                                    relation: "argument_call",
+                                },
+                            );
+                        }
+                    }
+                } else if let HoverTarget::MethodCall { receiver_type, .. } =
+                    root_snapshot.target.clone()
+                {
+                    let resolved_receiver = self.resolve_type_for_hover(
+                        &receiver_type,
+                        &root_snapshot.class_context,
+                        root_snapshot.method_context.as_deref(),
+                    );
+                    let prefer_singleton = matches!(&resolved_receiver, Type::Singleton(_));
+                    let resolved = self.method_explanation_from_receiver(
+                        &root_snapshot.name,
+                        &resolved_receiver,
+                        prefer_singleton,
+                        hover.display_rbs.clone(),
+                    );
+                    let call_site = TypeExplanationCallSite {
+                        start: root_snapshot.start,
+                        end: root_snapshot.end,
+                        method_name: root_snapshot.name.clone(),
+                        receiver_type: resolved_receiver,
+                        inferred_type: Some(hover.ty.clone()),
+                        arguments: Vec::new(),
+                    };
+                    if let Some(resolved) = resolved {
+                        self.append_resolved_method_explanation(
+                            &mut traversal,
+                            resolved,
+                            Some(call_site),
+                            TypeExplanationLink {
+                                depth: 0,
+                                parent: None,
+                                relation: "queried_call",
+                            },
+                        );
+                    }
+                }
+            }
+            HoverTarget::MethodDefinition {
+                owner_type,
+                is_singleton,
+            } => {
+                if let Some(resolved) = self.method_explanation_from_definition(
+                    &root_snapshot.name,
+                    &owner_type,
+                    is_singleton,
+                    hover.display_rbs.clone(),
+                    &root_snapshot.class_context,
+                    root_snapshot.method_context.as_deref(),
+                ) {
+                    self.append_resolved_method_explanation(
+                        &mut traversal,
+                        resolved,
+                        None,
+                        TypeExplanationLink {
+                            depth: 0,
+                            parent: None,
+                            relation: "queried_method_definition",
+                        },
+                    );
+                }
+            }
+            HoverTarget::Value(_) => {}
+        }
+
+        Some(TypeExplanation {
+            hover,
+            steps: traversal.steps,
+            truncated: traversal.truncated,
+        })
+    }
+
+    fn append_call_explanation(
+        &mut self,
+        traversal: &mut TypeExplanationTraversal<'_>,
+        site: &ArgCheckSite,
+        link: TypeExplanationLink,
+    ) -> Option<usize> {
+        let hover = self.find_hover_at(traversal.source, site.call_start);
+        let call_site = self.explanation_call_site(site, hover.as_ref());
+        let resolved = self.method_explanation_from_call(
+            site,
+            hover.as_ref().and_then(|result| result.display_rbs.clone()),
+        );
+        let Some(resolved) = resolved else {
+            if traversal.steps.len() >= traversal.max_steps {
+                traversal.truncated = true;
+                return None;
+            }
+            let index = traversal.steps.len();
+            traversal.steps.push(TypeExplanationStep {
+                depth: link.depth,
+                parent: link.parent,
+                relation: link.relation.to_string(),
+                method: None,
+                call_site: Some(call_site),
+                callers: Vec::new(),
+                callers_truncated: false,
+                body_returns: Vec::new(),
+                body_returns_truncated: false,
+            });
+            return Some(index);
+        };
+
+        self.append_resolved_method_explanation(traversal, resolved, Some(call_site), link)
+    }
+
+    fn append_resolved_method_explanation(
+        &mut self,
+        traversal: &mut TypeExplanationTraversal<'_>,
+        resolved: ResolvedTypeExplanationMethod,
+        call_site: Option<TypeExplanationCallSite>,
+        link: TypeExplanationLink,
+    ) -> Option<usize> {
+        if traversal.steps.len() >= traversal.max_steps {
+            traversal.truncated = true;
+            return None;
+        }
+
+        let (callers, callers_truncated) = self.explanation_callers(traversal.source, &resolved);
+        let (body_returns, body_returns_truncated) =
+            self.explanation_body_returns(&resolved.evidence);
+        traversal.truncated |= body_returns_truncated;
+        let step_index = traversal.steps.len();
+        traversal.steps.push(TypeExplanationStep {
+            depth: link.depth,
+            parent: link.parent,
+            relation: link.relation.to_string(),
+            method: Some(resolved.evidence.clone()),
+            call_site,
+            callers,
+            callers_truncated,
+            body_returns: body_returns.clone(),
+            body_returns_truncated,
+        });
+
+        let body_calls = self.body_call_sites(&body_returns);
+        if link.depth >= traversal.max_depth {
+            if !body_calls.is_empty() {
+                traversal.truncated = true;
+            }
+            return Some(step_index);
+        }
+        if !traversal.visited.insert(resolved.key) {
+            return Some(step_index);
+        }
+
+        for child in body_calls {
+            self.append_call_explanation(
+                traversal,
+                &child,
+                TypeExplanationLink {
+                    depth: link.depth.saturating_add(1),
+                    parent: Some(step_index),
+                    relation: "method_body_call",
+                },
+            );
+            if traversal.steps.len() >= traversal.max_steps {
+                traversal.truncated = true;
+                break;
+            }
+        }
+        Some(step_index)
+    }
+
+    fn method_explanation_from_call(
+        &mut self,
+        site: &ArgCheckSite,
+        signature: Option<String>,
+    ) -> Option<ResolvedTypeExplanationMethod> {
+        let receiver_type = self.resolve_type_for_hover(
+            &site.receiver_type,
+            &site.class_context,
+            site.method_context.as_deref(),
+        );
+        self.method_explanation_from_receiver(
+            &site.method_name,
+            &receiver_type,
+            site.is_singleton,
+            signature,
+        )
+    }
+
+    fn method_explanation_from_receiver(
+        &mut self,
+        method_name: &str,
+        receiver_type: &Type,
+        prefer_singleton: bool,
+        signature: Option<String>,
+    ) -> Option<ResolvedTypeExplanationMethod> {
+        let receiver_type = Self::normalize_receiver_type_for_signature(receiver_type);
+        let receiver_class = TypeRegistry::type_to_class_name_pub(&receiver_type)?;
+        self.preload_hover_lookup_hierarchy(&receiver_class);
+
+        let mut definition_name = method_name.to_string();
+        let mut prefer_singleton = prefer_singleton;
+        let mut resolved = self.registry.resolve_method_call_owners(
+            &receiver_class,
+            &definition_name,
+            prefer_singleton,
+        );
+        if resolved.is_empty() && method_name == "new" {
+            definition_name = "initialize".to_string();
+            prefer_singleton = false;
+            resolved = self.registry.resolve_method_call_owners(
+                &receiver_class,
+                &definition_name,
+                prefer_singleton,
+            );
+        }
+
+        let (owner, is_singleton) = resolved
+            .into_iter()
+            .next()
+            .unwrap_or((receiver_class, prefer_singleton));
+        let method_sig = self
+            .registry
+            .lookup_method_sig_exact(&owner, &definition_name, is_singleton)
+            .or_else(|| {
+                self.external_rbs.and_then(|registry| {
+                    registry.lookup_method_sig_exact(&owner, &definition_name, is_singleton)
+                })
+            });
+        let declaration = self
+            .registry
+            .lookup_method_definition_location_exact(&owner, &definition_name, is_singleton)
+            .or_else(|| {
+                self.external_rbs.and_then(|registry| {
+                    registry.lookup_method_definition_location_exact(
+                        &owner,
+                        &definition_name,
+                        is_singleton,
+                    )
+                })
+            });
+        Some(Self::resolved_method_explanation(
+            owner,
+            method_name.to_string(),
+            definition_name,
+            is_singleton,
+            method_sig,
+            declaration,
+            signature,
+        ))
+    }
+
+    fn method_explanation_from_definition(
+        &mut self,
+        method_name: &str,
+        owner_type: &Type,
+        is_singleton: bool,
+        signature: Option<String>,
+        class_context: &str,
+        method_context: Option<&str>,
+    ) -> Option<ResolvedTypeExplanationMethod> {
+        let owner_type = self.resolve_type_for_hover(owner_type, class_context, method_context);
+        let owner = TypeRegistry::type_to_class_name_pub(&owner_type)?;
+        self.preload_hover_lookup_hierarchy(&owner);
+        let method_sig = self
+            .registry
+            .lookup_method_sig_exact(&owner, method_name, is_singleton)
+            .or_else(|| {
+                self.external_rbs.and_then(|registry| {
+                    registry.lookup_method_sig_exact(&owner, method_name, is_singleton)
+                })
+            });
+        let declaration = self
+            .registry
+            .lookup_method_definition_location_exact(&owner, method_name, is_singleton)
+            .or_else(|| {
+                self.external_rbs.and_then(|registry| {
+                    registry.lookup_method_definition_location_exact(
+                        &owner,
+                        method_name,
+                        is_singleton,
+                    )
+                })
+            });
+        Some(Self::resolved_method_explanation(
+            owner,
+            method_name.to_string(),
+            method_name.to_string(),
+            is_singleton,
+            method_sig,
+            declaration,
+            signature,
+        ))
+    }
+
+    fn resolved_method_explanation(
+        owner: String,
+        name: String,
+        definition_name: String,
+        is_singleton: bool,
+        method_sig: Option<crate::types::MethodSig>,
+        declaration: Option<(String, SourceLocation)>,
+        signature: Option<String>,
+    ) -> ResolvedTypeExplanationMethod {
+        let declaration_path = declaration.as_ref().map(|(path, _)| path.clone());
+        let declaration_location = declaration
+            .as_ref()
+            .map(|(_, location)| *location)
+            .or_else(|| method_sig.as_ref().and_then(|sig| sig.loc));
+        let mut origins = Vec::new();
+        if let Some(sig) = method_sig.as_ref() {
+            if sig.rbs_file_source {
+                origins.push("rbs_file".to_string());
+            }
+            if sig.rbs_inline_annotated {
+                origins.push("rbs_comment".to_string());
+            }
+            if sig.sig_annotated {
+                origins.push("sorbet_sig".to_string());
+            }
+            if sig.synthetic_dsl_source {
+                origins.push("synthetic_dsl".to_string());
+            }
+            if sig.rbs_annotated && origins.is_empty() {
+                origins.push("rbs_annotation".to_string());
+            }
+            if origins.is_empty() {
+                origins.push("ruby_inference".to_string());
+            }
+        } else {
+            origins.push("unresolved".to_string());
+        }
+        let signature = signature.or_else(|| {
+            method_sig
+                .as_ref()
+                .map(|sig| format_hover_inferred_method_sig(&name, sig))
+        });
+        let key = TypeExplanationMethodKey {
+            owner: owner.clone(),
+            dispatch_name: name.clone(),
+            definition_name: definition_name.clone(),
+            is_singleton,
+            declaration_path: declaration_path.clone(),
+            declaration_location,
+        };
+        ResolvedTypeExplanationMethod {
+            evidence: TypeExplanationMethod {
+                owner,
+                name,
+                definition_name,
+                is_singleton,
+                signature,
+                origins,
+                declaration_path,
+                declaration_location,
+            },
+            key,
+        }
+    }
+
+    fn explanation_call_site(
+        &mut self,
+        site: &ArgCheckSite,
+        hover: Option<&crate::parser::HoverResult>,
+    ) -> TypeExplanationCallSite {
+        let receiver_type = self.resolve_type_for_hover(
+            &site.receiver_type,
+            &site.class_context,
+            site.method_context.as_deref(),
+        );
+        let arguments = site
+            .args
+            .iter()
+            .map(|arg| TypeExplanationArgument {
+                start: arg.start,
+                end: arg.end,
+                keyword: arg.keyword.clone(),
+                positional_index: arg.positional_index,
+                inferred_type: self.resolve_type_for_hover(
+                    &arg.ty,
+                    &site.class_context,
+                    site.method_context.as_deref(),
+                ),
+            })
+            .collect();
+        let inferred_type = hover.map(|result| result.ty.clone());
+        TypeExplanationCallSite {
+            start: site.call_start,
+            end: site.call_end,
+            method_name: site.method_name.clone(),
+            receiver_type,
+            inferred_type,
+            arguments,
+        }
+    }
+
+    fn explanation_callers(
+        &mut self,
+        source: &str,
+        target: &ResolvedTypeExplanationMethod,
+    ) -> (Vec<TypeExplanationCallSite>, bool) {
+        let mut seen = HashSet::new();
+        let mut candidates: Vec<_> = self
+            .arg_check_sites
+            .iter()
+            .rev()
+            .filter(|site| {
+                site.method_name == target.key.dispatch_name
+                    && seen.insert((site.call_start, site.call_end, site.method_name.clone()))
+            })
+            .cloned()
+            .collect();
+        candidates.sort_by_key(|site| (site.call_start, site.call_end));
+        let mut callers = Vec::new();
+        let mut truncated = false;
+        for site in candidates {
+            let resolved = self.method_explanation_from_call(&site, None);
+            if resolved
+                .as_ref()
+                .is_none_or(|resolved| resolved.key != target.key)
+            {
+                continue;
+            }
+            if callers.len() >= MAX_EXPLANATION_CALLERS {
+                truncated = true;
+                break;
+            }
+            let hover = self.find_hover_at(source, site.call_start);
+            callers.push(self.explanation_call_site(&site, hover.as_ref()));
+        }
+        (callers, truncated)
+    }
+
+    fn explanation_body_returns(
+        &self,
+        method: &TypeExplanationMethod,
+    ) -> (Vec<TypeExplanationBodyReturn>, bool) {
+        let mut seen = HashSet::new();
+        let mut returns: Vec<_> = self
+            .method_return_sites
+            .iter()
+            .rev()
+            .filter(|site| {
+                site.class_name == method.owner
+                    && site.method_name == method.definition_name
+                    && site.is_singleton == method.is_singleton
+                    && seen.insert((site.start, site.end))
+            })
+            .map(|site| TypeExplanationBodyReturn {
+                owner: site.class_name.clone(),
+                method_name: site.method_name.clone(),
+                start: site.start,
+                end: site.end,
+                inferred_type: site.actual.clone(),
+                declared_types: site.declared.clone(),
+            })
+            .collect();
+        returns.sort_by_key(|site| (site.start, site.end));
+        let truncated = returns.len() > MAX_EXPLANATION_BODY_RETURNS;
+        (
+            returns
+                .into_iter()
+                .take(MAX_EXPLANATION_BODY_RETURNS)
+                .collect(),
+            truncated,
+        )
+    }
+
+    fn body_call_sites(&self, body_returns: &[TypeExplanationBodyReturn]) -> Vec<ArgCheckSite> {
+        let mut call_sites = Vec::new();
+        let mut seen = HashSet::new();
+        for body in body_returns {
+            for site in self.arg_check_sites.iter().rev() {
+                if site.call_start >= body.start
+                    && site.call_end <= body.end
+                    && seen.insert((site.call_start, site.call_end, site.method_name.clone()))
+                {
+                    call_sites.push(site.clone());
+                }
+            }
+        }
+        call_sites.sort_by_key(|site| (site.call_start, site.call_end));
+        call_sites
+    }
+
+    fn nested_call_sites(&self, arguments: &[ArgCheckArg]) -> Vec<ArgCheckSite> {
+        let mut call_sites = Vec::new();
+        let mut seen = HashSet::new();
+        for arg in arguments {
+            for site in self.arg_check_sites.iter().rev() {
+                if site.call_start >= arg.start
+                    && site.call_end <= arg.end
+                    && seen.insert((site.call_start, site.call_end, site.method_name.clone()))
+                {
+                    call_sites.push(site.clone());
+                }
+            }
+        }
+        call_sites.sort_by_key(|site| (site.call_start, site.call_end));
+        call_sites
     }
 
     fn find_best_snapshot(&self, byte_offset: usize) -> Option<&HoverSnapshot> {

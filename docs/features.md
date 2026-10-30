@@ -9,7 +9,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - Ruby source と `.rbs` を中心にした query 型推論 engine
 - CLI の RBS 出力、JSON Lines diagnostics、型カバレッジ JSON
 - TypeProf VSCode 拡張と接続できる LSP server
-- stdio MCP server による AI agent 向けの位置指定型推論
+- stdio MCP server による AI agent 向けの位置指定型推論と、明示queryによる同一source内の型由来説明
 - Rails / gem DSL plugin
 - Sorbet `sig` / `.rbi` の実験的な補助
 - wasm playground（[Playground](https://pvcresin.github.io/tyda/playground/)）
