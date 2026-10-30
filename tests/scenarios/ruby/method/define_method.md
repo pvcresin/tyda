@@ -147,10 +147,6 @@ end
 
 ## define_method from unbound method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -166,17 +162,13 @@ end
 
 ```rbs
 class Copier
-  def source: (untyped value) -> untyped
+  def source: (untyped value) -> String
   def target: (Integer value) -> String
   def call: -> String
 end
 ```
 
 ## define_method from project unbound method
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -200,7 +192,7 @@ end
 
 ```rbs
 class Copy < Source
-  def name: (untyped value) -> untyped
+  def name: (untyped value) -> String
   def call: -> String
 end
 ```
@@ -639,10 +631,6 @@ end
 
 ## Register send define_method on static receiver
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -674,7 +662,7 @@ class Object < BasicObject
 end
 
 class Source
-  def label: (untyped value) -> untyped
+  def label: (untyped value) -> String
 end
 ```
 

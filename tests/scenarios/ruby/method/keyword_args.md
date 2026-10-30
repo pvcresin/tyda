@@ -336,10 +336,6 @@ end
 
 ## Read a keyword rest value from caller record variants
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class KeywordRestReadFromRecordVariants
   def target(**rest) = rest[:value]
@@ -509,10 +505,6 @@ end
 ```
 
 ## Fetch a keyword rest value from caller record variants
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class KeywordRestFetchFromRecordVariants

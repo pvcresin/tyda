@@ -15073,24 +15073,26 @@ impl<'a> InferenceEngine<'a> {
                 )
             }
             Type::Union(parts) => {
-                let mut iter = parts.iter();
-                let mut merged = Self::keyword_fields_from_splat_type(iter.next()?)?;
-                for part in iter {
+                let mut merged: Vec<RecordField> = Vec::new();
+                for (branch_index, part) in parts.iter().enumerate() {
                     let fields = Self::keyword_fields_from_splat_type(part)?;
-                    if fields.len() != merged.len()
-                        || fields
-                            .iter()
-                            .any(|field| !merged.iter().any(|known| known.key == field.key))
-                    {
-                        return None;
+                    for known in &mut merged {
+                        if !fields.iter().any(|field| field.key == known.key) {
+                            known.optional = true;
+                        }
                     }
                     for field in fields {
-                        let existing = merged
-                            .iter_mut()
-                            .find(|known| known.key == field.key)
-                            .expect("field key checked above");
-                        existing.value = existing.value.clone().union_with(field.value);
-                        existing.optional |= field.optional;
+                        if let Some(existing) =
+                            merged.iter_mut().find(|known| known.key == field.key)
+                        {
+                            existing.value = existing.value.clone().union_with(field.value);
+                            existing.optional |= field.optional;
+                        } else {
+                            merged.push(RecordField {
+                                optional: field.optional || branch_index > 0,
+                                ..field
+                            });
+                        }
                     }
                 }
                 Some(merged)

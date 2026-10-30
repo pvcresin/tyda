@@ -268,10 +268,6 @@ end
 
 ## Method object call resolves project method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -288,7 +284,7 @@ end
 
 ```rbs
 class Worker
-  def normalize: (untyped value) -> untyped
+  def normalize: (untyped value) -> String
   def identity: (untyped value) -> untyped
   def direct: -> String
   def via_proc: -> String
@@ -297,10 +293,6 @@ end
 ```
 
 ## Method object as enumerable block
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -317,18 +309,14 @@ end
 
 ```rbs
 class Worker
-  def normalize: (untyped value) -> untyped
-  def build: (untyped value) -> [untyped, untyped]
+  def normalize: (untyped value) -> String
+  def build: (untyped value) -> [untyped, String]
   def values: -> Array[String]
   def pairs: -> Array[[1?, String]]
 end
 ```
 
 ## Explicit receiver method object
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -357,8 +345,8 @@ class Caller
 end
 
 class Formatter
-  def self.render: (untyped value) -> untyped
-  def label: (untyped value) -> untyped
+  def self.render: (untyped value) -> String
+  def label: (untyped value) -> String
 end
 ```
 

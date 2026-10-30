@@ -32,10 +32,6 @@ end
 
 ## Resolve deferred method returns before truthiness filtering
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class DeferredShortCircuit
   def self.maybe_strings(flag)
@@ -52,8 +48,8 @@ end
 
 ```rbs
 class DeferredShortCircuit
-  def self.maybe_strings: (untyped flag) -> [untyped]?
-  def self.with_default: (untyped flag) -> ([untyped] | [ ])
+  def self.maybe_strings: (untyped flag) -> [String]?
+  def self.with_default: (untyped flag) -> Array[String]
 end
 ```
 
