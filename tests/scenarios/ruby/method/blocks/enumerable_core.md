@@ -44,10 +44,6 @@ end
 
 ## Preserve the array result when a block return is deferred
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

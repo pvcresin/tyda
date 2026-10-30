@@ -5896,6 +5896,14 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn call_receiver_is_empty_hash_literal(call_node: &ruby_prism::CallNode<'_>) -> bool {
+        call_node.receiver().is_some_and(|receiver| {
+            receiver
+                .as_hash_node()
+                .is_some_and(|hash| hash.elements().is_empty())
+        })
+    }
+
     fn pattern_record_key_from_node(node: &Node<'_>) -> Option<RecordKey> {
         if let Some(key) = Self::record_key_from_node(node) {
             return Some(key);
@@ -16354,35 +16362,51 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             None
                         };
-                    for (idx, (name, _, _)) in named_requireds.iter().enumerate() {
-                        let ty = param_types.get(idx).cloned().unwrap_or_else(|| {
-                            if Self::is_unresolved_call_arg_type(&receiver_type)
-                                || matches!(
-                                    receiver_type,
-                                    Type::IvarRef(_) | Type::GlobalVariableRef(_)
-                                )
-                            {
-                                Type::Untyped
+                    let destructures_single_yield = param_types.len() == 1
+                        && named_requireds.len() > 1
+                        && accumulator_param_index.is_none()
+                        && method_name != "tap";
+                    if destructures_single_yield {
+                        if let Some(params_node) = block.parameters() {
+                            self.bind_call_block_param_types(
+                                class_name,
+                                &params_node,
+                                &param_types,
+                                parse_result,
+                                &mut block_scope,
+                            );
+                        }
+                    } else {
+                        for (idx, (name, _, _)) in named_requireds.iter().enumerate() {
+                            let ty = param_types.get(idx).cloned().unwrap_or_else(|| {
+                                if Self::is_unresolved_call_arg_type(&receiver_type)
+                                    || matches!(
+                                        receiver_type,
+                                        Type::IvarRef(_) | Type::GlobalVariableRef(_)
+                                    )
+                                {
+                                    Type::Untyped
+                                } else {
+                                    Type::Nil
+                                }
+                            });
+                            if accumulator_param_index == Some(idx) {
+                                Self::set_block_param_or_alias(
+                                    &mut block_scope,
+                                    name,
+                                    ty,
+                                    init_arg_alias.clone(),
+                                );
+                            } else if method_name == "tap" && idx == 0 {
+                                Self::set_block_param_or_alias(
+                                    &mut block_scope,
+                                    name,
+                                    ty,
+                                    tap_receiver_alias.clone(),
+                                );
                             } else {
-                                Type::Nil
+                                block_scope.set(name, ty);
                             }
-                        });
-                        if accumulator_param_index == Some(idx) {
-                            Self::set_block_param_or_alias(
-                                &mut block_scope,
-                                name,
-                                ty,
-                                init_arg_alias.clone(),
-                            );
-                        } else if method_name == "tap" && idx == 0 {
-                            Self::set_block_param_or_alias(
-                                &mut block_scope,
-                                name,
-                                ty,
-                                tap_receiver_alias.clone(),
-                            );
-                        } else {
-                            block_scope.set(name, ty);
                         }
                     }
                 } else {
@@ -30645,13 +30669,20 @@ impl<'a> InferenceEngine<'a> {
                 None
             };
 
+        if Self::call_receiver_is_empty_hash_literal(call_node)
+            && default_type.is_none()
+            && block_type.is_none()
+        {
+            return Some(Type::Bot);
+        }
+
         match receiver_type {
             Type::Record(fields) => {
                 if let Some(ref key) = key {
                     if let Some(value) = Self::record_field_value(fields, key) {
                         return Some(value);
                     }
-                    return default_type.or(block_type).or(Some(Type::Untyped));
+                    return default_type.or(block_type).or(Some(Type::Bot));
                 }
 
                 let value_type = Type::from_type_vec_preserve_untyped(
@@ -31371,6 +31402,22 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
     ) -> Option<Type> {
         let keys = self.call_literal_keys(class_name, call_node, parse_result, scope)?;
+        if Self::call_receiver_is_empty_hash_literal(call_node) && !keys.is_empty() {
+            let key_types = keys.iter().map(Self::record_key_type).collect::<Vec<_>>();
+            let block_type = self.fetch_values_block_return_type(
+                class_name,
+                call_node,
+                &key_types,
+                parse_result,
+                scope,
+            );
+            return Some(match block_type {
+                Some(block_type) if !Self::type_never_returns(&block_type) => {
+                    Type::Tuple(vec![block_type; keys.len()])
+                }
+                _ => Type::Bot,
+            });
+        }
         match receiver_type {
             Type::Record(fields) => {
                 let missing_keys: Vec<Type> = keys
@@ -31385,6 +31432,9 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                if !missing_keys.is_empty() && block_type.is_none() {
+                    return Some(Type::Bot);
+                }
                 Some(Type::Tuple(
                     keys.iter()
                         .map(|key| {
@@ -34114,6 +34164,18 @@ impl<'a> InferenceEngine<'a> {
         if method_name == "sum" && block_return_type != Type::Untyped {
             return Some(Self::include_optional_control_type(
                 block_return_type.widen(),
+                &block_break_type,
+            ));
+        }
+
+        if matches!(method_name, "map" | "collect")
+            && matches!(receiver_type, Type::Array(_) | Type::Tuple(_))
+            && matches!(&method_return, Type::Array(_))
+            && !Self::is_concrete(&method_return)
+            && !self.instance_method_has_source_override(&receiver_class, method_name)
+        {
+            return Some(Self::include_optional_control_type(
+                method_return,
                 &block_break_type,
             ));
         }
@@ -38336,6 +38398,9 @@ impl<'a> InferenceEngine<'a> {
         actual_type: &Type,
         cache: &mut RbsRelationCache,
     ) -> bool {
+        if matches!(actual_type, Type::Bot) {
+            return true;
+        }
         let key = (
             rbs_type as *const rbs_ir::RbsType as usize,
             actual_type.clone(),
@@ -39151,6 +39216,9 @@ impl<'a> InferenceEngine<'a> {
         receiver_type: &Type,
         cache: &mut RbsRelationCache,
     ) -> bool {
+        if matches!(actual_type, Type::Bot) {
+            return true;
+        }
         if !Self::rbs_type_mentions_self(rbs_type) {
             return Self::rbs_type_structurally_matches_cached(rbs_type, actual_type, cache);
         }

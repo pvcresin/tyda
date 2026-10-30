@@ -485,6 +485,50 @@ fn diagnostics_flag_outputs_json_lines() {
 }
 
 #[test]
+fn diagnostics_class_body_blocks_destructure_a_single_yield() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let sig_dir = dir.path().join("sig");
+    fs::create_dir_all(&sig_dir).expect("failed to create sig dir");
+    fs::write(
+        sig_dir.join("pair_source.rbs"),
+        "class PairSource\n  def self.each: () { (untyped pair) -> void } -> void\nend\n",
+    )
+    .expect("failed to write RBS");
+    let rb_file = dir.path().join("pair_consumer.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class PairConsumer\n",
+            "  PairSource.each do |name, params|\n",
+            "    opt = params.last.is_a?(Hash) ? params.pop : {}\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write Ruby source");
+
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("--diagnostics")
+        .arg(&rb_file)
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    assert!(
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "missing_method"
+                && matches!(diagnostic["method_name"].as_str(), Some("last" | "pop"))
+        }),
+        "a single untyped yield destructured into two block parameters must not make the second parameter nil: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn diagnostics_flag_suppresses_unreachable_presence_branch_methods() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("unreachable.rb");

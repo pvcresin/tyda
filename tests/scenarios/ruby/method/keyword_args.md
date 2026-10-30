@@ -549,10 +549,6 @@ end
 
 ## Infer no normal return when fetch has no key or fallback
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class KeywordRestFetchMissingKey
   def target(**rest) = rest.fetch(:missing)
@@ -725,14 +721,11 @@ end
 
 ## Infer no normal return when fetch_values has a required missing key
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class KeywordRestFetchValuesMissingKey
   def target(**rest) = rest.fetch_values(:missing)
   def call = target(**{ present: true })
+  def literal = {}.fetch_values(:missing)
 end
 ```
 
@@ -742,6 +735,7 @@ end
 class KeywordRestFetchValuesMissingKey
   def target: (**bool rest) -> bot
   def call: -> bot
+  def literal: -> bot
 end
 ```
 

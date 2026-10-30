@@ -808,3 +808,35 @@ class ControlFlowMethodOverrides
   def yielding_nonlocal_return: -> :from_block
 end
 ```
+
+## Rescue branches that raise do not reach code after the begin
+
+```ruby
+class RescueResponse
+  def status = :ok
+end
+
+class RescueFlow
+  def call(should_raise)
+    begin
+      raise "stop" if should_raise
+      response = RescueResponse.new
+    rescue StandardError
+      raise
+    end
+    response.status
+  end
+end
+```
+
+### result
+
+```rbs
+class RescueFlow
+  def call: (untyped should_raise) -> :ok
+end
+
+class RescueResponse
+  def status: -> :ok
+end
+```

@@ -511,3 +511,32 @@ class OneYieldSource
   def each: { (Symbol) -> String } -> String
 end
 ```
+
+## Destructure a tuple yield in a class body
+
+### update
+
+```rbs
+class ClassBodyPairSource
+  def self.each: () { (untyped pair) -> void } -> void
+end
+```
+
+```ruby
+class ClassBodyPairConsumer
+  result = nil
+  ClassBodyPairSource.each do |_name, params|
+    result = params.nil?
+  end
+
+  RESULT = result
+end
+```
+
+### result
+
+```rbs
+class ClassBodyPairConsumer
+  RESULT: bool?
+end
+```
