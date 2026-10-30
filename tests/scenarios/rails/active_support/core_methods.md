@@ -400,10 +400,6 @@ end
 
 ## ActiveSupport Array.wrap and predicate helpers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -427,8 +423,8 @@ class Probe
   def wrapped_nil: -> [ ]
   def wrapped_value: -> Array[:tag]
   def wrapped_array: -> [1, 2]
-  def predicates: (untyped value) -> [untyped, bool, bool]
-  def formatted: (untyped value) -> untyped
+  def predicates: (untyped value) -> [bool, bool, bool]
+  def formatted: (untyped value) -> String
 end
 ```
 

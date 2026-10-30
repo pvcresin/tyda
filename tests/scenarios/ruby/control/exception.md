@@ -599,11 +599,30 @@ class Object < BasicObject
 end
 ```
 
-## Ignore code after a terminating begin body
+## Retry preserves an earlier method return
 
-```yaml
-known_issue: true
+### update
+
+```ruby
+def return_before_retry(uri)
+  return nil if uri.nil?
+  begin
+    :conversation
+  rescue StandardError
+    retry
+  end
+end
 ```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def return_before_retry: (untyped uri) -> :conversation?
+end
+```
+
+## Ignore code after a terminating begin body
 
 ### update
 

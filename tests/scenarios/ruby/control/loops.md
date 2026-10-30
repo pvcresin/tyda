@@ -404,10 +404,6 @@ end
 
 ## Multi-value break in times
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -423,6 +419,22 @@ end
 ```rbs
 class Object < BasicObject
   def check: -> [:a, :b, :c]
+end
+```
+
+## A zero times call skips its block break
+
+### update
+
+```ruby
+def zero_times_break = 0.times { break :unreachable }
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def zero_times_break: -> 0
 end
 ```
 

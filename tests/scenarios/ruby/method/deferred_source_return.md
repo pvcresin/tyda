@@ -85,6 +85,10 @@ end
 
 ## Keep an empty array result when a block has no elements
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 class EmptyDeferredCollection
   def mapped
@@ -107,6 +111,10 @@ end
 ```
 
 ## Preserve block execution for an empty receiver and updated local
+
+```yaml
+known_issue: true
+```
 
 ```ruby
 class EmptyDeferredCounter

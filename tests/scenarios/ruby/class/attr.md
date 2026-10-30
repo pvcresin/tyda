@@ -356,10 +356,6 @@ end
 
 ## attr true also generates writer
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -380,7 +376,7 @@ item.name
 
 ```rbs
 class Item
-  def name: -> String
+  def name: -> "item"
   def name=: (String name) -> String
   def initialize: -> void
 end
