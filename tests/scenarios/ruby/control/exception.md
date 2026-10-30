@@ -668,10 +668,6 @@ end
 
 ## Exiting rescue branches do not widen fallthrough locals
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 def exiting_rescue_does_not_widen_local
   begin

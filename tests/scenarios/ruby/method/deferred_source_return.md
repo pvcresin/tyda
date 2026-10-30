@@ -85,10 +85,6 @@ end
 
 ## Keep an empty array result when a block has no elements
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class EmptyDeferredCollection
   def mapped
@@ -112,10 +108,6 @@ end
 
 ## Preserve block execution for an empty receiver and updated local
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class EmptyDeferredCounter
   def mapped
@@ -135,6 +127,26 @@ end
 class EmptyDeferredCounter
   def mapped: -> [ ]
   def values: -> [ ]
+end
+```
+
+## Empty array transformations keep an empty tuple
+
+```ruby
+class EmptyArrayTransformations
+  def mapped = [].map { :mapped }
+  def collected = [].collect { :collected }
+  def mapped_in_place = [].map! { :mapped }
+end
+```
+
+### result
+
+```rbs
+class EmptyArrayTransformations
+  def mapped: -> [ ]
+  def collected: -> [ ]
+  def mapped_in_place: -> [ ]
 end
 ```
 

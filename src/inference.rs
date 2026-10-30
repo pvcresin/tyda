@@ -3499,6 +3499,30 @@ impl<'a> InferenceEngine<'a> {
         self.merge_scope_locals_with_missing_local_nil(base, then_scope, else_scope, false)
     }
 
+    fn merge_continuing_scope_branches(
+        &self,
+        base: &Scope,
+        then_scope: &Scope,
+        then_continues: bool,
+        else_scope: &Scope,
+        else_continues: bool,
+    ) -> Scope {
+        match (then_continues, else_continues) {
+            (false, false) => self.merge_terminal_scope_locals(base, then_scope, else_scope),
+            (false, true) => {
+                let mut merged = else_scope.clone();
+                Self::merge_terminating_branch_outputs(&mut merged, then_scope);
+                merged
+            }
+            (true, false) => {
+                let mut merged = then_scope.clone();
+                Self::merge_terminating_branch_outputs(&mut merged, else_scope);
+                merged
+            }
+            (true, true) => self.merge_scope_locals(base, then_scope, else_scope),
+        }
+    }
+
     fn merge_scope_locals_with_missing_local_nil(
         &self,
         base: &Scope,
@@ -20111,6 +20135,7 @@ impl<'a> InferenceEngine<'a> {
                         body_type
                     };
 
+                    let normal_continues = !Self::type_never_returns(&normal_type);
                     merged_scope = normal_scope.clone();
                     result_type = Some(match result_type {
                         Some(prev) => prev.union_with(normal_type),
@@ -20139,7 +20164,14 @@ impl<'a> InferenceEngine<'a> {
                             parse_result,
                             &mut rescue_scope,
                         );
-                        merged_scope = self.merge_scope_locals(scope, &normal_scope, &rescue_scope);
+                        let rescue_continues = !Self::type_never_returns(&rescue_type);
+                        merged_scope = self.merge_continuing_scope_branches(
+                            scope,
+                            &normal_scope,
+                            normal_continues,
+                            &rescue_scope,
+                            rescue_continues,
+                        );
                         result_type = Some(match result_type {
                             Some(prev) => prev.union_with(rescue_type),
                             None => rescue_type,
@@ -26108,7 +26140,15 @@ impl<'a> InferenceEngine<'a> {
                 parse_result,
                 &mut subsequent_scope,
             );
-            *scope = self.merge_scope_locals(&base_scope, &branch_scope, &subsequent_scope);
+            let body_continues = !Self::type_never_returns(&body_type);
+            let subsequent_continues = !Self::type_never_returns(&subsequent_type);
+            *scope = self.merge_continuing_scope_branches(
+                &base_scope,
+                &branch_scope,
+                body_continues,
+                &subsequent_scope,
+                subsequent_continues,
+            );
             body_type.union_with(subsequent_type)
         } else {
             *scope = branch_scope;
@@ -33163,6 +33203,11 @@ impl<'a> InferenceEngine<'a> {
             Type::Nil
         };
         self.record_hover_block_return(call_node, block_return_type.clone());
+        if matches!(receiver_type, Type::Tuple(elements) if elements.is_empty())
+            && matches!(method_name, "map" | "collect" | "map!" | "collect!")
+        {
+            return Some(receiver_type.clone());
+        }
         let block_break_type = if block_scope.break_types.is_empty() {
             None
         } else {
