@@ -466,3 +466,73 @@ class Worker
   def via_local: -> { name: "item" }
 end
 ```
+
+## A return guard narrows a value before yielding
+
+### update
+
+```ruby
+class YieldGuardValue
+  def read = "ok"
+end
+
+class YieldGuard
+  def with_value(condition)
+    value = condition ? YieldGuardValue.new : nil
+    return unless value
+    yield value
+  end
+
+  def with_optional_value(condition)
+    value = condition ? YieldGuardValue.new : nil
+    yield value
+  end
+end
+
+class YieldGuardCaller
+  def read_value = YieldGuard.new.with_value(true) { |value| value.read }
+end
+```
+
+### result
+
+```rbs
+class YieldGuard
+  def with_value: (bool condition) { (YieldGuardValue) -> "ok" } -> "ok"?
+  def with_optional_value: (untyped condition) { (YieldGuardValue?) -> untyped } -> untyped
+end
+
+class YieldGuardCaller
+  def read_value: -> "ok"?
+end
+
+class YieldGuardValue
+  def read: -> "ok"
+end
+```
+
+## Yielded values include assignments from continuing branches
+
+### update
+
+```ruby
+class BranchYield
+  def each_data(filename)
+    data = "body"
+    if filename == ""
+      return
+    elsif filename
+      data = { name: filename }
+    end
+    yield data
+  end
+end
+```
+
+### result
+
+```rbs
+class BranchYield
+  def each_data: (untyped filename) { ((String | { name: untyped })) -> untyped } -> (nil | untyped)
+end
+```

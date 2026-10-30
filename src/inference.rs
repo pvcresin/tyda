@@ -13429,25 +13429,14 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::StatementsNode { .. } => {
                 let statements = body.as_statements_node().expect("must be StatementsNode");
-                let mut current_scope = scope.clone();
                 for child in statements.body().iter() {
                     self.scan_method_body_summary_node(
                         class_name,
                         &child,
                         parse_result,
-                        &current_scope,
+                        scope,
                         summary,
                     );
-                    if let Some(write) = child.as_local_variable_write_node() {
-                        let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-                        let value_type = self.infer_node_type(
-                            class_name,
-                            &write.value(),
-                            parse_result,
-                            &current_scope,
-                        );
-                        current_scope.set(&name, value_type);
-                    }
                 }
             }
             Node::WhileNode { .. } => {
