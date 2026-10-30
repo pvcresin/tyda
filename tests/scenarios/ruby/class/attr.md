@@ -107,10 +107,6 @@ end
 
 ## Infer splatted attr name lists
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -529,10 +525,6 @@ end
 ```
 
 ## attr_accessor getter reflects external setter writes
-
-```yaml
-known_issue: true
-```
 
 ### update
 

@@ -134,7 +134,7 @@ end
 
 class Setting
   def self.enabled: -> false
-  def self.enabled=: (bool enabled) -> false
+  def self.enabled=: (bool enabled) -> bool
   def self.stream: -> IO
   def self.stream=: (IO stream) -> IO
 end
