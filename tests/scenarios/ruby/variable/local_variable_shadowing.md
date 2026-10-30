@@ -138,10 +138,6 @@ end
 
 ## Setter without `self.` is local assignment
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -244,10 +240,6 @@ end
 ```
 
 ## `self.name = ...` calls setter method
-
-```yaml
-known_issue: true
-```
 
 ### update
 

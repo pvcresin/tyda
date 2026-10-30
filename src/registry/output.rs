@@ -439,11 +439,18 @@ impl TypeRegistry {
         }
         if method.name.ends_with('=')
             && method.attr_ivar.is_some()
-            && params.len() == 1
-            && !Self::is_concrete_for_global_resolve(&params[0].param_type)
-            && Self::is_concrete_for_global_resolve(&return_type)
+            && let [param] = params.as_mut_slice()
         {
-            params[0].param_type = return_type.clone();
+            if !method.has_annotation() && Self::is_concrete_for_global_resolve(&param.param_type) {
+                return_type = param.param_type.clone().widen_arg_for_param();
+            } else if !Self::is_concrete_for_global_resolve(&param.param_type)
+                && Self::is_concrete_for_global_resolve(&return_type)
+            {
+                param.param_type = return_type.clone().widen_arg_for_param();
+                if !method.has_annotation() {
+                    return_type = param.param_type.clone();
+                }
+            }
         }
 
         let overloads: Vec<OverloadSig> = if !method.extra_overloads.is_empty() {
