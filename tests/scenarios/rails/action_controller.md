@@ -46,10 +46,6 @@ end
 
 ## Resolve params accessors
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -64,8 +60,8 @@ end
 
 ```rbs
 class UsersController < ActionController::Base
-  def read_param: -> untyped
-  def fetch_param: -> untyped
+  def read_param: -> String
+  def fetch_param: -> String
 end
 ```
 
@@ -93,10 +89,6 @@ end
 
 ## Resolve controller request helpers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -117,8 +109,8 @@ end
 class UsersController < ActionController::Base
   def remote_ip: -> String
   def get_request: -> bool
-  def notice: -> untyped
-  def user_id: -> untyped
+  def notice: -> String
+  def user_id: -> Integer
 end
 ```
 

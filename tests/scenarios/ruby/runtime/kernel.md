@@ -152,6 +152,8 @@ end
 
 ```ruby
 def ids = Array([1, 2, 3])
+def map_untyped(values) = Array(values).map { |value| value.to_s }
+def wrap_untyped(values) = Array(values)
 ```
 
 ### result
@@ -159,5 +161,7 @@ def ids = Array([1, 2, 3])
 ```rbs
 class Object < BasicObject
   def ids: -> Array[1 | 2 | 3]
+  def map_untyped: (untyped values) -> Array[String]
+  def wrap_untyped: (untyped values) -> Array[untyped]
 end
 ```

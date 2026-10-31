@@ -1678,10 +1678,6 @@ end
 
 ## Direct `[]=` call accepts a block argument
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -2145,6 +2141,32 @@ class IndexAccess
   def tuple_last_elem: -> "a"
   def tuple_out_of_range: -> nil
   def tuple_dynamic_index: (untyped i) -> (1 | "a")?
+end
+```
+
+## Preserve array element types for deferred integer expressions
+
+### update
+
+```ruby
+class IvarIndexAccess
+  def initialize
+    @indices = Array.new(4, 0)
+  end
+
+  def indexed
+    values = Array.new(4, "value")
+    values[@indices[0] >> 1 & 3]
+  end
+end
+```
+
+### result
+
+```rbs
+class IvarIndexAccess
+  def initialize: -> void
+  def indexed: -> "value"?
 end
 ```
 

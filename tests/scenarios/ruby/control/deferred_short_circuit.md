@@ -144,7 +144,7 @@ end
 
 ```rbs
 class DeferredSafeNavigation
-  def self.label: -> String?
+  def self.label: -> String
   def self.nullable_label: (untyped status) -> String?
   def self.value: -> "ready"
   def self.nullable_value: (untyped status) -> "ready"?

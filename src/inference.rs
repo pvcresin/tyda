@@ -15910,6 +15910,20 @@ impl<'a> InferenceEngine<'a> {
         Self::merge_reachable_types(types)
     }
 
+    fn optional_block_value_type(node: &Node<'_>, ty: Type, scope: &Scope) -> Type {
+        let Some(block_name) = scope.current_block_param_name.as_deref() else {
+            return ty;
+        };
+        let Some(read) = node.as_local_variable_read_node() else {
+            return ty;
+        };
+        if String::from_utf8_lossy(read.name().as_slice()) == block_name {
+            ty.union_with(Type::Nil)
+        } else {
+            ty
+        }
+    }
+
     fn infer_control_arguments_type(
         &mut self,
         class_name: &str,
@@ -17235,6 +17249,12 @@ impl<'a> InferenceEngine<'a> {
         }
         let args = call_node.arguments()?;
         let value_arg = if method_name == "[]=" {
+            let index_assignment = call_node
+                .message_loc()
+                .is_some_and(|loc| loc.as_slice() != b"[]=");
+            if !index_assignment {
+                return None;
+            }
             args.arguments().iter().last()?
         } else {
             args.arguments().iter().next()?
@@ -20009,6 +20029,8 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let right_type =
                     self.infer_node_type(class_name, &or_node.right(), parse_result, &right_scope);
+                let right_type =
+                    Self::optional_block_value_type(&or_node.right(), right_type, scope);
                 if Self::type_never_returns(&right_type) {
                     let base = scope.clone();
                     self.apply_compound_branch_leaf(
@@ -23860,20 +23882,19 @@ impl<'a> InferenceEngine<'a> {
                             }
                         }
 
-                        let mut call_arg_types_for_generic: Vec<Type> = Vec::new();
-                        let mut call_kw_arg_types_for_generic: HashMap<String, Type> =
-                            HashMap::new();
+                        let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
+                            node,
+                            parse_result,
+                            class_name,
+                            scope,
+                        );
+                        let call_arg_types_for_generic = arg_types.clone();
+                        let call_kw_arg_types_for_generic = kw_types.clone();
                         let mut user_defined_block_call_result: Option<Type> = None;
                         let mut user_defined_no_block_enumerator_result: Option<Type> = None;
                         if self.record_hover_snapshots
                             && matches!(safe_nav_receiver_type, Type::Union(_))
                         {
-                            let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
-                                node,
-                                parse_result,
-                                class_name,
-                                scope,
-                            );
                             self.record_arg_check_site(
                                 &call_node,
                                 parse_result,
@@ -23891,14 +23912,6 @@ impl<'a> InferenceEngine<'a> {
                         }
                         if let Some(target_class) = self.type_to_class_name(&safe_nav_receiver_type)
                         {
-                            let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
-                                node,
-                                parse_result,
-                                class_name,
-                                scope,
-                            );
-                            call_arg_types_for_generic = arg_types.clone();
-                            call_kw_arg_types_for_generic = kw_types.clone();
                             let method_is_singleton = Self::receiver_is_singleton_dispatch(
                                 &receiver,
                                 scope.singleton_dispatch,
@@ -25370,6 +25383,8 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let right_type =
                     self.infer_node_type(class_name, &or_node.right(), parse_result, &right_scope);
+                let right_type =
+                    Self::optional_block_value_type(&or_node.right(), right_type, scope);
                 let mut result_types = Vec::new();
                 if let Some(truthy) = Self::deferred_truthy_only(&left_type) {
                     result_types.push(truthy);
@@ -32140,9 +32155,15 @@ impl<'a> InferenceEngine<'a> {
             }
             [single] => {
                 let index_type = self.infer_node_type(class_name, single, parse_result, scope);
-                if Self::is_unresolved_call_arg_type(&index_type)
-                    || matches!(index_type, Type::IvarRef(_) | Type::GlobalVariableRef(_))
-                {
+                let index_type = self.resolve_array_index_argument_type(
+                    class_name,
+                    scope.singleton_dispatch,
+                    &index_type,
+                );
+                if matches!(
+                    index_type,
+                    Type::Untyped | Type::Todo | Type::ParamRef(_) | Type::KeywordParamRef(_)
+                ) {
                     Some(Type::Untyped)
                 } else if matches!(index_type, Type::Integer | Type::LiteralInteger(_))
                     || Self::literal_integer_convertible_value(&index_type).is_some()
@@ -32154,10 +32175,22 @@ impl<'a> InferenceEngine<'a> {
             }
             [start, length] => {
                 let start_type = self.infer_node_type(class_name, start, parse_result, scope);
+                let start_type = self.resolve_array_index_argument_type(
+                    class_name,
+                    scope.singleton_dispatch,
+                    &start_type,
+                );
                 let length_type = self.infer_node_type(class_name, length, parse_result, scope);
+                let length_type = self.resolve_array_index_argument_type(
+                    class_name,
+                    scope.singleton_dispatch,
+                    &length_type,
+                );
                 let has_unresolved_arg = [&start_type, &length_type].into_iter().any(|ty| {
-                    Self::is_unresolved_call_arg_type(ty)
-                        || matches!(ty, Type::IvarRef(_) | Type::GlobalVariableRef(_))
+                    matches!(
+                        ty,
+                        Type::Untyped | Type::Todo | Type::ParamRef(_) | Type::KeywordParamRef(_)
+                    )
                 });
                 if has_unresolved_arg {
                     Some(Type::Untyped)
@@ -32172,6 +32205,20 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => None,
         }
+    }
+
+    fn resolve_array_index_argument_type(
+        &self,
+        class_name: &str,
+        singleton_context: bool,
+        ty: &Type,
+    ) -> Type {
+        if !matches!(ty, Type::IvarRef(_) | Type::GlobalVariableRef(_)) {
+            return ty.clone();
+        }
+
+        self.registry
+            .resolve_deferred_refs_for_context(class_name, singleton_context, ty)
     }
 
     fn node_is_integer_range(
@@ -41368,13 +41415,29 @@ impl<'a> InferenceEngine<'a> {
         let block_raw = call_node.block()?;
         let block_arg = block_raw.as_block_argument_node()?;
         let expr = block_arg.expression()?;
+        let normalized_receiver_type = Self::normalize_union_receiver(receiver_type);
+        if let Some(receiver_class) = self.type_to_class_name(&normalized_receiver_type) {
+            let method_is_singleton = matches!(normalized_receiver_type, Type::Singleton(_));
+            let has_source_method = self
+                .registry
+                .resolve_method_call_owners(&receiver_class, method_name, method_is_singleton)
+                .first()
+                .and_then(|(owner, is_singleton)| {
+                    self.registry
+                        .lookup_method_def(owner, method_name, *is_singleton)
+                })
+                .is_some_and(|method| !method.rbs_file_source);
+            if has_source_method {
+                return None;
+            }
+        }
         let (call_arg_types, call_kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
         let call_arg_count = call_arg_types
             .len()
             .max(Self::call_node_positional_arg_count(call_node));
 
-        let receiver_type = &Self::normalize_union_receiver(receiver_type);
+        let receiver_type = &normalized_receiver_type;
 
         if let Node::LocalVariableReadNode { .. } = &expr {
             let lvar = expr.as_local_variable_read_node()?;
@@ -41516,6 +41579,13 @@ impl<'a> InferenceEngine<'a> {
             call_arg_count,
         ) {
             return Some(result);
+        }
+
+        if method_name == "sort_by"
+            && call_arg_count == 0
+            && matches!(receiver_type, Type::Array(_) | Type::Tuple(_))
+        {
+            return Some(Self::rebuild_array_with_elem(receiver_type, &elem_type));
         }
 
         if matches!(method_name, "map!" | "collect!") {
@@ -43124,6 +43194,16 @@ impl<'a> InferenceEngine<'a> {
     ) -> Option<Type> {
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
+
+        if receiver_class == "Kernel"
+            && method_name == "Array"
+            && call_arg_count == 1
+            && call_arg_types.len() == 1
+            && call_kw_arg_types.is_empty()
+            && Self::is_unresolved_call_arg_type(&call_arg_types[0])
+        {
+            return Some(Type::Array(Some(Box::new(Type::Untyped))));
+        }
 
         let receiver_type_args = Self::extract_type_args(receiver_type);
         let mut class_type_vars =

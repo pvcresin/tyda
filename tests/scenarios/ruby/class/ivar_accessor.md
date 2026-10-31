@@ -30,10 +30,6 @@ end
 
 ## Assign chained untyped call to ivar
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -50,8 +46,8 @@ end
 
 ```rbs
 class Config
-  def limit: -> untyped
-  def label: -> untyped
+  def limit: -> Integer
+  def label: -> String
   def initialize: (?Hash[untyped, untyped] options) -> void
 end
 ```

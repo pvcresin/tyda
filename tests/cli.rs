@@ -384,6 +384,30 @@ fn coverage_flag_outputs_deterministic_json_report() {
 }
 
 #[test]
+fn coverage_includes_arguments_of_unresolved_receiver_calls() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("unknown_receiver.rb");
+    fs::write(
+        &rb_file,
+        "def invoke(receiver)\n  receiver.call(\"value\".length)\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["references"]["total"], 3);
+    assert_eq!(report["by_kind"]["method_call"]["total"], 2);
+    assert_eq!(report["by_kind"]["method_call"]["typed"], 1);
+    assert_eq!(report["by_kind"]["method_call"]["unknown"], 1);
+}
+
+#[test]
 fn coverage_resolves_cross_file_references_after_workspace_merge() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(

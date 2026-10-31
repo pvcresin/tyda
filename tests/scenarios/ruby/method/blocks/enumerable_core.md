@@ -318,10 +318,6 @@ end
 
 ## Chained array transformations keep the result of symbol-proc sort_by
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
