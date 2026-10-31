@@ -1075,6 +1075,37 @@ class Source
 end
 ```
 
+## User iterator infers a loop-assigned yield value
+
+### update
+
+```ruby
+class LocalPopSource
+  def each
+    entries = ["value"]
+    while entry = entries.pop
+      yield entry
+    end
+  end
+end
+
+class LocalPopConsumer
+  def value = LocalPopSource.new.each { |entry| entry.upcase }
+end
+```
+
+### result
+
+```rbs
+class LocalPopConsumer
+  def value: -> LocalPopSource
+end
+
+class LocalPopSource
+  def each: { (String) -> String } -> nil
+end
+```
+
 ## User iterator enum substitutes call args
 
 ```yaml

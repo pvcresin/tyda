@@ -736,6 +736,7 @@ pub struct MethodBlockMeta {
     pub return_type: Option<Type>,
     pub forwarded_block: Option<(SharedName, bool)>,
     pub yields: bool,
+    pub yields_at_least_once: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -11772,6 +11773,7 @@ mod tests {
                 return_type: None,
                 forwarded_block: None,
                 yields: true,
+                yields_at_least_once: false,
             },
         );
         registry.set_method_block_meta(
@@ -11783,6 +11785,7 @@ mod tests {
                 return_type: None,
                 forwarded_block: None,
                 yields: true,
+                yields_at_least_once: false,
             },
         );
         registry.set_method_block_meta(
@@ -11794,6 +11797,7 @@ mod tests {
                 return_type: None,
                 forwarded_block: None,
                 yields: true,
+                yields_at_least_once: false,
             },
         );
 
@@ -11861,6 +11865,7 @@ mod tests {
                 return_type: None,
                 forwarded_block: None,
                 yields: true,
+                yields_at_least_once: false,
             },
         );
 

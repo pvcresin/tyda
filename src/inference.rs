@@ -661,6 +661,7 @@ pub struct InferenceEngine<'a> {
     self_bind_comments: Vec<SorbetSelfBindComment>,
     deferred_method_bodies: Vec<DeferredMethodBody>,
     active_method_body: Option<ActiveMethodBody>,
+    active_loop_entry_scopes: Option<HashMap<usize, Scope>>,
     module_function_mirrors: Vec<(String, String)>,
     refinement_methods: HashMap<String, HashMap<String, LocalSingletonMethod>>,
     refinement_modules: HashMap<String, Vec<String>>,
@@ -1791,6 +1792,7 @@ impl<'a> InferenceEngine<'a> {
             self_bind_comments: Vec::new(),
             deferred_method_bodies: Vec::new(),
             active_method_body: None,
+            active_loop_entry_scopes: None,
             module_function_mirrors: Vec::new(),
             refinement_methods: HashMap::new(),
             refinement_modules: HashMap::new(),
@@ -1854,6 +1856,7 @@ impl<'a> InferenceEngine<'a> {
             self_bind_comments: Vec::new(),
             deferred_method_bodies: Vec::new(),
             active_method_body: None,
+            active_loop_entry_scopes: None,
             module_function_mirrors: Vec::new(),
             refinement_methods: HashMap::new(),
             refinement_modules: HashMap::new(),
@@ -3470,7 +3473,80 @@ impl<'a> InferenceEngine<'a> {
         self.registry.add_call_site(class_name, call_site);
     }
 
+    fn merge_terminating_branch_outputs(target: &mut Scope, branch: &Scope) {
+        target
+            .return_types
+            .extend(branch.return_types.iter().cloned());
+        target.next_types.extend(branch.next_types.iter().cloned());
+        target
+            .break_types
+            .extend(branch.break_types.iter().cloned());
+        target
+            .enumerator_yielded_types
+            .extend(branch.enumerator_yielded_types.iter().cloned());
+        if let Some(entry) = branch.exception_entry.as_deref() {
+            target.merge_exception_from_map(entry);
+        }
+    }
+
     fn merge_scope_locals(&self, base: &Scope, then_scope: &Scope, else_scope: &Scope) -> Scope {
+        self.merge_scope_locals_with_missing_local_nil(base, then_scope, else_scope, true)
+    }
+
+    fn merge_terminal_scope_locals(
+        &self,
+        base: &Scope,
+        then_scope: &Scope,
+        else_scope: &Scope,
+    ) -> Scope {
+        self.merge_scope_locals_with_missing_local_nil(base, then_scope, else_scope, false)
+    }
+
+    fn merge_continuing_scope_branches(
+        &self,
+        base: &Scope,
+        then_scope: &Scope,
+        then_continues: bool,
+        else_scope: &Scope,
+        else_continues: bool,
+    ) -> Scope {
+        match (then_continues, else_continues) {
+            (false, false) => self.merge_terminal_scope_locals(base, then_scope, else_scope),
+            (false, true) => {
+                let mut merged = else_scope.clone();
+                Self::merge_terminating_branch_outputs(&mut merged, then_scope);
+                Self::merge_prior_control_outputs(&mut merged, base);
+                merged
+            }
+            (true, false) => {
+                let mut merged = then_scope.clone();
+                Self::merge_terminating_branch_outputs(&mut merged, else_scope);
+                Self::merge_prior_control_outputs(&mut merged, base);
+                merged
+            }
+            (true, true) => self.merge_scope_locals(base, then_scope, else_scope),
+        }
+    }
+
+    fn merge_prior_control_outputs(target: &mut Scope, base: &Scope) {
+        target
+            .return_types
+            .splice(0..0, base.return_types.iter().cloned());
+        target
+            .next_types
+            .splice(0..0, base.next_types.iter().cloned());
+        target
+            .break_types
+            .splice(0..0, base.break_types.iter().cloned());
+    }
+
+    fn merge_scope_locals_with_missing_local_nil(
+        &self,
+        base: &Scope,
+        then_scope: &Scope,
+        else_scope: &Scope,
+        missing_local_is_nil: bool,
+    ) -> Scope {
         let mut names: HashSet<String> = base.locals.keys().cloned().collect();
         names.extend(then_scope.locals.keys().cloned());
         names.extend(else_scope.locals.keys().cloned());
@@ -3636,7 +3712,32 @@ impl<'a> InferenceEngine<'a> {
                     }
                     merged.set(name, Self::merge_branch_types(left, right))
                 }
-                (Some(only), None) | (None, Some(only)) => merged.set(name, only),
+                (Some(only), None) => {
+                    let ty = if missing_local_is_nil {
+                        if only != Type::Nil {
+                            changed_local_count += 1;
+                            has_disjoint_primitive_pair |=
+                                has_disjoint_primitive_flow_types(&only, &Type::Nil);
+                        }
+                        Self::merge_branch_types(only, Type::Nil)
+                    } else {
+                        only
+                    };
+                    merged.set(name, ty)
+                }
+                (None, Some(only)) => {
+                    let ty = if missing_local_is_nil {
+                        if only != Type::Nil {
+                            changed_local_count += 1;
+                            has_disjoint_primitive_pair |=
+                                has_disjoint_primitive_flow_types(&Type::Nil, &only);
+                        }
+                        Self::merge_branch_types(Type::Nil, only)
+                    } else {
+                        only
+                    };
+                    merged.set(name, ty)
+                }
                 (None, None) => {}
             }
             if let (Some(left), Some(right)) = (then_def, else_def)
@@ -3651,8 +3752,14 @@ impl<'a> InferenceEngine<'a> {
             alternatives.reserve_exact(changed_local_count);
             overlaps_previous = false;
             for name in &names {
-                let left = then_scope.get(name).or_else(|| base.get(name));
-                let right = else_scope.get(name).or_else(|| base.get(name));
+                let base_ty = base.get(name);
+                let missing_type = (missing_local_is_nil && base_ty.is_none()).then_some(Type::Nil);
+                let left = then_scope
+                    .get(name)
+                    .or(base_ty)
+                    .cloned()
+                    .or_else(|| missing_type.clone());
+                let right = else_scope.get(name).or(base_ty).cloned().or(missing_type);
                 if let (Some(left), Some(right)) = (left, right)
                     && left != right
                 {
@@ -4656,6 +4763,15 @@ impl<'a> InferenceEngine<'a> {
             Node::BeginNode { .. } => {
                 let begin_node = node.as_begin_node().expect("must be BeginNode");
                 Self::begin_ensure_always_exits(&begin_node)
+                    || begin_node
+                        .statements()
+                        .is_some_and(|statements| Self::statements_unrescuably_exit(&statements))
+            }
+            Node::RescueModifierNode { .. } => {
+                let rescue_node = node
+                    .as_rescue_modifier_node()
+                    .expect("must be RescueModifierNode");
+                Self::return_node_has_non_raising_arguments(&rescue_node.expression())
             }
             Node::CallNode { .. } => {
                 let call = node.as_call_node().expect("must be CallNode");
@@ -4683,6 +4799,43 @@ impl<'a> InferenceEngine<'a> {
                     .is_some_and(|s| Self::statements_always_exit(&s));
                 body_exits && else_exits
             }
+            Node::CaseNode { .. } => {
+                let case_node = node.as_case_node().expect("must be CaseNode");
+                let all_when_bodies_exit = case_node.conditions().iter().all(|condition| {
+                    if let Node::WhenNode { .. } = &condition {
+                        condition
+                            .as_when_node()
+                            .and_then(|when_node| when_node.statements())
+                            .is_some_and(|statements| Self::statements_always_exit(&statements))
+                    } else {
+                        false
+                    }
+                });
+                let else_exits = case_node
+                    .else_clause()
+                    .and_then(|else_clause| else_clause.statements())
+                    .is_some_and(|statements| Self::statements_always_exit(&statements));
+                case_node.else_clause().is_some() && else_exits && all_when_bodies_exit
+            }
+            Node::CaseMatchNode { .. } => {
+                let case_node = node.as_case_match_node().expect("must be CaseMatchNode");
+                let all_in_bodies_exit = case_node.conditions().iter().all(|condition| {
+                    if let Node::InNode { .. } = &condition {
+                        condition
+                            .as_in_node()
+                            .and_then(|in_node| in_node.statements())
+                            .is_some_and(|statements| Self::statements_always_exit(&statements))
+                    } else {
+                        false
+                    }
+                });
+                let else_exits = case_node.else_clause().is_none()
+                    || case_node
+                        .else_clause()
+                        .and_then(|else_clause| else_clause.statements())
+                        .is_some_and(|statements| Self::statements_always_exit(&statements));
+                all_in_bodies_exit && else_exits
+            }
             _ => false,
         }
     }
@@ -4693,6 +4846,35 @@ impl<'a> InferenceEngine<'a> {
             .iter()
             .last()
             .is_some_and(|node| matches!(node, Node::BreakNode { .. }))
+    }
+
+    fn return_node_has_non_raising_arguments(node: &Node<'_>) -> bool {
+        let Some(return_node) = node.as_return_node() else {
+            return false;
+        };
+        return_node.arguments().is_none_or(|arguments| {
+            arguments.arguments().iter().all(|argument| {
+                matches!(
+                    argument,
+                    Node::FalseNode { .. }
+                        | Node::FloatNode { .. }
+                        | Node::ImaginaryNode { .. }
+                        | Node::IntegerNode { .. }
+                        | Node::NilNode { .. }
+                        | Node::RationalNode { .. }
+                        | Node::StringNode { .. }
+                        | Node::SymbolNode { .. }
+                        | Node::TrueNode { .. }
+                )
+            })
+        })
+    }
+
+    fn statements_unrescuably_exit(statements: &ruby_prism::StatementsNode<'_>) -> bool {
+        let mut body = statements.body().iter();
+        body.next()
+            .is_some_and(|node| Self::return_node_has_non_raising_arguments(&node))
+            && body.next().is_none()
     }
 
     fn begin_ensure_always_exits(begin_node: &ruby_prism::BeginNode<'_>) -> bool {
@@ -4724,6 +4906,39 @@ impl<'a> InferenceEngine<'a> {
             | Type::Proc { .. } => Some(true),
             _ => None,
         }
+    }
+
+    fn syntactic_node_truthiness(node: &Node<'_>) -> Option<bool> {
+        match node {
+            Node::FalseNode { .. } | Node::NilNode { .. } => Some(false),
+            Node::TrueNode { .. }
+            | Node::FloatNode { .. }
+            | Node::ImaginaryNode { .. }
+            | Node::IntegerNode { .. }
+            | Node::RationalNode { .. }
+            | Node::StringNode { .. }
+            | Node::SymbolNode { .. } => Some(true),
+            _ => None,
+        }
+    }
+
+    fn branch_truthiness(node: &Node<'_>, inferred_type: &Type) -> Option<bool> {
+        Self::syntactic_node_truthiness(node).or_else(|| {
+            let call = node.as_call_node()?;
+            if call.name().as_slice() != b"empty?"
+                || call.block().is_some()
+                || call
+                    .arguments()
+                    .is_some_and(|arguments| !arguments.arguments().is_empty())
+            {
+                return None;
+            }
+            match inferred_type {
+                Type::True => Some(true),
+                Type::False => Some(false),
+                _ => None,
+            }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4772,7 +4987,11 @@ impl<'a> InferenceEngine<'a> {
             self.infer_node_type(class_name, &for_node.collection(), parse_result, scope);
         let resolved_collection_type =
             self.resolve_receiver_method_refs_for_destructuring(&collection_type);
-        let cardinality = Self::collection_iteration_cardinality(&resolved_collection_type);
+        let source_each = self.source_defined_each_info(class_name, &resolved_collection_type);
+        let cardinality = source_each
+            .as_ref()
+            .map(|(cardinality, _)| *cardinality)
+            .unwrap_or_else(|| Self::collection_iteration_cardinality(&resolved_collection_type));
         if matches!(cardinality, IterationCardinality::Never) {
             return collection_type;
         }
@@ -4780,7 +4999,9 @@ impl<'a> InferenceEngine<'a> {
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
-        let index_type = Self::for_iteration_target_type(&resolved_collection_type);
+        let index_type = source_each
+            .map(|(_, target_type)| target_type)
+            .unwrap_or_else(|| Self::for_iteration_target_type(&resolved_collection_type));
         self.assign_multi_target(class_name, &for_node.index(), index_type, &mut loop_scope);
 
         if let Some(statements) = for_node.statements() {
@@ -4857,8 +5078,36 @@ impl<'a> InferenceEngine<'a> {
             let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
             let value_type =
                 self.infer_node_type(class_name, &write.value(), parse_result, &loop_scope);
-            let truthy = Self::truthy_only(&value_type).unwrap_or(value_type);
+            let truthy = Type::project_truthy(&value_type).unwrap_or(value_type);
             loop_scope.set(&name, truthy);
+        } else if !is_until && let Node::LocalVariableReadNode { .. } = predicate {
+            let read = predicate
+                .as_local_variable_read_node()
+                .expect("must be LocalVariableReadNode");
+            let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
+            if let Some(value_type) = loop_scope.get(&name).and_then(Type::project_truthy) {
+                loop_scope.set(&name, value_type);
+            }
+        } else if is_until && let Node::LocalVariableReadNode { .. } = predicate {
+            let read = predicate
+                .as_local_variable_read_node()
+                .expect("must be LocalVariableReadNode");
+            let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
+            if let Some(value_type) = loop_scope.get(&name).and_then(Type::project_falsy) {
+                loop_scope.set(&name, value_type);
+            }
+        } else if is_until && let Node::LocalVariableWriteNode { .. } = predicate {
+            let write = predicate
+                .as_local_variable_write_node()
+                .expect("must be LocalVariableWriteNode");
+            let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+            let value_type =
+                self.infer_node_type(class_name, &write.value(), parse_result, &loop_scope);
+            let falsy = Type::project_falsy(&value_type).unwrap_or(value_type);
+            loop_scope.set(&name, falsy);
+        }
+        if let Some(loop_entry_scopes) = self.active_loop_entry_scopes.as_mut() {
+            loop_entry_scopes.insert(predicate.location().start_offset(), loop_scope.clone());
         }
         const LOOP_FIXPOINT_LIMIT: usize = 4;
         for _ in 0..LOOP_FIXPOINT_LIMIT {
@@ -4951,24 +5200,31 @@ impl<'a> InferenceEngine<'a> {
         for_node: &ruby_prism::ForNode<'_>,
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
-    ) -> Type {
+    ) -> (Type, bool) {
         let collection_type =
             self.infer_node_type(class_name, &for_node.collection(), parse_result, scope);
         let resolved_collection_type =
             self.resolve_receiver_method_refs_for_destructuring(&collection_type);
-        let cardinality = Self::collection_iteration_cardinality(&resolved_collection_type);
+        let source_each = self.source_defined_each_info(class_name, &resolved_collection_type);
+        let cardinality = source_each
+            .as_ref()
+            .map(|(cardinality, _)| *cardinality)
+            .unwrap_or_else(|| Self::collection_iteration_cardinality(&resolved_collection_type));
 
         if matches!(cardinality, IterationCardinality::Never) {
             self.assign_multi_target(class_name, &for_node.index(), Type::Nil, scope);
-            return collection_type;
+            return (collection_type, false);
         }
 
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
-        let index_type = Self::for_iteration_target_type(&resolved_collection_type);
+        let index_type = source_each
+            .map(|(_, target_type)| target_type)
+            .unwrap_or_else(|| Self::for_iteration_target_type(&resolved_collection_type));
         self.assign_multi_target(class_name, &for_node.index(), index_type, &mut loop_scope);
         let mut for_value = collection_type.clone();
+        let mut exits_method = false;
         if let Some(statements) = for_node.statements() {
             self.process_statements_for_returns(
                 class_name,
@@ -4987,13 +5243,167 @@ impl<'a> InferenceEngine<'a> {
                     collection_type.union_with(break_type)
                 };
             }
+            exits_method = matches!(cardinality, IterationCardinality::AtLeastOnce)
+                && loop_scope.break_types.is_empty()
+                && Self::statements_guarantee_method_return(&statements);
         }
 
         *scope = self.merge_loop_scope_locals(scope, &loop_scope);
         if matches!(cardinality, IterationCardinality::AtLeastOnce) {
             self.overwrite_definite_target_locals(&for_node.index(), &loop_scope, scope);
         }
-        for_value
+        (for_value, exits_method)
+    }
+
+    fn source_defined_each_info(
+        &self,
+        class_name: &str,
+        collection_type: &Type,
+    ) -> Option<(IterationCardinality, Type)> {
+        let receiver_class = self.type_to_class_name(collection_type)?;
+        let receiver_class = self
+            .registry
+            .resolve_class_name_for_type_name(&receiver_class, class_name)
+            .unwrap_or(receiver_class);
+        let (owner, is_singleton) = self
+            .registry
+            .resolve_method_call_owners(&receiver_class, "each", false)
+            .into_iter()
+            .next()?;
+        let method = self
+            .registry
+            .lookup_method_def(&owner, "each", is_singleton)?;
+        if method.rbs_file_source || method.synthetic_dsl_source {
+            return None;
+        }
+        let meta = self
+            .registry
+            .lookup_method_block_meta(&owner, "each", is_singleton)?;
+        let can_yield =
+            meta.yields || !meta.yield_param_types.is_empty() || meta.forwarded_block.is_some();
+        let cardinality = if meta.yields_at_least_once {
+            IterationCardinality::AtLeastOnce
+        } else if can_yield {
+            IterationCardinality::Maybe
+        } else {
+            IterationCardinality::Never
+        };
+        let target_type = if meta.forwarded_block.is_some() && meta.yield_param_types.is_empty() {
+            Type::Untyped
+        } else {
+            match meta.yield_param_types.as_slice() {
+                [] => Type::Nil,
+                [single] => single.clone(),
+                params => Type::Tuple(params.to_vec()),
+            }
+        };
+        Some((cardinality, target_type))
+    }
+
+    fn method_body_yields_at_least_once(body: &Node<'_>) -> bool {
+        Self::node_yield_summary(body).0
+    }
+
+    fn statements_yield_summary(statements: &ruby_prism::StatementsNode<'_>) -> (bool, bool) {
+        for statement in statements.body().iter() {
+            let (guarantees_yield, may_exit_before_yield) = Self::node_yield_summary(&statement);
+            if guarantees_yield || may_exit_before_yield {
+                return (guarantees_yield, may_exit_before_yield);
+            }
+        }
+        (false, false)
+    }
+
+    fn node_yield_summary(node: &Node<'_>) -> (bool, bool) {
+        match node {
+            Node::YieldNode { .. } => (true, false),
+            Node::ReturnNode { .. }
+            | Node::BreakNode { .. }
+            | Node::NextNode { .. }
+            | Node::RedoNode { .. }
+            | Node::RetryNode { .. } => (false, true),
+            Node::CallNode { .. } => {
+                let call = node.as_call_node().expect("must be CallNode");
+                (
+                    false,
+                    matches!(
+                        String::from_utf8_lossy(call.name().as_slice()).as_ref(),
+                        "raise" | "fail" | "exit" | "abort" | "throw"
+                    ),
+                )
+            }
+            Node::StatementsNode { .. } => {
+                let statements = node.as_statements_node().expect("must be StatementsNode");
+                Self::statements_yield_summary(&statements)
+            }
+            Node::IfNode { .. } => {
+                let if_node = node.as_if_node().expect("must be IfNode");
+                let then_summary = if_node
+                    .statements()
+                    .map(|statements| Self::statements_yield_summary(&statements))
+                    .unwrap_or((false, false));
+                let else_summary = if_node
+                    .subsequent()
+                    .map(|subsequent| Self::node_yield_summary(&subsequent))
+                    .unwrap_or((false, false));
+                (
+                    then_summary.0 && else_summary.0,
+                    then_summary.1 || else_summary.1,
+                )
+            }
+            Node::UnlessNode { .. } => {
+                let unless_node = node.as_unless_node().expect("must be UnlessNode");
+                let then_summary = unless_node
+                    .statements()
+                    .map(|statements| Self::statements_yield_summary(&statements))
+                    .unwrap_or((false, false));
+                let else_summary = unless_node
+                    .else_clause()
+                    .and_then(|else_clause| else_clause.statements())
+                    .map(|statements| Self::statements_yield_summary(&statements))
+                    .unwrap_or((false, false));
+                (
+                    then_summary.0 && else_summary.0,
+                    then_summary.1 || else_summary.1,
+                )
+            }
+            Node::ElseNode { .. } => node
+                .as_else_node()
+                .and_then(|else_node| else_node.statements())
+                .map(|statements| Self::statements_yield_summary(&statements))
+                .unwrap_or((false, false)),
+            Node::CaseNode { .. } => {
+                let case_node = node.as_case_node().expect("must be CaseNode");
+                let branch_summaries = case_node.conditions().iter().map(|condition| {
+                    condition
+                        .as_when_node()
+                        .and_then(|when_node| when_node.statements())
+                        .map(|statements| Self::statements_yield_summary(&statements))
+                        .unwrap_or((false, false))
+                });
+                let else_summary = case_node
+                    .else_clause()
+                    .and_then(|else_clause| else_clause.statements())
+                    .map(|statements| Self::statements_yield_summary(&statements))
+                    .unwrap_or((false, false));
+                let mut guarantees_yield = else_summary.0;
+                let mut may_exit_before_yield = else_summary.1;
+                for (branch_guarantees_yield, branch_may_exit_before_yield) in branch_summaries {
+                    guarantees_yield &= branch_guarantees_yield;
+                    may_exit_before_yield |= branch_may_exit_before_yield;
+                }
+                (guarantees_yield, may_exit_before_yield)
+            }
+            _ => (false, false),
+        }
+    }
+
+    fn statements_guarantee_method_return(statements: &ruby_prism::StatementsNode<'_>) -> bool {
+        statements
+            .body()
+            .iter()
+            .next()
+            .is_some_and(|statement| matches!(statement, Node::ReturnNode { .. }))
     }
 
     fn collection_iteration_cardinality(ty: &Type) -> IterationCardinality {
@@ -5484,6 +5894,14 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
         }
+    }
+
+    fn call_receiver_is_empty_hash_literal(call_node: &ruby_prism::CallNode<'_>) -> bool {
+        call_node.receiver().is_some_and(|receiver| {
+            receiver
+                .as_hash_node()
+                .is_some_and(|hash| hash.elements().is_empty())
+        })
     }
 
     fn pattern_record_key_from_node(node: &Node<'_>) -> Option<RecordKey> {
@@ -7887,6 +8305,16 @@ impl<'a> InferenceEngine<'a> {
         let Some(args) = super_node.arguments() else {
             return;
         };
+        if args.arguments().len() == 1
+            && args
+                .arguments()
+                .iter()
+                .next()
+                .is_some_and(|arg| matches!(arg, Node::ForwardingArgumentsNode { .. }))
+        {
+            self.register_forwarding_super_call_site(class_name, scope);
+            return;
+        }
         self.ensure_class_available(class_name);
         let superclass = match self.registry.get_superclass(class_name).map(str::to_string) {
             Some(sc) => sc,
@@ -8044,6 +8472,16 @@ impl<'a> InferenceEngine<'a> {
         } else {
             return Some(method_def.raw_return_type.clone());
         };
+        if args.as_ref().is_some_and(|args| {
+            args.arguments().len() == 1
+                && args
+                    .arguments()
+                    .iter()
+                    .next()
+                    .is_some_and(|arg| matches!(arg, Node::ForwardingArgumentsNode { .. }))
+        }) {
+            return Some(method_def.raw_return_type.clone());
+        }
 
         let mut positional_types = Vec::new();
         let mut keyword_types = HashMap::new();
@@ -8704,7 +9142,7 @@ impl<'a> InferenceEngine<'a> {
                 if self.collect_refinement_call("Object", &call_node, parse_result) {
                     return;
                 }
-                let scope = Scope::default();
+                let scope = self.top_level_scope.clone();
                 let collected_static_send_definition = if let Some(sent_method_name) =
                     self.static_send_target_method_name("Object", &call_node, parse_result, &scope)
                 {
@@ -8806,7 +9244,13 @@ impl<'a> InferenceEngine<'a> {
                         &scope,
                     ))
                 {
-                    self.collect_top_level_calls("Object", node, parse_result, false);
+                    self.collect_top_level_calls_with_scope(
+                        "Object",
+                        node,
+                        parse_result,
+                        false,
+                        &scope,
+                    );
                     if call_node.block().is_some() {
                         let mut scope = scope;
                         self.process_call_block_side_effects(
@@ -12089,6 +12533,7 @@ impl<'a> InferenceEngine<'a> {
                 return_type: annotation.block_return_type.clone(),
                 forwarded_block: None,
                 yields: true,
+                yields_at_least_once: false,
             })
     }
 
@@ -12581,6 +13026,29 @@ impl<'a> InferenceEngine<'a> {
             &scope,
         );
 
+        let has_body_scan_summary = def_node.body().is_some_and(|body| {
+            let start = body.location().start_offset();
+            let end = body.location().end_offset();
+            let has_yield =
+                Self::source_slice_may_contain(parse_result.source(), start, end, b"yield");
+            let has_named_block = scope
+                .current_block_param_name
+                .as_deref()
+                .is_some_and(|name| {
+                    Self::source_slice_may_contain(
+                        parse_result.source(),
+                        start,
+                        end,
+                        name.as_bytes(),
+                    )
+                });
+            has_yield || has_named_block
+        });
+        let saved_active_loop_entry_scopes = std::mem::replace(
+            &mut self.active_loop_entry_scopes,
+            has_body_scan_summary.then(HashMap::new),
+        );
+
         let saved_suppress_call_sites = self.suppress_body_call_sites;
         if self.defer_unresolved_body_call_sites && !param_infos.is_empty() {
             self.suppress_body_call_sites = true;
@@ -12625,24 +13093,10 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let body_scan_summary = def_node.body().and_then(|body| {
-            let start = body.location().start_offset();
-            let end = body.location().end_offset();
-            let has_yield =
-                Self::source_slice_may_contain(parse_result.source(), start, end, b"yield");
-            let has_named_block = scope
-                .current_block_param_name
-                .as_deref()
-                .is_some_and(|name| {
-                    Self::source_slice_may_contain(
-                        parse_result.source(),
-                        start,
-                        end,
-                        name.as_bytes(),
-                    )
-                });
-            (has_yield || has_named_block)
+            has_body_scan_summary
                 .then(|| self.scan_method_body_summary(class_name, &body, parse_result, &scope))
         });
+        self.active_loop_entry_scopes = saved_active_loop_entry_scopes;
         let (unresolved_block_receivers, has_case_class_dispatch) = self
             .active_method_body
             .take()
@@ -12852,6 +13306,9 @@ impl<'a> InferenceEngine<'a> {
                         b"yield",
                     )
                 }),
+                yields_at_least_once: def_node
+                    .body()
+                    .is_some_and(|body| Self::method_body_yields_at_least_once(&body)),
             },
         );
         self.record_method_definition_hover_snapshot(
@@ -13247,6 +13704,84 @@ impl<'a> InferenceEngine<'a> {
                         &child,
                         parse_result,
                         scope,
+                        summary,
+                    );
+                }
+            }
+            Node::WhileNode { .. } => {
+                let while_node = body.as_while_node().expect("must be WhileNode");
+                let predicate = while_node.predicate();
+                self.scan_method_body_summary_node(
+                    class_name,
+                    &predicate,
+                    parse_result,
+                    scope,
+                    summary,
+                );
+                let loop_entry_scope = self
+                    .active_loop_entry_scopes
+                    .as_ref()
+                    .and_then(|scopes| scopes.get(&predicate.location().start_offset()));
+                let mut body_scope = loop_entry_scope.cloned().unwrap_or_else(|| scope.clone());
+                if loop_entry_scope.is_none()
+                    && let Node::LocalVariableWriteNode { .. } = &predicate
+                {
+                    let write = predicate
+                        .as_local_variable_write_node()
+                        .expect("must be LocalVariableWriteNode");
+                    let value_type =
+                        self.infer_node_type(class_name, &write.value(), parse_result, scope);
+                    let Some(value_type) = Self::truthy_only(&value_type) else {
+                        return;
+                    };
+                    let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+                    body_scope.set(&name, value_type);
+                }
+                if let Some(statements) = while_node.statements() {
+                    self.scan_method_body_summary_node(
+                        class_name,
+                        &statements.as_node(),
+                        parse_result,
+                        &body_scope,
+                        summary,
+                    );
+                }
+            }
+            Node::UntilNode { .. } => {
+                let until_node = body.as_until_node().expect("must be UntilNode");
+                let predicate = until_node.predicate();
+                self.scan_method_body_summary_node(
+                    class_name,
+                    &predicate,
+                    parse_result,
+                    scope,
+                    summary,
+                );
+                let loop_entry_scope = self
+                    .active_loop_entry_scopes
+                    .as_ref()
+                    .and_then(|scopes| scopes.get(&predicate.location().start_offset()));
+                let mut body_scope = loop_entry_scope.cloned().unwrap_or_else(|| scope.clone());
+                if loop_entry_scope.is_none()
+                    && let Node::LocalVariableWriteNode { .. } = &predicate
+                {
+                    let write = predicate
+                        .as_local_variable_write_node()
+                        .expect("must be LocalVariableWriteNode");
+                    let value_type =
+                        self.infer_node_type(class_name, &write.value(), parse_result, scope);
+                    let Some(value_type) = Self::falsy_only(&value_type) else {
+                        return;
+                    };
+                    let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+                    body_scope.set(&name, value_type);
+                }
+                if let Some(statements) = until_node.statements() {
+                    self.scan_method_body_summary_node(
+                        class_name,
+                        &statements.as_node(),
+                        parse_result,
+                        &body_scope,
                         summary,
                     );
                 }
@@ -14808,24 +15343,26 @@ impl<'a> InferenceEngine<'a> {
                 )
             }
             Type::Union(parts) => {
-                let mut iter = parts.iter();
-                let mut merged = Self::keyword_fields_from_splat_type(iter.next()?)?;
-                for part in iter {
+                let mut merged: Vec<RecordField> = Vec::new();
+                for (branch_index, part) in parts.iter().enumerate() {
                     let fields = Self::keyword_fields_from_splat_type(part)?;
-                    if fields.len() != merged.len()
-                        || fields
-                            .iter()
-                            .any(|field| !merged.iter().any(|known| known.key == field.key))
-                    {
-                        return None;
+                    for known in &mut merged {
+                        if !fields.iter().any(|field| field.key == known.key) {
+                            known.optional = true;
+                        }
                     }
                     for field in fields {
-                        let existing = merged
-                            .iter_mut()
-                            .find(|known| known.key == field.key)
-                            .expect("field key checked above");
-                        existing.value = existing.value.clone().union_with(field.value);
-                        existing.optional |= field.optional;
+                        if let Some(existing) =
+                            merged.iter_mut().find(|known| known.key == field.key)
+                        {
+                            existing.value = existing.value.clone().union_with(field.value);
+                            existing.optional |= field.optional;
+                        } else {
+                            merged.push(RecordField {
+                                optional: field.optional || branch_index > 0,
+                                ..field
+                            });
+                        }
                     }
                 }
                 Some(merged)
@@ -15232,8 +15769,9 @@ impl<'a> InferenceEngine<'a> {
                 let mut body_nodes = statements.body().iter().peekable();
                 while let Some(node) = body_nodes.next() {
                     if body_nodes.peek().is_some() {
-                        self.process_statement(class_name, &node, parse_result, scope);
-                        if Self::node_always_exits(&node) {
+                        let for_exits_method =
+                            self.process_statement(class_name, &node, parse_result, scope);
+                        if Self::node_always_exits(&node) || for_exits_method {
                             return Self::normal_flow_type_from_scope(scope, None);
                         }
                         continue;
@@ -15370,6 +15908,20 @@ impl<'a> InferenceEngine<'a> {
             types.push(implicit);
         }
         Self::merge_reachable_types(types)
+    }
+
+    fn optional_block_value_type(node: &Node<'_>, ty: Type, scope: &Scope) -> Type {
+        let Some(block_name) = scope.current_block_param_name.as_deref() else {
+            return ty;
+        };
+        let Some(read) = node.as_local_variable_read_node() else {
+            return ty;
+        };
+        if String::from_utf8_lossy(read.name().as_slice()) == block_name {
+            ty.union_with(Type::Nil)
+        } else {
+            ty
+        }
     }
 
     fn infer_control_arguments_type(
@@ -15695,7 +16247,7 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                     param_count,
                 )
-            } else if let Some(param_types) = Self::refine_hash_entry_block_param_types(
+            } else if let Some(param_types) = self.refine_hash_entry_block_param_types(
                 &receiver_type,
                 method_name.as_ref(),
                 param_count,
@@ -15797,7 +16349,35 @@ impl<'a> InferenceEngine<'a> {
                     _ => None,
                 }
             }
-            .or_else(|| rbs_block_seed.as_ref().map(|seed| seed.param_types.clone()));
+            .or_else(|| rbs_block_seed.as_ref().map(|seed| seed.param_types.clone()))
+            .or_else(|| {
+                let resolved_receiver =
+                    self.try_resolve_receiver_inline(class_name, &receiver_type);
+                let receiver_class = self.type_to_class_name(&resolved_receiver)?;
+                let receiver_class = self
+                    .registry
+                    .resolve_class_name_for_type_name(&receiver_class, class_name)
+                    .unwrap_or(receiver_class);
+                let param_types = self.resolve_user_defined_block_param_types(
+                    &receiver_class,
+                    method_name.as_ref(),
+                    Self::receiver_is_singleton_dispatch(&receiver, scope.singleton_dispatch),
+                    0,
+                )?;
+                let (positional_arg_types, keyword_arg_types) = self
+                    .collect_call_arg_types_with_kw_skip(
+                        call_node,
+                        parse_result,
+                        class_name,
+                        scope,
+                        0,
+                    );
+                Some(Self::substitute_user_defined_block_param_types(
+                    param_types,
+                    &positional_arg_types,
+                    &keyword_arg_types,
+                ))
+            });
 
             if has_only_plain_required_params && !named_requireds.is_empty() {
                 if let Some(param_types) = side_effect_param_types {
@@ -15816,26 +16396,56 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             None
                         };
-                    for (idx, ((name, _, _), ty)) in
-                        named_requireds.iter().zip(param_types).enumerate()
-                    {
-                        if accumulator_param_index == Some(idx) {
-                            Self::set_block_param_or_alias(
+                    let destructures_single_yield = param_types.len() == 1
+                        && named_requireds.len() > 1
+                        && accumulator_param_index.is_none()
+                        && method_name != "tap";
+                    if destructures_single_yield {
+                        if let Some(params_node) = block.parameters() {
+                            self.bind_call_block_param_types(
+                                class_name,
+                                &params_node,
+                                &param_types,
+                                parse_result,
                                 &mut block_scope,
-                                name,
-                                ty,
-                                init_arg_alias.clone(),
                             );
-                        } else if method_name == "tap" && idx == 0 {
-                            Self::set_block_param_or_alias(
-                                &mut block_scope,
-                                name,
-                                ty,
-                                tap_receiver_alias.clone(),
-                            );
-                        } else {
-                            block_scope.set(name, ty);
                         }
+                    } else {
+                        for (idx, (name, _, _)) in named_requireds.iter().enumerate() {
+                            let ty = param_types.get(idx).cloned().unwrap_or_else(|| {
+                                if Self::is_unresolved_call_arg_type(&receiver_type)
+                                    || matches!(
+                                        receiver_type,
+                                        Type::IvarRef(_) | Type::GlobalVariableRef(_)
+                                    )
+                                {
+                                    Type::Untyped
+                                } else {
+                                    Type::Nil
+                                }
+                            });
+                            if accumulator_param_index == Some(idx) {
+                                Self::set_block_param_or_alias(
+                                    &mut block_scope,
+                                    name,
+                                    ty,
+                                    init_arg_alias.clone(),
+                                );
+                            } else if method_name == "tap" && idx == 0 {
+                                Self::set_block_param_or_alias(
+                                    &mut block_scope,
+                                    name,
+                                    ty,
+                                    tap_receiver_alias.clone(),
+                                );
+                            } else {
+                                block_scope.set(name, ty);
+                            }
+                        }
+                    }
+                } else {
+                    for (name, _, _) in &named_requireds {
+                        block_scope.set(name, Type::Untyped);
                     }
                 }
             } else if let Some(params_node) = block.parameters()
@@ -16300,6 +16910,9 @@ impl<'a> InferenceEngine<'a> {
                     depth + 1,
                 );
             }
+            if meta.yields {
+                return Some(meta.yield_param_types.clone());
+            }
         }
         if !method.rbs_method_types.is_empty() {
             return None;
@@ -16636,6 +17249,12 @@ impl<'a> InferenceEngine<'a> {
         }
         let args = call_node.arguments()?;
         let value_arg = if method_name == "[]=" {
+            let index_assignment = call_node
+                .message_loc()
+                .is_some_and(|loc| loc.as_slice() != b"[]=");
+            if !index_assignment {
+                return None;
+            }
             args.arguments().iter().last()?
         } else {
             args.arguments().iter().next()?
@@ -17592,17 +18211,41 @@ impl<'a> InferenceEngine<'a> {
             &positional_arg_types,
             &keyword_arg_types,
         );
-
         if let Some(block_arg) = block_raw.as_block_argument_node()
             && let Some(expr) = block_arg.expression()
-            && let Node::LocalVariableReadNode { .. } = &expr
         {
-            let lvar = expr.as_local_variable_read_node()?;
-            let var_name = String::from_utf8_lossy(lvar.name().as_slice()).to_string();
-            if scope.current_block_param_name.as_deref() == Some(var_name.as_str()) {
-                scope.forwarded_block = Some((method_name.to_string(), method_is_singleton));
+            if let Node::LocalVariableReadNode { .. } = &expr {
+                let lvar = expr.as_local_variable_read_node()?;
+                let var_name = String::from_utf8_lossy(lvar.name().as_slice()).to_string();
+                if scope.current_block_param_name.as_deref() == Some(var_name.as_str()) {
+                    scope.forwarded_block = Some((method_name.to_string(), method_is_singleton));
+                    return None;
+                }
             }
-            return None;
+            let Type::Proc {
+                return_type,
+                param_count,
+            } = self.infer_node_type(class_name, &expr, parse_result, scope)
+            else {
+                return None;
+            };
+            if param_count != block_param_types.len() {
+                return None;
+            }
+            let return_type = Self::substitute_param_refs(&return_type, &block_param_types);
+            return Some(HoverBlockSig {
+                params: block_param_types
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, ty)| Param {
+                        name: format!("arg{idx}"),
+                        param_type: ty,
+                        kind: ParamKind::Required,
+                    })
+                    .collect(),
+                return_type,
+                required: true,
+            });
         }
 
         let block = block_raw.as_block_node()?;
@@ -18258,7 +18901,7 @@ impl<'a> InferenceEngine<'a> {
         node: &Node<'_>,
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
-    ) {
+    ) -> bool {
         self.apply_sorbet_self_bind_for_statement(class_name, node, parse_result, scope);
         let invalidates_self_facts = !scope.self_facts.is_empty()
             && self.statement_invalidates_self_facts(
@@ -18276,6 +18919,7 @@ impl<'a> InferenceEngine<'a> {
         if invalidates_self_facts && !defer_self_fact_invalidation {
             scope.clear_self_facts();
         }
+        let mut for_exits_method = false;
         match node {
             Node::DefNode { .. } => {
                 if let Some(def_node) = node.as_def_node() {
@@ -19339,7 +19983,9 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::ForNode { .. } => {
                 let for_node = node.as_for_node().expect("must be ForNode");
-                self.process_for_scope(class_name, &for_node, parse_result, scope);
+                for_exits_method = self
+                    .process_for_scope(class_name, &for_node, parse_result, scope)
+                    .1;
             }
             _ => {
                 self.infer_node_type(class_name, node, parse_result, scope);
@@ -19348,6 +19994,7 @@ impl<'a> InferenceEngine<'a> {
         if defer_self_fact_invalidation {
             scope.clear_self_facts();
         }
+        for_exits_method
     }
 
     fn infer_node_type_with_scope(
@@ -19382,6 +20029,8 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let right_type =
                     self.infer_node_type(class_name, &or_node.right(), parse_result, &right_scope);
+                let right_type =
+                    Self::optional_block_value_type(&or_node.right(), right_type, scope);
                 if Self::type_never_returns(&right_type) {
                     let base = scope.clone();
                     self.apply_compound_branch_leaf(
@@ -19454,7 +20103,9 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::IfNode { .. } => {
                 let if_node = node.as_if_node().expect("must be IfNode");
-                self.infer_node_type(class_name, &if_node.predicate(), parse_result, scope);
+                let predicate_type =
+                    self.infer_node_type(class_name, &if_node.predicate(), parse_result, scope);
+                let truthiness = Self::branch_truthiness(&if_node.predicate(), &predicate_type);
                 self.bind_condition_assignment_target(
                     class_name,
                     &if_node.predicate(),
@@ -19489,7 +20140,9 @@ impl<'a> InferenceEngine<'a> {
                     &mut then_scope,
                 );
                 self.bind_match_write_captures(class_name, &if_node.predicate(), &mut then_scope);
-                let then_type = if let Some(statements) = if_node.statements() {
+                let then_type = if truthiness == Some(false) {
+                    Type::Bot
+                } else if let Some(statements) = if_node.statements() {
                     self.infer_statements_return_type(
                         class_name,
                         &statements,
@@ -19513,7 +20166,9 @@ impl<'a> InferenceEngine<'a> {
                     &mut else_scope,
                     false,
                 );
-                let else_type = if let Some(else_clause) = if_node.subsequent() {
+                let else_type = if truthiness == Some(true) {
+                    Type::Bot
+                } else if let Some(else_clause) = if_node.subsequent() {
                     self.infer_node_type_with_scope(
                         class_name,
                         &else_clause,
@@ -19708,6 +20363,8 @@ impl<'a> InferenceEngine<'a> {
 
                 let mut branch_types: Vec<Type> = Vec::new();
                 let mut merged_scope: Option<Scope> = None;
+                let mut terminating_scope: Option<Scope> = None;
+                let mut terminating_branch_locals = Scope::default();
                 for condition in case_node.conditions().iter() {
                     if let Node::WhenNode { .. } = &condition {
                         let when_node = condition.as_when_node().expect("must be WhenNode");
@@ -19757,13 +20414,28 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             Type::Nil
                         };
+                        let branch_always_exits = when_node
+                            .statements()
+                            .is_some_and(|statements| Self::statements_always_exit(&statements))
+                            || Self::type_never_returns(&when_type);
                         branch_types.push(when_type);
-                        merged_scope = Some(match merged_scope {
-                            Some(current) => {
-                                self.merge_scope_locals(scope, &current, &branch_scope)
-                            }
-                            None => branch_scope,
-                        });
+                        if branch_always_exits {
+                            terminating_branch_locals
+                                .merge_exception_from_map(&branch_scope.locals);
+                            terminating_scope = Some(match terminating_scope {
+                                Some(current) => {
+                                    self.merge_terminal_scope_locals(scope, &current, &branch_scope)
+                                }
+                                None => branch_scope,
+                            });
+                        } else {
+                            merged_scope = Some(match merged_scope {
+                                Some(current) => {
+                                    self.merge_scope_locals(scope, &current, &branch_scope)
+                                }
+                                None => branch_scope,
+                            });
+                        }
                     }
                 }
 
@@ -19788,18 +20460,49 @@ impl<'a> InferenceEngine<'a> {
                 } else {
                     Type::Nil
                 };
+                let else_always_exits = else_reachable
+                    && (case_node
+                        .else_clause()
+                        .and_then(|else_clause| else_clause.statements())
+                        .is_some_and(|statements| Self::statements_always_exit(&statements))
+                        || (case_node.else_clause().is_some()
+                            && Self::type_never_returns(&else_type)));
                 if else_reachable {
                     branch_types.push(else_type);
+                    if else_always_exits {
+                        terminating_scope = Some(match terminating_scope {
+                            Some(current) => {
+                                self.merge_terminal_scope_locals(scope, &current, &else_scope)
+                            }
+                            None => else_scope.clone(),
+                        });
+                    }
                 }
 
-                *scope = match (merged_scope, else_reachable) {
-                    (Some(current), true) => self.merge_scope_locals(scope, &current, &else_scope),
-                    (Some(current), false) => current,
-                    (None, true) => {
-                        self.merge_scope_locals(scope, &else_scope, &scope.fork_for_branch())
+                let (mut continuation_scope, has_continuation) =
+                    match (merged_scope, else_reachable, else_always_exits) {
+                        (Some(current), true, true) => (current, true),
+                        (Some(current), true, false) => {
+                            (self.merge_scope_locals(scope, &current, &else_scope), true)
+                        }
+                        (Some(current), false, _) => (current, true),
+                        (None, true, true) | (None, false, _) => (scope.fork_for_branch(), false),
+                        (None, true, false) => (else_scope, true),
+                    };
+                if has_continuation {
+                    if let Some(terminating_scope) = &terminating_scope {
+                        Self::merge_terminating_branch_outputs(
+                            &mut continuation_scope,
+                            terminating_scope,
+                        );
                     }
-                    (None, false) => scope.fork_for_branch(),
+                    if let Some(entry) = terminating_branch_locals.exception_entry.as_deref() {
+                        continuation_scope.merge_exception_from_map(entry);
+                    }
+                } else if let Some(terminating_scope) = terminating_scope {
+                    continuation_scope = terminating_scope;
                 };
+                *scope = continuation_scope;
                 Self::merge_reachable_types(branch_types)
             }
             Node::CaseMatchNode { .. } => {
@@ -19821,16 +20524,62 @@ impl<'a> InferenceEngine<'a> {
 
                 let mut branch_types: Vec<Type> = Vec::new();
                 let mut merged_scope: Option<Scope> = None;
+                let mut terminating_scope: Option<Scope> = None;
+                let mut terminating_branch_locals = Scope::default();
+                let mut remaining_subject_type = subject_type.clone();
+                let mut remaining_subject_is_known = subject_type.is_some();
+                let mut literal_partitioning_enabled = subject_type.is_some();
                 for condition in case_node.conditions().iter() {
+                    if remaining_subject_is_known && remaining_subject_type.is_none() {
+                        break;
+                    }
                     if let Node::InNode { .. } = &condition {
                         let in_node = condition.as_in_node().expect("must be InNode");
-                        let narrowed_type = self.extract_pattern_narrowing(
-                            class_name,
-                            &in_node.pattern(),
-                            parse_result,
-                            subject_type.as_ref(),
-                            scope,
-                        );
+                        let narrowed_type =
+                            if Self::is_irrefutable_variable_pattern(&in_node.pattern()) {
+                                let matched_type = if literal_partitioning_enabled {
+                                    remaining_subject_type.clone()
+                                } else {
+                                    None
+                                };
+                                remaining_subject_type = None;
+                                remaining_subject_is_known = true;
+                                literal_partitioning_enabled = false;
+                                matched_type
+                            } else if literal_partitioning_enabled {
+                                if let Some((matched_type, unmatched_type)) = self
+                                    .partition_case_pattern(
+                                        class_name,
+                                        &in_node.pattern(),
+                                        remaining_subject_type.as_ref(),
+                                    )
+                                {
+                                    remaining_subject_type = unmatched_type;
+                                    remaining_subject_is_known = true;
+                                    let Some(matched_type) = matched_type else {
+                                        continue;
+                                    };
+                                    Some(matched_type)
+                                } else {
+                                    literal_partitioning_enabled = false;
+                                    remaining_subject_is_known = false;
+                                    self.extract_pattern_narrowing(
+                                        class_name,
+                                        &in_node.pattern(),
+                                        parse_result,
+                                        subject_type.as_ref(),
+                                        scope,
+                                    )
+                                }
+                            } else {
+                                self.extract_pattern_narrowing(
+                                    class_name,
+                                    &in_node.pattern(),
+                                    parse_result,
+                                    subject_type.as_ref(),
+                                    scope,
+                                )
+                            };
                         let mut branch_scope = scope.fork_for_branch();
                         if let (Some(var_name), Some(narrow_ty)) = (&predicate_var, &narrowed_type)
                         {
@@ -19859,17 +20608,35 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             Type::Nil
                         };
+                        let branch_always_exits = in_node
+                            .statements()
+                            .is_some_and(|statements| Self::statements_always_exit(&statements))
+                            || Self::type_never_returns(&branch_type);
                         branch_types.push(branch_type);
-                        merged_scope = Some(match merged_scope {
-                            Some(current) => {
-                                self.merge_scope_locals(scope, &current, &branch_scope)
-                            }
-                            None => branch_scope,
-                        });
+                        if branch_always_exits {
+                            terminating_branch_locals
+                                .merge_exception_from_map(&branch_scope.locals);
+                            terminating_scope = Some(match terminating_scope {
+                                Some(current) => {
+                                    self.merge_terminal_scope_locals(scope, &current, &branch_scope)
+                                }
+                                None => branch_scope,
+                            });
+                        } else {
+                            merged_scope = Some(match merged_scope {
+                                Some(current) => {
+                                    self.merge_scope_locals(scope, &current, &branch_scope)
+                                }
+                                None => branch_scope,
+                            });
+                        }
                     }
                 }
 
-                if let Some(else_clause) = case_node.else_clause() {
+                let mut has_continuation = false;
+                let else_reachable =
+                    !remaining_subject_is_known || remaining_subject_type.is_some();
+                if let Some(else_clause) = case_node.else_clause().filter(|_| else_reachable) {
                     let mut else_scope = scope.fork_for_branch();
                     let else_type = if let Some(statements) = else_clause.statements() {
                         self.infer_statements_return_type(
@@ -19881,15 +20648,44 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         Type::Nil
                     };
+                    let else_always_exits = else_clause
+                        .statements()
+                        .is_some_and(|statements| Self::statements_always_exit(&statements))
+                        || Self::type_never_returns(&else_type);
                     branch_types.push(else_type);
-                    *scope = if let Some(current) = merged_scope {
-                        self.merge_scope_locals(scope, &current, &else_scope)
+                    if else_always_exits {
+                        terminating_scope = Some(match terminating_scope {
+                            Some(current) => {
+                                self.merge_terminal_scope_locals(scope, &current, &else_scope)
+                            }
+                            None => else_scope,
+                        });
+                        if let Some(current) = merged_scope {
+                            *scope = current;
+                            has_continuation = true;
+                        }
                     } else {
-                        self.merge_scope_locals(scope, &else_scope, &scope.fork_for_branch())
-                    };
+                        *scope = if let Some(current) = merged_scope {
+                            self.merge_scope_locals(scope, &current, &else_scope)
+                        } else {
+                            else_scope
+                        };
+                        has_continuation = true;
+                    }
                 } else if let Some(current) = merged_scope {
                     // An unmatched case/in raises, so only matched branches reach this point.
                     *scope = current;
+                    has_continuation = true;
+                }
+                if has_continuation {
+                    if let Some(terminating_scope) = &terminating_scope {
+                        Self::merge_terminating_branch_outputs(scope, terminating_scope);
+                    }
+                    if let Some(entry) = terminating_branch_locals.exception_entry.as_deref() {
+                        scope.merge_exception_from_map(entry);
+                    }
+                } else if let Some(terminating_scope) = terminating_scope {
+                    *scope = terminating_scope;
                 }
                 Self::merge_reachable_types(branch_types)
             }
@@ -19937,6 +20733,7 @@ impl<'a> InferenceEngine<'a> {
                         body_type
                     };
 
+                    let normal_continues = !Self::type_never_returns(&normal_type);
                     merged_scope = normal_scope.clone();
                     result_type = Some(match result_type {
                         Some(prev) => prev.union_with(normal_type),
@@ -19965,7 +20762,15 @@ impl<'a> InferenceEngine<'a> {
                             parse_result,
                             &mut rescue_scope,
                         );
-                        merged_scope = self.merge_scope_locals(scope, &normal_scope, &rescue_scope);
+                        let rescue_continues = !Self::type_never_returns(&rescue_type)
+                            && !Self::rescue_clause_always_exits(&rescue_clause);
+                        merged_scope = self.merge_continuing_scope_branches(
+                            scope,
+                            &normal_scope,
+                            normal_continues,
+                            &rescue_scope,
+                            rescue_continues,
+                        );
                         result_type = Some(match result_type {
                             Some(prev) => prev.union_with(rescue_type),
                             None => rescue_type,
@@ -20003,17 +20808,21 @@ impl<'a> InferenceEngine<'a> {
                 let expr = rescue_node.expression();
                 let expr_type =
                     self.infer_last_statement_type(class_name, &expr, parse_result, scope);
-                scope.clear_self_facts();
-                let rescue_type = self.infer_last_statement_type(
-                    class_name,
-                    &rescue_node.rescue_expression(),
-                    parse_result,
-                    scope,
-                );
-                if Self::node_always_exits(&expr) {
-                    rescue_type
+                if Self::return_node_has_non_raising_arguments(&expr) {
+                    expr_type
                 } else {
-                    expr_type.union_with(rescue_type)
+                    scope.clear_self_facts();
+                    let rescue_type = self.infer_last_statement_type(
+                        class_name,
+                        &rescue_node.rescue_expression(),
+                        parse_result,
+                        scope,
+                    );
+                    if Self::node_always_exits(&expr) {
+                        rescue_type
+                    } else {
+                        expr_type.union_with(rescue_type)
+                    }
                 }
             }
             Node::WhileNode { .. } => {
@@ -20043,6 +20852,7 @@ impl<'a> InferenceEngine<'a> {
             Node::ForNode { .. } => {
                 let for_node = node.as_for_node().expect("must be ForNode");
                 self.process_for_scope(class_name, &for_node, parse_result, scope)
+                    .0
             }
             _ => self.infer_node_type(class_name, node, parse_result, scope),
         }
@@ -20469,7 +21279,7 @@ impl<'a> InferenceEngine<'a> {
                 scope,
                 param_count,
             )
-        } else if let Some(param_types) = Self::refine_hash_entry_block_param_types(
+        } else if let Some(param_types) = self.refine_hash_entry_block_param_types(
             &receiver_type,
             method_name.as_ref(),
             param_count,
@@ -22568,6 +23378,9 @@ impl<'a> InferenceEngine<'a> {
                                 scope,
                             )
                         {
+                            if array_result == Type::Untyped {
+                                break 'recv wrap(array_result);
+                            }
                             let rbs_allows = self.rbs_return_allows_call_node_refined_result(
                                 &safe_nav_receiver_type,
                                 &method_name,
@@ -23069,20 +23882,19 @@ impl<'a> InferenceEngine<'a> {
                             }
                         }
 
-                        let mut call_arg_types_for_generic: Vec<Type> = Vec::new();
-                        let mut call_kw_arg_types_for_generic: HashMap<String, Type> =
-                            HashMap::new();
+                        let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
+                            node,
+                            parse_result,
+                            class_name,
+                            scope,
+                        );
+                        let call_arg_types_for_generic = arg_types.clone();
+                        let call_kw_arg_types_for_generic = kw_types.clone();
                         let mut user_defined_block_call_result: Option<Type> = None;
                         let mut user_defined_no_block_enumerator_result: Option<Type> = None;
                         if self.record_hover_snapshots
                             && matches!(safe_nav_receiver_type, Type::Union(_))
                         {
-                            let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
-                                node,
-                                parse_result,
-                                class_name,
-                                scope,
-                            );
                             self.record_arg_check_site(
                                 &call_node,
                                 parse_result,
@@ -23100,14 +23912,6 @@ impl<'a> InferenceEngine<'a> {
                         }
                         if let Some(target_class) = self.type_to_class_name(&safe_nav_receiver_type)
                         {
-                            let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
-                                node,
-                                parse_result,
-                                class_name,
-                                scope,
-                            );
-                            call_arg_types_for_generic = arg_types.clone();
-                            call_kw_arg_types_for_generic = kw_types.clone();
                             let method_is_singleton = Self::receiver_is_singleton_dispatch(
                                 &receiver,
                                 scope.singleton_dispatch,
@@ -24137,7 +24941,9 @@ impl<'a> InferenceEngine<'a> {
             Node::IfNode { .. } => {
                 let if_node = node.as_if_node().expect("must be IfNode");
 
-                self.infer_node_type(class_name, &if_node.predicate(), parse_result, scope);
+                let predicate_type =
+                    self.infer_node_type(class_name, &if_node.predicate(), parse_result, scope);
+                let truthiness = Self::branch_truthiness(&if_node.predicate(), &predicate_type);
 
                 let narrowing = self.extract_if_node_narrowing(
                     class_name,
@@ -24147,7 +24953,9 @@ impl<'a> InferenceEngine<'a> {
                     self.supports_pattern_matching(),
                 );
 
-                let then_type = if let Some(statements) = if_node.statements() {
+                let then_type = if truthiness == Some(false) {
+                    Type::Bot
+                } else if let Some(statements) = if_node.statements() {
                     let mut then_scope = scope.fork_for_branch();
                     if let Some(n) = &narrowing
                         && let Some(ty) = &n.then_ty
@@ -24183,7 +24991,9 @@ impl<'a> InferenceEngine<'a> {
                     Type::Nil
                 };
 
-                let else_type = if let Some(else_clause) = if_node.subsequent() {
+                let else_type = if truthiness == Some(true) {
+                    Type::Bot
+                } else if let Some(else_clause) = if_node.subsequent() {
                     let mut else_scope = scope.fork_for_branch();
                     if let Some(n) = &narrowing
                         && let Some(ty) = &n.else_ty
@@ -24405,17 +25215,61 @@ impl<'a> InferenceEngine<'a> {
                     let subject_type = case_node.predicate().map(|predicate| {
                         self.infer_node_type(class_name, &predicate, parse_result, scope)
                     });
+                    let mut remaining_subject_type = subject_type.clone();
+                    let mut remaining_subject_is_known = subject_type.is_some();
+                    let mut literal_partitioning_enabled = subject_type.is_some();
 
                     for condition in case_node.conditions().iter() {
+                        if remaining_subject_is_known && remaining_subject_type.is_none() {
+                            break;
+                        }
                         if let Node::InNode { .. } = &condition {
                             let in_node = condition.as_in_node().expect("must be InNode");
-                            let narrowed_type = self.extract_pattern_narrowing(
-                                class_name,
-                                &in_node.pattern(),
-                                parse_result,
-                                subject_type.as_ref(),
-                                scope,
-                            );
+                            let narrowed_type =
+                                if Self::is_irrefutable_variable_pattern(&in_node.pattern()) {
+                                    let matched_type = if literal_partitioning_enabled {
+                                        remaining_subject_type.clone()
+                                    } else {
+                                        None
+                                    };
+                                    remaining_subject_type = None;
+                                    remaining_subject_is_known = true;
+                                    literal_partitioning_enabled = false;
+                                    matched_type
+                                } else if literal_partitioning_enabled {
+                                    if let Some((matched_type, unmatched_type)) = self
+                                        .partition_case_pattern(
+                                            class_name,
+                                            &in_node.pattern(),
+                                            remaining_subject_type.as_ref(),
+                                        )
+                                    {
+                                        remaining_subject_type = unmatched_type;
+                                        remaining_subject_is_known = true;
+                                        let Some(matched_type) = matched_type else {
+                                            continue;
+                                        };
+                                        Some(matched_type)
+                                    } else {
+                                        literal_partitioning_enabled = false;
+                                        remaining_subject_is_known = false;
+                                        self.extract_pattern_narrowing(
+                                            class_name,
+                                            &in_node.pattern(),
+                                            parse_result,
+                                            subject_type.as_ref(),
+                                            scope,
+                                        )
+                                    }
+                                } else {
+                                    self.extract_pattern_narrowing(
+                                        class_name,
+                                        &in_node.pattern(),
+                                        parse_result,
+                                        subject_type.as_ref(),
+                                        scope,
+                                    )
+                                };
                             let mut branch_scope = scope.fork_for_branch();
                             if let (Some(var_name), Some(narrow_ty)) =
                                 (&predicate_var, &narrowed_type)
@@ -24450,7 +25304,9 @@ impl<'a> InferenceEngine<'a> {
                         }
                     }
 
-                    if let Some(else_clause) = case_node.else_clause() {
+                    let else_reachable =
+                        !remaining_subject_is_known || remaining_subject_type.is_some();
+                    if let Some(else_clause) = case_node.else_clause().filter(|_| else_reachable) {
                         let else_type = if let Some(statements) = else_clause.statements() {
                             self.infer_statements_return_type(
                                 class_name,
@@ -24527,6 +25383,8 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let right_type =
                     self.infer_node_type(class_name, &or_node.right(), parse_result, &right_scope);
+                let right_type =
+                    Self::optional_block_value_type(&or_node.right(), right_type, scope);
                 let mut result_types = Vec::new();
                 if let Some(truthy) = Self::deferred_truthy_only(&left_type) {
                     result_types.push(truthy);
@@ -24796,6 +25654,9 @@ impl<'a> InferenceEngine<'a> {
                     .as_rescue_modifier_node()
                     .expect("must be RescueModifierNode");
                 let expr = rescue_node.expression();
+                if Self::return_node_has_non_raising_arguments(&expr) {
+                    return self.infer_node_type(class_name, &expr, parse_result, scope);
+                }
                 let rescue_expr = rescue_node.rescue_expression();
                 let rescue_type =
                     self.infer_node_type(class_name, &rescue_expr, parse_result, scope);
@@ -25835,9 +26696,13 @@ impl<'a> InferenceEngine<'a> {
         let mut body_nodes = statements.body().iter().peekable();
         while let Some(node) = body_nodes.next() {
             if body_nodes.peek().is_some() {
-                self.process_statement(class_name, &node, parse_result, scope);
+                let for_exits_method =
+                    self.process_statement(class_name, &node, parse_result, scope);
                 Self::record_raise_exception_from_node(&node, scope);
-                if Self::node_always_exits(&node) || Self::statement_assigns_bot(&node, scope) {
+                if Self::node_always_exits(&node)
+                    || for_exits_method
+                    || Self::statement_assigns_bot(&node, scope)
+                {
                     return Self::normal_flow_type_from_scope(scope, Some(Type::Bot));
                 }
                 continue;
@@ -25848,6 +26713,15 @@ impl<'a> InferenceEngine<'a> {
             return Self::normal_flow_type_from_scope(scope, implicit);
         }
         Type::Nil
+    }
+
+    fn rescue_clause_always_exits(rescue_node: &ruby_prism::RescueNode<'_>) -> bool {
+        rescue_node
+            .statements()
+            .is_some_and(|statements| Self::statements_always_exit(&statements))
+            && rescue_node
+                .subsequent()
+                .is_none_or(|subsequent| Self::rescue_clause_always_exits(&subsequent))
     }
 
     fn rescue_clause_has_retry(rescue_node: &ruby_prism::RescueNode<'_>) -> bool {
@@ -25934,7 +26808,19 @@ impl<'a> InferenceEngine<'a> {
                 parse_result,
                 &mut subsequent_scope,
             );
-            *scope = self.merge_scope_locals(&base_scope, &branch_scope, &subsequent_scope);
+            let body_exits = rescue_node
+                .statements()
+                .is_some_and(|statements| Self::statements_always_exit(&statements));
+            let body_continues = !Self::type_never_returns(&body_type) && !body_exits;
+            let subsequent_continues = !Self::type_never_returns(&subsequent_type)
+                && !Self::rescue_clause_always_exits(&subsequent);
+            *scope = self.merge_continuing_scope_branches(
+                &base_scope,
+                &branch_scope,
+                body_continues,
+                &subsequent_scope,
+                subsequent_continues,
+            );
             body_type.union_with(subsequent_type)
         } else {
             *scope = branch_scope;
@@ -28030,11 +28916,11 @@ impl<'a> InferenceEngine<'a> {
         let elem_type = Self::collection_block_element_type(&receiver_type, "flat_map")
             .unwrap_or_else(|| Self::enumerable_element_type(&receiver_type));
         let ruby_param_count = Self::block_positional_param_count(&block);
-        let param_types =
-            Self::refine_hash_entry_block_param_types(&receiver_type, "flat_map", ruby_param_count)
-                .unwrap_or_else(|| {
-                    Self::array_block_param_types(&receiver_type, &elem_type, ruby_param_count)
-                });
+        let param_types = self
+            .refine_hash_entry_block_param_types(&receiver_type, "flat_map", ruby_param_count)
+            .unwrap_or_else(|| {
+                Self::array_block_param_types(&receiver_type, &elem_type, ruby_param_count)
+            });
         let (block_return, _control_type) = self.infer_block_return_with_param_types(
             class_name,
             &block,
@@ -29845,13 +30731,20 @@ impl<'a> InferenceEngine<'a> {
                 None
             };
 
+        if Self::call_receiver_is_empty_hash_literal(call_node)
+            && default_type.is_none()
+            && block_type.is_none()
+        {
+            return Some(Type::Bot);
+        }
+
         match receiver_type {
             Type::Record(fields) => {
                 if let Some(ref key) = key {
                     if let Some(value) = Self::record_field_value(fields, key) {
                         return Some(value);
                     }
-                    return default_type.or(block_type).or(Some(Type::Untyped));
+                    return default_type.or(block_type).or(Some(Type::Bot));
                 }
 
                 let value_type = Type::from_type_vec_preserve_untyped(
@@ -30216,7 +31109,14 @@ impl<'a> InferenceEngine<'a> {
             return None;
         }
 
-        if method_name == "empty?" && call_node.arguments().is_none() {
+        if method_name == "empty?"
+            && call_node
+                .arguments()
+                .is_none_or(|arguments| arguments.arguments().is_empty())
+        {
+            if self.static_empty_predicate_has_source_override(receiver_type) {
+                return None;
+            }
             return Self::static_empty_predicate_type(receiver_type);
         }
 
@@ -30418,6 +31318,17 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn static_empty_predicate_has_source_override(&self, receiver_type: &Type) -> bool {
+        match receiver_type {
+            Type::Tuple(_) => self.instance_method_has_source_override("Array", "empty?"),
+            Type::Record(_) => self.instance_method_has_source_override("Hash", "empty?"),
+            Type::Union(parts) => parts
+                .iter()
+                .any(|part| self.static_empty_predicate_has_source_override(part)),
+            _ => false,
+        }
+    }
+
     fn hash_key_predicate_type(receiver_type: &Type, query_type: &Type) -> Type {
         match receiver_type {
             Type::Record(fields) => {
@@ -30553,6 +31464,22 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
     ) -> Option<Type> {
         let keys = self.call_literal_keys(class_name, call_node, parse_result, scope)?;
+        if Self::call_receiver_is_empty_hash_literal(call_node) && !keys.is_empty() {
+            let key_types = keys.iter().map(Self::record_key_type).collect::<Vec<_>>();
+            let block_type = self.fetch_values_block_return_type(
+                class_name,
+                call_node,
+                &key_types,
+                parse_result,
+                scope,
+            );
+            return Some(match block_type {
+                Some(block_type) if !Self::type_never_returns(&block_type) => {
+                    Type::Tuple(vec![block_type; keys.len()])
+                }
+                _ => Type::Bot,
+            });
+        }
         match receiver_type {
             Type::Record(fields) => {
                 let missing_keys: Vec<Type> = keys
@@ -30567,6 +31494,9 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                if !missing_keys.is_empty() && block_type.is_none() {
+                    return Some(Type::Bot);
+                }
                 Some(Type::Tuple(
                     keys.iter()
                         .map(|key| {
@@ -31223,17 +32153,72 @@ impl<'a> InferenceEngine<'a> {
             [single] if self.node_is_integer_range(class_name, single, parse_result, scope) => {
                 Some(Type::Array(Some(Box::new(inner.clone()))).union_with(Type::Nil))
             }
-            [single] if self.node_is_integer_like(class_name, single, parse_result, scope) => {
-                Some(inner.clone().union_with(Type::Nil))
+            [single] => {
+                let index_type = self.infer_node_type(class_name, single, parse_result, scope);
+                let index_type = self.resolve_array_index_argument_type(
+                    class_name,
+                    scope.singleton_dispatch,
+                    &index_type,
+                );
+                if matches!(
+                    index_type,
+                    Type::Untyped | Type::Todo | Type::ParamRef(_) | Type::KeywordParamRef(_)
+                ) {
+                    Some(Type::Untyped)
+                } else if matches!(index_type, Type::Integer | Type::LiteralInteger(_))
+                    || Self::literal_integer_convertible_value(&index_type).is_some()
+                {
+                    Some(inner.clone().union_with(Type::Nil))
+                } else {
+                    None
+                }
             }
-            [start, length]
-                if self.node_is_integer_like(class_name, start, parse_result, scope)
-                    && self.node_is_integer_like(class_name, length, parse_result, scope) =>
-            {
-                Some(Type::Array(Some(Box::new(inner.clone()))).union_with(Type::Nil))
+            [start, length] => {
+                let start_type = self.infer_node_type(class_name, start, parse_result, scope);
+                let start_type = self.resolve_array_index_argument_type(
+                    class_name,
+                    scope.singleton_dispatch,
+                    &start_type,
+                );
+                let length_type = self.infer_node_type(class_name, length, parse_result, scope);
+                let length_type = self.resolve_array_index_argument_type(
+                    class_name,
+                    scope.singleton_dispatch,
+                    &length_type,
+                );
+                let has_unresolved_arg = [&start_type, &length_type].into_iter().any(|ty| {
+                    matches!(
+                        ty,
+                        Type::Untyped | Type::Todo | Type::ParamRef(_) | Type::KeywordParamRef(_)
+                    )
+                });
+                if has_unresolved_arg {
+                    Some(Type::Untyped)
+                } else if [&start_type, &length_type].into_iter().all(|ty| {
+                    matches!(ty, Type::Integer | Type::LiteralInteger(_))
+                        || Self::literal_integer_convertible_value(ty).is_some()
+                }) {
+                    Some(Type::Array(Some(Box::new(inner.clone()))).union_with(Type::Nil))
+                } else {
+                    None
+                }
             }
             _ => None,
         }
+    }
+
+    fn resolve_array_index_argument_type(
+        &self,
+        class_name: &str,
+        singleton_context: bool,
+        ty: &Type,
+    ) -> Type {
+        if !matches!(ty, Type::IvarRef(_) | Type::GlobalVariableRef(_)) {
+            return ty.clone();
+        }
+
+        self.registry
+            .resolve_deferred_refs_for_context(class_name, singleton_context, ty)
     }
 
     fn node_is_integer_range(
@@ -31391,6 +32376,23 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
     ) -> Option<Type> {
         if call_node.block().is_some() {
+            return None;
+        }
+        if method_name == "clear"
+            && call_node
+                .arguments()
+                .is_none_or(|arguments| arguments.arguments().is_empty())
+        {
+            let resolved_receiver = if matches!(receiver_type, Type::IvarRef(_)) {
+                self.try_resolve_receiver_inline(class_name, receiver_type)
+            } else {
+                receiver_type.clone()
+            };
+            let result = Type::Tuple(Vec::new());
+            let is_array_like = Self::is_array_like_type(&resolved_receiver);
+            if is_array_like && !self.array_clear_has_ruby_override() {
+                return Some(result);
+            }
             return None;
         }
         if !Self::is_array_like_type(receiver_type) {
@@ -32561,6 +33563,31 @@ impl<'a> InferenceEngine<'a> {
         );
     }
 
+    fn block_body_is_direct_break(block: &ruby_prism::BlockNode<'_>) -> bool {
+        let Some(body) = block.body() else {
+            return false;
+        };
+        if matches!(body, Node::BreakNode { .. }) {
+            return true;
+        }
+        let Some(statements) = body.as_statements_node() else {
+            return false;
+        };
+        let mut nodes = statements.body().iter();
+        nodes
+            .next()
+            .is_some_and(|node| matches!(node, Node::BreakNode { .. }))
+            && nodes.next().is_none()
+    }
+
+    fn integer_times_has_source_override(&self) -> bool {
+        self.registry
+            .resolve_instance_method_call_owners("Integer", "times")
+            .first()
+            .and_then(|owner| self.registry.lookup_method_def(owner, "times", false))
+            .is_some_and(|method| !method.rbs_file_source)
+    }
+
     fn resolve_block_call_generic(
         &mut self,
         class_name: &str,
@@ -32570,6 +33597,12 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<Type> {
+        if method_name == "times"
+            && !self.integer_times_has_source_override()
+            && matches!(receiver_type, Type::LiteralInteger(count) if *count <= 0)
+        {
+            return Some(receiver_type.clone());
+        }
         let block_node_raw = call_node.block()?;
         let block = block_node_raw.as_block_node()?;
         let normalized = Self::normalize_union_receiver(receiver_type);
@@ -32579,6 +33612,16 @@ impl<'a> InferenceEngine<'a> {
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
         self.ensure_class_available("Enumerable");
+        let has_source_override = matches!(method_name, "map" | "collect" | "map!" | "collect!")
+            && self.instance_method_has_source_override(&receiver_class, method_name);
+        if has_source_override {
+            return None;
+        }
+        if matches!(receiver_type, Type::Tuple(elements) if elements.is_empty())
+            && matches!(method_name, "map" | "collect" | "map!" | "collect!")
+        {
+            return Some(Type::Tuple(Vec::new()));
+        }
 
         let prefer_singleton = matches!(receiver_type, Type::Singleton(_));
         let rbs_overloads =
@@ -32707,7 +33750,7 @@ impl<'a> InferenceEngine<'a> {
                 scope,
             )
             .or_else(|| {
-                Self::refine_hash_entry_block_param_types(
+                self.refine_hash_entry_block_param_types(
                     receiver_type,
                     method_name,
                     ruby_param_count,
@@ -32989,11 +34032,43 @@ impl<'a> InferenceEngine<'a> {
             Type::Nil
         };
         self.record_hover_block_return(call_node, block_return_type.clone());
+        if call_node.receiver().is_some_and(|receiver| {
+            matches!(&receiver, Node::ArrayNode { .. })
+                && receiver
+                    .as_array_node()
+                    .is_some_and(|array| array.elements().is_empty())
+        }) && matches!(method_name, "map" | "collect" | "map!" | "collect!")
+        {
+            return Some(Type::Tuple(Vec::new()));
+        }
+        if matches!(method_name, "map" | "collect")
+            && !self.array_map_has_ruby_override()
+            && matches!(receiver_type, Type::Tuple(elements) if elements.len() == 1)
+            && call_node.receiver().is_some_and(|receiver| {
+                receiver
+                    .as_array_node()
+                    .is_some_and(|array| array.elements().len() == 1)
+            })
+            && call_node
+                .arguments()
+                .is_none_or(|arguments| arguments.arguments().is_empty())
+            && Self::block_is_identity_of_first_param(&block, parse_result)
+        {
+            return Some(receiver_type.clone());
+        }
         let block_break_type = if block_scope.break_types.is_empty() {
             None
         } else {
             Some(Self::merge_reachable_types(block_scope.break_types.clone()))
         };
+        if method_name == "times"
+            && !self.integer_times_has_source_override()
+            && matches!(receiver_type, Type::LiteralInteger(count) if *count > 0)
+            && Self::block_body_is_direct_break(&block)
+            && let Some(break_type) = &block_break_type
+        {
+            return Some(break_type.clone());
+        }
         if method_name == "tap" {
             let result = tap_block_param_name
                 .as_deref()
@@ -33193,6 +34268,18 @@ impl<'a> InferenceEngine<'a> {
         if method_name == "sum" && block_return_type != Type::Untyped {
             return Some(Self::include_optional_control_type(
                 block_return_type.widen(),
+                &block_break_type,
+            ));
+        }
+
+        if matches!(method_name, "map" | "collect")
+            && matches!(receiver_type, Type::Array(_) | Type::Tuple(_))
+            && matches!(&method_return, Type::Array(_))
+            && !Self::is_concrete(&method_return)
+            && !has_source_override
+        {
+            return Some(Self::include_optional_control_type(
+                method_return,
                 &block_break_type,
             ));
         }
@@ -34324,6 +35411,7 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn refine_hash_entry_block_param_types(
+        &mut self,
         receiver_type: &Type,
         method_name: &str,
         ruby_param_count: usize,
@@ -34332,7 +35420,11 @@ impl<'a> InferenceEngine<'a> {
             return None;
         }
 
-        let (key_type, value_type) = Self::exact_hash_key_value_types(receiver_type)?;
+        let receiver_type = self.resolve_receiver_method_refs(receiver_type);
+        if Self::type_contains_receiver_resolution_ref(&receiver_type) {
+            return None;
+        }
+        let (key_type, value_type) = Self::exact_hash_key_value_types(&receiver_type)?;
 
         if ruby_param_count >= 2 {
             let mut result = vec![key_type, value_type];
@@ -34503,7 +35595,15 @@ impl<'a> InferenceEngine<'a> {
                     Type::from_type_vec_preserve_untyped(value_types),
                 ))
             }
-            Type::Hash(Some(key), Some(value)) => Some((*key.clone(), *value.clone())),
+            Type::Hash(key, value) => Some((
+                key.as_deref().cloned().unwrap_or(Type::Untyped),
+                value.as_deref().cloned().unwrap_or(Type::Untyped),
+            )),
+            Type::Class(name) if name.as_str() == "Hash" => Some((Type::Untyped, Type::Untyped)),
+            Type::Generic { base, args } if base.as_str() == "Hash" => Some((
+                args.first().cloned().unwrap_or(Type::Untyped),
+                args.get(1).cloned().unwrap_or(Type::Untyped),
+            )),
             Type::Union(parts) => {
                 let mut key_types = Vec::new();
                 let mut value_types = Vec::new();
@@ -37402,6 +38502,9 @@ impl<'a> InferenceEngine<'a> {
         actual_type: &Type,
         cache: &mut RbsRelationCache,
     ) -> bool {
+        if matches!(actual_type, Type::Bot) {
+            return true;
+        }
         let key = (
             rbs_type as *const rbs_ir::RbsType as usize,
             actual_type.clone(),
@@ -38217,6 +39320,9 @@ impl<'a> InferenceEngine<'a> {
         receiver_type: &Type,
         cache: &mut RbsRelationCache,
     ) -> bool {
+        if matches!(actual_type, Type::Bot) {
+            return true;
+        }
         if !Self::rbs_type_mentions_self(rbs_type) {
             return Self::rbs_type_structurally_matches_cached(rbs_type, actual_type, cache);
         }
@@ -40309,13 +41415,29 @@ impl<'a> InferenceEngine<'a> {
         let block_raw = call_node.block()?;
         let block_arg = block_raw.as_block_argument_node()?;
         let expr = block_arg.expression()?;
+        let normalized_receiver_type = Self::normalize_union_receiver(receiver_type);
+        if let Some(receiver_class) = self.type_to_class_name(&normalized_receiver_type) {
+            let method_is_singleton = matches!(normalized_receiver_type, Type::Singleton(_));
+            let has_source_method = self
+                .registry
+                .resolve_method_call_owners(&receiver_class, method_name, method_is_singleton)
+                .first()
+                .and_then(|(owner, is_singleton)| {
+                    self.registry
+                        .lookup_method_def(owner, method_name, *is_singleton)
+                })
+                .is_some_and(|method| !method.rbs_file_source);
+            if has_source_method {
+                return None;
+            }
+        }
         let (call_arg_types, call_kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
         let call_arg_count = call_arg_types
             .len()
             .max(Self::call_node_positional_arg_count(call_node));
 
-        let receiver_type = &Self::normalize_union_receiver(receiver_type);
+        let receiver_type = &normalized_receiver_type;
 
         if let Node::LocalVariableReadNode { .. } = &expr {
             let lvar = expr.as_local_variable_read_node()?;
@@ -40457,6 +41579,13 @@ impl<'a> InferenceEngine<'a> {
             call_arg_count,
         ) {
             return Some(result);
+        }
+
+        if method_name == "sort_by"
+            && call_arg_count == 0
+            && matches!(receiver_type, Type::Array(_) | Type::Tuple(_))
+        {
+            return Some(Self::rebuild_array_with_elem(receiver_type, &elem_type));
         }
 
         if matches!(method_name, "map!" | "collect!") {
@@ -42066,6 +43195,16 @@ impl<'a> InferenceEngine<'a> {
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
 
+        if receiver_class == "Kernel"
+            && method_name == "Array"
+            && call_arg_count == 1
+            && call_arg_types.len() == 1
+            && call_kw_arg_types.is_empty()
+            && Self::is_unresolved_call_arg_type(&call_arg_types[0])
+        {
+            return Some(Type::Array(Some(Box::new(Type::Untyped))));
+        }
+
         let receiver_type_args = Self::extract_type_args(receiver_type);
         let mut class_type_vars =
             self.class_type_vars_from_args(&receiver_class, &receiver_type_args);
@@ -42388,7 +43527,21 @@ impl<'a> InferenceEngine<'a> {
             _ => return current_type.clone().union_with(value_type.clone()),
         };
         let resolved_current = self.resolve_receiver_method_refs(current_type);
-        let resolved = self.resolve_method_on_type(&resolved_current, method_name);
+        let has_source_override =
+            self.type_to_class_name(&resolved_current)
+                .is_some_and(|class_name| {
+                    self.instance_method_has_source_override(&class_name, method_name)
+                });
+        let resolved = if has_source_override {
+            self.resolve_method_on_type(&resolved_current, method_name)
+        } else {
+            self.resolve_binary_op_via_overloads(
+                &resolved_current,
+                method_name,
+                std::slice::from_ref(value_type),
+            )
+            .unwrap_or_else(|| self.resolve_method_on_type(&resolved_current, method_name))
+        };
         if resolved == Type::Untyped {
             current_type.clone().union_with(value_type.clone())
         } else {
@@ -43003,6 +44156,21 @@ impl<'a> InferenceEngine<'a> {
         let Some(receiver) = call_node.receiver() else {
             return;
         };
+        if method_name == "clear"
+            && !scope.singleton_dispatch
+            && !self.array_clear_has_ruby_override()
+            && let Some(ivar_read) = receiver.as_instance_variable_read_node()
+        {
+            let ivar_name = String::from_utf8_lossy(ivar_read.name().as_slice()).to_string();
+            if let Some(current) = self.current_ivar_type(class_name, scope, &ivar_name)
+                && let Some(summary) = Self::array_summary_after_clear(&current)
+            {
+                scope.set_self_fact(&ivar_name, summary.clone());
+                self.registry
+                    .replace_ivar_type(class_name, &ivar_name, summary);
+            }
+            return;
+        }
         if let Some((target, existing)) =
             self.resolve_alias_assignment_source(class_name, &receiver, parse_result, scope)
         {
@@ -43084,6 +44252,7 @@ impl<'a> InferenceEngine<'a> {
                 | "prepend"
                 | "insert"
                 | "replace"
+                | "clear"
                 | "fill"
                 | "store"
                 | "transform_values!"
@@ -43094,6 +44263,43 @@ impl<'a> InferenceEngine<'a> {
                 | "merge"
                 | "subtract"
         ) || Self::is_array_mutating_identity_method(method_name)
+    }
+
+    fn instance_method_has_source_override(&self, class_name: &str, method_name: &str) -> bool {
+        self.registry
+            .lookup_method_def(class_name, method_name, false)
+            .is_some_and(|method| !method.rbs_file_source)
+            || self
+                .registry
+                .resolve_instance_method_call_owners(class_name, method_name)
+                .iter()
+                .filter_map(|owner| self.registry.lookup_method_def(owner, method_name, false))
+                .any(|method| !method.rbs_file_source)
+    }
+
+    fn array_clear_has_ruby_override(&self) -> bool {
+        self.instance_method_has_source_override("Array", "clear")
+    }
+
+    fn array_map_has_ruby_override(&self) -> bool {
+        self.instance_method_has_source_override("Array", "map")
+    }
+
+    fn array_summary_after_clear(receiver_type: &Type) -> Option<Type> {
+        match receiver_type {
+            Type::Union(parts) => {
+                let cleared = parts
+                    .iter()
+                    .map(Self::array_summary_after_clear)
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Type::from_type_vec_preserve_untyped(cleared))
+            }
+            Type::Array(_) | Type::Tuple(_) => Some(Self::rebuild_array_with_elem(
+                receiver_type,
+                &Self::extract_element_type(receiver_type),
+            )),
+            _ => None,
+        }
     }
 
     fn is_string_mutating_write_method(method_name: &str) -> bool {
@@ -44264,7 +45470,13 @@ impl<'a> InferenceEngine<'a> {
                 return result;
             }
         }
-        if method_tables::UNIVERSAL_BOOL_METHODS.contains(&method_name) {
+        let source_empty_override = method_name == "empty?"
+            && self
+                .type_to_class_name(receiver_type)
+                .is_some_and(|class_name| {
+                    self.instance_method_has_source_override(&class_name, "empty?")
+                });
+        if method_tables::UNIVERSAL_BOOL_METHODS.contains(&method_name) && !source_empty_override {
             return Type::Bool;
         }
         if method_tables::IDENTITY_METHODS.contains(&method_name) {
@@ -45535,6 +46747,10 @@ impl<'a> InferenceEngine<'a> {
         receiver_type: &Type,
         parse_result: &ParseResult<'_>,
     ) -> Option<Type> {
+        if Self::is_unresolved_receiver(receiver_type) {
+            return Some(Type::Untyped);
+        }
+
         if matches!(
             receiver,
             Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
@@ -47532,6 +48748,223 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn partition_case_pattern(
+        &mut self,
+        class_name: &str,
+        pattern: &Node<'_>,
+        subject_type: Option<&Type>,
+    ) -> Option<(Option<Type>, Option<Type>)> {
+        self.partition_literal_value_pattern(pattern, subject_type)
+            .or_else(|| self.partition_class_constant_pattern(class_name, pattern, subject_type))
+    }
+
+    fn pattern_class_target_name(
+        &mut self,
+        class_context: &str,
+        target_path: &str,
+    ) -> Option<String> {
+        let Type::Singleton(target_class) =
+            self.resolve_constant_type_in_scope(target_path, class_context)
+        else {
+            return None;
+        };
+        let target_class = target_class.to_string();
+        self.ensure_class_available(&target_class);
+        let target_data = self.registry.class_data_for(&target_class)?;
+        if target_data.is_module
+            || !target_data.has_type_substance()
+            || !self.uses_standard_class_case_equality(&target_class)
+        {
+            return None;
+        }
+        Some(target_class)
+    }
+
+    fn partition_class_constant_pattern(
+        &mut self,
+        class_name: &str,
+        pattern: &Node<'_>,
+        subject_type: Option<&Type>,
+    ) -> Option<(Option<Type>, Option<Type>)> {
+        let subject_type = subject_type?;
+        if !Self::is_closed_case_subject_type(subject_type) {
+            return None;
+        }
+        let target_path = match pattern {
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
+                String::from_utf8_lossy(pattern.location().as_slice()).to_string()
+            }
+            _ => return None,
+        };
+        let target_class = self.pattern_class_target_name(class_name, &target_path)?;
+
+        let mut pending = match subject_type {
+            Type::Union(parts) => parts.clone(),
+            other => vec![other.clone()],
+        };
+        let mut matched_types = Vec::new();
+        let mut unmatched_types = Vec::new();
+        while let Some(subject) = pending.pop() {
+            let subject_class = self.type_to_class_name(&subject)?;
+            self.ensure_class_available(&subject_class);
+            let subject_data = self.registry.class_data_for(&subject_class)?;
+            if subject_data.is_module {
+                return None;
+            }
+
+            if self.class_is_or_subclass_of_target(
+                &subject_class,
+                &target_class,
+                &mut HashSet::new(),
+            ) {
+                matched_types.push(subject);
+            } else if self.class_is_or_subclass_of_target(
+                &target_class,
+                &subject_class,
+                &mut HashSet::new(),
+            ) {
+                // A base class may include instances that do not match this subclass pattern.
+                return None;
+            } else {
+                unmatched_types.push(subject);
+            }
+        }
+
+        let matched_type = (!matched_types.is_empty()).then(|| Type::from_type_vec(matched_types));
+        let unmatched_type =
+            (!unmatched_types.is_empty()).then(|| Type::from_type_vec(unmatched_types));
+        Some((matched_type, unmatched_type))
+    }
+
+    fn partition_literal_value_pattern(
+        &mut self,
+        pattern: &Node<'_>,
+        subject_type: Option<&Type>,
+    ) -> Option<(Option<Type>, Option<Type>)> {
+        let subject_type = subject_type?;
+        let (pattern_type, class_name) = match pattern {
+            Node::NilNode { .. } => (Type::Nil, "NilClass"),
+            Node::FalseNode { .. } => (Type::False, "FalseClass"),
+            Node::TrueNode { .. } => (Type::True, "TrueClass"),
+            _ => return None,
+        };
+        if !self.uses_standard_literal_value_equality(class_name) {
+            return None;
+        }
+
+        let mut pending = vec![subject_type.clone()];
+        let mut matched_types = Vec::new();
+        let mut unmatched_types = Vec::new();
+        while let Some(subject) = pending.pop() {
+            match subject {
+                Type::Union(parts) => pending.extend(parts),
+                Type::Bot => {}
+                Type::Nil | Type::False | Type::True => {
+                    if subject == pattern_type {
+                        matched_types.push(subject);
+                    } else {
+                        unmatched_types.push(subject);
+                    }
+                }
+                Type::Bool => match pattern_type {
+                    Type::False => {
+                        matched_types.push(Type::False);
+                        unmatched_types.push(Type::True);
+                    }
+                    Type::True => {
+                        matched_types.push(Type::True);
+                        unmatched_types.push(Type::False);
+                    }
+                    _ => unmatched_types.push(Type::Bool),
+                },
+                Type::String
+                | Type::Symbol
+                | Type::Integer
+                | Type::Float
+                | Type::LiteralString(_)
+                | Type::LiteralSymbol(_)
+                | Type::LiteralInteger(_)
+                | Type::LiteralFloat(_)
+                | Type::Array(_)
+                | Type::Hash(_, _)
+                | Type::Record(_)
+                | Type::Tuple(_)
+                | Type::Proc { .. }
+                | Type::Singleton(_) => unmatched_types.push(subject),
+                Type::Class(name)
+                    if !matches!(
+                        name.as_str(),
+                        "Object" | "BasicObject" | "NilClass" | "TrueClass" | "FalseClass"
+                    ) =>
+                {
+                    unmatched_types.push(Type::Class(name));
+                }
+                Type::Generic { base, args }
+                    if !matches!(
+                        base.as_str(),
+                        "Object" | "BasicObject" | "NilClass" | "TrueClass" | "FalseClass"
+                    ) =>
+                {
+                    unmatched_types.push(Type::Generic { base, args });
+                }
+                _ => {
+                    matched_types.push(pattern_type.clone());
+                    unmatched_types.push(subject);
+                }
+            }
+        }
+
+        let matched_type = if matched_types.is_empty() {
+            None
+        } else {
+            Some(Type::from_type_vec(matched_types))
+        };
+        let unmatched_type = if unmatched_types.is_empty() {
+            None
+        } else {
+            Some(Type::from_type_vec(unmatched_types))
+        };
+        Some((matched_type, unmatched_type))
+    }
+
+    fn is_irrefutable_variable_pattern(pattern: &Node<'_>) -> bool {
+        matches!(pattern, Node::LocalVariableTargetNode { .. })
+    }
+
+    fn uses_standard_literal_value_equality(&mut self, class_name: &str) -> bool {
+        self.ensure_class_available(class_name);
+        self.ensure_class_available("Object");
+        for method_name in ["===", "=="] {
+            let owner = self
+                .registry
+                .resolve_method_call_owners(class_name, method_name, false)
+                .into_iter()
+                .next();
+            if !matches!(
+                owner.as_ref(),
+                Some((owner, false))
+                    if owner == class_name || owner == "Object" || owner == "BasicObject"
+            ) {
+                return false;
+            }
+            let Some((owner, _)) = owner else {
+                return false;
+            };
+            if self
+                .registry
+                .class_data_for(&owner)
+                .is_none_or(|data| data.user_defined || data.is_module)
+                || self
+                    .registry
+                    .lookup_method_def(&owner, method_name, false)
+                    .is_none_or(|method| !method.rbs_file_source)
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     fn extract_pattern_narrowing(
         &mut self,
         class_name: &str,
@@ -47563,12 +48996,15 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::ConstantReadNode { .. } => {
                 let c = pattern.as_constant_read_node()?;
-                let class_name = String::from_utf8_lossy(c.name().as_slice()).to_string();
-                Some(Self::class_name_to_type(&class_name))
+                let target_path = String::from_utf8_lossy(c.name().as_slice()).to_string();
+                let target_class = self.pattern_class_target_name(class_name, &target_path)?;
+                Some(Self::class_name_to_type(&target_class))
             }
             Node::ConstantPathNode { .. } => {
-                let raw = String::from_utf8_lossy(pattern.location().as_slice()).to_string();
-                Some(Self::class_name_to_type(&raw))
+                let target_path =
+                    String::from_utf8_lossy(pattern.location().as_slice()).to_string();
+                let target_class = self.pattern_class_target_name(class_name, &target_path)?;
+                Some(Self::class_name_to_type(&target_class))
             }
             Node::ArrayPatternNode { .. } | Node::FindPatternNode { .. } => {
                 Some(Type::Array(Some(Box::new(Type::Untyped))))
@@ -48911,7 +50347,6 @@ impl<'a> InferenceEngine<'a> {
         let Some(method_info) = method_info else {
             return;
         };
-
         // Skip if already annotated or no body
         if method_info.rbs_annotated
             || method_info.sig_annotated
@@ -48989,6 +50424,14 @@ impl<'a> InferenceEngine<'a> {
             .cloned()
             .map(Type::widen_arg_for_param)
             .collect();
+        let has_explicit_keyword_param = |name: &str| {
+            method_info.param_infos.iter().any(|param| {
+                matches!(
+                    param.kind,
+                    ParamKind::KeywordRequired | ParamKind::KeywordOptional
+                ) && param.name == name
+            })
+        };
 
         // Positional resolution ignores keywords; keyword-only methods (and
         // `initialize`) still need a body pass once any call site exists.
@@ -49117,6 +50560,9 @@ impl<'a> InferenceEngine<'a> {
                                 && site.method_is_singleton == is_singleton
                         }) {
                             for (name, ty) in &site.keyword_arg_types {
+                                if has_explicit_keyword_param(name.as_ref()) {
+                                    continue;
+                                }
                                 saw_kw = true;
                                 fields
                                     .entry(name.as_ref().to_string())
@@ -49146,6 +50592,9 @@ impl<'a> InferenceEngine<'a> {
                                 && site.method_is_singleton == is_singleton
                         }) {
                             for (name, ty) in &site.keyword_arg_types {
+                                if has_explicit_keyword_param(name.as_ref()) {
+                                    continue;
+                                }
                                 if !fields.iter().any(|f| {
                                     matches!(&f.key, RecordKey::Symbol(n) if n == name.as_ref())
                                 }) {
@@ -49221,7 +50670,15 @@ impl<'a> InferenceEngine<'a> {
 
         // Refresh the stored return unless the second pass is clearly worse
         // (untyped / pattern-ref / nil-degraded destructure slots).
-        if Self::return_reinfer_is_degraded(&method_info.raw_return_type, &new_return_type) {
+        let exhaustively_narrowed_case_return = case_dispatch_needs_replay
+            && Self::is_single_case_method_body(&body)
+            && Self::case_return_only_loses_root_nil(
+                &method_info.raw_return_type,
+                &new_return_type,
+            );
+        if Self::return_reinfer_is_degraded(&method_info.raw_return_type, &new_return_type)
+            && !exhaustively_narrowed_case_return
+        {
             if let Some(saved) = saved_ctx {
                 self.enter_method_body_context(saved);
             }
@@ -49324,6 +50781,34 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => false,
         }
+    }
+
+    fn case_return_only_loses_root_nil(old: &Type, new: &Type) -> bool {
+        let Type::Union(parts) = old else {
+            return false;
+        };
+        let non_nil_parts: Vec<Type> = parts
+            .iter()
+            .filter(|part| !matches!(part, Type::Nil))
+            .cloned()
+            .collect();
+        non_nil_parts.len() < parts.len()
+            && !non_nil_parts.is_empty()
+            && Type::from_type_vec(non_nil_parts) == *new
+    }
+
+    fn is_single_case_method_body(body: &Node<'_>) -> bool {
+        if matches!(body, Node::CaseNode { .. }) {
+            return true;
+        }
+        let Node::StatementsNode { .. } = body else {
+            return false;
+        };
+        let Some(statements) = body.as_statements_node() else {
+            return false;
+        };
+        let mut nodes = statements.body().iter();
+        matches!(nodes.next(), Some(Node::CaseNode { .. })) && nodes.next().is_none()
     }
 
     fn type_needs_backward_propagation(ty: &Type) -> bool {

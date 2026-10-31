@@ -287,10 +287,6 @@ end
 
 ## While-loop multiply widens a constant accumulator
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -404,10 +400,6 @@ end
 
 ## Multi-value break in times
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -423,6 +415,22 @@ end
 ```rbs
 class Object < BasicObject
   def check: -> [:a, :b, :c]
+end
+```
+
+## A zero times call skips its block break
+
+### update
+
+```ruby
+def zero_times_break = 0.times { break :unreachable }
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def zero_times_break: -> 0
 end
 ```
 
@@ -981,10 +989,6 @@ end
 
 ## for uses source-defined Array#each
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class Array
   def each
@@ -1016,10 +1020,6 @@ end
 
 ## for uses source-defined Hash#each
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class Hash
   def each
@@ -1050,10 +1050,6 @@ end
 ```
 
 ## for uses prepended source-defined Array#each
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 module ForEachPrepend
@@ -1087,5 +1083,69 @@ end
 
 class ForEachPrepended
   def result: -> :item
+end
+```
+
+## for preserves the zero-yield path for conditional source-defined each
+
+```ruby
+class Array
+  def each
+    if @should_yield
+      yield :item
+    end
+  end
+end
+
+class ForEachConditional
+  def result
+    for value in []
+      return value
+    end
+    :after
+  end
+end
+```
+
+### result
+
+```rbs
+class Array
+  def each: { (Symbol) -> untyped } -> nil | untyped
+end
+
+class ForEachConditional
+  def result: -> :after | :item
+end
+```
+
+## for break continues after source-defined each
+
+```ruby
+class Array
+  def each
+    yield :item
+  end
+end
+
+class ForEachBreakAfter
+  def result
+    for value in []
+      break :done
+    end
+    :after
+  end
+end
+```
+
+### result
+
+```rbs
+class Array
+  def each: { (Symbol) -> untyped } -> untyped
+end
+
+class ForEachBreakAfter
+  def result: -> :after
 end
 ```

@@ -52,10 +52,6 @@ end
 
 ## branch-only local is nilable after case
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -79,10 +75,6 @@ end
 ```
 
 ## assignment in an exiting case branch is not reachable afterwards
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -121,6 +113,7 @@ def case_all_paths_return(value)
     return :other
   end
   selected
+  :unreachable
 end
 ```
 
@@ -216,10 +209,6 @@ end
 
 ## case when narrowing changes method return
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -245,10 +234,6 @@ end
 ```
 
 ## case when with multiple conditions
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -358,10 +343,6 @@ end
 ```
 
 ## Pattern matching in Ruby 3+
-
-```yaml
-known_issue: true
-```
 
 ### update
 

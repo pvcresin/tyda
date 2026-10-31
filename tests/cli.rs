@@ -384,6 +384,30 @@ fn coverage_flag_outputs_deterministic_json_report() {
 }
 
 #[test]
+fn coverage_includes_arguments_of_unresolved_receiver_calls() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("unknown_receiver.rb");
+    fs::write(
+        &rb_file,
+        "def invoke(receiver)\n  receiver.call(\"value\".length)\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["references"]["total"], 3);
+    assert_eq!(report["by_kind"]["method_call"]["total"], 2);
+    assert_eq!(report["by_kind"]["method_call"]["typed"], 1);
+    assert_eq!(report["by_kind"]["method_call"]["unknown"], 1);
+}
+
+#[test]
 fn coverage_resolves_cross_file_references_after_workspace_merge() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
@@ -481,6 +505,50 @@ fn diagnostics_flag_outputs_json_lines() {
             .as_str()
             .is_some_and(|message| message.contains("missing")),
         "diagnostic message should name missing method: {diagnostic:?}"
+    );
+}
+
+#[test]
+fn diagnostics_class_body_blocks_destructure_a_single_yield() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let sig_dir = dir.path().join("sig");
+    fs::create_dir_all(&sig_dir).expect("failed to create sig dir");
+    fs::write(
+        sig_dir.join("pair_source.rbs"),
+        "class PairSource\n  def self.each: () { (untyped pair) -> void } -> void\nend\n",
+    )
+    .expect("failed to write RBS");
+    let rb_file = dir.path().join("pair_consumer.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class PairConsumer\n",
+            "  PairSource.each do |name, params|\n",
+            "    opt = params.last.is_a?(Hash) ? params.pop : {}\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write Ruby source");
+
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("--diagnostics")
+        .arg(&rb_file)
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    assert!(
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "missing_method"
+                && matches!(diagnostic["method_name"].as_str(), Some("last" | "pop"))
+        }),
+        "a single untyped yield destructured into two block parameters must not make the second parameter nil: {diagnostics:?}"
     );
 }
 

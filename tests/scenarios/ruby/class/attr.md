@@ -276,10 +276,6 @@ end
 
 ## Resolve generated attr methods from call sites
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -316,8 +312,8 @@ end
 class Profile
   def name: -> "Ada"
   def age: -> Integer
-  def age=: (Integer age) -> (20 | 21)
-  def token=: (String token) -> "secret"
+  def age=: (Integer age) -> Integer
+  def token=: (String token) -> String
   def initialize: -> void
 end
 
@@ -355,10 +351,6 @@ end
 ```
 
 ## attr true also generates writer
-
-```yaml
-known_issue: true
-```
 
 ### update
 

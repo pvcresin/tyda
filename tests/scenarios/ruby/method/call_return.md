@@ -78,10 +78,6 @@ end
 
 ## Infer Object method on untyped receiver
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -99,20 +95,16 @@ end
 
 ```rbs
 class Checker
-  def check_nil: (untyped x) -> untyped
-  def check_equal: (untyped x, untyped y) -> untyped
-  def object_identity: (untyped x) -> untyped
-  def to_string: (untyped x) -> untyped
-  def to_integer: (untyped x) -> untyped
-  def check_pred: (untyped x) -> untyped
+  def check_nil: (untyped x) -> bool
+  def check_equal: (untyped x, untyped y) -> bool
+  def object_identity: (untyped x) -> Integer
+  def to_string: (untyped x) -> String
+  def to_integer: (untyped x) -> Integer
+  def check_pred: (untyped x) -> bool
 end
 ```
 
 ## Infer universal conversion methods on untyped receiver
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -132,12 +124,12 @@ end
 
 ```rbs
 class Conv
-  def sym: (untyped x) -> untyped
-  def len: (untyped x) -> untyped
-  def siz: (untyped x) -> untyped
-  def cnt: (untyped x) -> untyped
-  def flt: (untyped x) -> untyped
-  def arr: (untyped x) -> untyped
+  def sym: (untyped x) -> Symbol
+  def len: (untyped x) -> Integer
+  def siz: (untyped x) -> Integer
+  def cnt: (untyped x) -> Integer
+  def flt: (untyped x) -> Float
+  def arr: (untyped x) -> Array
   def neg: (untyped x) -> bool
 end
 ```

@@ -805,6 +805,9 @@ impl<'a> InferenceEngine<'a> {
             Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
                 Self::type_contains_param_ref(subject)
             }
+            Type::TruthyProjection(subject) | Type::FalsyProjection(subject) => {
+                Self::type_contains_param_ref(subject)
+            }
             Type::ReceiverMethodRef(receiver_type, _) => {
                 Self::type_contains_param_ref(receiver_type)
             }
@@ -1531,6 +1534,24 @@ impl<'a> InferenceEngine<'a> {
                     keyword_types,
                 );
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+            }
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+                let resolved_inner =
+                    Self::substitute_param_refs_with_keywords(inner, param_types, keyword_types);
+                if Self::type_contains_param_ref(&resolved_inner) {
+                    if matches!(ty, Type::TruthyProjection(_)) {
+                        Type::TruthyProjection(Box::new(resolved_inner))
+                    } else {
+                        Type::FalsyProjection(Box::new(resolved_inner))
+                    }
+                } else {
+                    let projected = if matches!(ty, Type::TruthyProjection(_)) {
+                        Type::project_truthy(&resolved_inner)
+                    } else {
+                        Type::project_falsy(&resolved_inner)
+                    };
+                    projected.unwrap_or(Type::Bot)
+                }
             }
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject =

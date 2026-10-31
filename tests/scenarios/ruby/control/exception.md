@@ -599,11 +599,30 @@ class Object < BasicObject
 end
 ```
 
-## Ignore code after a terminating begin body
+## Retry preserves an earlier method return
 
-```yaml
-known_issue: true
+### update
+
+```ruby
+def return_before_retry(uri)
+  return nil if uri.nil?
+  begin
+    :conversation
+  rescue StandardError
+    retry
+  end
+end
 ```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def return_before_retry: (untyped uri) -> :conversation?
+end
+```
+
+## Ignore code after a terminating begin body
 
 ### update
 
@@ -667,10 +686,6 @@ end
 ```
 
 ## Exiting rescue branches do not widen fallthrough locals
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 def exiting_rescue_does_not_widen_local
@@ -791,5 +806,37 @@ class ControlFlowMethodOverrides
   def no_yield_nonlocal_return: -> :after_no_yield
   def explicit_no_yield_nonlocal_return: -> :after_no_yield
   def yielding_nonlocal_return: -> :from_block
+end
+```
+
+## Rescue branches that raise do not reach code after the begin
+
+```ruby
+class RescueResponse
+  def status = :ok
+end
+
+class RescueFlow
+  def call(should_raise)
+    begin
+      raise "stop" if should_raise
+      response = RescueResponse.new
+    rescue StandardError
+      raise
+    end
+    response.status
+  end
+end
+```
+
+### result
+
+```rbs
+class RescueFlow
+  def call: (untyped should_raise) -> :ok
+end
+
+class RescueResponse
+  def status: -> :ok
 end
 ```

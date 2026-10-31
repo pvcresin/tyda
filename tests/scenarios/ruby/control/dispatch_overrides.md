@@ -108,3 +108,68 @@ class Object < BasicObject
   def class_case_equality_override: (untyped flag) -> (1 | "value" | :other)
 end
 ```
+
+## Class patterns use source-defined case equality conservatively
+
+### update
+
+```ruby
+class PatternTarget
+  def self.===(_other) = [true, false].sample
+end
+
+def class_pattern_equality_override(flag)
+  value = if flag
+    1
+  else
+    "value"
+  end
+
+  case value
+  in PatternTarget
+    value
+  else
+    :other
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def class_pattern_equality_override: (untyped flag) -> (1 | "value" | :other)
+end
+
+class PatternTarget
+  def self.===: (untyped _other) -> bool
+end
+```
+
+## Operator writes prefer source-defined operators
+
+### update
+
+```ruby
+class ProductOverride
+  def *(other) = :product
+end
+
+def source_defined_multiply_write
+  product = ProductOverride.new
+  product *= 2
+  product
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def source_defined_multiply_write: -> :product
+end
+
+class ProductOverride
+  def *: (untyped other) -> :product
+end
+```

@@ -268,10 +268,6 @@ end
 
 ## Method object call resolves project method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -288,7 +284,7 @@ end
 
 ```rbs
 class Worker
-  def normalize: (untyped value) -> untyped
+  def normalize: (untyped value) -> String
   def identity: (untyped value) -> untyped
   def direct: -> String
   def via_proc: -> String
@@ -297,10 +293,6 @@ end
 ```
 
 ## Method object as enumerable block
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -317,18 +309,14 @@ end
 
 ```rbs
 class Worker
-  def normalize: (untyped value) -> untyped
-  def build: (untyped value) -> [untyped, untyped]
+  def normalize: (untyped value) -> String
+  def build: (untyped value) -> [untyped, String]
   def values: -> Array[String]
   def pairs: -> Array[[1?, String]]
 end
 ```
 
 ## Explicit receiver method object
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -357,8 +345,8 @@ class Caller
 end
 
 class Formatter
-  def self.render: (untyped value) -> untyped
-  def label: (untyped value) -> untyped
+  def self.render: (untyped value) -> String
+  def label: (untyped value) -> String
 end
 ```
 
@@ -384,31 +372,55 @@ end
 
 ## Pass lambda and proc values as blocks
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
 class BlockRunner
   def run(&block) = block.call(1)
   def via_lambda = run(&->(value) { value.to_s })
+  def via_identity_lambda = run(&->(value) { value })
 
   def via_proc
     callback = Proc.new { |value| value.to_s }
     run(&callback)
   end
+
+  def via_identity_proc
+    callback = Proc.new { |value| value }
+    run(&callback)
+  end
+end
+
+class UntypedBlockRunner
+  def run(&block) = block.call(1)
+  def via_untyped_callback(callback) = run(&callback)
+end
+
+class ArityMismatchBlockRunner
+  def run(&block) = block.call(1)
+  def via_lambda = run(&->(left, right) { left })
 end
 ```
 
 ### result
 
 ```rbs
+class ArityMismatchBlockRunner
+  def run: { (Integer) -> untyped } -> untyped
+  def via_lambda: -> untyped
+end
+
 class BlockRunner
-  def run: { (Integer) -> String } -> String
+  def run: { (Integer) -> (String | 1) } -> String | 1
   def via_lambda: -> String
+  def via_identity_lambda: -> 1
   def via_proc: -> String
+  def via_identity_proc: -> 1
+end
+
+class UntypedBlockRunner
+  def run: { (Integer) -> untyped } -> untyped
+  def via_untyped_callback: (untyped callback) -> untyped
 end
 ```
 
@@ -476,5 +488,147 @@ class Worker
   def via_symbol: -> [1, 2]
   def via_method: -> [1, 2]
   def via_local: -> { name: "item" }
+end
+```
+
+## A return guard narrows a value before yielding
+
+### update
+
+```ruby
+class YieldGuardValue
+  def read = "ok"
+end
+
+class YieldGuard
+  def with_value(condition)
+    value = condition ? YieldGuardValue.new : nil
+    return unless value
+    yield value
+  end
+
+  def with_optional_value(condition)
+    value = condition ? YieldGuardValue.new : nil
+    yield value
+  end
+end
+
+class YieldGuardCaller
+  def read_value = YieldGuard.new.with_value(true) { |value| value.read }
+end
+```
+
+### result
+
+```rbs
+class YieldGuard
+  def with_value: (bool condition) { (YieldGuardValue) -> "ok" } -> "ok"?
+  def with_optional_value: (untyped condition) { (YieldGuardValue?) -> untyped } -> untyped
+end
+
+class YieldGuardCaller
+  def read_value: -> "ok"?
+end
+
+class YieldGuardValue
+  def read: -> "ok"
+end
+```
+
+## Yielded values include assignments from continuing branches
+
+### update
+
+```ruby
+class BranchYield
+  def each_data(filename)
+    data = "body"
+    if filename == ""
+      return
+    elsif filename
+      data = { name: filename }
+    end
+    yield data
+  end
+end
+```
+
+### result
+
+```rbs
+class BranchYield
+  def each_data: (untyped filename) { ((String | { name: untyped })) -> untyped } -> (nil | untyped)
+end
+```
+
+## Substitute call arguments into source yield types
+
+### update
+
+```ruby
+class PairSource
+  def each_pair(left, right)
+    yield left, right
+  end
+end
+
+class PairSourceCaller
+  def read = PairSource.new.each_pair("name", 1) { |name, count| [name.upcase, count.to_s] }
+
+  def assigned_name
+    name = nil
+    PairSource.new.each_pair("name", 1) { |value, _count| name = value }
+    name
+  end
+end
+
+class WhileYieldSource
+  def each_value(value)
+    current = value
+    while current
+      yield current
+      current = nil
+    end
+  end
+end
+
+class WhileYieldCaller
+  def assigned_value
+    value = nil
+    WhileYieldSource.new.each_value(:item) { |item| value = item; nil }
+    value
+  end
+
+  def nullable_downcase
+    WhileYieldSource.new.each_value(maybe_string) { |value| value.downcase }
+  end
+end
+```
+
+```rbs
+class Object
+  def maybe_string: -> String?
+end
+```
+
+### result
+
+```rbs
+class PairSource
+  def each_pair: (String left, Integer right) { (untyped, untyped) -> ("name" | [String, String]) } -> ("name" | [String, String])
+end
+
+class PairSourceCaller
+  def read: -> [String, String]
+  def assigned_name: -> "name"?
+end
+
+class WhileYieldCaller
+  def assigned_value: -> :item?
+  def nullable_downcase: -> nil
+end
+
+class WhileYieldSource
+  def each_value: ((String | Symbol)? value) { (untyped) -> String? } -> nil
 end
 ```

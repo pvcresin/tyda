@@ -20,12 +20,19 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 - class / module / method / mixin / constant / local / instance variable（LSP / Playground の定義・参照 hover を含む。宣言済み引数の定義位置も対象）
 - method dispatch、visibility、`super`、singleton method、refinement（`include` / `prepend` /
-  `extend` の適用順を反映。静的に完全な `Module#ancestors` は順序付き `Tuple`）
+  `extend` の適用順を反映。静的に完全な `Module#ancestors` は順序付き `Tuple`。トップレベルの
+  local receiver も呼び出し時点の型で解決し、`super(...)` の引数転送と method call の keyword splat から optional keyword 型を広げる。名前付き `**rest` は個別の keyword 引数を除いた caller record から推論する。`obj[key] = value` は RHS を返し、`obj.[]=(...)` はメソッドの戻り値を保つ）
 - block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（遅延解決された source method return を
-  block dispatch 前に反映し、tuple の要素 union とリテラル演算を block 内へ伝播）
-- Array / Hash / Set / Tuple / Record の要素型と shape
-- if / case / rescue / safe navigation / pattern matching の flow narrowing。標準の `Class#===` による postfix の local 代入条件や、pure な no-arg ivar reader の再呼び出しも扱い、分岐で相関したlocalも識別可能な型で絞られた場合に反映
-- 多重代入、operator-write、method 内の instance variable 再代入、文字列・シンボル補間（静的な literal / union の展開を含む）
+  block dispatch 前に反映し、source method の yield 型に呼び出し引数を代入し、`&` で渡された Proc / lambda の戻り型にも yield 引数型を反映し、tuple の要素 union とリテラル演算を block 内へ伝播。既知の空配列に対する
+  `map` / `collect` / `map!` は空の結果を保ち、source-defined `map` / `collect` override の戻り型を優先し、遅延 block return でも標準 `map` / `collect` の Array shape を維持し、
+  単一要素配列リテラルを identity block で `map` / `collect` した場合も要素 shape を維持。source method の yield summary は early-exit guard と分岐内の local 代入を反映し、
+  loop 内 yield は条件による local の絞り込みを反映。`for` は source-defined `each` の yield 型を
+  index に反映し、単一 yield の複数 block 引数への destructuring も tuple / Array の形に沿って扱う。
+  全経路で yield が保証される場合だけ本体が必ず実行されると扱い、Array / Tuple の `sort_by(&:method)` は要素型を保つ。yield 型が不明な
+  block 引数は `untyped` にする）
+- Array / Hash / Set / Tuple / Record の要素型と shape。unknown な値を `Kernel.Array` に渡した結果は `Array[untyped]` を保ち、unknown な添字の Array index は `untyped` を保つ。型引数のない `Hash` の iteration も key/value を別々の `untyped` block 引数として扱い、Record の `Hash#fetch` / `Hash#fetch_values` は欠落キーと fallback を反映し、`Array#clear` の呼び出し結果は空 Tuple にし、instance variable の共有要素型は維持
+- if / case / rescue / safe navigation / pattern matching の flow narrowing。静的に到達不能な `if` 分岐は推論せず、結果が静的に決まる no-arg `empty?` による分岐も絞り、終了分岐の local を後続へ混ぜず、片側だけで代入された local は未代入経路の `nil` を含める。標準の `Class#===` による postfix の local 代入条件や、pure な no-arg ivar reader の再呼び出しも扱い、安定した primitive 型で分岐先を区別できる場合は、片側だけで初期化された local を含む相関も反映。標準RBSの `nil` / `true` / `false` literal pattern と class pattern は一致する型と残りの型を分け、source-defined case equality ではクラス型による絞り込みをしない
+- 多重代入、右辺型を使った RBS operator overload の選択と source-defined operator を優先する operator-write、method 内の instance variable 再代入、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播
 - 静的に名前を求められる `alias` / `define_method` / `attr_*`（推論した writer の戻り値は引数型に一致） /
   `Struct.new` / `Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） / `Forwardable` / `send` / `const_get`

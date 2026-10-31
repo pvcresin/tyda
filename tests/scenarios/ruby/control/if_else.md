@@ -66,10 +66,6 @@ end
 
 ## local assigned on one branch is nilable after the branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -271,5 +267,44 @@ end
 
 class RangeResponseIterator
   def bytesize: -> 10
+end
+```
+
+## Correlate a one-sided local with a primitive branch value
+
+### update
+
+```ruby
+class MissingLocalCorrelation
+  def safe
+    [180, 3000].each do |frame|
+      break_end = frame * 2 if frame == 3000
+      if frame == 180
+        :first
+      else
+        break_end + 10
+      end
+    end
+  end
+
+  def unsafe
+    [180, 3600, 3000].each do |frame|
+      break_end = frame * 2 if frame == 3000
+      if frame == 180
+        :first
+      else
+        break_end + 10
+      end
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class MissingLocalCorrelation
+  def safe: -> [180, 3000]
+  def unsafe: -> [180, 3600, 3000]
 end
 ```

@@ -337,10 +337,6 @@ end
 
 ## Use nil bool and special literal pattern as condition
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -373,6 +369,85 @@ check_special(nil)
 ```rbs
 class Object < BasicObject
   def check_special: (nil x) -> :nil
+end
+```
+
+## Preserve unmatched nil and boolean pattern branches
+
+### update
+
+```ruby
+def check_nil_or_string(value)
+  case value
+  in nil
+    :nil
+  else
+    :other
+  end
+end
+
+check_nil_or_string(nil)
+check_nil_or_string("text")
+
+def check_integer_against_nil(value)
+  case value
+  in nil
+    :nil
+  else
+    :other
+  end
+end
+
+check_integer_against_nil(1)
+
+def check_boolean(value)
+  case value
+  in false
+    :false
+  in true
+    :true
+  end
+end
+
+check_boolean(false)
+check_boolean(true)
+
+def check_wildcard_before_nil(value)
+  case value
+  in _
+    :first
+  in nil
+    :second
+  else
+    :third
+  end
+end
+
+check_wildcard_before_nil(nil)
+
+def check_variable_before_nil(value)
+  case value
+  in captured
+    :first
+  in nil
+    :second
+  else
+    :third
+  end
+end
+
+check_variable_before_nil(nil)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def check_nil_or_string: (String? value) -> (:nil | :other)
+  def check_integer_against_nil: (Integer value) -> :other
+  def check_boolean: (bool value) -> (:false | :true)
+  def check_wildcard_before_nil: (nil value) -> :first
+  def check_variable_before_nil: (nil value) -> :first
 end
 ```
 
@@ -981,10 +1056,6 @@ end
 
 ## Do not merge locals from an exiting case/in branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1023,6 +1094,7 @@ def case_match_all_paths_return(value)
     return :text
   end
   selected
+  :unreachable
 end
 ```
 

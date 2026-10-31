@@ -35,10 +35,6 @@ end
 
 ## Resolve Rails application helpers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -71,7 +67,7 @@ class Probe
   def logger: -> Logger
   def root: -> Pathname
   def custom_config: -> untyped
-  def cache_value: -> untyped
+  def cache_value: -> String
   def delete_cache: -> bool
 end
 ```
