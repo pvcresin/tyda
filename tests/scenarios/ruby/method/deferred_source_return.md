@@ -85,10 +85,6 @@ end
 
 ## Keep an empty array result when a block has no elements
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class EmptyDeferredCollection
   def mapped
@@ -111,10 +107,6 @@ end
 ```
 
 ## Preserve block execution for an empty receiver and updated local
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class EmptyDeferredCounter
@@ -155,6 +147,38 @@ class EmptyArrayTransformations
   def mapped: -> [ ]
   def collected: -> [ ]
   def mapped_in_place: -> [ ]
+end
+```
+
+## Source-defined array transformations keep their return types
+
+```ruby
+class Array
+  def map = :source_map
+  def collect = :source_collect
+end
+
+class DeferredArrayTransformationOverride
+  def mapped = values.map { load_raw(_1) }
+  def collected = values.collect { load_raw(_1) }
+  def values = []
+  def load_raw(_value) = :deferred
+end
+```
+
+### result
+
+```rbs
+class Array[E]
+  def map: -> :source_map
+  def collect: -> :source_collect
+end
+
+class DeferredArrayTransformationOverride
+  def mapped: -> :source_map
+  def collected: -> :source_collect
+  def values: -> [ ]
+  def load_raw: (nil _value) -> :deferred
 end
 ```
 

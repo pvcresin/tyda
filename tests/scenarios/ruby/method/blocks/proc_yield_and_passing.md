@@ -372,31 +372,55 @@ end
 
 ## Pass lambda and proc values as blocks
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
 class BlockRunner
   def run(&block) = block.call(1)
   def via_lambda = run(&->(value) { value.to_s })
+  def via_identity_lambda = run(&->(value) { value })
 
   def via_proc
     callback = Proc.new { |value| value.to_s }
     run(&callback)
   end
+
+  def via_identity_proc
+    callback = Proc.new { |value| value }
+    run(&callback)
+  end
+end
+
+class UntypedBlockRunner
+  def run(&block) = block.call(1)
+  def via_untyped_callback(callback) = run(&callback)
+end
+
+class ArityMismatchBlockRunner
+  def run(&block) = block.call(1)
+  def via_lambda = run(&->(left, right) { left })
 end
 ```
 
 ### result
 
 ```rbs
+class ArityMismatchBlockRunner
+  def run: { (Integer) -> untyped } -> untyped
+  def via_lambda: -> untyped
+end
+
 class BlockRunner
-  def run: { (Integer) -> String } -> String
+  def run: { (Integer) -> (String | 1) } -> String | 1
   def via_lambda: -> String
+  def via_identity_lambda: -> 1
   def via_proc: -> String
+  def via_identity_proc: -> 1
+end
+
+class UntypedBlockRunner
+  def run: { (Integer) -> untyped } -> untyped
+  def via_untyped_callback: (untyped callback) -> untyped
 end
 ```
 

@@ -857,3 +857,26 @@ class KeywordRestCollectionMethods
   def call: (untyped flag) -> [Array[:a | :b | :c], Array[true | 1 | 2 | "x"], Array[[:a | :b | :c, true | 1 | 2 | "x"]], Array[[:a | :b | :c, true | 1 | 2 | "x"]], { a: 1, b: "x" } | { a: 2, c: true }, Hash[true | 1 | 2 | "x", :a | :b | :c]]
 end
 ```
+
+## Exclude explicit keywords from a named keyword rest
+
+### update
+
+```ruby
+class ExplicitKeywordRest
+  def collect(value:, **options) = options
+  def call
+    collect(value: "item", extra: 1)
+    :done
+  end
+end
+```
+
+### result
+
+```rbs
+class ExplicitKeywordRest
+  def collect: (value: String, **Integer options) -> { extra: 1 }
+  def call: -> :done
+end
+```

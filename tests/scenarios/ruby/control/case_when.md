@@ -209,10 +209,6 @@ end
 
 ## case when narrowing changes method return
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -238,10 +234,6 @@ end
 ```
 
 ## case when with multiple conditions
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -351,10 +343,6 @@ end
 ```
 
 ## Pattern matching in Ruby 3+
-
-```yaml
-known_issue: true
-```
 
 ### update
 

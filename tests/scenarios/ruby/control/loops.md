@@ -287,10 +287,6 @@ end
 
 ## While-loop multiply widens a constant accumulator
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

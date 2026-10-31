@@ -8305,6 +8305,16 @@ impl<'a> InferenceEngine<'a> {
         let Some(args) = super_node.arguments() else {
             return;
         };
+        if args.arguments().len() == 1
+            && args
+                .arguments()
+                .iter()
+                .next()
+                .is_some_and(|arg| matches!(arg, Node::ForwardingArgumentsNode { .. }))
+        {
+            self.register_forwarding_super_call_site(class_name, scope);
+            return;
+        }
         self.ensure_class_available(class_name);
         let superclass = match self.registry.get_superclass(class_name).map(str::to_string) {
             Some(sc) => sc,
@@ -8462,6 +8472,16 @@ impl<'a> InferenceEngine<'a> {
         } else {
             return Some(method_def.raw_return_type.clone());
         };
+        if args.as_ref().is_some_and(|args| {
+            args.arguments().len() == 1
+                && args
+                    .arguments()
+                    .iter()
+                    .next()
+                    .is_some_and(|arg| matches!(arg, Node::ForwardingArgumentsNode { .. }))
+        }) {
+            return Some(method_def.raw_return_type.clone());
+        }
 
         let mut positional_types = Vec::new();
         let mut keyword_types = HashMap::new();
@@ -18173,14 +18193,39 @@ impl<'a> InferenceEngine<'a> {
         );
         if let Some(block_arg) = block_raw.as_block_argument_node()
             && let Some(expr) = block_arg.expression()
-            && let Node::LocalVariableReadNode { .. } = &expr
         {
-            let lvar = expr.as_local_variable_read_node()?;
-            let var_name = String::from_utf8_lossy(lvar.name().as_slice()).to_string();
-            if scope.current_block_param_name.as_deref() == Some(var_name.as_str()) {
-                scope.forwarded_block = Some((method_name.to_string(), method_is_singleton));
+            if let Node::LocalVariableReadNode { .. } = &expr {
+                let lvar = expr.as_local_variable_read_node()?;
+                let var_name = String::from_utf8_lossy(lvar.name().as_slice()).to_string();
+                if scope.current_block_param_name.as_deref() == Some(var_name.as_str()) {
+                    scope.forwarded_block = Some((method_name.to_string(), method_is_singleton));
+                    return None;
+                }
             }
-            return None;
+            let Type::Proc {
+                return_type,
+                param_count,
+            } = self.infer_node_type(class_name, &expr, parse_result, scope)
+            else {
+                return None;
+            };
+            if param_count != block_param_types.len() {
+                return None;
+            }
+            let return_type = Self::substitute_param_refs(&return_type, &block_param_types);
+            return Some(HoverBlockSig {
+                params: block_param_types
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, ty)| Param {
+                        name: format!("arg{idx}"),
+                        param_type: ty,
+                        kind: ParamKind::Required,
+                    })
+                    .collect(),
+                return_type,
+                required: true,
+            });
         }
 
         let block = block_raw.as_block_node()?;
@@ -20481,7 +20526,8 @@ impl<'a> InferenceEngine<'a> {
                                 matched_type
                             } else if literal_partitioning_enabled {
                                 if let Some((matched_type, unmatched_type)) = self
-                                    .partition_literal_value_pattern(
+                                    .partition_case_pattern(
+                                        class_name,
                                         &in_node.pattern(),
                                         remaining_subject_type.as_ref(),
                                     )
@@ -25179,7 +25225,8 @@ impl<'a> InferenceEngine<'a> {
                                     matched_type
                                 } else if literal_partitioning_enabled {
                                     if let Some((matched_type, unmatched_type)) = self
-                                        .partition_literal_value_pattern(
+                                        .partition_case_pattern(
+                                            class_name,
                                             &in_node.pattern(),
                                             remaining_subject_type.as_ref(),
                                         )
@@ -33518,6 +33565,16 @@ impl<'a> InferenceEngine<'a> {
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
         self.ensure_class_available("Enumerable");
+        let has_source_override = matches!(method_name, "map" | "collect" | "map!" | "collect!")
+            && self.instance_method_has_source_override(&receiver_class, method_name);
+        if has_source_override {
+            return None;
+        }
+        if matches!(receiver_type, Type::Tuple(elements) if elements.is_empty())
+            && matches!(method_name, "map" | "collect" | "map!" | "collect!")
+        {
+            return Some(Type::Tuple(Vec::new()));
+        }
 
         let prefer_singleton = matches!(receiver_type, Type::Singleton(_));
         let rbs_overloads =
@@ -34172,7 +34229,7 @@ impl<'a> InferenceEngine<'a> {
             && matches!(receiver_type, Type::Array(_) | Type::Tuple(_))
             && matches!(&method_return, Type::Array(_))
             && !Self::is_concrete(&method_return)
-            && !self.instance_method_has_source_override(&receiver_class, method_name)
+            && !has_source_override
         {
             return Some(Self::include_optional_control_type(
                 method_return,
@@ -43390,7 +43447,21 @@ impl<'a> InferenceEngine<'a> {
             _ => return current_type.clone().union_with(value_type.clone()),
         };
         let resolved_current = self.resolve_receiver_method_refs(current_type);
-        let resolved = self.resolve_method_on_type(&resolved_current, method_name);
+        let has_source_override =
+            self.type_to_class_name(&resolved_current)
+                .is_some_and(|class_name| {
+                    self.instance_method_has_source_override(&class_name, method_name)
+                });
+        let resolved = if has_source_override {
+            self.resolve_method_on_type(&resolved_current, method_name)
+        } else {
+            self.resolve_binary_op_via_overloads(
+                &resolved_current,
+                method_name,
+                std::slice::from_ref(value_type),
+            )
+            .unwrap_or_else(|| self.resolve_method_on_type(&resolved_current, method_name))
+        };
         if resolved == Type::Untyped {
             current_type.clone().union_with(value_type.clone())
         } else {
@@ -48597,6 +48668,94 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn partition_case_pattern(
+        &mut self,
+        class_name: &str,
+        pattern: &Node<'_>,
+        subject_type: Option<&Type>,
+    ) -> Option<(Option<Type>, Option<Type>)> {
+        self.partition_literal_value_pattern(pattern, subject_type)
+            .or_else(|| self.partition_class_constant_pattern(class_name, pattern, subject_type))
+    }
+
+    fn pattern_class_target_name(
+        &mut self,
+        class_context: &str,
+        target_path: &str,
+    ) -> Option<String> {
+        let Type::Singleton(target_class) =
+            self.resolve_constant_type_in_scope(target_path, class_context)
+        else {
+            return None;
+        };
+        let target_class = target_class.to_string();
+        self.ensure_class_available(&target_class);
+        let target_data = self.registry.class_data_for(&target_class)?;
+        if target_data.is_module
+            || !target_data.has_type_substance()
+            || !self.uses_standard_class_case_equality(&target_class)
+        {
+            return None;
+        }
+        Some(target_class)
+    }
+
+    fn partition_class_constant_pattern(
+        &mut self,
+        class_name: &str,
+        pattern: &Node<'_>,
+        subject_type: Option<&Type>,
+    ) -> Option<(Option<Type>, Option<Type>)> {
+        let subject_type = subject_type?;
+        if !Self::is_closed_case_subject_type(subject_type) {
+            return None;
+        }
+        let target_path = match pattern {
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
+                String::from_utf8_lossy(pattern.location().as_slice()).to_string()
+            }
+            _ => return None,
+        };
+        let target_class = self.pattern_class_target_name(class_name, &target_path)?;
+
+        let mut pending = match subject_type {
+            Type::Union(parts) => parts.clone(),
+            other => vec![other.clone()],
+        };
+        let mut matched_types = Vec::new();
+        let mut unmatched_types = Vec::new();
+        while let Some(subject) = pending.pop() {
+            let subject_class = self.type_to_class_name(&subject)?;
+            self.ensure_class_available(&subject_class);
+            let subject_data = self.registry.class_data_for(&subject_class)?;
+            if subject_data.is_module {
+                return None;
+            }
+
+            if self.class_is_or_subclass_of_target(
+                &subject_class,
+                &target_class,
+                &mut HashSet::new(),
+            ) {
+                matched_types.push(subject);
+            } else if self.class_is_or_subclass_of_target(
+                &target_class,
+                &subject_class,
+                &mut HashSet::new(),
+            ) {
+                // A base class may include instances that do not match this subclass pattern.
+                return None;
+            } else {
+                unmatched_types.push(subject);
+            }
+        }
+
+        let matched_type = (!matched_types.is_empty()).then(|| Type::from_type_vec(matched_types));
+        let unmatched_type =
+            (!unmatched_types.is_empty()).then(|| Type::from_type_vec(unmatched_types));
+        Some((matched_type, unmatched_type))
+    }
+
     fn partition_literal_value_pattern(
         &mut self,
         pattern: &Node<'_>,
@@ -48757,12 +48916,15 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::ConstantReadNode { .. } => {
                 let c = pattern.as_constant_read_node()?;
-                let class_name = String::from_utf8_lossy(c.name().as_slice()).to_string();
-                Some(Self::class_name_to_type(&class_name))
+                let target_path = String::from_utf8_lossy(c.name().as_slice()).to_string();
+                let target_class = self.pattern_class_target_name(class_name, &target_path)?;
+                Some(Self::class_name_to_type(&target_class))
             }
             Node::ConstantPathNode { .. } => {
-                let raw = String::from_utf8_lossy(pattern.location().as_slice()).to_string();
-                Some(Self::class_name_to_type(&raw))
+                let target_path =
+                    String::from_utf8_lossy(pattern.location().as_slice()).to_string();
+                let target_class = self.pattern_class_target_name(class_name, &target_path)?;
+                Some(Self::class_name_to_type(&target_class))
             }
             Node::ArrayPatternNode { .. } | Node::FindPatternNode { .. } => {
                 Some(Type::Array(Some(Box::new(Type::Untyped))))
@@ -50182,6 +50344,14 @@ impl<'a> InferenceEngine<'a> {
             .cloned()
             .map(Type::widen_arg_for_param)
             .collect();
+        let has_explicit_keyword_param = |name: &str| {
+            method_info.param_infos.iter().any(|param| {
+                matches!(
+                    param.kind,
+                    ParamKind::KeywordRequired | ParamKind::KeywordOptional
+                ) && param.name == name
+            })
+        };
 
         // Positional resolution ignores keywords; keyword-only methods (and
         // `initialize`) still need a body pass once any call site exists.
@@ -50310,6 +50480,9 @@ impl<'a> InferenceEngine<'a> {
                                 && site.method_is_singleton == is_singleton
                         }) {
                             for (name, ty) in &site.keyword_arg_types {
+                                if has_explicit_keyword_param(name.as_ref()) {
+                                    continue;
+                                }
                                 saw_kw = true;
                                 fields
                                     .entry(name.as_ref().to_string())
@@ -50339,6 +50512,9 @@ impl<'a> InferenceEngine<'a> {
                                 && site.method_is_singleton == is_singleton
                         }) {
                             for (name, ty) in &site.keyword_arg_types {
+                                if has_explicit_keyword_param(name.as_ref()) {
+                                    continue;
+                                }
                                 if !fields.iter().any(|f| {
                                     matches!(&f.key, RecordKey::Symbol(n) if n == name.as_ref())
                                 }) {
@@ -50414,7 +50590,15 @@ impl<'a> InferenceEngine<'a> {
 
         // Refresh the stored return unless the second pass is clearly worse
         // (untyped / pattern-ref / nil-degraded destructure slots).
-        if Self::return_reinfer_is_degraded(&method_info.raw_return_type, &new_return_type) {
+        let exhaustively_narrowed_case_return = case_dispatch_needs_replay
+            && Self::is_single_case_method_body(&body)
+            && Self::case_return_only_loses_root_nil(
+                &method_info.raw_return_type,
+                &new_return_type,
+            );
+        if Self::return_reinfer_is_degraded(&method_info.raw_return_type, &new_return_type)
+            && !exhaustively_narrowed_case_return
+        {
             if let Some(saved) = saved_ctx {
                 self.enter_method_body_context(saved);
             }
@@ -50517,6 +50701,34 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => false,
         }
+    }
+
+    fn case_return_only_loses_root_nil(old: &Type, new: &Type) -> bool {
+        let Type::Union(parts) = old else {
+            return false;
+        };
+        let non_nil_parts: Vec<Type> = parts
+            .iter()
+            .filter(|part| !matches!(part, Type::Nil))
+            .cloned()
+            .collect();
+        non_nil_parts.len() < parts.len()
+            && !non_nil_parts.is_empty()
+            && Type::from_type_vec(non_nil_parts) == *new
+    }
+
+    fn is_single_case_method_body(body: &Node<'_>) -> bool {
+        if matches!(body, Node::CaseNode { .. }) {
+            return true;
+        }
+        let Node::StatementsNode { .. } = body else {
+            return false;
+        };
+        let Some(statements) = body.as_statements_node() else {
+            return false;
+        };
+        let mut nodes = statements.body().iter();
+        matches!(nodes.next(), Some(Node::CaseNode { .. })) && nodes.next().is_none()
     }
 
     fn type_needs_backward_propagation(ty: &Type) -> bool {
