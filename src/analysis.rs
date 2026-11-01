@@ -3355,6 +3355,127 @@ end
     }
 
     #[test]
+    fn respond_to_guards_narrow_if_and_modifier_if_diagnostic_snapshots() {
+        let loader = playground_loader();
+        let source = concat!(
+            "def stringify_with_modifier(value)\n",
+            "  value = value.to_str if value.respond_to?(:to_str)\n",
+            "  value\n",
+            "end\n",
+            "\n",
+            "def stringify_with_if(value)\n",
+            "  if value.respond_to?(:to_str)\n",
+            "    value = value.to_str\n",
+            "  end\n",
+            "  value\n",
+            "end\n",
+            "\n",
+            "#: (untyped value) -> untyped\n",
+            "def stringify_unknown(value)\n",
+            "  value = value.to_str if value.respond_to?(:to_str)\n",
+            "  value\n",
+            "end\n",
+            "\n",
+            "class CustomRespondTo\n",
+            "  def respond_to?(name, include_private = false) = name == :to_str\n",
+            "  def method_missing(name, *args) = \"dynamic\"\n",
+            "end\n",
+            "\n",
+            "class CustomRespondToMissing\n",
+            "  def respond_to_missing?(name, include_private = false) = name == :to_str\n",
+            "  def method_missing(name, *args) = \"dynamic\"\n",
+            "end\n",
+            "\n",
+            "stringify_with_modifier(nil)\n",
+            "stringify_with_modifier(\"name\")\n",
+            "stringify_with_if(nil)\n",
+            "stringify_with_if(\"name\")\n",
+            "stringify_with_modifier(CustomRespondTo.new)\n",
+            "stringify_with_modifier(CustomRespondToMissing.new)\n",
+            "stringify_unknown(Object.new)\n",
+        );
+        let result = playground_analyze(source, "", &loader, "respond_to_guard.rb");
+        let missing_methods: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .collect();
+
+        assert!(missing_methods.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn respond_to_guard_keeps_custom_responder_types_unknown() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class CustomRespondTo\n",
+            "  def respond_to?(name, include_private = false) = name == :upcase\n",
+            "end\n",
+            "\n",
+            "class CustomRespondToMissing\n",
+            "  def respond_to_missing?(name, include_private = false) = name == :upcase\n",
+            "end\n",
+            "\n",
+            "def guarded_upcase(value)\n",
+            "  value.upcase if value.respond_to?(:upcase)\n",
+            "end\n",
+            "\n",
+            "guarded_upcase(nil)\n",
+            "guarded_upcase(\"name\")\n",
+            "guarded_upcase(CustomRespondTo.new)\n",
+            "guarded_upcase(CustomRespondToMissing.new)\n",
+        );
+        let result = playground_analyze(source, "", &loader, "respond_to_custom_guard.rb");
+        let missing_methods: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| diagnostic.unresolved_method.as_str())
+            .collect();
+
+        assert!(
+            missing_methods.contains(&"CustomRespondTo#upcase"),
+            "{missing_methods:?}"
+        );
+        assert!(
+            missing_methods.contains(&"CustomRespondToMissing#upcase"),
+            "{missing_methods:?}"
+        );
+        assert!(
+            !missing_methods.contains(&"NilClass#upcase"),
+            "{missing_methods:?}"
+        );
+    }
+
+    #[test]
+    fn respond_to_guard_is_cleared_after_local_reassignment() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class NoStringConversion; end\n",
+            "\n",
+            "def stringify_after_reassignment(value)\n",
+            "  if value.respond_to?(:to_str)\n",
+            "    value = NoStringConversion.new\n",
+            "    value.to_str\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "stringify_after_reassignment(nil)\n",
+            "stringify_after_reassignment(\"name\")\n",
+        );
+        let result = playground_analyze(source, "", &loader, "respond_to_reassignment.rb");
+
+        assert!(
+            result.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "missing_method"
+                    && diagnostic.unresolved_method == "NoStringConversion#to_str"
+            }),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
     fn playground_mixin_dispatch_and_ancestors_keep_ruby_order() {
         let loader = playground_loader();
         let source = concat!(

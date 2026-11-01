@@ -570,6 +570,7 @@ mod tests {
                 result_type: Type::String,
                 has_block: false,
                 safe_navigation: false,
+                respond_to_guards: Vec::new(),
             },
         );
         let mut recorder = CoverageRecorder::default();

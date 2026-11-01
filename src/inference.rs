@@ -1208,6 +1208,7 @@ pub(crate) struct Scope {
     self_override: Option<Type>,
     self_facts: Arc<HashMap<String, Type>>,
     runtime_facts: Arc<HashMap<String, RuntimeFact>>,
+    respond_to_guards: Arc<HashMap<String, Vec<Vec<String>>>>,
     initialized_record_keys: Arc<HashSet<(String, String)>>,
     callback_mutated_record_locals: Arc<HashSet<String>>,
     local_singleton_methods: Arc<HashMap<String, HashMap<String, LocalSingletonMethod>>>,
@@ -1396,6 +1397,7 @@ impl Scope {
             self_override: self.self_override.clone(),
             self_facts: self.self_facts.clone(),
             runtime_facts: self.runtime_facts.clone(),
+            respond_to_guards: self.respond_to_guards.clone(),
             initialized_record_keys: self.initialized_record_keys.clone(),
             callback_mutated_record_locals: self.callback_mutated_record_locals.clone(),
             local_singleton_methods: self.local_singleton_methods.clone(),
@@ -1550,6 +1552,9 @@ impl Scope {
     fn set(&mut self, name: &str, ty: Type) {
         Arc::make_mut(&mut self.locals).insert(name.to_string(), ty);
         Arc::make_mut(&mut self.aliases).remove(name);
+        if self.respond_to_guards.contains_key(name) {
+            Arc::make_mut(&mut self.respond_to_guards).remove(name);
+        }
         Arc::make_mut(&mut self.enumerator_yielder_names).remove(name);
         Arc::make_mut(&mut self.runtime_facts).remove(name);
         Arc::make_mut(&mut self.local_singleton_methods).remove(name);
@@ -1580,6 +1585,22 @@ impl Scope {
 
     fn get(&self, name: &str) -> Option<&Type> {
         self.locals.get(name)
+    }
+
+    fn add_respond_to_guard(&mut self, name: &str, method_names: Vec<String>) {
+        let guards = Arc::make_mut(&mut self.respond_to_guards)
+            .entry(name.to_string())
+            .or_default();
+        if !guards.contains(&method_names) {
+            guards.push(method_names);
+        }
+    }
+
+    fn respond_to_guards_for_local(&self, name: &str) -> Vec<Vec<String>> {
+        self.respond_to_guards
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn set_runtime_fact(&mut self, name: &str, fact: RuntimeFact) {
@@ -1698,6 +1719,15 @@ impl Scope {
         let aliases = Arc::make_mut(&mut self.aliases);
         for name in names {
             aliases.remove(name);
+        }
+        if names
+            .iter()
+            .any(|name| self.respond_to_guards.contains_key(name))
+        {
+            let respond_to_guards = Arc::make_mut(&mut self.respond_to_guards);
+            for name in names {
+                respond_to_guards.remove(name);
+            }
         }
         let definitions = Arc::make_mut(&mut self.definitions);
         for name in names {
@@ -3781,6 +3811,13 @@ impl<'a> InferenceEngine<'a> {
                 Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
             merged.runtime_facts =
                 merge_identical_scope_maps(&then_scope.runtime_facts, &else_scope.runtime_facts);
+            if !then_scope.respond_to_guards.is_empty() || !else_scope.respond_to_guards.is_empty()
+            {
+                merged.respond_to_guards = merge_identical_scope_maps(
+                    &then_scope.respond_to_guards,
+                    &else_scope.respond_to_guards,
+                );
+            }
             merged.local_singleton_methods = merge_identical_scope_maps(
                 &then_scope.local_singleton_methods,
                 &else_scope.local_singleton_methods,
@@ -3829,6 +3866,7 @@ impl<'a> InferenceEngine<'a> {
             self_override: Self::merge_branch_self_override(base, then_scope, else_scope),
             self_facts: Self::merge_branch_self_facts(then_scope, else_scope),
             runtime_facts: base.runtime_facts.clone(),
+            respond_to_guards: Arc::default(),
             local_singleton_methods: base.local_singleton_methods.clone(),
             active_refinements: base.active_refinements.clone(),
             dsl_bindings: base.dsl_bindings.clone(),
@@ -3991,6 +4029,12 @@ impl<'a> InferenceEngine<'a> {
         merged.enumerator_yielder_names = base.enumerator_yielder_names.clone();
         merged.runtime_facts =
             merge_identical_scope_maps(&then_scope.runtime_facts, &else_scope.runtime_facts);
+        if !then_scope.respond_to_guards.is_empty() || !else_scope.respond_to_guards.is_empty() {
+            merged.respond_to_guards = merge_identical_scope_maps(
+                &then_scope.respond_to_guards,
+                &else_scope.respond_to_guards,
+            );
+        }
         merged.local_singleton_methods = merge_identical_scope_maps(
             &then_scope.local_singleton_methods,
             &else_scope.local_singleton_methods,
@@ -4085,6 +4129,7 @@ impl<'a> InferenceEngine<'a> {
             self_override: Self::merge_loop_self_override(base, loop_scope),
             self_facts: Arc::default(),
             runtime_facts: base.runtime_facts.clone(),
+            respond_to_guards: Arc::default(),
             initialized_record_keys: base.initialized_record_keys.clone(),
             callback_mutated_record_locals: Arc::new(
                 base.callback_mutated_record_locals
@@ -4134,6 +4179,10 @@ impl<'a> InferenceEngine<'a> {
         merged.enumerator_yielder_names = base.enumerator_yielder_names.clone();
         merged.runtime_facts =
             merge_identical_scope_maps(&base.runtime_facts, &loop_scope.runtime_facts);
+        if !base.respond_to_guards.is_empty() || !loop_scope.respond_to_guards.is_empty() {
+            merged.respond_to_guards =
+                merge_identical_scope_maps(&base.respond_to_guards, &loop_scope.respond_to_guards);
+        }
         merged.local_singleton_methods = merge_identical_scope_maps(
             &base.local_singleton_methods,
             &loop_scope.local_singleton_methods,
@@ -8269,6 +8318,7 @@ impl<'a> InferenceEngine<'a> {
                 ),
                 has_block: false,
                 safe_navigation: false,
+                respond_to_guards: Vec::new(),
             },
             class_context: String::new(),
             method_context: None,
@@ -23010,6 +23060,18 @@ impl<'a> InferenceEngine<'a> {
                                 result_type,
                                 has_block: call_node.block().is_some(),
                                 safe_navigation: call_node.is_safe_navigation(),
+                                respond_to_guards: if scope.respond_to_guards.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    call_node
+                                        .receiver()
+                                        .and_then(|receiver| {
+                                            Self::extract_local_var_name_in_scope(&receiver, scope)
+                                        })
+                                        .map_or_else(Vec::new, |name| {
+                                            scope.respond_to_guards_for_local(&name)
+                                        })
+                                },
                             },
                             class_context: class_name.to_string(),
                             method_context: scope.method_name.clone(),
@@ -23339,6 +23401,12 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                     self.supports_pattern_matching(),
                 );
+                let respond_to_guard = self.extract_positive_respond_to_guard(
+                    class_name,
+                    &if_node.predicate(),
+                    parse_result,
+                    scope,
+                );
                 let truthiness = truthiness.or_else(|| {
                     let narrowing = narrowing.as_ref()?;
                     match (
@@ -23371,6 +23439,9 @@ impl<'a> InferenceEngine<'a> {
                     &mut then_scope,
                 );
                 self.bind_match_write_captures(class_name, &if_node.predicate(), &mut then_scope);
+                if let Some((name, methods)) = &respond_to_guard {
+                    then_scope.add_respond_to_guard(name, methods.clone());
+                }
                 let then_type = if truthiness == Some(false) {
                     Type::Bot
                 } else if let Some(statements) = if_node.statements() {
@@ -26213,6 +26284,7 @@ impl<'a> InferenceEngine<'a> {
                                 result_type: result.clone(),
                                 has_block: call_node.block().is_some(),
                                 safe_navigation: call_node.is_safe_navigation(),
+                                respond_to_guards: Vec::new(),
                             }
                         };
                         self.push_hover_snapshot(HoverSnapshot {
@@ -28455,6 +28527,18 @@ impl<'a> InferenceEngine<'a> {
                                 result_type: result.clone(),
                                 has_block: call_node.block().is_some(),
                                 safe_navigation: call_node.is_safe_navigation(),
+                                respond_to_guards: if scope.respond_to_guards.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    call_node
+                                        .receiver()
+                                        .and_then(|receiver| {
+                                            Self::extract_local_var_name_in_scope(&receiver, scope)
+                                        })
+                                        .map_or_else(Vec::new, |name| {
+                                            scope.respond_to_guards_for_local(&name)
+                                        })
+                                },
                             }
                         };
                         self.push_hover_snapshot(HoverSnapshot {
@@ -28520,6 +28604,12 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                     self.supports_pattern_matching(),
                 );
+                let respond_to_guard = self.extract_positive_respond_to_guard(
+                    class_name,
+                    &if_node.predicate(),
+                    parse_result,
+                    scope,
+                );
 
                 let then_type = if truthiness == Some(false) {
                     Type::Bot
@@ -28549,6 +28639,9 @@ impl<'a> InferenceEngine<'a> {
                         &if_node.predicate(),
                         &mut then_scope,
                     );
+                    if let Some((name, methods)) = &respond_to_guard {
+                        then_scope.add_respond_to_guard(name, methods.clone());
+                    }
                     self.infer_statements_return_type(
                         class_name,
                         &statements,
@@ -52704,13 +52797,16 @@ impl<'a> InferenceEngine<'a> {
             .map(|narrowed| (var_name, narrowed))
     }
 
-    fn extract_respond_to_condition_narrowing(
+    fn extract_respond_to_guard(
         &mut self,
         class_name: &str,
         call: &ruby_prism::CallNode<'_>,
         parse_result: &ParseResult<'_>,
         scope: &Scope,
-    ) -> Option<(String, Type, Type)> {
+    ) -> Option<(String, Vec<String>)> {
+        if call.name().as_slice() != b"respond_to?" {
+            return None;
+        }
         let receiver = call.receiver()?;
         let var_name = Self::extract_local_var_name_in_scope(&receiver, scope)?;
         let args = call.arguments()?;
@@ -52720,6 +52816,40 @@ impl<'a> InferenceEngine<'a> {
         let first_arg = args.arguments().iter().next()?;
         let method_names =
             self.static_dispatch_names_from_arg(class_name, &first_arg, parse_result, scope)?;
+        Some((var_name, method_names))
+    }
+
+    fn extract_positive_respond_to_guard(
+        &mut self,
+        class_name: &str,
+        predicate: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<(String, Vec<String>)> {
+        let call = if let Node::ParenthesesNode { .. } = predicate {
+            let paren = predicate.as_parentheses_node()?;
+            let body = paren.body()?;
+            let inner = if let Some(statements) = body.as_statements_node() {
+                statements.body().iter().last()?
+            } else {
+                body
+            };
+            inner.as_call_node()?
+        } else {
+            predicate.as_call_node()?
+        };
+        self.extract_respond_to_guard(class_name, &call, parse_result, scope)
+    }
+
+    fn extract_respond_to_condition_narrowing(
+        &mut self,
+        class_name: &str,
+        call: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<(String, Type, Type)> {
+        let (var_name, method_names) =
+            self.extract_respond_to_guard(class_name, call, parse_result, scope)?;
         let current = self.resolve_narrowing_input_type(class_name, scope, scope.get(&var_name)?);
         let parts: Vec<Type> = match &current {
             Type::Union(parts) => parts.clone(),

@@ -17,6 +17,7 @@ pub(crate) enum HoverTarget {
         result_type: Type,
         has_block: bool,
         safe_navigation: bool,
+        respond_to_guards: Vec<Vec<String>>,
     },
     MethodDefinition {
         owner_type: Type,
@@ -1433,6 +1434,7 @@ impl<'a> InferenceEngine<'a> {
         let HoverTarget::MethodCall {
             receiver_type,
             safe_navigation,
+            respond_to_guards,
             ..
         } = &snap.target
         else {
@@ -1451,6 +1453,7 @@ impl<'a> InferenceEngine<'a> {
             &snap.class_context,
             snap.method_context.as_deref(),
         );
+        let receiver = self.narrow_receiver_by_respond_to_guards(receiver, respond_to_guards);
         let Type::Union(parts) = &receiver else {
             return None;
         };
@@ -1507,6 +1510,19 @@ impl<'a> InferenceEngine<'a> {
             });
         }
         (!calls.is_empty()).then_some(calls)
+    }
+
+    fn narrow_receiver_by_respond_to_guards(
+        &mut self,
+        mut receiver: Type,
+        guards: &[Vec<String>],
+    ) -> Type {
+        for methods in guards {
+            if let Some(narrowed) = self.narrow_type_by_respond_to_methods(&receiver, methods) {
+                receiver = narrowed;
+            }
+        }
+        receiver
     }
 
     fn member_surface_provably_complete(&mut self, class: &str) -> bool {
@@ -5445,6 +5461,7 @@ mod arg_compat_tests {
                     ),
                     has_block: false,
                     safe_navigation: true,
+                    respond_to_guards: Vec::new(),
                 },
                 class_context: "FollowRequest".to_string(),
                 method_context: Some("process".to_string()),
