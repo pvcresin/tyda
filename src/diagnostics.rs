@@ -1031,6 +1031,46 @@ mod tests {
     }
 
     #[test]
+    fn known_method_with_untyped_return_is_not_reported_missing() {
+        let source = concat!(
+            "class Node\n",
+            "  #: () -> untyped\n",
+            "  def lenv; end\n",
+            "end\n",
+            "\n",
+            "class Owner\n",
+            "  def initialize(node)\n",
+            "    @node = node\n",
+            "  end\n",
+            "\n",
+            "  #: (Node node) -> untyped\n",
+            "  def read\n",
+            "    @node.lenv\n",
+            "  end\n",
+            "\n",
+            "  #: (Node node) -> untyped\n",
+            "  def missing\n",
+            "    @node.unknown\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "class MutexOwner\n",
+            "  #: (Thread::Mutex mutex) -> void\n",
+            "  def initialize(mutex)\n",
+            "    @mutex = mutex\n",
+            "  end\n",
+            "\n",
+            "  def synchronize\n",
+            "    @mutex.synchronize { :ok }\n",
+            "  end\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert_eq!(methods, ["Node#unknown"]);
+    }
+
+    #[test]
     fn union_member_missing_method_reports_all_members_that_lack_it() {
         let source = concat!(
             "class Alpha\n",

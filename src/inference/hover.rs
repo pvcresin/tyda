@@ -286,6 +286,22 @@ impl<'a> InferenceEngine<'a> {
             if !Self::unresolved_method_matches_snapshot_name(&unresolved_method, &snap.name) {
                 continue;
             }
+            let method_exists_on_resolved_receiver = resolved_receiver
+                .as_ref()
+                .and_then(|receiver| {
+                    TypeRegistry::type_to_class_name_pub(receiver).map(|class| {
+                        self.resolve_hover_method_return_opt(
+                            &class,
+                            &snap.name,
+                            matches!(receiver, Type::Singleton(_)),
+                        )
+                        .is_some()
+                    })
+                })
+                .unwrap_or(false);
+            if method_exists_on_resolved_receiver {
+                continue;
+            }
             if Self::is_known_class_body_dsl_unresolved_call(&snap, &unresolved_method) {
                 continue;
             }
