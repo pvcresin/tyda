@@ -169,3 +169,22 @@ class UserMailer < ApplicationMailer
   def self.welcome: -> ActionMailer::MessageDelivery
 end
 ```
+
+## Infer mailer params
+
+### update
+
+```ruby
+class ParamsMailer < ApplicationMailer
+  def message_params = params
+end
+```
+
+### result
+
+```rbs
+class ParamsMailer < ApplicationMailer
+  def message_params: -> Hash[untyped, untyped]
+  def self.message_params: -> ActionMailer::MessageDelivery
+end
+```

@@ -382,7 +382,8 @@ fn type_level(ty: &Type, class_context: &str, method_context: Option<&str>) -> C
         | Type::Todo
         | Type::BlockReturnRef
         | Type::TruthyProjection(_)
-        | Type::FalsyProjection(_) => CoverageLevel::Untyped,
+        | Type::FalsyProjection(_)
+        | Type::DeferredSafeNavigation(..) => CoverageLevel::Untyped,
         Type::ParamRef(_) | Type::KeywordParamRef(_) => {
             if method_context.is_some() {
                 CoverageLevel::Untyped

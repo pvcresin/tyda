@@ -66,6 +66,16 @@ impl TypeRegistry {
                     }
                 }
             }
+            IncluderBoundDsl::ActiveRecordEnumAttribute { name, loc } => {
+                if self.inherits_any(includer, &["ActiveRecord::Base", "ApplicationRecord"]) {
+                    self.add_enum_reader(includer, name, *loc);
+                }
+            }
+            IncluderBoundDsl::ActiveRecordSerializedAttribute { name, ty, loc } => {
+                if self.inherits_any(includer, &["ActiveRecord::Base", "ApplicationRecord"]) {
+                    self.register_typed_attribute_accessors(includer, name, ty.clone(), *loc, true);
+                }
+            }
             IncluderBoundDsl::ActiveRecordEnumStatuses { name, loc } => {
                 if self.inherits_any(includer, &["ActiveRecord::Base", "ApplicationRecord"]) {
                     self.add_simple_singleton_reader(
@@ -76,6 +86,89 @@ impl TypeRegistry {
                     );
                 }
             }
+        }
+    }
+
+    fn register_typed_attribute_accessors(
+        &mut self,
+        class_name: &str,
+        attr_name: &str,
+        ty: Type,
+        loc: SourceLocation,
+        preserve_explicit_methods: bool,
+    ) {
+        let getter_is_explicit = preserve_explicit_methods
+            && self
+                .lookup_method_def(class_name, attr_name, false)
+                .is_some_and(|method| {
+                    !method.synthetic_dsl_source
+                        && (method.rbs_file_source
+                            || method.rbs_inline_annotated
+                            || method.sig_annotated
+                            || !method.rbs_annotated)
+                });
+        if self.has_method_variant(class_name, attr_name, false) && !getter_is_explicit {
+            self.update_instance_method_return_type(class_name, attr_name, ty.clone());
+        } else if !getter_is_explicit {
+            self.add_method_def(
+                class_name,
+                MethodDef {
+                    name: Sym::new(attr_name),
+                    param_infos: Vec::new(),
+                    raw_return_type: ty.clone(),
+                    sorbet_modifier_comments: Vec::new(),
+                    rbs_annotated: true,
+                    rbs_inline_annotated: false,
+                    sig_annotated: false,
+                    attr_ivar: Some(format!("@{attr_name}")),
+                    is_singleton: false,
+                    rbs_file_source: false,
+                    synthetic_dsl_source: false,
+                    rbs_method_types: Default::default(),
+                    extra_overloads: Vec::new(),
+                    loc: Some(loc),
+                },
+            );
+        }
+
+        let setter_name = format!("{attr_name}=");
+        let setter_is_explicit = preserve_explicit_methods
+            && self
+                .lookup_method_def(class_name, &setter_name, false)
+                .is_some_and(|method| {
+                    !method.synthetic_dsl_source
+                        && (method.rbs_file_source
+                            || method.rbs_inline_annotated
+                            || method.sig_annotated
+                            || !method.rbs_annotated)
+                });
+        if self.has_method_variant(class_name, &setter_name, false) && !setter_is_explicit {
+            self.update_instance_method_return_type(class_name, &setter_name, ty.clone());
+            self.update_method_param_default_type(class_name, &setter_name, 0, ty);
+        } else if !setter_is_explicit {
+            self.add_method_def(
+                class_name,
+                MethodDef {
+                    name: Sym::new(setter_name),
+                    param_infos: vec![ParamInfo {
+                        name: attr_name.to_string(),
+                        kind: ParamKind::Required,
+                        default_type: Some(ty.clone()),
+                    }],
+                    raw_return_type: ty,
+                    sorbet_modifier_comments: Vec::new(),
+                    rbs_annotated: true,
+                    rbs_inline_annotated: false,
+                    sig_annotated: false,
+                    attr_ivar: Some(format!("@{attr_name}")),
+                    is_singleton: false,
+                    rbs_file_source: false,
+                    synthetic_dsl_source: false,
+                    rbs_method_types: Default::default(),
+                    extra_overloads: Vec::new(),
+                    loc: Some(loc),
+                },
+            );
         }
     }
 
@@ -133,6 +226,28 @@ impl TypeRegistry {
                 is_singleton: false,
                 rbs_file_source: false,
                 synthetic_dsl_source: false,
+                rbs_method_types: Default::default(),
+                extra_overloads: Vec::new(),
+                loc: Some(loc),
+            },
+        );
+    }
+
+    fn add_enum_reader(&mut self, class_name: &str, name: &str, loc: SourceLocation) {
+        self.add_method_def_overriding_synthetic_if_missing(
+            class_name,
+            MethodDef {
+                name: Sym::new(name),
+                param_infos: Vec::new(),
+                raw_return_type: Type::String,
+                sorbet_modifier_comments: Vec::new(),
+                rbs_annotated: false,
+                rbs_inline_annotated: false,
+                sig_annotated: false,
+                attr_ivar: None,
+                is_singleton: false,
+                rbs_file_source: false,
+                synthetic_dsl_source: true,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),

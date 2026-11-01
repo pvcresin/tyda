@@ -105,6 +105,7 @@ pub enum Type {
     PatternKeyRef(Box<Type>, Box<RecordKey>),
     PatternKeyRestRef(Box<Type>, Box<[RecordKey]>),
     ReceiverMethodRef(Box<Type>, Sym),
+    DeferredSafeNavigation(Box<Type>, Box<Type>),
     SelfType,
     // At a call site this resolves to the receiver; when rendering a declaration, it resolves to an instance of the owner.
     InstanceType,
@@ -168,6 +169,9 @@ impl Type {
                     + keys.iter().map(RecordKey::deep_extra_bytes).sum::<usize>()
             }
             Type::ReceiverMethodRef(receiver, _) => SLOT + receiver.deep_extra_bytes(),
+            Type::DeferredSafeNavigation(receiver, result) => {
+                SLOT + receiver.deep_extra_bytes() + result.deep_extra_bytes()
+            }
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 SLOT + inner.deep_extra_bytes()
             }
@@ -191,6 +195,7 @@ impl Type {
             }
             Type::MethodReturnRef(..)
             | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..)
             | Type::ParamRef(..)
             | Type::KeywordParamRef(..)
             | Type::IvarRef(..)
@@ -217,6 +222,7 @@ impl Type {
             }
             Type::MethodReturnRef(..)
             | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..)
             | Type::ParamRef(..)
             | Type::KeywordParamRef(..)
             | Type::IvarRef(..)
@@ -224,6 +230,60 @@ impl Type {
             Type::TruthyProjection(_) => None,
             Type::FalsyProjection(_) => Some(ty.clone()),
             _ => None,
+        }
+    }
+
+    pub(crate) fn contains_deferred_receiver_ref(ty: &Type) -> bool {
+        match ty {
+            Type::ParamRef(_)
+            | Type::KeywordParamRef(_)
+            | Type::MethodReturnRef(..)
+            | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..)
+            | Type::BlockReturnRef
+            | Type::IvarRef(_)
+            | Type::GlobalVariableRef(_) => true,
+            Type::Union(parts) | Type::Intersection(parts) => {
+                parts.iter().any(Self::contains_deferred_receiver_ref)
+            }
+            Type::TruthyProjection(subject) | Type::FalsyProjection(subject) => {
+                Self::contains_deferred_receiver_ref(subject)
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn receiver_type_may_be_unknown(ty: &Type) -> bool {
+        match ty {
+            Type::Untyped | Type::Todo | Type::Top => true,
+            Type::Union(parts) | Type::Intersection(parts) => {
+                parts.iter().any(Self::receiver_type_may_be_unknown)
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn contains_nil(ty: &Type) -> bool {
+        match ty {
+            Type::Nil => true,
+            Type::Union(parts) => parts.iter().any(Self::contains_nil),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn resolve_deferred_safe_navigation(receiver: Type, result: Type) -> Type {
+        if Self::contains_deferred_receiver_ref(&receiver) {
+            Self::DeferredSafeNavigation(Box::new(receiver), Box::new(result))
+        } else if receiver == Self::Nil {
+            Self::Nil
+        } else if Self::receiver_type_may_be_unknown(&receiver) || Self::contains_nil(&receiver) {
+            if result == Self::Untyped {
+                Self::Untyped
+            } else {
+                Self::from_type_vec_preserve_untyped(vec![result, Self::Nil])
+            }
+        } else {
+            result
         }
     }
 }
@@ -279,6 +339,9 @@ impl PartialEq for Type {
             }
             (Type::ReceiverMethodRef(t1, m1), Type::ReceiverMethodRef(t2, m2)) => {
                 t1 == t2 && m1 == m2
+            }
+            (Type::DeferredSafeNavigation(r1, v1), Type::DeferredSafeNavigation(r2, v2)) => {
+                r1 == r2 && v1 == v2
             }
             (Type::TruthyProjection(t1), Type::TruthyProjection(t2))
             | (Type::FalsyProjection(t1), Type::FalsyProjection(t2)) => t1 == t2,
@@ -347,6 +410,10 @@ impl std::hash::Hash for Type {
             Type::ReceiverMethodRef(t, m) => {
                 t.hash(state);
                 m.hash(state);
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                receiver.hash(state);
+                result.hash(state);
             }
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => inner.hash(state),
             Type::Proc {
@@ -418,6 +485,7 @@ impl Type {
             Type::PatternKeyRef(_, _) => 28,
             Type::PatternKeyRestRef(_, _) => 29,
             Type::ReceiverMethodRef(_, _) => 30,
+            Type::DeferredSafeNavigation(_, _) => 42,
             Type::TruthyProjection(_) => 40,
             Type::FalsyProjection(_) => 41,
             Type::SelfType => 31,
@@ -476,6 +544,9 @@ impl Type {
             (Type::ReceiverMethodRef(t1, m1), Type::ReceiverMethodRef(t2, m2)) => {
                 t1.cmp(t2).then(m1.cmp(m2))
             }
+            (Type::DeferredSafeNavigation(r1, v1), Type::DeferredSafeNavigation(r2, v2)) => {
+                r1.cmp(r2).then(v1.cmp(v2))
+            }
             (Type::TruthyProjection(t1), Type::TruthyProjection(t2))
             | (Type::FalsyProjection(t1), Type::FalsyProjection(t2)) => t1.cmp(t2),
             (
@@ -503,12 +574,19 @@ impl Type {
     pub(crate) fn replace_self_type(&self, self_type: &Type) -> Type {
         match self {
             Type::SelfType => self_type.clone(),
-            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
-                parts
+            Type::Union(parts) => {
+                let preserve_short_circuit_array_shape =
+                    Self::is_short_circuit_array_shape_union(self);
+                let replaced: Vec<Type> = parts
                     .iter()
                     .map(|part| part.replace_self_type(self_type))
-                    .collect(),
-            ),
+                    .collect();
+                if preserve_short_circuit_array_shape && !replaced.contains(&Type::Untyped) {
+                    Self::from_type_vec_preserve_short_circuit_array_shape(replaced)
+                } else {
+                    Self::from_type_vec_preserve_untyped(replaced)
+                }
+            }
             Type::Intersection(parts) => Type::Intersection(
                 parts
                     .iter()
@@ -551,6 +629,10 @@ impl Type {
             Type::FalsyProjection(inner) => {
                 Type::FalsyProjection(Box::new(inner.replace_self_type(self_type)))
             }
+            Type::DeferredSafeNavigation(receiver, result) => Type::DeferredSafeNavigation(
+                Box::new(receiver.replace_self_type(self_type)),
+                Box::new(result.replace_self_type(self_type)),
+            ),
             Type::Tuple(types) => Type::Tuple(
                 types
                     .iter()
@@ -584,6 +666,9 @@ impl Type {
             Type::Record(fields) => fields.iter().any(|f| f.value.contains_instance_type()),
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 inner.contains_instance_type()
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                receiver.contains_instance_type() || result.contains_instance_type()
             }
             Type::Proc { return_type, .. } => return_type.contains_instance_type(),
             _ => false,
@@ -641,6 +726,10 @@ impl Type {
             Type::FalsyProjection(inner) => {
                 Type::FalsyProjection(Box::new(inner.replace_instance_type(instance_type)))
             }
+            Type::DeferredSafeNavigation(receiver, result) => Type::DeferredSafeNavigation(
+                Box::new(receiver.replace_instance_type(instance_type)),
+                Box::new(result.replace_instance_type(instance_type)),
+            ),
             Type::Tuple(types) => Type::Tuple(
                 types
                     .iter()
@@ -686,7 +775,7 @@ impl Type {
             return Type::Untyped;
         }
 
-        let types = Self::merge_array_union(parts);
+        let types = Self::merge_array_union(parts, false);
         let types = Self::subsume_literals(types);
         match types.len() {
             0 => Type::Untyped,
@@ -733,7 +822,7 @@ impl Type {
             .collect()
     }
 
-    fn merge_array_union(types: Vec<Type>) -> Vec<Type> {
+    fn merge_array_union(types: Vec<Type>, preserve_short_circuit_empty_tuple: bool) -> Vec<Type> {
         let mut array_like: Vec<Type> = Vec::new();
         let mut others: Vec<Type> = Vec::new();
         for t in types {
@@ -746,14 +835,22 @@ impl Type {
         if array_like.len() > 1 {
             let all_tuples = array_like.iter().all(|t| matches!(t, Type::Tuple(_)));
             let keep_tuple_union = all_tuples && {
-                let mut lens = array_like.iter().filter_map(|t| match t {
-                    Type::Tuple(elems) => Some(elems.len()),
-                    _ => None,
-                });
-                match lens.next() {
-                    Some(len) if len > 0 => lens.all(|other| other == len),
-                    _ => false,
-                }
+                let lengths: Vec<_> = array_like
+                    .iter()
+                    .filter_map(|ty| match ty {
+                        Type::Tuple(elems) => Some(elems.len()),
+                        _ => None,
+                    })
+                    .collect();
+                let nonempty_length = lengths.iter().copied().find(|len| *len > 0);
+                let same_nonempty_length = nonempty_length
+                    .is_some_and(|length| lengths.iter().all(|other| *other == length));
+                same_nonempty_length
+                    || (preserve_short_circuit_empty_tuple
+                        && lengths.contains(&0)
+                        && nonempty_length.is_some_and(|length| {
+                            lengths.iter().all(|other| *other == 0 || *other == length)
+                        }))
             };
             if keep_tuple_union {
                 others.extend(array_like);
@@ -856,7 +953,7 @@ impl Type {
             parts.retain(|ty| *ty != Type::Bot);
         }
 
-        let result = Self::merge_array_union(parts);
+        let result = Self::merge_array_union(parts, false);
         let result = Self::subsume_literals(result);
         match result.len() {
             0 => Type::Untyped,
@@ -884,13 +981,75 @@ impl Type {
             parts.retain(|ty| *ty != Type::Bot);
         }
 
-        let result = Self::merge_array_union(parts);
+        let result = Self::merge_array_union(parts, false);
         let result = Self::subsume_literals(result);
         match result.len() {
             0 => Type::Untyped,
             1 => result.into_iter().next().unwrap(),
             _ => Type::Union(result),
         }
+    }
+
+    pub(crate) fn from_type_vec_preserve_short_circuit_array_shape(types: Vec<Type>) -> Type {
+        let mut parts = Vec::new();
+        for ty in types {
+            Self::collect_union_parts(ty, &mut parts);
+            if parts.len() > Self::UNION_DEDUP_FLUSH_LIMIT {
+                Self::sort_dedup_parts(&mut parts);
+                if parts.len() > Self::UNION_CARDINALITY_LIMIT {
+                    return Type::Untyped;
+                }
+            }
+        }
+        Self::sort_dedup_parts(&mut parts);
+        if parts.len() > Self::UNION_CARDINALITY_LIMIT {
+            return Type::Untyped;
+        }
+        if parts.len() > 1 {
+            parts.retain(|ty| *ty != Type::Bot);
+        }
+
+        let result = Self::merge_array_union(parts, true);
+        let result = Self::subsume_literals(result);
+        match result.len() {
+            0 => Type::Untyped,
+            1 => result.into_iter().next().unwrap(),
+            _ => Type::Union(result),
+        }
+    }
+
+    pub(crate) fn is_short_circuit_array_shape_union(ty: &Type) -> bool {
+        let Type::Union(parts) = ty else {
+            return false;
+        };
+        let mut has_empty_tuple = false;
+        let mut has_literal_element = false;
+        let mut nonempty_length = None;
+        for part in parts {
+            match part {
+                Type::Tuple(elements) if elements.is_empty() => has_empty_tuple = true,
+                Type::Tuple(elements) => {
+                    has_literal_element |= elements.iter().any(|element| {
+                        matches!(
+                            element,
+                            Type::LiteralInteger(_)
+                                | Type::LiteralFloat(_)
+                                | Type::LiteralString(_)
+                                | Type::LiteralSymbol(_)
+                                | Type::True
+                                | Type::False
+                        )
+                    });
+                    if nonempty_length.is_some_and(|length| length != elements.len()) {
+                        return false;
+                    }
+                    nonempty_length = Some(elements.len());
+                }
+                Type::Array(Some(_)) => return false,
+                _ => {}
+            }
+        }
+        has_empty_tuple && nonempty_length.is_some() && has_literal_element
     }
 
     pub fn widen_tuple_to_array(self) -> Type {
@@ -1168,6 +1327,7 @@ impl fmt::Display for Type {
             Type::PatternKeyRef(_, _) => write!(f, "untyped"),
             Type::PatternKeyRestRef(_, _) => write!(f, "untyped"),
             Type::ReceiverMethodRef(_, _) => write!(f, "untyped"),
+            Type::DeferredSafeNavigation(_, _) => write!(f, "untyped"),
             Type::TruthyProjection(_) | Type::FalsyProjection(_) => write!(f, "untyped"),
             Type::SelfType => write!(f, "self"),
             Type::InstanceType => write!(f, "instance"),

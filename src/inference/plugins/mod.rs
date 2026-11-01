@@ -676,6 +676,16 @@ impl<'e, 'src> PluginCx<'e, 'src> {
             .collect_attribute_dsl(class_name, call_node, parse_result);
     }
 
+    pub(in crate::inference) fn collect_serialized_attribute_dsl(
+        &mut self,
+        class_name: &str,
+        call_node: &CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+    ) {
+        self.engine
+            .collect_serialized_attribute_dsl(class_name, call_node, parse_result);
+    }
+
     pub(in crate::inference) fn collect_attributes_dsl(
         &mut self,
         class_name: &str,

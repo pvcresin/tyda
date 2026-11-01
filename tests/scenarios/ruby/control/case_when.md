@@ -368,10 +368,6 @@ end
 
 ## Use pattern match captured local in return
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -749,10 +745,6 @@ end
 
 ## class case preserves the local subject after a later Module equality override
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -819,5 +811,247 @@ end
 
 class Object < BasicObject
   def module_override_unknown_case: (untyped value) -> (untyped | "other")
+end
+```
+
+## class case avoids narrowing after an aliased Module equality override
+
+### update
+
+```ruby
+class Module
+  def match_any?(_value) = true
+  alias_method :===, :match_any?
+end
+
+def aliased_module_equality_case(value)
+  case value
+  when String
+    value
+  else
+    :other
+  end
+end
+
+aliased_module_equality_case(1)
+```
+
+### result
+
+```rbs
+class Module
+  def match_any?: (untyped _value) -> true
+  alias === match_any?
+end
+
+class Object < BasicObject
+  def aliased_module_equality_case: (Integer value) -> (Integer | :other)
+end
+```
+
+## class case replay follows a custom false equality result
+
+### update
+
+```ruby
+def module_override_concrete_case(value)
+  case value
+  when Integer
+    :matched
+  else
+    :other
+  end
+end
+
+module Module
+  def ===(_value)
+    false
+  end
+end
+
+module_override_concrete_case(42)
+```
+
+### result
+
+```rbs
+module Module
+  def ===: (untyped other) -> bool
+end
+
+class Object < BasicObject
+  def module_override_concrete_case: (Integer value) -> (:matched | :other)
+end
+```
+
+## class case narrows method parameter receivers
+
+```ruby
+class Group
+  def group_name = "group"
+end
+
+class User
+  def email = "user"
+end
+
+class ParticipableService
+  def participant_as_hash(participant)
+    case participant
+    when User
+      { email: participant.email }
+    when Group
+      { name: participant.group_name }
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Group
+  def group_name: -> "group"
+end
+
+class ParticipableService
+  def participant_as_hash: (untyped participant) -> ({ email: "user" } | { name: "group" })?
+end
+
+class User
+  def email: -> "user"
+end
+```
+
+## A qualified class case keeps its namespace
+
+### update
+
+```ruby
+module Accounts
+  class User
+    def account_id = 1
+  end
+end
+
+class User
+  def display_name = "top-level"
+end
+
+def read_account(value)
+  case value
+  when Accounts::User
+    value.account_id
+  else
+    :other
+  end
+end
+```
+
+### result
+
+```rbs
+class Accounts::User
+  def account_id: -> 1
+end
+
+class Object < BasicObject
+  def read_account: (untyped value) -> (1 | :other)
+end
+
+class User
+  def display_name: -> "top-level"
+end
+```
+
+## Narrow a memoized receiver in a class case
+
+```ruby
+class ClusterCaseProject
+  def id = "project"
+end
+
+class ClusterCaseGroup
+  def id = 1
+end
+
+class ClusterCaseService
+  def clusterable = @clusterable ||= nil
+
+  def lookup
+    case clusterable
+    when ClusterCaseProject
+      clusterable.id
+    when ClusterCaseGroup
+      clusterable.id
+    else
+      :other
+    end
+  end
+end
+```
+
+```rbs
+class ClusterCaseService
+  def clusterable: () -> (ClusterCaseProject | ClusterCaseGroup | nil)
+end
+```
+
+### result
+
+```rbs
+class ClusterCaseGroup
+  def id: -> 1
+end
+
+class ClusterCaseProject
+  def id: -> "project"
+end
+
+class ClusterCaseService
+  def clusterable: -> (ClusterCaseGroup | ClusterCaseProject)?
+  def lookup: -> 1 | "project" | :other
+end
+```
+
+## A class object does not match itself as an instance
+
+### update
+
+```ruby
+class User
+  def id = 1
+end
+
+def class_object_case
+  klass = User
+
+  case klass
+  when User
+    :matched
+  else
+    :other
+  end
+end
+
+def class_object_value = User
+
+def class_object_local_value
+  klass = User
+  klass
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def class_object_case: -> :other
+  def class_object_value: -> singleton(User)
+  def class_object_local_value: -> singleton(User)
+end
+
+class User
+  def id: -> 1
 end
 ```

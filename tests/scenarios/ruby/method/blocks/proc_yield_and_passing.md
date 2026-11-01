@@ -426,10 +426,6 @@ end
 
 ## Method object to_proc forwards a callback block
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

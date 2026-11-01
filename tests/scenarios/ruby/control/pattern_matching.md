@@ -156,10 +156,6 @@ end
 
 ## Keep type with right assignment pattern
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -184,10 +180,6 @@ end
 ```
 
 ## Use array pattern as condition
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -259,10 +251,6 @@ end
 
 ## Use numeric literal pattern as condition
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -294,10 +282,6 @@ end
 
 ## Use string and symbol literal pattern as condition
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -327,7 +311,7 @@ check_text(:AAA)
 ```rbs
 class Object < BasicObject
   def check_interpolation: (untyped x) -> nil
-  def check_text: (Symbol x) -> (:interpolated_symbol | :zzz)
+  def check_text: (Symbol x) -> (:interpolated_symbol | :symbol | :zzz)
 end
 ```
 
@@ -501,10 +485,6 @@ end
 ```
 
 ## Use find pattern as condition
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -851,10 +831,6 @@ end
 
 ## Include failed predicate paths in captured locals
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -905,10 +881,6 @@ class PatternMatchExpressionBindings
   def assigned_hash(value)
     matched = (value in { payload: Integer => payload })
     payload
-  end
-
-  def parenthesized_ternary(value)
-    (value in [Integer => number]) ? number : nil
   end
 
   def short_circuit_and(value)
@@ -964,23 +936,6 @@ class PatternMatchExpressionBindings
     end
   end
 
-  def capture_after_case_match(value)
-    case value
-    in Integer => number
-      :matched
-    end
-    number
-  end
-
-  def capture_in_case_else(value)
-    case value
-    in Integer => number
-      :matched
-    else
-      number
-    end
-  end
-
   def capture_in_statically_matched_guard_else
     value = -1
     case value
@@ -989,25 +944,6 @@ class PatternMatchExpressionBindings
     else
       number
     end
-  end
-
-  def case_match_preserves_existing(value)
-    number = :before
-    case value
-    in Integer => number
-      :matched
-    end
-    number
-  end
-
-  def capture_after_case_alternatives(value)
-    case value
-    in Integer => integer
-      :integer
-    in String => string
-      :string
-    end
-    [integer, string]
   end
 
   def parenthesized_local_assignment
@@ -1035,7 +971,6 @@ end
 class PatternMatchExpressionBindings
   def assigned: (untyped value) -> Integer?
   def assigned_hash: (untyped value) -> Integer?
-  def parenthesized_ternary: (untyped value) -> Integer?
   def short_circuit_and: (untyped value) -> (Integer | false)
   def negated_else: (untyped value) -> Integer?
   def and_condition: (untyped value, untyped flag) -> Integer?
@@ -1045,14 +980,70 @@ class PatternMatchExpressionBindings
   def short_circuit_or: (untyped value) -> Integer?
   def short_circuit_or_rhs: (untyped value, untyped flag) -> Integer?
   def capture_in_or_condition: (untyped value, untyped flag) -> Integer?
-  def capture_after_case_match: (untyped value) -> Integer
-  def capture_in_case_else: (untyped value) -> :matched?
   def capture_in_statically_matched_guard_else: -> -1
-  def case_match_preserves_existing: (untyped value) -> Integer
-  def capture_after_case_alternatives: (untyped value) -> ([Integer, nil] | [nil, String])
   def parenthesized_local_assignment: -> 1
   def assignment_preserves_existing: (untyped value) -> (Integer | :before)
   def assignment_keeps_statically_matched_literal: -> "x"
+end
+```
+
+## Preserve captures across successful case patterns
+
+### update
+
+```ruby
+class PatternMatchExpressionBindings
+  def parenthesized_ternary(value)
+    (value in [Integer => number]) ? number : nil
+  end
+
+  def capture_after_case_match(value)
+    case value
+    in Integer => number
+      :matched
+    end
+    number
+  end
+
+  def capture_in_case_else(value)
+    case value
+    in Integer => number
+      :matched
+    else
+      number
+    end
+  end
+
+  def case_match_preserves_existing(value)
+    number = :before
+    case value
+    in Integer => number
+      :matched
+    end
+    number
+  end
+
+  def capture_after_case_alternatives(value)
+    case value
+    in Integer => integer
+      :integer
+    in String => string
+      :string
+    end
+    [integer, string]
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchExpressionBindings
+  def parenthesized_ternary: (untyped value) -> Integer?
+  def capture_after_case_match: (untyped value) -> Integer
+  def capture_in_case_else: (untyped value) -> :matched?
+  def case_match_preserves_existing: (untyped value) -> Integer
+  def capture_after_case_alternatives: (untyped value) -> ([Integer, nil] | [nil, String])
 end
 ```
 

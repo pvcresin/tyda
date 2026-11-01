@@ -4,6 +4,8 @@ use crate::project::DslLibrary;
 use crate::types::{Sym, Type};
 use ruby_prism::{CallNode, ParseResult};
 
+const TAG_BUILDER: &str = "ActionView::Helpers::TagHelper::TagBuilder";
+
 const CLASS_BODY_METHODS: &[&str] = &[
     "helper_method",
     "before_action",
@@ -159,6 +161,10 @@ pub(in crate::inference) fn synthetic_method_return(
     let Type::Class(class_name) = receiver_type else {
         return None;
     };
+    if class_name.as_str() == TAG_BUILDER && engine.dsl_enabled(DslLibrary::ActionControllerHelpers)
+    {
+        return Some(Type::String);
+    }
     if class_name.as_str() == "ActionDispatch::Response" {
         if !engine.dsl_enabled(DslLibrary::ActionControllerHelpers) {
             return None;
@@ -203,8 +209,8 @@ pub(in crate::inference) fn synthetic_method_return(
         "stale?" => Type::Bool,
         // Authorization predicates (CanCan / policy frameworks mix these in).
         "can?" | "cannot?" => Type::Bool,
+        "tag" => Type::Class(Sym::new(TAG_BUILDER)),
         "content_tag"
-        | "tag"
         | "link_to"
         | "button_to"
         | "image_tag"

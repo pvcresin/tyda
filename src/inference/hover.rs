@@ -214,6 +214,7 @@ impl<'a> InferenceEngine<'a> {
                 | Type::GlobalVariableRef(_)
                 | Type::MethodReturnRef(_, _)
                 | Type::ReceiverMethodRef(_, _)
+                | Type::DeferredSafeNavigation(_, _)
                 | Type::TruthyProjection(_)
                 | Type::FalsyProjection(_)
         )
@@ -229,6 +230,8 @@ impl<'a> InferenceEngine<'a> {
         let mut ancestor_complete_cache: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
         let mut union_surface_cache: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+        let mut method_exists_cache: std::collections::HashMap<(Type, String), bool> =
             std::collections::HashMap::new();
         for snap in snapshots {
             if snap.start >= snap.end {
@@ -289,14 +292,17 @@ impl<'a> InferenceEngine<'a> {
             let method_exists_on_resolved_receiver = resolved_receiver
                 .as_ref()
                 .and_then(|receiver| {
-                    TypeRegistry::type_to_class_name_pub(receiver).map(|class| {
-                        self.resolve_hover_method_return_opt(
-                            &class,
-                            &snap.name,
-                            matches!(receiver, Type::Singleton(_)),
+                    self.type_to_class_name(receiver)?;
+                    let key = (receiver.clone(), snap.name.clone());
+                    Some(*method_exists_cache.entry(key).or_insert_with(|| {
+                        let resolved = self.resolve_method_on_type(receiver, &snap.name);
+                        !matches!(
+                            resolved,
+                            Type::ReceiverMethodRef(resolved_receiver, method)
+                                if resolved_receiver.as_ref() == receiver
+                                    && method.as_str() == snap.name
                         )
-                        .is_some()
-                    })
+                    }))
                 })
                 .unwrap_or(false);
             if method_exists_on_resolved_receiver {
@@ -1472,6 +1478,19 @@ impl<'a> InferenceEngine<'a> {
             if !member_lacks_method {
                 continue;
             }
+            let prefer_singleton = matches!(member, Type::Singleton(_));
+            let method_is_registered = self
+                .registry
+                .lookup_method_return_type_with_hint(&class, &snap.name, prefer_singleton)
+                .is_some()
+                || self.external_rbs.is_some_and(|registry| {
+                    registry
+                        .lookup_method_return_type_via_including_classes(&class, &snap.name)
+                        .is_some()
+                });
+            if method_is_registered {
+                continue;
+            }
             let unresolved_method = format!("{class}#{}", snap.name);
             if Self::is_known_class_body_dsl_unresolved_call(snap, &unresolved_method)
                 || self.module_call_resolvable_via_includers(&unresolved_method, &snap.name)
@@ -2497,6 +2516,7 @@ impl<'a> InferenceEngine<'a> {
                 | Type::IvarRef(_)
                 | Type::MethodReturnRef(_, _)
                 | Type::ReceiverMethodRef(_, _)
+                | Type::DeferredSafeNavigation(_, _)
                 | Type::BlockReturnRef
                 | Type::PatternIndexRef(_, _)
                 | Type::PatternRestRef(_)
@@ -3370,6 +3390,7 @@ impl<'a> InferenceEngine<'a> {
                 };
                 Some(format!("{owner}#{method}"))
             }
+            Type::DeferredSafeNavigation(_, result) => Self::describe_unresolved_ref(result),
             _ => None,
         }
     }
@@ -3648,6 +3669,13 @@ impl<'a> InferenceEngine<'a> {
                     Type::Untyped
                 }
             }
+            Type::DeferredSafeNavigation(receiver_type, result_type) => {
+                let resolved_receiver =
+                    self.resolve_type_for_hover(receiver_type, class_context, method_context);
+                let resolved_result =
+                    self.resolve_type_for_hover(result_type, class_context, method_context);
+                Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
+            }
             Type::Union(parts) => {
                 let resolved: Vec<Type> = parts
                     .iter()
@@ -3840,6 +3868,7 @@ impl<'a> InferenceEngine<'a> {
                 self.resolve_hover_method_return_opt(&receiver_class, method, prefer_singleton)
                     .is_some()
             }
+            Type::DeferredSafeNavigation(_, result) => self.method_call_is_discoverable(result),
             _ => false,
         }
     }
@@ -5366,6 +5395,70 @@ mod arg_compat_tests {
 
     fn engine() -> InferenceEngine<'static> {
         InferenceEngine::new()
+    }
+
+    #[test]
+    fn registered_alias_is_not_reported_missing_on_union_receiver() {
+        let mut e = engine();
+        let receiver = Type::Class(Sym::new("FollowRequest"));
+        e.registry.mark_user_defined("FollowRequest");
+        e.registry.add_method_def(
+            "FollowRequest",
+            crate::registry::MethodDef {
+                name: Sym::new("reject!"),
+                param_infos: Vec::new(),
+                raw_return_type: Type::MethodReturnRef(
+                    Sym::new("FollowRequest"),
+                    Sym::new("destroy!"),
+                ),
+                sorbet_modifier_comments: Vec::new(),
+                rbs_annotated: false,
+                rbs_inline_annotated: false,
+                sig_annotated: false,
+                attr_ivar: None,
+                is_singleton: false,
+                rbs_file_source: false,
+                synthetic_dsl_source: false,
+                rbs_method_types: Default::default(),
+                extra_overloads: Vec::new(),
+                loc: None,
+            },
+        );
+        e.registry.record_method_alias(
+            "FollowRequest",
+            "reject!".to_string(),
+            "destroy!".to_string(),
+            false,
+            None,
+        );
+        let maybe_receiver = Type::Union(vec![receiver.clone(), Type::Nil]);
+        for (start, name) in [(0, "reject!"), (20, "unknown!")] {
+            e.var_snapshots.push(HoverSnapshot {
+                start,
+                end: start + name.len(),
+                name: name.to_string(),
+                target: HoverTarget::MethodCall {
+                    receiver_type: maybe_receiver.clone(),
+                    result_type: Type::ReceiverMethodRef(
+                        Box::new(maybe_receiver.clone()),
+                        Sym::new(name),
+                    ),
+                    has_block: false,
+                    safe_navigation: true,
+                },
+                class_context: "FollowRequest".to_string(),
+                method_context: Some("process".to_string()),
+            });
+        }
+
+        let calls = e.unresolved_method_calls_for_snapshots();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.unresolved_method.as_str())
+                .collect::<Vec<_>>(),
+            ["FollowRequest#unknown!"]
+        );
     }
 
     fn opt(t: Type) -> Type {

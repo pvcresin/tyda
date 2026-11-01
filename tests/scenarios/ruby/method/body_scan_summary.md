@@ -145,7 +145,7 @@ end
 
 ```rbs
 class A
-  def foo: { (A) -> A } -> A?
+  def foo: ?{ (A) -> A } -> A?
   def bar: -> A?
 end
 ```

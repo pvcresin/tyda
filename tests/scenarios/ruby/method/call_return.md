@@ -104,7 +104,77 @@ class Checker
 end
 ```
 
-## Infer universal conversion methods on untyped receiver
+## Keep a known nil predicate on a union with an untyped member
+
+### update
+
+```ruby
+class UntypedUnionPredicate
+  #: (untyped flag) -> untyped
+  def dynamic_value(flag); end
+
+  def nil_predicate(flag)
+    value = flag ? "known" : dynamic_value(flag)
+    value.nil?
+  end
+
+  def value_type(flag)
+    value = flag ? "known" : dynamic_value(flag)
+    value
+  end
+
+  def unknown_predicate(flag)
+    value = flag ? "known" : dynamic_value(flag)
+    value.valid?
+  end
+end
+```
+
+### result
+
+```rbs
+class UntypedUnionPredicate
+  def dynamic_value: (untyped flag) -> untyped
+  def nil_predicate: (untyped flag) -> bool
+  def value_type: (untyped flag) -> (untyped | "known")
+  def unknown_predicate: (untyped flag) -> untyped
+end
+```
+
+## Keep source-defined nil predicates unknown on an untyped union
+
+### update
+
+```ruby
+class CustomNilPredicate
+  def nil? = :sentinel
+end
+
+class UntypedUnionOverride
+  #: () -> untyped
+  def dynamic_value; end
+
+  def nil_predicate(flag)
+    value = flag ? CustomNilPredicate.new : dynamic_value
+    value.nil?
+  end
+end
+```
+
+### result
+
+```rbs
+class CustomNilPredicate
+  def nil?: -> :sentinel
+end
+
+class UntypedUnionOverride
+  def dynamic_value: -> untyped
+  def nil_predicate: (untyped flag) -> untyped
+end
+```
+
+## Infer common conversion methods on untyped receiver
 
 ### update
 
@@ -125,9 +195,9 @@ end
 ```rbs
 class Conv
   def sym: (untyped x) -> Symbol
-  def len: (untyped x) -> Integer
-  def siz: (untyped x) -> Integer
-  def cnt: (untyped x) -> Integer
+  def len: (untyped x) -> untyped
+  def siz: (untyped x) -> untyped
+  def cnt: (untyped x) -> untyped
   def flt: (untyped x) -> Float
   def arr: (untyped x) -> Array
   def neg: (untyped x) -> bool
@@ -171,6 +241,64 @@ end
 
 class Object < BasicObject
   def unresolved_equality: (untyped x) -> untyped
+end
+```
+
+## Keep source-overridden conversions untyped on an unresolved receiver
+
+### update
+
+```ruby
+class CustomConversion
+  def to_s = :custom
+end
+
+def unresolved_to_string(value) = value.to_s
+```
+
+### result
+
+```rbs
+class CustomConversion
+  def to_s: -> :custom
+end
+
+class Object < BasicObject
+  def unresolved_to_string: (untyped value) -> untyped
+end
+```
+
+## Keep source-overridden date conversions untyped on an unresolved receiver
+
+### update
+
+```ruby
+class CustomDateConversion
+  def to_date = :custom
+end
+
+def unresolved_to_date(value) = value.to_date
+
+def custom_date_conversion_union(flag)
+  value = if flag
+    CustomDateConversion.new
+  else
+    "2024-01-01"
+  end
+  value.to_date
+end
+```
+
+### result
+
+```rbs
+class CustomDateConversion
+  def to_date: -> :custom
+end
+
+class Object < BasicObject
+  def unresolved_to_date: (untyped value) -> untyped
+  def custom_date_conversion_union: (untyped flag) -> (:custom | Date)
 end
 ```
 
@@ -327,5 +455,30 @@ end
 
 class Push < Base
   def initialize: -> void
+end
+```
+
+## Unknown count results stay untyped
+
+### update
+
+```ruby
+class UnknownBuilder
+  #: () -> untyped
+  def self.make; end
+end
+
+def unknown_count = UnknownBuilder.make.count
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def unknown_count: -> untyped
+end
+
+class UnknownBuilder
+  def self.make: -> untyped
 end
 ```

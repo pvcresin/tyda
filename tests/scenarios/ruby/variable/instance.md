@@ -469,3 +469,33 @@ class Object < BasicObject
   def foo: -> true
 end
 ```
+
+## Dynamic ivar names preserve name-value correlation
+
+### update
+
+```ruby
+class ReflectedAttributes
+  def initialize(flag)
+    @items = []
+    @name = "item"
+
+    ivar = flag ? :@items : :@name
+    value = flag ? [] : "item"
+    instance_variable_set(ivar, value)
+  end
+
+  def items = @items
+  def name = @name
+end
+```
+
+### result
+
+```rbs
+class ReflectedAttributes
+  def initialize: (untyped flag) -> void
+  def items: -> [ ]
+  def name: -> "item"
+end
+```

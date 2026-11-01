@@ -21,8 +21,8 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - class / module / method / mixin / constant / local / instance variable（LSP / Playground の定義・参照 hover を含む。宣言済み引数の定義位置も対象）
 - method dispatch、visibility、`super`、singleton method、refinement（`include` / `prepend` /
   `extend` の適用順を反映。静的に完全な `Module#ancestors` は順序付き `Tuple`。トップレベルの
-  local receiver も呼び出し時点の型で解決し、untyped receiver の真偽値fallbackはRBS Coreの標準契約にあるメソッドに限る。source methodで同じ名前が定義される場合は推測しない。`super(...)` の引数転送と method call の keyword splat から optional keyword 型を広げる。名前付き `**rest` は個別の keyword 引数を除いた caller record から推論し、動的な keyword hash でも標準 Hash API の key 型（`keys` は `Symbol`）を保つ。`obj[key] = value` は RHS を返し、`obj.[]=(...)` はメソッドの戻り値を保つ。`alias_method` は alias 元の keyword signature と戻り値参照を保持する）
-- block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（遅延解決された source method return を
+  local receiver も呼び出し時点の型で解決し、untyped receiver の真偽値fallbackはRBS Coreの標準契約にあるメソッドに限る。source methodで同じ名前が定義される場合は推測しない。`super(...)` の引数転送と method call の keyword splat から optional keyword 型を広げ、明示的な `super` に渡す `&block` には親 method の既知の block contract を反映する。名前付き `**rest` は個別の keyword 引数を除いた caller record から推論し、動的な keyword hash でも標準 Hash API の key 型（`keys` は `Symbol`）を保つ。`obj[key] = value` は RHS を返し、`obj.[]=(...)` はメソッドの戻り値を保つ。`alias_method` は alias 元の keyword signature と戻り値参照を保持する）
+- block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（同じdispatchのsource overrideがない `block_given?` / 安定した `&block` のガードとcall block内のyieldからrequirednessを推論し、明示RBSのblock契約を優先。`Enumerator::Lazy.new` は既知 enumerable source の要素型を block に渡し、yielder への送信型から出力要素型を推論。遅延解決された source method return を
   block dispatch 前に反映し、source method の yield 型に呼び出し引数を代入し、block signature にも positional / keyword method parameter の型を反映し、`&` で渡された Proc / lambda の戻り型にも yield 引数型を反映し、tuple の要素 union とリテラル演算を block 内へ伝播。既知の空配列に対する
   `map` / `collect` / `map!` は空の結果を保ち、source-defined `map` / `collect` override の戻り型を優先し、遅延 block return でも標準 `map` / `collect` の Array shape を維持し、
   単一要素配列リテラルを identity block で `map` / `collect` した場合も要素 shape を維持。source method の yield summary は early-exit guard と分岐内の local 代入を反映し、
@@ -30,8 +30,8 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
   index に反映し、単一 yield の複数 block 引数への destructuring も tuple / Array の形に沿って扱う。
   全経路で yield が保証される場合だけ本体が必ず実行されると扱い、そのblock末尾のnon-local `return` 後は呼び出し後の処理を到達不能とする。Array / Tuple の `sort_by(&:method)` は要素型を保つ。yield 型が不明な
   block 引数は `untyped` にする）
-- Array / Hash / Set / Tuple / Record の要素型と shape。unknown な値を `Kernel.Array` に渡した結果は `Array[untyped]` を保ち、unknown な添字の Array index は `untyped` を保つ。型引数のない `Hash` の iteration も key/value を別々の `untyped` block 引数として扱い、keyword-rest の caller record が持つ optional key を保持して `Hash#[]` の `nil` と `Hash#fetch` の fallback / block を反映する。Record の `Hash#fetch` / `Hash#fetch_values` は欠落キーと fallback を反映し、`Array#clear` の呼び出し結果は空 Tuple にし、instance variable の共有要素型は維持
-- if / case / rescue / safe navigation / pattern matching の flow narrowing。静的に到達不能な `if` 分岐は推論せず、結果が静的に決まる no-arg `empty?` による分岐も絞り、終了分岐の local を後続へ混ぜず、片側だけで代入された local は未代入経路の `nil` を含める。標準の `Class#===` による postfix の local 代入条件や、pure な no-arg ivar reader の再呼び出しも扱い、安定した primitive 型で分岐先を区別できる場合は、片側だけで初期化された local を含む相関も反映。標準RBSの `nil` / `true` / `false` literal pattern と class pattern は一致する型と残りの型を分け、source-defined case equality ではクラス型による絞り込みをしない。括弧で囲んだ pattern predicate の capture も true branch に反映。裸の `rescue => e` は静的に分かる `raise` / `fail` の StandardError subclass を反映し、不明な raise は `StandardError` にする。ASCII の単純な literal regex と literal string の `=~` は分岐を絞り、option / metacharacter / 複数capture / 動的な文字列は unknown にする。optional parameter の default だけが確定している場合は参照を早期解決せず、snapshot replay で parameter / method return / variable reference を解決してから truthy / falsy projection を適用する。truthy 条件が `bot` になる receiver は missing-method 診断の対象にしない
+- Array / Hash / Set / Tuple / Record の要素型と shape。unknown な値を `Kernel.Array` に渡した結果は `Array[untyped]` を保ち、unknown な添字の Array index は `untyped` を保つ。型引数のない `Hash` の iteration も key/value を別々の `untyped` block 引数として扱い、keyword-rest の caller record が持つ optional key を保持して `Hash#[]` の `nil` と `Hash#fetch` の fallback / block を反映する。`Hash#delete` は既知のvalue型に `nil` を加え、value型がunknownなら `nil` だけに誤縮退しない。Record の `Hash#fetch` / `Hash#fetch_values` は欠落キーと fallback を反映し、`Array#clear` の呼び出し結果は空 Tuple にし、instance variable の共有要素型は維持
+- if / case / rescue / safe navigation / pattern matching の flow narrowing。静的に到達不能な `if` 分岐は推論せず、結果が静的に決まる no-arg `empty?` による分岐も絞り、終了分岐の local を後続へ混ぜず、片側だけで代入された local は未代入経路の `nil` を含める。標準の `Class#===` による postfix の local 代入条件や、pure な no-arg ivar reader の再呼び出しも扱い、安定した primitive 型で分岐先を区別できる場合は、片側だけで初期化された local を含む相関も反映。標準RBSの `nil` / `true` / `false` literal pattern と class pattern は一致する型と残りの型を分け、source-defined case equality ではクラス型による絞り込みをしない。閉じた型の rightward assignment は成功後の subject local を一致型へ絞る。括弧で囲んだ pattern predicate の capture も true branch に反映。裸の `rescue => e` は静的に分かる `raise` / `fail` の StandardError subclass を反映し、不明な raise は `StandardError` にする。ASCII の単純な literal regex と literal string の `=~` は分岐を絞り、option / metacharacter / 複数capture / 動的な文字列は unknown にする。optional parameter の default だけが確定している場合は参照を早期解決せず、snapshot replay で parameter / method return / variable reference を解決してから truthy / falsy projection を適用する。truthy 条件が `bot` になる receiver は missing-method 診断の対象にしない
 - 多重代入、右辺型を使った RBS operator overload の選択と source-defined operator を優先する operator-write、method 内の instance variable 再代入、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播
 - 静的に名前を求められる `alias` / `define_method` / `attr_*`（生成 writer の戻り値は引数型に一致し、代入値は対応する reader にも反映） /
@@ -115,8 +115,11 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 個別 gem の一覧をこの文書に重複して持たない。
 
 - schema / `attribute` / relation から model の型を補う
-- Concern、association、scope、enum（plural map method を含む）、delegate などの静的な DSL を展開する。`structure.sql` の外部キー先は明示的な `self.table_name` も参照する
+- Concern、association、scope、enum（plural map method、文字列キーを返すreader、静的に読めるHash/Array/`HashWithIndifferentAccess.new`定数mappingを含む）、delegate などの静的な DSL を展開する。`structure.sql` の外部キー先は明示的な `self.table_name` も参照する
+- `serialize` は `type:` がある場合だけその型を使い、型指定のないserialized attributeは `untyped` として扱う。明示されたsource/RBS methodの型は保持する
+- ActionController の `tag` helper は、引数なしでは `TagBuilder`、生成したタグ名の呼び出しでは `String` として推論する
 - ActiveRecord の `find` は単一 ID、ID 配列、複数 ID の overload とモデル／配列の戻り値を出力する
+- ActiveRecord relation と association proxy の `count` / `size` / `length` は `Integer` を返す
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
 - GitLab in-tree の Presenter / CurrentSettings / Metrics / EE 拡張を検出する

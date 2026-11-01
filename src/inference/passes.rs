@@ -491,6 +491,23 @@ impl<'a> InferenceEngine<'a> {
                 }
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
             }
+            Type::DeferredSafeNavigation(receiver_type, result_type) => {
+                let resolved_receiver = Self::resolve_general_method_refs_depth(
+                    registry,
+                    context_class,
+                    receiver_type,
+                    visiting,
+                    depth + 1,
+                );
+                let resolved_result = Self::resolve_general_method_refs_depth(
+                    registry,
+                    context_class,
+                    result_type,
+                    visiting,
+                    depth + 1,
+                );
+                Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
+            }
             Type::Union(parts) => Type::from_type_vec(
                 parts
                     .iter()
@@ -534,7 +551,10 @@ impl<'a> InferenceEngine<'a> {
 
     pub(super) fn type_contains_method_ref(ty: &Type) -> bool {
         match ty {
-            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) | Type::IvarRef(..) => true,
+            Type::MethodReturnRef(..)
+            | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..)
+            | Type::IvarRef(..) => true,
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::type_contains_method_ref)
             }

@@ -68,10 +68,6 @@ end
 
 ## Explicit block forwarding through super retains the block signature
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

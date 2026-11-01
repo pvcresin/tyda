@@ -1658,6 +1658,251 @@ fn compact_file_snapshot(mut analysis: FileAnalysisSnapshot) -> FileAnalysisSnap
     analysis
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SourceCaseEqualityOverrides {
+    pub base_class_dispatch: bool,
+    pub numeric_dispatch: bool,
+    pub block_given_override: bool,
+}
+
+#[derive(Clone, Copy)]
+enum CaseEqualityOwner {
+    Other,
+    BaseClass,
+    Numeric,
+}
+
+struct CaseEqualityOverrideScan {
+    namespace_stack: Vec<CaseEqualityOwner>,
+    global_block_given_owner_stack: Vec<bool>,
+    overrides: SourceCaseEqualityOverrides,
+}
+
+impl CaseEqualityOverrideScan {
+    fn record_alias(&mut self, name: &Node<'_>) {
+        let name = match name {
+            Node::SymbolNode { .. } => String::from_utf8_lossy(
+                name.as_symbol_node()
+                    .expect("must be SymbolNode")
+                    .unescaped(),
+            )
+            .into_owned(),
+            Node::StringNode { .. } => String::from_utf8_lossy(
+                name.as_string_node()
+                    .expect("must be StringNode")
+                    .unescaped(),
+            )
+            .into_owned(),
+            _ => return,
+        };
+        let owner = self
+            .namespace_stack
+            .last()
+            .copied()
+            .unwrap_or(CaseEqualityOwner::Other);
+        match (owner, name.as_str()) {
+            (CaseEqualityOwner::BaseClass, "===") => {
+                self.overrides.base_class_dispatch = true;
+            }
+            (CaseEqualityOwner::Numeric, "===" | "==") => {
+                self.overrides.numeric_dispatch = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn push_namespace(&mut self, path: &[u8]) {
+        let top_level = self.namespace_stack.is_empty();
+        self.global_block_given_owner_stack.push(
+            [b"::Object".as_slice(), b"::Kernel", b"::BasicObject"].contains(&path)
+                || (top_level && [b"Object".as_slice(), b"Kernel", b"BasicObject"].contains(&path)),
+        );
+        let owner = if path == b"::Class"
+            || path == b"::Module"
+            || (top_level && (path == b"Class" || path == b"Module"))
+        {
+            CaseEqualityOwner::BaseClass
+        } else if [
+            b"::Integer".as_slice(),
+            b"::Float",
+            b"::Numeric",
+            b"::Rational",
+            b"::Complex",
+            b"::Object",
+            b"::Kernel",
+            b"::BasicObject",
+        ]
+        .contains(&path)
+            || (top_level
+                && [
+                    b"Integer".as_slice(),
+                    b"Float",
+                    b"Numeric",
+                    b"Rational",
+                    b"Complex",
+                    b"Object",
+                    b"Kernel",
+                    b"BasicObject",
+                ]
+                .contains(&path))
+        {
+            CaseEqualityOwner::Numeric
+        } else {
+            CaseEqualityOwner::Other
+        };
+        self.namespace_stack.push(owner);
+    }
+}
+
+impl<'pr> prism::Visit<'pr> for CaseEqualityOverrideScan {
+    fn visit_class_node(&mut self, node: &prism::ClassNode<'pr>) {
+        let path = node.constant_path().location().as_slice();
+        self.push_namespace(path);
+        if let Some(body) = node.body() {
+            prism::Visit::visit(self, &body);
+        }
+        self.namespace_stack.pop();
+        self.global_block_given_owner_stack.pop();
+    }
+
+    fn visit_module_node(&mut self, node: &prism::ModuleNode<'pr>) {
+        let path = node.constant_path().location().as_slice();
+        self.push_namespace(path);
+        if let Some(body) = node.body() {
+            prism::Visit::visit(self, &body);
+        }
+        self.namespace_stack.pop();
+        self.global_block_given_owner_stack.pop();
+    }
+
+    fn visit_def_node(&mut self, node: &prism::DefNode<'pr>) {
+        if node.receiver().is_some() {
+            return;
+        }
+        if node.name().as_slice() == b"block_given?" {
+            if self.namespace_stack.is_empty()
+                || self.global_block_given_owner_stack.last() == Some(&true)
+            {
+                self.overrides.block_given_override = true;
+            }
+            return;
+        }
+        let owner = self
+            .namespace_stack
+            .last()
+            .copied()
+            .unwrap_or(CaseEqualityOwner::Other);
+        match (owner, node.name().as_slice()) {
+            (CaseEqualityOwner::BaseClass, b"===") => {
+                self.overrides.base_class_dispatch = true;
+            }
+            (CaseEqualityOwner::Numeric, b"===" | b"==") => {
+                self.overrides.numeric_dispatch = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_alias_method_node(&mut self, node: &prism::AliasMethodNode<'pr>) {
+        let new_name = node.new_name();
+        self.record_alias(&new_name);
+        prism::visit_alias_method_node(self, node);
+    }
+
+    fn visit_call_node(&mut self, node: &prism::CallNode<'pr>) {
+        if node.name().as_slice() == b"alias_method"
+            && node
+                .receiver()
+                .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }))
+            && let Some(arguments) = node.arguments()
+            && let Some(new_name) = arguments.arguments().first()
+        {
+            self.record_alias(&new_name);
+        }
+        prism::visit_call_node(self, node);
+    }
+
+    fn visit_singleton_class_node(&mut self, _node: &prism::SingletonClassNode<'pr>) {}
+}
+
+fn source_may_define_instance_equality_override(source: &str) -> bool {
+    if source.contains("alias") && source.contains("==") {
+        return true;
+    }
+
+    let bytes = source.as_bytes();
+    let mut offset = 0;
+    while let Some(relative) = source[offset..].find("def") {
+        let start = offset + relative;
+        let before_is_identifier =
+            start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        let mut cursor = start + 3;
+        let has_keyword_boundary = cursor == bytes.len()
+            || !(bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_');
+        if before_is_identifier || !has_keyword_boundary {
+            offset = cursor;
+            continue;
+        }
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        let method = &bytes[cursor..];
+        if method.starts_with(b"===")
+            || (method.starts_with(b"==") && method.get(2).is_none_or(|byte| *byte != b'='))
+        {
+            return true;
+        }
+        offset = cursor;
+    }
+    false
+}
+
+fn source_may_define_block_given_override(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut offset = 0;
+    while let Some(relative) = source[offset..].find("def") {
+        let start = offset + relative;
+        let before_is_identifier =
+            start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        let mut cursor = start + 3;
+        let has_keyword_boundary = cursor == bytes.len()
+            || !(bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_');
+        if before_is_identifier || !has_keyword_boundary {
+            offset = cursor;
+            continue;
+        }
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        if bytes[cursor..].starts_with(b"block_given?") {
+            return true;
+        }
+        offset = cursor;
+    }
+    false
+}
+
+fn source_case_equality_overrides_in_root(root: &Node<'_>) -> SourceCaseEqualityOverrides {
+    let mut scan = CaseEqualityOverrideScan {
+        namespace_stack: Vec::new(),
+        global_block_given_owner_stack: Vec::new(),
+        overrides: SourceCaseEqualityOverrides::default(),
+    };
+    prism::Visit::visit(&mut scan, root);
+    scan.overrides
+}
+
+pub fn source_case_equality_overrides(source: &str) -> SourceCaseEqualityOverrides {
+    if !source_may_define_instance_equality_override(source)
+        && !source_may_define_block_given_override(source)
+    {
+        return SourceCaseEqualityOverrides::default();
+    }
+    let parse_result = prism::parse(source.as_bytes());
+    let root = parse_result.node();
+    source_case_equality_overrides_in_root(&root)
+}
+
 fn build_engine_with_timings<'a>(
     request: AnalysisRequest<'a>,
 ) -> (InferenceEngine<'a>, AnalysisTimings) {
@@ -1686,6 +1931,19 @@ fn build_engine_with_timings<'a>(
     let root = parse_result.node();
 
     let mut engine = InferenceEngine::new();
+    if source_may_define_instance_equality_override(source)
+        || source_may_define_block_given_override(source)
+    {
+        let overrides = source_case_equality_overrides_in_root(&root);
+        engine.record_source_case_equality_overrides(
+            overrides.base_class_dispatch,
+            overrides.numeric_dispatch,
+            overrides.block_given_override,
+        );
+        engine.set_source_base_case_equality_override(
+            resolution_depth.keeps_only_exported_facts() && overrides.base_class_dispatch,
+        );
+    }
     engine.set_record_hover_snapshots(hover_snapshot_mode.should_record());
     engine.set_record_coverage(hover_snapshot_mode.should_record_coverage());
     engine.set_record_annotated_method_body_hover_snapshots(
@@ -2059,6 +2317,407 @@ box.value
         );
         assert!(facts_analysis.hover_index.snapshots.is_empty());
         assert!(facts_analysis.registry().class_data_for("Box").is_some());
+    }
+
+    #[test]
+    fn compact_case_class_dispatch_narrows_method_branch_receivers() {
+        let source = r#"
+class Group
+  def group_name = "group"
+end
+
+class User
+  def email = "user"
+end
+
+class ParticipableService
+  def participant_as_hash(participant)
+    case participant
+    when User
+      { email: participant.email }
+    when Group
+      { name: participant.group_name }
+    end
+  end
+end
+"#;
+        let loader = playground_loader();
+        let snapshot = analyze_cli_diagnostic_target_snapshot_timed(
+            source,
+            None,
+            &loader,
+            None,
+            "case_when_compact.rb",
+            AnalysisOptions::default(),
+            false,
+        )
+        .0;
+
+        let rendered =
+            crate::rbs::render::render_rbs_for_file(snapshot.registry(), "case_when_compact.rb");
+        assert!(
+            rendered.contains(
+                "def participant_as_hash: (untyped participant) -> ({ email: \"user\" } | { name: \"group\" })?"
+            ),
+            "compact case analysis should infer the class-specific branch receivers:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn source_case_equality_preflight_detects_relevant_instance_overrides() {
+        assert_eq!(
+            source_case_equality_overrides(
+                "module Wrapper\n  class ::Module\n    def ===(value) = true\n  end\nend"
+            ),
+            SourceCaseEqualityOverrides {
+                base_class_dispatch: true,
+                numeric_dispatch: false,
+                block_given_override: false,
+            }
+        );
+        assert_eq!(
+            source_case_equality_overrides(
+                "class Integer\n  def ===(value) = true\n  def ==(value) = true\nend"
+            ),
+            SourceCaseEqualityOverrides {
+                base_class_dispatch: false,
+                numeric_dispatch: true,
+                block_given_override: false,
+            }
+        );
+        assert_eq!(
+            source_case_equality_overrides(
+                "class Module\n  def match_any?(_value) = true\n  alias_method :===, :match_any?\nend"
+            ),
+            SourceCaseEqualityOverrides {
+                base_class_dispatch: true,
+                numeric_dispatch: false,
+                block_given_override: false,
+            }
+        );
+        assert_eq!(
+            source_case_equality_overrides(
+                "class Module\n  def match_any?(_value) = true\n  alias :===, :match_any?\nend"
+            ),
+            SourceCaseEqualityOverrides {
+                base_class_dispatch: true,
+                numeric_dispatch: false,
+                block_given_override: false,
+            }
+        );
+        assert_eq!(
+            source_case_equality_overrides("class Widget\n  def ===(value) = true\nend"),
+            SourceCaseEqualityOverrides::default()
+        );
+        assert_eq!(
+            source_case_equality_overrides(
+                "class BlockGivenOverride\n  def block_given? = true\nend"
+            ),
+            SourceCaseEqualityOverrides::default()
+        );
+    }
+
+    #[test]
+    fn compact_scan_records_block_given_override_without_equality_override() {
+        let source = r#"
+class Object
+  def block_given? = true
+end
+
+class Sample
+  def run
+    yield :value if block_given?
+  end
+end
+"#;
+        let loader = playground_loader();
+        let snapshot = analyze_compact_file_snapshot_timed(
+            source,
+            None,
+            &loader,
+            None,
+            "block_given_override.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+
+        assert!(snapshot.registry().has_source_block_given_override());
+    }
+
+    #[test]
+    fn compact_source_overrides_are_visible_across_files() {
+        let override_source = r#"
+class Array
+  def self.new(size) = :custom
+  def clear = :custom
+end
+
+class CustomDateConversion
+  def to_date = :custom
+end
+"#;
+        let target_source = r#"
+class OverrideCalls
+  def custom_array_new = Array.new(1)
+
+  def clear_array_override
+    values = [1]
+    values.clear
+    values[0]
+  end
+
+  def unresolved_to_date(value) = value.to_date
+end
+"#;
+        let loader = playground_loader();
+        let override_snapshot = analyze_compact_file_snapshot_timed(
+            override_source,
+            None,
+            &loader,
+            None,
+            "source_overrides.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+        let target_snapshot = analyze_cli_diagnostic_target_snapshot_timed(
+            target_source,
+            Some(override_snapshot.registry()),
+            &loader,
+            None,
+            "override_calls.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+        let rendered = crate::rbs::render::render_rbs_for_file(
+            target_snapshot.registry(),
+            "override_calls.rb",
+        );
+
+        assert!(
+            rendered.contains("def custom_array_new: -> :custom"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("def clear_array_override: -> 1"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("def unresolved_to_date: (untyped value) -> untyped"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn compact_case_class_dispatch_does_not_seed_through_later_base_equality_overrides() {
+        for override_source in [
+            "module Module\n  def ===(_value) = true\nend",
+            "class Class\n  def ===(_value) = true\nend",
+        ] {
+            let source = format!(
+                r#"
+class User
+  def email = "user"
+end
+
+class Service
+  def participant_email(value)
+    case value
+    when User
+      value.email
+    else
+      :other
+    end
+  end
+end
+
+{override_source}
+"#
+            );
+            let loader = playground_loader();
+            let snapshot = analyze_cli_diagnostic_target_snapshot_timed(
+                &source,
+                None,
+                &loader,
+                None,
+                "case_when_override.rb",
+                AnalysisOptions::default(),
+                false,
+            )
+            .0;
+
+            let rendered = crate::rbs::render::render_rbs_for_file(
+                snapshot.registry(),
+                "case_when_override.rb",
+            );
+            assert!(
+                rendered.contains("def participant_email: (untyped value) -> (untyped | :other)"),
+                "a later base equality override must keep the branch receiver unknown:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_case_class_dispatch_sees_base_equality_overrides_from_external_registry() {
+        let override_source = "class Module\n  def ===(_value) = true\nend";
+        let target_source = r#"
+class User
+  def email = "user"
+end
+
+class Service
+  def participant_email(value)
+    case value
+    when User
+      value.email
+    else
+      :other
+    end
+  end
+end
+"#;
+        let loader = playground_loader();
+        let mut external_registry = TypeRegistry::new();
+        assert!(loader.merge_class_into("Module", &mut external_registry));
+        assert!(
+            external_registry
+                .get_methods("Module")
+                .iter()
+                .any(|method| method.name.as_str() == "===" && method.rbs_file_source),
+            "the fixture must preload the standard RBS Module#==="
+        );
+        let override_snapshot = analyze_definitions_only_snapshot_timed(
+            override_source,
+            Some(&external_registry),
+            &loader,
+            None,
+            "case_when_external_override.rb",
+            AnalysisOptions::default(),
+        )
+        .0;
+        let mut builder = crate::workspace_state::BatchProjectionBuilder::new(external_registry);
+        builder.apply_chunk([(
+            "case_when_external_override.rb".to_owned(),
+            override_snapshot,
+        )]);
+        let external_registry = builder.finish(None);
+        assert!(external_registry.has_source_base_case_equality_override());
+        assert!(
+            external_registry
+                .get_methods("Module")
+                .iter()
+                .any(|method| method.name.as_str() == "===" && method.rbs_file_source),
+            "the RBS Module#=== slot should remain after snapshot merge"
+        );
+        assert!(
+            !external_registry
+                .get_methods("Module")
+                .iter()
+                .any(|method| method.name.as_str() == "===" && !method.rbs_file_source),
+            "the source override should be hidden by the same-owner RBS slot"
+        );
+
+        // The CLI scans candidate sources and records their metadata on the base registry
+        // before it starts the regular compact target pass.
+        let mut preflight_registry = TypeRegistry::new();
+        assert!(loader.merge_class_into("Module", &mut preflight_registry));
+        let mut preflight_overrides = SourceCaseEqualityOverrides::default();
+        for source in [override_source, target_source] {
+            let scanned = source_case_equality_overrides(source);
+            preflight_overrides.base_class_dispatch |= scanned.base_class_dispatch;
+            preflight_overrides.numeric_dispatch |= scanned.numeric_dispatch;
+        }
+        preflight_registry.record_source_case_equality_overrides(
+            preflight_overrides.base_class_dispatch,
+            preflight_overrides.numeric_dispatch,
+            preflight_overrides.block_given_override,
+        );
+        assert!(preflight_registry.has_source_base_case_equality_override());
+
+        let preflight_snapshot = analyze_compact_file_snapshot_timed(
+            target_source,
+            Some(&preflight_registry),
+            &loader,
+            None,
+            "case_when_target.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+        let builder_snapshot = analyze_compact_file_snapshot_timed(
+            target_source,
+            Some(&external_registry),
+            &loader,
+            None,
+            "case_when_target.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+
+        let preflight_rendered = crate::rbs::render::render_rbs_for_file(
+            preflight_snapshot.registry(),
+            "case_when_target.rb",
+        );
+        let builder_rendered = crate::rbs::render::render_rbs_for_file(
+            builder_snapshot.registry(),
+            "case_when_target.rb",
+        );
+        assert!(
+            preflight_rendered
+                .contains("def participant_email: (untyped value) -> (untyped | :other)"),
+            "CLI source preflight must prevent class narrowing:\n{preflight_rendered}"
+        );
+        assert_eq!(builder_rendered, preflight_rendered);
+    }
+
+    #[test]
+    fn compact_numeric_case_cache_sees_hidden_external_equality_override() {
+        let override_source = "class Integer\n  def ==(_value) = true\nend";
+        let loader = playground_loader();
+        let mut external_registry = TypeRegistry::new();
+        assert!(loader.merge_class_into("Integer", &mut external_registry));
+        assert!(
+            external_registry
+                .get_methods("Integer")
+                .iter()
+                .any(|method| method.name.as_str() == "==" && method.rbs_file_source),
+            "the fixture must preload the standard RBS Integer#== slot"
+        );
+
+        let override_snapshot = analyze_definitions_only_snapshot_timed(
+            override_source,
+            Some(&external_registry),
+            &loader,
+            None,
+            "case_when_integer_override.rb",
+            AnalysisOptions::default(),
+        )
+        .0;
+        let mut builder = crate::workspace_state::BatchProjectionBuilder::new(external_registry);
+        builder.apply_chunk([(
+            "case_when_integer_override.rb".to_owned(),
+            override_snapshot,
+        )]);
+        let external_registry = builder.finish(None);
+
+        assert!(external_registry.has_source_numeric_case_equality_override());
+        assert!(
+            external_registry
+                .get_methods("Integer")
+                .iter()
+                .any(|method| method.name.as_str() == "==" && method.rbs_file_source),
+            "the standard RBS Integer#== slot should remain after snapshot merge"
+        );
+        assert!(
+            !external_registry
+                .get_methods("Integer")
+                .iter()
+                .any(|method| method.name.as_str() == "==" && !method.rbs_file_source),
+            "the source Integer#== override should be hidden by the same-owner RBS slot"
+        );
     }
 
     #[test]
@@ -2455,15 +3114,15 @@ end
         assert_eq!(attrs.params[0].param_type.to_string(), "Alert");
         assert_eq!(
             build.return_type.to_string(),
-            "{ title: \"critical\", count: Integer }"
+            "{ title: \"critical\", count: 1 }"
         );
         assert_eq!(
             attrs.return_type.to_string(),
-            "{ title: \"critical\", count: Integer }"
+            "{ title: \"critical\", count: 1 }"
         );
         assert_eq!(
             payload.return_type.to_string(),
-            "{ title: \"critical\", count: Integer }"
+            "{ title: \"critical\", count: 1 }"
         );
     }
 
@@ -2601,6 +3260,98 @@ end
             .expect("hover on the `a` call in the condition");
         // Mirrors the LSP/editor body exactly: no `a: a:` double prefix.
         assert_eq!(call_hover.display, "[Tyda] -> \"2\" | :a");
+    }
+
+    #[test]
+    fn rails_tag_hover_snapshot_uses_call_arguments() {
+        let loader = playground_loader();
+        let source = concat!(
+            "module TagsHelper\n",
+            "  def with_arguments\n",
+            "    tag(\"p\", \"content\")\n",
+            "  end\n",
+            "\n",
+            "  def without_arguments\n",
+            "    tag\n",
+            "  end\n",
+            "end\n",
+        );
+        let options = AnalysisOptions {
+            rails_mode: true,
+            dsl_activation: DslActivation::with_rails_mode(true),
+            ..AnalysisOptions::default()
+        };
+        let (snapshot, _, _) = analyze_source_for_display(
+            source,
+            None,
+            Some(&loader),
+            None,
+            Some("tags_helper.rb"),
+            options,
+        );
+        let result = playground_result_from_snapshot(
+            source,
+            None,
+            &loader,
+            "tags_helper.rb",
+            &snapshot,
+            false,
+            false,
+        );
+        let tag_hovers: Vec<_> = result
+            .hovers
+            .iter()
+            .filter(|hover| hover.name == "tag")
+            .collect();
+
+        assert_eq!(tag_hovers.len(), 2, "{:?}", result.hovers);
+        assert_eq!(tag_hovers[0].display, "[Tyda] String");
+        assert_eq!(
+            tag_hovers[1].display,
+            "[Tyda] ActionView::Helpers::TagHelper::TagBuilder"
+        );
+    }
+
+    #[test]
+    fn rails_extensions_and_tag_builder_do_not_hide_unknown_methods() {
+        let loader = playground_loader();
+        let source = concat!(
+            "module Helpers\n",
+            "  def tags = tag.strong(\"bold\")\n",
+            "  def extensions = [\"title\".truncate(4), \"Rails\".ends_with?(\"ils\"), 2.megabytes]\n",
+            "  def unknown = \"value\".not_a_method\n",
+            "end\n",
+        );
+        let options = AnalysisOptions {
+            rails_mode: true,
+            dsl_activation: DslActivation::with_rails_mode(true),
+            ..AnalysisOptions::default()
+        };
+        let (snapshot, _, _) = analyze_source_for_display(
+            source,
+            None,
+            Some(&loader),
+            None,
+            Some("helpers.rb"),
+            options,
+        );
+        let result = playground_result_from_snapshot(
+            source,
+            None,
+            &loader,
+            "helpers.rb",
+            &snapshot,
+            false,
+            false,
+        );
+        let missing_methods: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .collect();
+
+        assert_eq!(missing_methods.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(missing_methods[0].line, 4);
     }
 
     #[test]

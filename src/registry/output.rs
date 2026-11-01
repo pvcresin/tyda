@@ -429,7 +429,8 @@ impl TypeRegistry {
                 Some(
                     ref deferred @ (Type::IvarRef(_)
                     | Type::MethodReturnRef(..)
-                    | Type::ReceiverMethodRef(..)),
+                    | Type::ReceiverMethodRef(..)
+                    | Type::DeferredSafeNavigation(..)),
                 ) => {
                     let resolved = self.resolve_deferred_refs_for_context(
                         receiver_class,
@@ -454,6 +455,7 @@ impl TypeRegistry {
                                         Type::IvarRef(_)
                                             | Type::MethodReturnRef(..)
                                             | Type::ReceiverMethodRef(..)
+                                            | Type::DeferredSafeNavigation(..)
                                     )
                                 {
                                     resolved
@@ -677,6 +679,10 @@ impl TypeRegistry {
         method: &MethodDef,
         method_params: &[Param],
     ) -> Option<HoverBlockSig> {
+        let has_explicit_block_param = method
+            .param_infos
+            .iter()
+            .any(|param| param.kind == ParamKind::Block);
         if let Some(meta) =
             self.lookup_method_block_meta(owner_class, &method.name, method.is_singleton)
             && let Some((forwarded_name, forwarded_singleton)) = &meta.forwarded_block
@@ -689,8 +695,21 @@ impl TypeRegistry {
 
         if let Some(meta) =
             self.lookup_method_block_meta(owner_class, &method.name, method.is_singleton)
-            && (!meta.yield_param_types.is_empty() || meta.return_type.is_some())
+            && (!meta.yield_param_types.is_empty()
+                || meta.return_type.is_some()
+                || (meta.yield_requires_block.is_some() && !has_explicit_block_param))
         {
+            let block_return_type =
+                self.resolve_block_return_type(owner_class, &method.name, method.is_singleton);
+            let block_return_type = if matches!(block_return_type, Type::MethodReturnRef(..)) {
+                self.resolve_deferred_refs_for_context(
+                    owner_class,
+                    method.is_singleton,
+                    &block_return_type,
+                )
+            } else {
+                block_return_type
+            };
             let params = meta
                 .yield_param_types
                 .iter()
@@ -701,14 +720,24 @@ impl TypeRegistry {
                     kind: ParamKind::Required,
                 })
                 .collect();
+            let declared_required = method
+                .rbs_method_types
+                .iter()
+                .find_map(|method_type| method_type.block.as_ref().map(|block| block.required));
+            let inferred_required = if self.method_call_has_user_source_definition(
+                owner_class,
+                "block_given?",
+                method.is_singleton,
+            ) {
+                None
+            } else {
+                meta.yield_requires_block
+            };
+            let required = declared_required.or(inferred_required).unwrap_or(true);
             return Some(HoverBlockSig {
                 params,
-                return_type: self.resolve_block_return_type(
-                    owner_class,
-                    &method.name,
-                    method.is_singleton,
-                ),
-                required: true,
+                return_type: block_return_type,
+                required,
             });
         }
 
@@ -770,12 +799,22 @@ impl TypeRegistry {
             Type::BlockReturnRef => {
                 self.resolve_block_return_type(owner_class, &method.name, method.is_singleton)
             }
-            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
-                parts
+            Type::DeferredSafeNavigation(receiver, result) => {
+                let receiver = self.resolve_block_return_refs(owner_class, method, receiver);
+                let result = self.resolve_block_return_refs(owner_class, method, result);
+                Type::resolve_deferred_safe_navigation(receiver, result)
+            }
+            Type::Union(parts) => {
+                let resolved: Vec<Type> = parts
                     .iter()
                     .map(|part| self.resolve_block_return_refs(owner_class, method, part))
-                    .collect(),
-            ),
+                    .collect();
+                if Type::is_short_circuit_array_shape_union(ty) {
+                    Type::from_type_vec_preserve_short_circuit_array_shape(resolved)
+                } else {
+                    Type::from_type_vec_preserve_untyped(resolved)
+                }
+            }
             Type::Intersection(parts) => Type::Intersection(
                 parts
                     .iter()

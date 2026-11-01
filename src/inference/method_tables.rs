@@ -94,6 +94,8 @@ pub const RAILS_STRING_RETURNING_METHODS: &[&str] = &[
     "pluralize",
     "singularize",
     "html_safe",
+    "first",
+    "last",
     "truncate",
     "truncate_bytes",
     "truncate_words",

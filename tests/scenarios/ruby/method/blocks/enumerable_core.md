@@ -266,6 +266,31 @@ class ExplicitBlockInvocation
 end
 ```
 
+## Record direct block calls without changing unused block returns
+
+### update
+
+```ruby
+class DirectBlockCall
+  def invoke(&block)
+    block.call
+  end
+
+  def ignore(&block)
+    :ignored
+  end
+end
+```
+
+### result
+
+```rbs
+class DirectBlockCall
+  def invoke: (?untyped &block) -> untyped
+  def ignore: (?untyped &block) -> :ignored
+end
+```
+
 ## Hash iteration keeps the receiver result across block control flow
 
 ### update
@@ -1367,7 +1392,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def bar: -> nil
+  def bar: { () -> :a } -> nil
   def foo: -> nil
 end
 ```

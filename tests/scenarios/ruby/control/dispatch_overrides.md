@@ -12,6 +12,13 @@ def overridden_index_after_nonempty_guard
   values[0]
 end
 
+def overridden_constructor_index_after_nonempty_guard
+  values = Array.new(1, 1)
+  def values.[](_index) = nil
+  return :empty if values.empty?
+  values[0]
+end
+
 def overridden_slice_after_nonempty_guard
   values = [1]
   def values.slice(_index) = nil
@@ -25,6 +32,7 @@ end
 ```rbs
 class Object < BasicObject
   def overridden_index_after_nonempty_guard: -> nil
+  def overridden_constructor_index_after_nonempty_guard: -> nil
   def overridden_slice_after_nonempty_guard: -> nil
 end
 ```

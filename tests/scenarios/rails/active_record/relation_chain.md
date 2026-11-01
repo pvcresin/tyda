@@ -1,5 +1,44 @@
 # Rails / Active Record / Relation Chain
 
+## Preserve collection proxy count methods
+
+`app/models/post.rb`
+
+```ruby
+class ActiveRecord::Base; end
+
+class Comment < ActiveRecord::Base; end
+
+class Post < ActiveRecord::Base
+  has_many :comments
+end
+```
+
+### update
+
+```ruby
+class CommentCounter
+  def count(post) = post.comments.count
+  def size(post) = post.comments.size
+  def length(post) = post.comments.length
+end
+
+counter = CommentCounter.new
+counter.count(Post.new)
+counter.size(Post.new)
+counter.length(Post.new)
+```
+
+### result
+
+```rbs
+class CommentCounter
+  def count: (Post post) -> Integer
+  def size: (Post post) -> Integer
+  def length: (Post post) -> Integer
+end
+```
+
 ## Preserve relation chain through a terminal pluck
 
 `db/schema.rb`

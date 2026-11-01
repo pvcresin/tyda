@@ -1069,7 +1069,7 @@ end
 
 ```rbs
 class Source
-  def each: { (String) -> untyped } -> untyped | Enumerator["a" | "b", Source]
+  def each: ?{ (String) -> untyped } -> untyped | Enumerator["a" | "b", Source]
   def values: -> Array["A" | "B"]
   def direct_values: -> Array["A" | "B"]
 end
@@ -1135,7 +1135,7 @@ end
 
 ```rbs
 class PairSource
-  def each_value: (String value) { (String) -> String } -> (String | Enumerator[String, untyped])
+  def each_value: (String value) ?{ (String) -> String } -> (String | Enumerator[String, untyped])
   def block_value: -> String
   def enum_value: -> Array["B"]
   def direct_enum_value: -> Array["C"]
@@ -1167,7 +1167,7 @@ end
 
 ```rbs
 class KeywordSource
-  def each_value: (prefix: String) { (String) -> untyped } -> (untyped | Enumerator[String, untyped])
+  def each_value: (prefix: String) ?{ (String) -> untyped } -> (untyped | Enumerator[String, untyped])
   def values: -> Array[String]
   def direct_values: -> Array[String]
 end
@@ -1197,7 +1197,7 @@ end
 
 ```rbs
 class Source
-  def each: { (Integer) -> untyped } -> untyped | Enumerator[1, Source]
+  def each: ?{ (Integer) -> untyped } -> untyped | Enumerator[1, Source]
 end
 
 class Store
@@ -1230,17 +1230,13 @@ end
 
 ```rbs
 class BlockSource
-  def each: { (String) -> String } -> String | Enumerator["a", BlockSource]
+  def each: ?{ (String) -> String } -> String | Enumerator["a", BlockSource]
   def block_value: -> String
   def enum_value: -> Array["A"]
 end
 ```
 
 ## Infer Enumerator::Lazy.new source and yielder types
-
-```yaml
-known_issue: true
-```
 
 ### update
 

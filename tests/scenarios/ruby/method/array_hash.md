@@ -154,6 +154,30 @@ class Object < BasicObject
 end
 ```
 
+## Respect source overrides of Array.new
+
+### update
+
+```ruby
+class Array
+  def self.new(size) = :custom
+end
+
+def custom_array_new = Array.new(1)
+```
+
+### result
+
+```rbs
+class Array[E]
+  def self.new: (Integer size) -> :custom
+end
+
+class Object < BasicObject
+  def custom_array_new: -> :custom
+end
+```
+
 ## Apply Hash.new default proc return to value type
 
 ### update
@@ -2378,5 +2402,23 @@ class PluginBlockMap
   def definitions: -> Hash
   def find_block: (untyped name) -> (nil | untyped)
   def partial: (untyped name) -> (nil | untyped)
+end
+```
+
+## Array compact removes nil from tuple element unions
+
+### update
+
+```ruby
+def compact_nilable_tuple(flag)
+  [flag ? 1 : nil, "right"].compact
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def compact_nilable_tuple: (untyped flag) -> Array[1 | "right"]
 end
 ```

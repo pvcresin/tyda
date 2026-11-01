@@ -777,6 +777,7 @@ pub struct MethodBlockMeta {
     pub forwarded_block: Option<(SharedName, bool)>,
     pub yields: bool,
     pub yields_at_least_once: bool,
+    pub yield_requires_block: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1899,6 +1900,8 @@ pub struct ClassDataCold {
     pub data_constructor: Option<DataConstructor>,
     // set of bare ivar readers (used only for self-fact narrowing).
     pub bare_ivar_readers: FxHashSet<(Sym, bool)>,
+    // Readers explicitly memoized by a DSL and therefore stable across a flow branch.
+    pub memoized_readers: FxHashSet<(Sym, bool)>,
     /// DSL recorded in a concern `included do` that must run against each includer
     /// (resource name / serializer owner), not the concern module itself.
     pub includer_bound_dsl: Vec<IncluderBoundDsl>,
@@ -1920,6 +1923,15 @@ pub enum IncluderBoundDsl {
     },
     AmsModelAttributes {
         names: Vec<String>,
+        loc: SourceLocation,
+    },
+    ActiveRecordEnumAttribute {
+        name: String,
+        loc: SourceLocation,
+    },
+    ActiveRecordSerializedAttribute {
+        name: String,
+        ty: Type,
         loc: SourceLocation,
     },
     ActiveRecordEnumStatuses {
@@ -2423,6 +2435,17 @@ impl FirstOwnerCache {
         });
         &shards[(hasher.finish() as usize) % shards.len()]
     }
+
+    fn clear(&self) {
+        if let Some(shards) = self.shards.get() {
+            for shard in shards {
+                if let Ok(mut guard) = shard.write() {
+                    guard.clear();
+                    guard.shrink_to_fit();
+                }
+            }
+        }
+    }
 }
 
 /// a context-free `resolve_attr_reader_return_type` outcome plus the return-type
@@ -2562,6 +2585,9 @@ pub struct TypeRegistry {
     mixin_hook_mixins_applied: bool,
     has_includer_bound_dsl: bool,
     includer_bound_dsl_applied: bool,
+    has_source_base_case_equality_override: bool,
+    has_source_numeric_case_equality_override: bool,
+    has_source_block_given_override: bool,
     /// skip the dirty-synthesis path entirely for registries with no dirty patterns (avoids per-miss matching cost for non-Rails).
     has_dirty_patterns: bool,
     /// resolved-param cache: valid because the registry is immutable during resolution. Call `invalidate_resolve_cache` after mutation.
@@ -2650,6 +2676,10 @@ impl Clone for TypeRegistry {
             mixin_hook_mixins_applied: self.mixin_hook_mixins_applied,
             has_includer_bound_dsl: self.has_includer_bound_dsl,
             includer_bound_dsl_applied: self.includer_bound_dsl_applied,
+            has_source_base_case_equality_override: self.has_source_base_case_equality_override,
+            has_source_numeric_case_equality_override: self
+                .has_source_numeric_case_equality_override,
+            has_source_block_given_override: self.has_source_block_given_override,
             has_dirty_patterns: self.has_dirty_patterns,
             resolve_params_cache: ParamCache::default(),
             resolve_params_cache_frozen: std::sync::atomic::AtomicBool::new(false),
@@ -2699,6 +2729,30 @@ pub(crate) struct PendingScopedTypeRef {
 }
 
 impl TypeRegistry {
+    #[doc(hidden)]
+    pub fn record_source_case_equality_overrides(
+        &mut self,
+        base_class_dispatch: bool,
+        numeric_dispatch: bool,
+        block_given_override: bool,
+    ) {
+        self.has_source_base_case_equality_override |= base_class_dispatch;
+        self.has_source_numeric_case_equality_override |= numeric_dispatch;
+        self.has_source_block_given_override |= block_given_override;
+    }
+
+    pub(crate) fn has_source_base_case_equality_override(&self) -> bool {
+        self.has_source_base_case_equality_override
+    }
+
+    pub(crate) fn has_source_numeric_case_equality_override(&self) -> bool {
+        self.has_source_numeric_case_equality_override
+    }
+
+    pub(crate) fn has_source_block_given_override(&self) -> bool {
+        self.has_source_block_given_override
+    }
+
     pub(crate) fn push_pending_method_alias(&mut self, pending: PendingMethodAlias) {
         // don't duplicate the same entry (so pending entries don't grow unbounded when
         // the same per-file registry gets merged in multiple times via lazy merge).
@@ -3496,6 +3550,11 @@ impl TypeRegistry {
             self.file_contribution_method_names.insert(method.name);
         }
         let data = self.class_data_mut(class_name);
+        if is_user {
+            data.cold_mut()
+                .memoized_readers
+                .remove(&(method.name, method.is_singleton));
+        }
         let method_file_path = method.loc.and_then(|_| {
             file_path
                 .filter(|path| Some(*path) != data.file_path.as_deref())
@@ -3547,6 +3606,45 @@ impl TypeRegistry {
         }
         self.add_method_def(class_name, method);
         true
+    }
+
+    /// Let DSL semantics replace generated methods without replacing source
+    /// definitions or user-provided RBS declarations.
+    pub fn add_method_def_overriding_synthetic_if_missing(
+        &mut self,
+        class_name: &str,
+        method: MethodDef,
+    ) -> bool {
+        let existing = self
+            .lookup_method_def(class_name, method.name.as_str(), method.is_singleton)
+            .map(|existing| existing.synthetic_dsl_source);
+        if existing == Some(false) {
+            return false;
+        }
+        if existing == Some(true) {
+            self.update_method_return_type_variant(
+                class_name,
+                method.name.as_str(),
+                method.is_singleton,
+                method.raw_return_type.clone(),
+            );
+            self.add_method_def(class_name, method);
+            self.clear_owner_lookup_cache_after_method_change();
+            return true;
+        }
+        self.add_method_def(class_name, method);
+        self.clear_owner_lookup_cache_after_method_change();
+        true
+    }
+
+    fn clear_owner_lookup_cache_after_method_change(&self) {
+        if self
+            .owner_lookup_cache_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.first_owner_cache.clear();
+            self.owner_lookup_cache.clear();
+        }
     }
 
     /// register dirty pattern: only add unknown columns (avoids duplicates from `table_name` override), sets `has_dirty_patterns`.
@@ -4404,7 +4502,8 @@ impl TypeRegistry {
         }
         if !is_singleton
             && let Some(ty) = self.infer_attr_type_from_initialize(class_name, &ivar)
-            && Self::is_concrete_for_global_resolve(&ty)
+            && ty != Type::Untyped
+            && Self::is_resolved_attr_return_type(&ty)
         {
             return Some(ty);
         }
@@ -4470,6 +4569,13 @@ impl TypeRegistry {
                 .cold()
                 .bare_ivar_readers
                 .contains(&(Sym::new(method_name), false))
+        {
+            return Some(true);
+        }
+        if data
+            .cold()
+            .memoized_readers
+            .contains(&(Sym::new(method_name), is_singleton))
         {
             return Some(true);
         }
@@ -6708,6 +6814,10 @@ impl TypeRegistry {
                 .iter()
                 .any(|field| Self::type_contains_untyped_member(&field.value)),
             Type::Proc { return_type, .. } => Self::type_contains_untyped_member(return_type),
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Self::type_contains_untyped_member(receiver)
+                    || Self::type_contains_untyped_member(result)
+            }
             _ => false,
         }
     }
@@ -6737,6 +6847,10 @@ impl TypeRegistry {
             | Type::ReceiverMethodRef(subject, _)
             | Type::TruthyProjection(subject)
             | Type::FalsyProjection(subject) => Self::type_contains_param_ref_static(subject),
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Self::type_contains_param_ref_static(receiver)
+                    || Self::type_contains_param_ref_static(result)
+            }
             _ => false,
         }
     }
@@ -6905,6 +7019,15 @@ impl TypeRegistry {
                     param_count: *param_count,
                 }
             }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                let (receiver, receiver_resolved, receiver_unresolved) =
+                    self.resolve_scoped_refs_in_type(scope_class, receiver);
+                let (result, result_resolved, result_unresolved) =
+                    self.resolve_scoped_refs_in_type(scope_class, result);
+                any_resolved |= receiver_resolved || result_resolved;
+                any_unresolved |= receiver_unresolved || result_unresolved;
+                Type::resolve_deferred_safe_navigation(receiver, result)
+            }
             // everything else (builtin / literal / various refs) is treated as having no nominal
             // reference and is returned as-is.
             _ => ty.clone(),
@@ -6939,6 +7062,10 @@ impl TypeRegistry {
                 parts.iter().any(Self::type_contains_scoped_nominal_ref)
             }
             Type::Proc { return_type, .. } => Self::type_contains_scoped_nominal_ref(return_type),
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Self::type_contains_scoped_nominal_ref(receiver)
+                    || Self::type_contains_scoped_nominal_ref(result)
+            }
             _ => false,
         }
     }
@@ -6989,7 +7116,9 @@ impl TypeRegistry {
 
     fn type_contains_subclass_ref_candidate(ty: &Type) -> bool {
         match ty {
-            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) => true,
+            Type::MethodReturnRef(..)
+            | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..) => true,
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::type_contains_subclass_ref_candidate)
             }
@@ -7059,6 +7188,11 @@ impl TypeRegistry {
                     }
                 }
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+            }
+            Type::DeferredSafeNavigation(receiver_type, result_type) => {
+                let resolved_receiver = self.resolve_subclass_refs_in_type(receiver_type);
+                let resolved_result = self.resolve_subclass_refs_in_type(result_type);
+                Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 let resolved_inner = self.resolve_subclass_refs_in_type(inner);
@@ -7331,6 +7465,7 @@ impl TypeRegistry {
         match ty {
             Type::MethodReturnRef(..)
             | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..)
             | Type::IvarRef(..)
             | Type::GlobalVariableRef(..) => true,
             Type::Union(parts) | Type::Intersection(parts) => {
@@ -7365,6 +7500,7 @@ impl TypeRegistry {
             Type::IvarRef(_)
                 | Type::MethodReturnRef(..)
                 | Type::ReceiverMethodRef(..)
+                | Type::DeferredSafeNavigation(..)
                 | Type::ParamRef(_)
                 | Type::KeywordParamRef(_)
                 | Type::TruthyProjection(..)
@@ -7410,6 +7546,26 @@ impl TypeRegistry {
                 .all(|field| Self::is_concrete_for_global_resolve(&field.value)),
             Type::Proc { return_type, .. } => Self::is_concrete_for_global_resolve(return_type),
             _ => false,
+        }
+    }
+
+    fn is_resolved_attr_return_type(ty: &Type) -> bool {
+        match ty {
+            Type::Untyped => true,
+            Type::Array(Some(inner)) => Self::is_resolved_attr_return_type(inner),
+            Type::Hash(Some(key), Some(value)) => {
+                Self::is_resolved_attr_return_type(key) && Self::is_resolved_attr_return_type(value)
+            }
+            Type::Hash(Some(key), None) => Self::is_resolved_attr_return_type(key),
+            Type::Hash(None, Some(value)) => Self::is_resolved_attr_return_type(value),
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+                parts.iter().all(Self::is_resolved_attr_return_type)
+            }
+            Type::Record(fields) => fields
+                .iter()
+                .all(|field| Self::is_resolved_attr_return_type(&field.value)),
+            Type::Proc { return_type, .. } => Self::is_resolved_attr_return_type(return_type),
+            _ => Self::is_concrete_for_global_resolve(ty),
         }
     }
 
@@ -7650,6 +7806,28 @@ impl TypeRegistry {
                         *method_name,
                     )
                 }
+            }
+            Type::DeferredSafeNavigation(receiver_type, result_type) => {
+                let resolved_receiver = self.resolve_global_refs(
+                    context_class,
+                    receiver_type,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                let resolved_result = self.resolve_global_refs(
+                    context_class,
+                    result_type,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
+                Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
             // a no-progress container is returned as-is without re-normalizing (avoids sort/dedup CPU cost dominating every round for blocked slots).
             Type::Union(parts) => {
@@ -8000,6 +8178,12 @@ impl TypeRegistry {
                     Type::Untyped
                 }
             }
+            Type::DeferredSafeNavigation(receiver_type, result_type) => {
+                let resolved_receiver =
+                    self.resolve_param_refs_from_resolved(receiver_type, params);
+                let resolved_result = self.resolve_param_refs_from_resolved(result_type, params);
+                Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
+            }
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
                 Self::resolve_pattern_index_ref(&resolved_subject, *index)
@@ -8115,6 +8299,7 @@ impl TypeRegistry {
             | Type::GlobalVariableRef(_)
             | Type::MethodReturnRef(..)
             | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..)
             | Type::PatternIndexRef(..)
             | Type::PatternRestRef(..)
             | Type::PatternTrailingRef(..)
@@ -8230,6 +8415,10 @@ impl TypeRegistry {
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _) => Self::type_is_memo_small(subject, budget),
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Self::type_is_memo_small(receiver, budget)
+                    && Self::type_is_memo_small(result, budget)
+            }
             _ => true,
         }
     }
@@ -8379,6 +8568,25 @@ impl TypeRegistry {
                     )
                 }
             }
+            Type::DeferredSafeNavigation(receiver_type, result_type) => {
+                let resolved_receiver = self.resolve_deferred_refs_depth(
+                    class_name,
+                    singleton_context,
+                    receiver_type,
+                    depth + 1,
+                    memo,
+                    visiting,
+                );
+                let resolved_result = self.resolve_deferred_refs_depth(
+                    class_name,
+                    singleton_context,
+                    result_type,
+                    depth + 1,
+                    memo,
+                    visiting,
+                );
+                Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
+            }
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 let resolved_inner = self.resolve_deferred_refs_depth(
                     class_name,
@@ -8452,6 +8660,9 @@ impl TypeRegistry {
             }
             // children with no deferred ref pass through as-is; skip re-normalizing if nothing changed (avoids sorting huge param unions on every wake).
             Type::Union(parts) => {
+                let has_short_circuit_projection = parts.iter().any(|part| {
+                    matches!(part, Type::TruthyProjection(_) | Type::FalsyProjection(_))
+                });
                 let resolved: Vec<Type> = parts
                     .iter()
                     .map(|t| {
@@ -8471,6 +8682,8 @@ impl TypeRegistry {
                     .collect();
                 if resolved == *parts {
                     ty.clone()
+                } else if has_short_circuit_projection {
+                    Type::from_type_vec_preserve_short_circuit_array_shape(resolved)
                 } else {
                     Type::from_type_vec_preserve_untyped(resolved)
                 }
@@ -8698,9 +8911,7 @@ impl TypeRegistry {
         }
         match method_name {
             "to_s" | "to_str" | "inspect" => return Type::String,
-            "to_i" | "to_int" | "count" | "size" | "length" | "hash" | "object_id" => {
-                return Type::Integer;
-            }
+            "to_i" | "to_int" | "hash" | "object_id" => return Type::Integer,
             "to_f" => return Type::Float,
             "to_a" => return Type::Array(None),
             "to_h" => return Type::Hash(None, None),
@@ -8725,6 +8936,7 @@ impl TypeRegistry {
                     "ActiveRecord::Relation"
                         | "ActiveRecord::AssociationRelation"
                         | "ActiveRecord::CollectionProxy"
+                        | "ActiveRecord::Associations::CollectionProxy"
                 ) =>
             {
                 args.first()?.clone()
@@ -8900,11 +9112,17 @@ impl TypeRegistry {
                 }
             }
             Type::Union(parts) => {
+                let preserve_short_circuit_array_shape =
+                    Type::is_short_circuit_array_shape_union(ty);
                 let resolved: Vec<Type> = parts
                     .iter()
                     .map(|t| Self::substitute_self_type(t, receiver_type))
                     .collect();
-                Type::from_type_vec_preserve_untyped(resolved)
+                if preserve_short_circuit_array_shape && !resolved.contains(&Type::Untyped) {
+                    Type::from_type_vec_preserve_short_circuit_array_shape(resolved)
+                } else {
+                    Type::from_type_vec_preserve_untyped(resolved)
+                }
             }
             Type::Intersection(parts) => Type::Intersection(
                 parts
@@ -8925,6 +9143,10 @@ impl TypeRegistry {
                     .iter()
                     .map(|t| Self::substitute_self_type(t, receiver_type))
                     .collect(),
+            ),
+            Type::DeferredSafeNavigation(receiver, result) => Type::DeferredSafeNavigation(
+                Box::new(Self::substitute_self_type(receiver, receiver_type)),
+                Box::new(Self::substitute_self_type(result, receiver_type)),
             ),
             Type::Record(fields) => Type::Record(
                 fields
@@ -8950,7 +9172,8 @@ impl TypeRegistry {
             | Type::KeywordParamRef(_)
             | Type::Union(_)
             | Type::TruthyProjection(..)
-            | Type::FalsyProjection(..) => false,
+            | Type::FalsyProjection(..)
+            | Type::DeferredSafeNavigation(..) => false,
             Type::MethodReturnRef(..) => !resolve_method_return_refs,
             Type::Intersection(parts) | Type::Tuple(parts) => parts
                 .iter()
@@ -8988,6 +9211,10 @@ impl TypeRegistry {
             Type::ReceiverMethodRef(receiver, name) => {
                 *name == method_name
                     || Self::type_contains_receiver_method_ref(receiver, method_name)
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Self::type_contains_receiver_method_ref(receiver, method_name)
+                    || Self::type_contains_receiver_method_ref(result, method_name)
             }
             Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => parts
                 .iter()
@@ -9059,6 +9286,14 @@ impl TypeRegistry {
             });
         }
         resolved
+    }
+
+    pub(crate) fn resolve_keyword_rest_shape_for_call_site(
+        &self,
+        call_site: &CallSite,
+        shape: &Type,
+    ) -> Type {
+        self.resolve_call_site_type_from_caller_context(call_site, shape, &mut FxHashSet::default())
     }
 
     fn resolve_call_site_type_from_caller_context_uncached(
@@ -9184,10 +9419,23 @@ impl TypeRegistry {
                 if PARAM_TABLE_MODE.with(|cell| cell.get())
                     && Self::type_contains_receiver_method_ref(&resolved_receiver, *method_name)
                 {
-                    Type::Untyped
+                    Type::ReceiverMethodRef(receiver_type.clone(), *method_name)
                 } else {
                     Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
                 }
+            }
+            Type::DeferredSafeNavigation(receiver_type, result_type) => {
+                let resolved_receiver = self.resolve_call_site_type_from_caller_context(
+                    call_site,
+                    receiver_type,
+                    visiting,
+                );
+                let resolved_result = self.resolve_call_site_type_from_caller_context(
+                    call_site,
+                    result_type,
+                    visiting,
+                );
+                Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
             Type::Proc {
                 return_type,
@@ -9848,6 +10096,10 @@ impl TypeRegistry {
                                 values.push(ty.clone());
                             }
                             if let Some(shape) = site.keyword_rest_shape.as_deref() {
+                                let resolved_shape = self
+                                    .resolve_call_site_type_from_caller_context(
+                                        site, shape, visiting,
+                                    );
                                 let mut append_record_values = |fields: &[RecordField]| {
                                     for field in fields {
                                         if let RecordKey::Symbol(name) = &field.key
@@ -9857,7 +10109,7 @@ impl TypeRegistry {
                                         }
                                     }
                                 };
-                                match shape {
+                                match &resolved_shape {
                                     Type::Record(fields) => append_record_values(fields),
                                     Type::Union(parts) => {
                                         for part in parts {
@@ -9869,6 +10121,7 @@ impl TypeRegistry {
                                     Type::Hash(_, Some(value)) => {
                                         values.push(value.as_ref().clone())
                                     }
+                                    Type::Untyped => values.push(Type::Untyped),
                                     _ => {}
                                 }
                             }
@@ -10147,6 +10400,20 @@ impl TypeRegistry {
         self.class_data_mut(class_name)
             .cold_mut()
             .bare_ivar_readers
+            .insert(key);
+    }
+
+    /// record a DSL-declared memoized reader for flow narrowing.
+    pub fn mark_memoized_reader(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) {
+        let key = (Sym::new(method_name), is_singleton);
+        self.class_data_mut(class_name)
+            .cold_mut()
+            .memoized_readers
             .insert(key);
     }
 
@@ -10868,6 +11135,9 @@ impl TypeRegistry {
             Type::ReceiverMethodRef(receiver_type, _) => {
                 Self::type_contains_param_ref(receiver_type)
             }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Self::type_contains_param_ref(receiver) || Self::type_contains_param_ref(result)
+            }
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 Self::type_contains_param_ref(inner)
             }
@@ -11141,6 +11411,11 @@ impl TypeRegistry {
             Type::ReceiverMethodRef(receiver_type, method_name) => {
                 let resolved_receiver = recur(receiver_type);
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                let resolved_receiver = recur(receiver);
+                let resolved_result = recur(result);
+                Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
             Type::Proc {
                 return_type,
@@ -11509,6 +11784,28 @@ mod tests {
         call_site.keyword_rest_shape = Some(Box::new(shape));
 
         assert_eq!(call_site.deep_bytes(), without_shape + expected_extra);
+    }
+
+    #[test]
+    fn attr_return_types_keep_untyped_fields_without_accepting_deferred_refs() {
+        let record = Type::Record(vec![RecordField {
+            key: RecordKey::Symbol("dynamic".to_string()),
+            value: Type::Untyped,
+            optional: false,
+        }]);
+        let deferred_record = Type::Record(vec![RecordField {
+            key: RecordKey::Symbol("dynamic".to_string()),
+            value: Type::MethodReturnRef("OptionSource".into(), "value".into()),
+            optional: false,
+        }]);
+
+        assert!(TypeRegistry::is_resolved_attr_return_type(&record));
+        assert!(!TypeRegistry::is_resolved_attr_return_type(
+            &deferred_record
+        ));
+        assert!(TypeRegistry::is_resolved_attr_return_type(&Type::Union(
+            vec![record, Type::Untyped,]
+        )));
     }
 
     /// finalize also resolves nominals inside compound types in lexical order (unresolved ones stay pending -> cross-file finalize).
@@ -11980,6 +12277,7 @@ mod tests {
                 forwarded_block: None,
                 yields: true,
                 yields_at_least_once: false,
+                yield_requires_block: None,
             },
         );
         registry.set_method_block_meta(
@@ -11992,6 +12290,7 @@ mod tests {
                 forwarded_block: None,
                 yields: true,
                 yields_at_least_once: false,
+                yield_requires_block: None,
             },
         );
         registry.set_method_block_meta(
@@ -12004,6 +12303,7 @@ mod tests {
                 forwarded_block: None,
                 yields: true,
                 yields_at_least_once: false,
+                yield_requires_block: None,
             },
         );
 
@@ -12072,6 +12372,7 @@ mod tests {
                 forwarded_block: None,
                 yields: true,
                 yields_at_least_once: false,
+                yield_requires_block: None,
             },
         );
 

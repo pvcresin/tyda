@@ -571,3 +571,97 @@ class Object < BasicObject
   def store_direct: -> 1
 end
 ```
+
+## Attribute readers preserve known record shape around untyped fields
+
+### update
+
+```rbs
+class OptionalCluster
+  def group_type?: -> bool
+end
+
+class ClusterSource
+  def self.fetch: -> (OptionalCluster | untyped)
+end
+```
+
+```ruby
+class AttributeRecordHolder
+  attr_reader :options
+
+  def initialize(options: {})
+    @options = options
+  end
+end
+
+def build_attribute_record_holder
+  cluster = ClusterSource.fetch
+  AttributeRecordHolder.new(options: { fixed: true, dynamic: cluster.group_type? })
+end
+```
+
+### result
+
+```rbs
+class AttributeRecordHolder
+  def options: -> Hash[untyped, untyped] | { fixed: bool, dynamic: untyped }
+  def initialize: (?options: (Hash[untyped, untyped] | { fixed: bool, dynamic: untyped })) -> void
+end
+
+class Object < BasicObject
+  def build_attribute_record_holder: -> AttributeRecordHolder
+end
+```
+
+## Keep an unknown hash delete result from narrowing to nil
+
+### update
+
+```ruby
+class ClusterParamProject
+  def id = 1
+end
+
+class ClusterParamGroup
+  def id = 1
+end
+
+class ClusterServiceParams
+  attr_reader :params
+
+  def initialize(params = {})
+    @params = params.dup
+  end
+
+  def clusterable = @clusterable ||= params.delete(:clusterable)
+
+  def clusterable_id
+    case clusterable
+    when ClusterParamProject
+      clusterable.id
+    when ClusterParamGroup
+      clusterable.id
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class ClusterParamGroup
+  def id: -> 1
+end
+
+class ClusterParamProject
+  def id: -> 1
+end
+
+class ClusterServiceParams
+  def params: -> untyped
+  def initialize: (?Hash[untyped, untyped] params) -> void
+  def clusterable: -> untyped
+  def clusterable_id: -> nil | untyped
+end
+```

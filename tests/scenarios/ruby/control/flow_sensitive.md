@@ -1652,3 +1652,264 @@ class Object < BasicObject
   def foo: ((Integer | Float | String) x) -> nil
 end
 ```
+
+## respond_to? distinguishes known missing and dynamic methods
+
+### update
+
+```ruby
+class DynamicReceiver
+  def respond_to_missing?(name, include_private = false)
+    name == :virtual
+  end
+
+  def method_missing(name, *args)
+    "dynamic"
+  end
+end
+
+def read_known_missing(x)
+  if x.respond_to?(:full_messages)
+    x.full_messages
+  else
+    :unavailable
+  end
+end
+
+def read_dynamic(x)
+  if x.respond_to?(:virtual)
+    x.virtual
+  else
+    :unavailable
+  end
+end
+
+read_known_missing("error")
+read_dynamic(DynamicReceiver.new)
+```
+
+### result
+
+```rbs
+class DynamicReceiver
+  def respond_to_missing?: (untyped name, ?bool include_private) -> bool
+  def method_missing: (untyped name, *untyped args) -> "dynamic"
+end
+
+class Object < BasicObject
+  def read_known_missing: (String x) -> :unavailable
+  def read_dynamic: (DynamicReceiver x) -> (untyped | :unavailable)
+end
+```
+
+## A pure reader stays narrowed through short-circuit conditions
+
+### update
+
+```ruby
+class OptionalReader
+  attr_reader :value
+
+  def initialize(flag)
+    @value = flag ? "value" : nil
+  end
+
+  def read = value && value.length
+end
+
+def read_optional = OptionalReader.new(true).read
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def read_optional: -> 5?
+end
+
+class OptionalReader
+  def value: -> "value"?
+  def initialize: (bool flag) -> void
+  def read: -> 5?
+end
+```
+
+## A memoized reader stays narrowed after a nil guard
+
+### update
+
+```ruby
+module Gitlab; end
+
+class MemoizedUser
+  def id = 1
+end
+
+class MemoizedReader
+  def initialize(enabled)
+    @enabled = enabled
+  end
+
+  def current_user = @enabled ? MemoizedUser.new : nil
+  strong_memoize_attr :current_user
+
+  def read
+    return nil unless current_user
+
+    current_user.id
+  end
+end
+
+def read_memoized_user(enabled) = MemoizedReader.new(enabled).read
+```
+
+### result
+
+```rbs
+class MemoizedReader
+  def initialize: (untyped enabled) -> void
+  def current_user: -> MemoizedUser?
+  def read: -> 1?
+end
+
+class MemoizedUser
+  def id: -> 1
+end
+
+class Object < BasicObject
+  def read_memoized_user: (untyped enabled) -> 1?
+end
+```
+
+## A memoized reader stays narrowed through case branches
+
+### update
+
+```ruby
+module Gitlab; end
+
+class ProjectNode
+  def project_value = 1
+end
+
+class GroupNode
+  def group_value = "group"
+end
+
+class MemoizedTargetReader
+  def initialize(project)
+    @project = project
+  end
+
+  def target = @project ? ProjectNode.new : GroupNode.new
+  strong_memoize_attr :target
+
+  def read
+    case target
+    when ProjectNode
+      target.project_value
+    when GroupNode
+      target.group_value
+    end
+  end
+end
+
+def read_memoized_target(project) = MemoizedTargetReader.new(project).read
+```
+
+### result
+
+```rbs
+class GroupNode
+  def group_value: -> "group"
+end
+
+class MemoizedTargetReader
+  def initialize: (untyped project) -> void
+  def target: -> GroupNode | ProjectNode
+  def read: -> (1 | "group")?
+end
+
+class Object < BasicObject
+  def read_memoized_target: (untyped project) -> (1 | "group")?
+end
+
+class ProjectNode
+  def project_value: -> 1
+end
+```
+
+## A later definition overrides memoized reader stability
+
+### update
+
+```ruby
+module Gitlab; end
+
+class DynamicMemoizedReader
+  def initialize(enabled)
+    @enabled = false
+  end
+
+  strong_memoize_attr :value
+  def value
+    @enabled = !@enabled
+    @enabled ? "text" : nil
+  end
+
+  def read
+    return nil unless value
+
+    value.upcase
+  end
+end
+
+def read_dynamic_memoized_value(enabled) = DynamicMemoizedReader.new(enabled).read
+```
+
+### result
+
+```rbs
+class DynamicMemoizedReader
+  def initialize: (untyped enabled) -> void
+  def value: -> "text"?
+  def read: -> String?
+end
+
+class Object < BasicObject
+  def read_dynamic_memoized_value: (untyped enabled) -> String?
+end
+```
+
+## A return guard narrows an optional parameter
+
+### update
+
+```ruby
+class GuardedUser
+  def name = "user"
+end
+
+def guarded_user_name(user)
+  return nil unless user
+
+  user.name.upcase
+end
+
+def read_guarded_user_name = guarded_user_name(GuardedUser.new)
+def read_guarded_user_name_without_user = guarded_user_name(nil)
+```
+
+### result
+
+```rbs
+class GuardedUser
+  def name: -> "user"
+end
+
+class Object < BasicObject
+  def guarded_user_name: (GuardedUser? user) -> String?
+  def read_guarded_user_name: -> String?
+  def read_guarded_user_name_without_user: -> String?
+end
+```

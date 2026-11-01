@@ -132,10 +132,6 @@ end
 
 ## complete assignments across elsif exits stay non-nil
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -188,6 +184,62 @@ def body_after_typed_range_branches(flag, head)
   body
 end
 
+def iterator_body_after_typed_range_branches(flag, head)
+  ranges = maybe_ranges(flag)
+  if ranges.nil?
+    ranges = [0..10]
+  elsif ranges.empty?
+    return :empty
+  else
+    partial = true
+    body = RangeResponseIterator.new
+  end
+
+  if head
+    body = []
+  elsif !partial
+    body = :full
+  end
+
+  body
+end
+
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def body_after_range_branches: (untyped ranges, untyped head) -> (:empty | :full | :head | :partial)
+  def maybe_ranges: (untyped flag) -> [Range[Integer]]?
+  def body_after_typed_range_branches: (untyped flag, untyped head) -> (:full | :head | :partial)
+  def iterator_body_after_typed_range_branches: (untyped flag, untyped head) -> (:full | RangeResponseIterator | [ ])
+end
+
+class RangeResponseIterator
+  def bytesize: -> 10
+end
+```
+
+## Preserve tuple correlation across nested branches
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+def maybe_ranges(flag)
+  flag ? [0..10] : nil
+end
+
+class RangeResponseIterator
+  def bytesize
+    10
+  end
+end
+
 def range_response_after_nested_branch(flag, head, single_range)
   ranges = maybe_ranges(flag)
   status = 200
@@ -215,33 +267,46 @@ def range_response_after_nested_branch(flag, head, single_range)
 
   [status, headers, body]
 end
+```
 
-def iterator_body_after_typed_range_branches(flag, head)
-  ranges = maybe_ranges(flag)
-  if ranges.nil?
-    ranges = [0..10]
-  elsif ranges.empty?
-    return :empty
-  else
-    partial = true
-    body = RangeResponseIterator.new
-  end
+### result
 
-  if head
-    body = []
-  elsif !partial
-    body = :full
-  end
-
-  body
+```rbs
+class Object < BasicObject
+  def maybe_ranges: (untyped flag) -> [Range[Integer]]?
+  def range_response_after_nested_branch: (untyped flag, untyped head, untyped single_range) -> ([200, Hash[untyped, untyped], :full] | [200, Hash[untyped, untyped], [ ]] | [206, Hash[:content_range, :single] | Hash[:content_type, :multiple], RangeResponseIterator] | [206, Hash[:content_range, :single] | Hash[:content_type, :multiple], [ ]])
 end
 
+class RangeResponseIterator
+  def bytesize: -> 10
+end
+```
+
+## Array.new with a literal size of one is nonempty
+
+### update
+
+```ruby
 def first_range_after_empty_guard
   ranges = Array.new(1, 0..10)
   return :empty if ranges.empty?
   ranges[0]
 end
+```
 
+### result
+
+```rbs
+class Object < BasicObject
+  def first_range_after_empty_guard: -> Range[Integer]
+end
+```
+
+## Clear updates the local array value
+
+### update
+
+```ruby
 def first_generic_array_after_clear
   values = [1].map { |value| value }
   return :empty if values.empty?
@@ -256,17 +321,54 @@ first_generic_array_after_clear
 
 ```rbs
 class Object < BasicObject
-  def body_after_range_branches: (untyped ranges, untyped head) -> (:empty | :full | :head | :partial)
-  def maybe_ranges: (untyped flag) -> [Range[Integer]]?
-  def body_after_typed_range_branches: (untyped flag, untyped head) -> (:full | :head | :partial)
-  def range_response_after_nested_branch: (untyped flag, untyped head, untyped single_range) -> ([200, Hash[untyped, untyped], :full] | [200, Hash[untyped, untyped], [ ]] | [206, Hash[:content_range, :single] | Hash[:content_type, :multiple], RangeResponseIterator] | [206, Hash[:content_range, :single] | Hash[:content_type, :multiple], [ ]])
-  def iterator_body_after_typed_range_branches: (untyped flag, untyped head) -> (:full | RangeResponseIterator | [ ])
-  def first_range_after_empty_guard: -> Range[Integer]
   def first_generic_array_after_clear: -> nil
 end
+```
 
-class RangeResponseIterator
-  def bytesize: -> 10
+## Invalid Array#clear arguments do not update instance variables
+
+### update
+
+```ruby
+class InvalidArrayClear
+  def first_value
+    @values = [1]
+    begin
+      @values.clear(:invalid)
+    rescue ArgumentError
+    end
+    @values.first
+  end
+end
+```
+
+### result
+
+```rbs
+class InvalidArrayClear
+  def first_value: -> 1?
+end
+```
+
+## Array#clear ignores blocks and empties a local instance variable
+
+### update
+
+```ruby
+class ClearIvarWithBlock
+  def first_value
+    @values = [1]
+    @values.clear { :ignored }
+    @values[0]
+  end
+end
+```
+
+### result
+
+```rbs
+class ClearIvarWithBlock
+  def first_value: -> nil
 end
 ```
 

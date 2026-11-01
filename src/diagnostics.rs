@@ -775,7 +775,8 @@ fn type_contains_hole(ty: &Type) -> bool {
         | Type::KeywordParamRef(_)
         | Type::IvarRef(_)
         | Type::MethodReturnRef(_, _)
-        | Type::ReceiverMethodRef(_, _) => true,
+        | Type::ReceiverMethodRef(_, _)
+        | Type::DeferredSafeNavigation(_, _) => true,
         Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
             parts.iter().any(type_contains_hole)
         }
@@ -972,6 +973,63 @@ mod tests {
     }
 
     #[test]
+    fn rails_method_table_fallbacks_are_not_reported_missing() {
+        let source = concat!(
+            "class Probe\n",
+            "  def duration = 2.days\n",
+            "  def minutes = 5.minutes\n",
+            "  def humanized = 'rails'.humanize\n",
+            "  def html_safe = 'rails'.html_safe\n",
+            "end\n",
+        );
+        let options = AnalysisOptions {
+            rails_mode: true,
+            ..AnalysisOptions::default()
+        };
+
+        let methods = union_member_missing_methods_with_options(source, options);
+        assert!(
+            methods.is_empty(),
+            "known Rails methods are available: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn optional_default_parameter_is_narrowed_after_early_return() {
+        let source = concat!(
+            "class AvatarUser\n",
+            "  def avatar_url = 'avatar'\n",
+            "  def blocked? = false\n",
+            "  def confirmed? = true\n",
+            "end\n",
+            "\n",
+            "module AvatarsHelper\n",
+            "  def avatar_for(user = nil, size = nil, scale = 2, only_path: true, current_user: nil)\n",
+            "    return 'default' unless user\n",
+            "    return 'default' if blocked_or_unconfirmed?(user) && !can_admin?(current_user)\n",
+            "    image_size = !size.nil? ? size * 2 : size\n",
+            "    user.avatar_url(size: image_size, only_path: only_path) || 'default'\n",
+            "  end\n",
+            "\n",
+            "  def blocked_or_unconfirmed?(user)\n",
+            "    user.blocked? || !user.confirmed?\n",
+            "  end\n",
+            "\n",
+            "  def can_admin?(user) = false\n",
+            "end\n",
+            "\n",
+            "def avatar_for_known_user = AvatarsHelper.new.avatar_for(AvatarUser.new)\n",
+            "def avatar_for_nil_user = AvatarsHelper.new.avatar_for(nil)\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "the early return leaves only non-nil receivers: {methods:?}"
+        );
+    }
+
+    #[test]
     fn non_rails_try_does_not_hide_nil_receiver_diagnostic() {
         let source = concat!(
             "class Resource\n",
@@ -1112,6 +1170,45 @@ mod tests {
         assert!(
             union_member_missing_methods(source).is_empty(),
             "untyped member suppresses the union diagnostic"
+        );
+    }
+
+    #[test]
+    fn unknown_count_receiver_does_not_become_an_integer() {
+        let source = concat!(
+            "class UnknownBuilder\n",
+            "  #: () -> untyped\n",
+            "  def self.make; end\n",
+            "end\n",
+            "\n",
+            "def build_query\n",
+            "  UnknownBuilder.make.count.as(:total)\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "unknown count result should not create a missing method on Integer: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn unless_known_falsy_return_makes_following_calls_unreachable() {
+        let source = concat!(
+            "def render_404 = nil\n",
+            "\n",
+            "def guarded_nil\n",
+            "  value = nil\n",
+            "  return render_404 unless value\n",
+            "  value.filename\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "a known-falsy unless guard exits before the following call: {methods:?}"
         );
     }
 

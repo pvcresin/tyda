@@ -168,7 +168,7 @@ end
 class A
   include Shared
 
-  def bar: -> Integer | String
+  def bar: -> String | 1
 end
 
 module Shared

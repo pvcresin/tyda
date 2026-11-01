@@ -479,7 +479,12 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
     let file_collect_handle = std::thread::spawn(move || {
         let files = collect_analysis_files(&paths_owned);
         // par_iter over an indexed source preserves input order in the collected Vec.
-        let scanned: Vec<(PathBuf, Option<String>, BTreeSet<DslLibrary>)> = files
+        let scanned: Vec<(
+            PathBuf,
+            Option<String>,
+            BTreeSet<DslLibrary>,
+            tyda::analysis::SourceCaseEqualityOverrides,
+        )> = files
             .into_par_iter()
             .filter_map(|path| {
                 if !is_ruby_file(&path) {
@@ -488,32 +493,48 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
                 let source = fs::read_to_string(&path).ok()?;
                 let mut detected = BTreeSet::new();
                 tyda::project::detect_dsl_from_source_text(&source, &mut detected);
-                Some((path, retain_sources.then_some(source), detected))
+                let case_equality_overrides =
+                    tyda::analysis::source_case_equality_overrides(&source);
+                Some((
+                    path,
+                    retain_sources.then_some(source),
+                    detected,
+                    case_equality_overrides,
+                ))
             })
             .collect();
         let mut file_sources: Vec<(PathBuf, Option<String>)> = Vec::with_capacity(scanned.len());
         let mut detected_dsl = BTreeSet::new();
-        for (path, source, detected) in scanned {
+        let mut case_equality_overrides = tyda::analysis::SourceCaseEqualityOverrides::default();
+        for (path, source, detected, file_overrides) in scanned {
             file_sources.push((path, source));
             detected_dsl.extend(detected);
+            case_equality_overrides.base_class_dispatch |= file_overrides.base_class_dispatch;
+            case_equality_overrides.numeric_dispatch |= file_overrides.numeric_dispatch;
+            case_equality_overrides.block_given_override |= file_overrides.block_given_override;
         }
-        (file_sources, detected_dsl)
+        (file_sources, detected_dsl, case_equality_overrides)
     });
 
     let preload_timing = std::env::var_os("TYDA_PRELOAD_TIMING").is_some();
     let (
         workspace_root,
         stdlib_loader,
-        user_rbs,
+        mut user_rbs,
         lazy_rbi_loader,
         rails_mode,
         mut dsl_activation,
         project_versions,
     ) = build_cli_context(paths, options.debug, dsl_spec);
     let build_cli_context_elapsed = preload_started.elapsed();
-    let (file_sources, detected_dsl) = file_collect_handle
+    let (file_sources, detected_dsl, case_equality_overrides) = file_collect_handle
         .join()
         .expect("file collection thread panicked");
+    user_rbs.record_source_case_equality_overrides(
+        case_equality_overrides.base_class_dispatch,
+        case_equality_overrides.numeric_dispatch,
+        case_equality_overrides.block_given_override,
+    );
     let file_collect_joined_elapsed = preload_started.elapsed();
 
     let dsl_detect_started = Instant::now();

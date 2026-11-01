@@ -101,10 +101,6 @@ end
 
 ## Forward a union of keyword records
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -241,10 +237,6 @@ end
 ```
 
 ## Deferred record keyword splat resolves at the call site
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -410,10 +402,6 @@ end
 ```
 
 ## Read a keyword rest value after multiple forwarding hops
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class KeywordRestReadAfterTwoHops
@@ -602,10 +590,6 @@ end
 ```
 
 ## Dig through a forwarded keyword rest record
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class KeywordRestDigFromRecordVariants

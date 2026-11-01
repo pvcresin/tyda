@@ -55,10 +55,6 @@ end
 
 ## Preserve known boolean return values through deferred short-circuit calls
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class DeferredKnownBooleanShortCircuit
   def self.maybe_strings(flag)
@@ -78,8 +74,8 @@ end
 ```rbs
 class DeferredKnownBooleanShortCircuit
   def self.maybe_strings: (bool flag) -> ["true"]?
-  def self.with_default: (bool flag) -> (["true"] | [ ])
-  def self.with_default_for_boolean: -> (["true"] | [ ])
+  def self.with_default: (bool flag) -> ([ ] | ["true"])
+  def self.with_default_for_boolean: -> [ ] | ["true"]
 end
 ```
 
@@ -107,17 +103,13 @@ end
 
 ```rbs
 class DeferredFalsyFallback
-  def self.entries_or_empty: (untyped status) -> Array["ready"]
+  def self.entries_or_empty: (untyped status) -> ([ ] | ["ready"])
   def self.entries_and_marker: (untyped status) -> (false | :present)?
   def self.possible_entries: (untyped status) -> (false | ["ready"])?
 end
 ```
 
 ## Keep nil from safe navigation when a deferred receiver is resolved
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class DeferredSafeNavigation
@@ -128,6 +120,8 @@ class DeferredSafeNavigation
   def self.nullable_label(status)
     nullable_value(status)&.upcase
   end
+
+  def self.false_receiver = false&.to_s
 
   def self.value
     "ready"
@@ -146,8 +140,31 @@ end
 class DeferredSafeNavigation
   def self.label: -> String
   def self.nullable_label: (untyped status) -> String?
+  def self.false_receiver: -> "false"
   def self.value: -> "ready"
   def self.nullable_value: (untyped status) -> "ready"?
+end
+```
+
+## Do not infer nil from an unresolved array element during safe navigation
+
+```ruby
+class DeferredSafeNavigationWithDeferredElement
+  def self.values = [value]
+
+  def self.value = "ready"
+
+  def self.size = values&.size
+end
+```
+
+### result
+
+```rbs
+class DeferredSafeNavigationWithDeferredElement
+  def self.values: -> ["ready"]
+  def self.value: -> "ready"
+  def self.size: -> 1
 end
 ```
 
@@ -174,7 +191,7 @@ end
 
 ```rbs
 class DeferredFalsyFallbackWithRescue
-  def self.entries_or_empty: (untyped status) -> Array["ready"]
+  def self.entries_or_empty: (untyped status) -> ([ ] | ["ready"])
   def self.possible_entries: (untyped status) -> (false | ["ready"])?
 end
 ```
@@ -199,7 +216,7 @@ end
 
 ```rbs
 class DeferredNestedElements
-  def self.with_default: (untyped value) -> Array[untyped]
+  def self.with_default: (untyped value) -> ([ ] | [untyped])
   def self.possibly_empty: (untyped value) -> (false | [untyped])
 end
 ```

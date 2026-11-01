@@ -74,6 +74,28 @@ class Widget
 end
 ```
 
+## Nil-only call preserves nil through a parameterized safe navigation
+
+### update
+
+```ruby
+class SafeNavigationExample
+  def nav(value)
+    value&.to_s
+  end
+end
+
+SafeNavigationExample.new.nav(nil)
+```
+
+### result
+
+```rbs
+class SafeNavigationExample
+  def nav: (nil value) -> nil
+end
+```
+
 ## Plain dot call does not add nil
 
 ### update

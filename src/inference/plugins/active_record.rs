@@ -13,6 +13,7 @@ const CLASS_BODY_METHODS: &[&str] = &[
     "has_and_belongs_to_many",
     "composed_of",
     "scope",
+    "serialize",
     "enum",
     "store_accessor",
     "store",
@@ -145,6 +146,10 @@ impl Plugin for ActiveRecord {
                 } else {
                     cx.collect_scope_dsl(class_name, call_node, parse_result);
                 }
+                true
+            }
+            "serialize" if cx.rails_feature_enabled() => {
+                cx.collect_serialized_attribute_dsl(class_name, call_node, parse_result);
                 true
             }
             "enum" if cx.dsl_enabled(DslLibrary::ActiveRecordEnum) => {
@@ -496,6 +501,43 @@ impl<'a> InferenceEngine<'a> {
                 loc: Some(loc),
             },
         );
+    }
+
+    pub(in crate::inference) fn collect_serialized_attribute_dsl(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+    ) {
+        if !self.rails_feature_enabled() {
+            return;
+        }
+        let Some(attr_name) = Self::extract_symbol_args(call_node).first().cloned() else {
+            return;
+        };
+        let ty = self
+            .hash_option_type(call_node, "type", parse_result)
+            .unwrap_or(Type::Untyped);
+        let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
+        if self.is_active_record_model_class(class_name) {
+            self.register_typed_attribute_accessors_inner(
+                class_name,
+                &attr_name,
+                ty,
+                loc,
+                Some(format!("@{attr_name}")),
+                true,
+            );
+        } else if self.is_collecting_concern_included() {
+            self.registry.push_includer_bound_dsl(
+                class_name,
+                IncluderBoundDsl::ActiveRecordSerializedAttribute {
+                    name: attr_name,
+                    ty,
+                    loc,
+                },
+            );
+        }
     }
     pub(super) fn collect_belongs_to(
         &mut self,
@@ -1008,7 +1050,7 @@ impl<'a> InferenceEngine<'a> {
         call_node: &ruby_prism::CallNode<'_>,
         parse_result: &ParseResult<'_>,
     ) {
-        let value_names = Self::extract_enum_value_names(call_node, parse_result);
+        let value_names = self.extract_enum_value_names(class_name, call_node, parse_result);
         let enum_attr_name = Self::extract_enum_attribute_name(call_node, parse_result);
         let prefix = enum_attr_name
             .as_deref()
@@ -1023,9 +1065,36 @@ impl<'a> InferenceEngine<'a> {
             if self.is_collecting_concern_included() {
                 self.registry.push_includer_bound_dsl(
                     class_name,
+                    IncluderBoundDsl::ActiveRecordEnumAttribute {
+                        name: attr_name.to_string(),
+                        loc,
+                    },
+                );
+                self.registry.push_includer_bound_dsl(
+                    class_name,
                     IncluderBoundDsl::ActiveRecordEnumStatuses { name, loc },
                 );
             } else {
+                self.registry
+                    .add_method_def_overriding_synthetic_if_missing(
+                        class_name,
+                        MethodDef {
+                            name: Sym::new(attr_name),
+                            param_infos: Vec::new(),
+                            raw_return_type: Type::String,
+                            sorbet_modifier_comments: Vec::new(),
+                            rbs_annotated: false,
+                            rbs_inline_annotated: false,
+                            sig_annotated: false,
+                            attr_ivar: None,
+                            is_singleton: false,
+                            rbs_file_source: false,
+                            synthetic_dsl_source: true,
+                            rbs_method_types: Default::default(),
+                            extra_overloads: Vec::new(),
+                            loc: Some(loc),
+                        },
+                    );
                 self.registry.add_method_def(
                     class_name,
                     MethodDef {

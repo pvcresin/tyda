@@ -265,6 +265,7 @@ fn hash_method_block_meta(meta: &MethodBlockMeta) -> u64 {
     let mut hasher = FxHasher::default();
     meta.yield_param_types.hash(&mut hasher);
     meta.forwarded_block.hash(&mut hasher);
+    meta.yield_requires_block.hash(&mut hasher);
     hasher.finish()
 }
 

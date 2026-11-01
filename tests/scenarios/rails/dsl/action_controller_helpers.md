@@ -86,3 +86,45 @@ module GroupsHelper
   def allowed?: -> bool
 end
 ```
+
+## Resolve tag builder methods in helper modules
+
+### update
+
+```ruby
+module TagsHelper
+  def scoped_tag(scope) = tag.samp(scope)
+
+  def translated_tag = tag.span(t('users.label'))
+
+  def direct_tag = tag('p', 'content')
+end
+```
+
+### result
+
+```rbs
+module TagsHelper
+  def scoped_tag: (untyped scope) -> String
+  def translated_tag: -> String
+  def direct_tag: -> String
+end
+```
+
+## Keep deleted controller parameters unknown
+
+### update
+
+```ruby
+class ParametersController < ActionController::Base
+  def deleted_value = params.delete(:value)
+end
+```
+
+### result
+
+```rbs
+class ParametersController < ActionController::Base
+  def deleted_value: -> untyped
+end
+```

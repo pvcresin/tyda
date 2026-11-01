@@ -32,7 +32,45 @@ class Parent
 end
 ```
 
-## Bare super in defaults forwards nil while super() uses the parent default
+## Bare super in a positional default forwards the current nil argument
+
+### update
+
+```ruby
+class DefaultSuperParent
+  def implicit(value = :parent) = value
+  def explicit(value = :parent) = value
+end
+
+class DefaultSuperChild < DefaultSuperParent
+  def implicit(value = super) = value
+  def explicit(value = super()) = value
+end
+
+class DefaultSuperCallSite
+  def call = [DefaultSuperChild.new.implicit, DefaultSuperChild.new.explicit]
+end
+```
+
+### result
+
+```rbs
+class DefaultSuperCallSite
+  def call: -> [nil, Symbol]
+end
+
+class DefaultSuperChild < DefaultSuperParent
+  def implicit: (?nil value) -> nil
+  def explicit: (?Symbol value) -> Symbol
+end
+
+class DefaultSuperParent
+  def implicit: (?Symbol? value) -> Symbol?
+  def explicit: (?Symbol value) -> Symbol
+end
+```
+
+## Bare super in later and keyword defaults forwards current values
 
 ```yaml
 known_issue: true
@@ -42,28 +80,17 @@ known_issue: true
 
 ```ruby
 class DefaultSuperParent
-  def implicit(value = :parent) = value
-  def explicit(value = :parent) = value
   def pair(first, second = :parent) = [first, second]
   def keyword(optional: :parent) = optional
 end
 
 class DefaultSuperChild < DefaultSuperParent
-  def implicit(value = super) = value
-  def explicit(value = super()) = value
   def pair(first, second = super) = second
   def keyword(optional: super) = optional
 end
 
 class DefaultSuperCallSite
-  def call
-    [
-      DefaultSuperChild.new.implicit,
-      DefaultSuperChild.new.explicit,
-      DefaultSuperChild.new.pair("first"),
-      DefaultSuperChild.new.keyword,
-    ]
-  end
+  def call = [DefaultSuperChild.new.pair("first"), DefaultSuperChild.new.keyword]
 end
 ```
 
@@ -71,19 +98,15 @@ end
 
 ```rbs
 class DefaultSuperCallSite
-  def call: -> [nil, Symbol, [String, nil], nil]
+  def call: -> [[String, nil], nil]
 end
 
 class DefaultSuperChild < DefaultSuperParent
-  def implicit: (?nil value) -> nil
-  def explicit: (?Symbol value) -> Symbol
   def pair: (String first, ?[String, nil] second) -> [String, nil]
   def keyword: (?optional: nil) -> nil
 end
 
 class DefaultSuperParent
-  def implicit: (?Symbol? value) -> :parent?
-  def explicit: (?Symbol value) -> Symbol
   def pair: (String first, ?Symbol? second) -> [String, :parent?]
   def keyword: (?optional: Symbol?) -> :parent?
 end
@@ -1000,7 +1023,7 @@ def call_direct_render = DirectBlockParent.new.render("value") { |item| item.to_
 
 ```rbs
 class DirectBlockParent
-  def render: (String item) { (String) -> :value } -> :value?
+  def render: (String item) ?{ (String) -> :value } -> :value?
 end
 
 class Object < BasicObject

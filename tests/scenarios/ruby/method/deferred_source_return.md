@@ -208,6 +208,36 @@ class DeferredArrayTransformationOverride
 end
 ```
 
+## Keep memoized helper hash returns concrete
+
+### update
+
+```ruby
+class MemoizedHashSource
+  def clear_cache
+    @source_requirements = nil
+  end
+
+  def source_requirements
+    @source_requirements ||= find_source_requirements
+  end
+
+  def find_source_requirements
+    { "ruby" => "3.0".split }
+  end
+end
+```
+
+### result
+
+```rbs
+class MemoizedHashSource
+  def clear_cache: -> nil
+  def source_requirements: -> { "ruby" => Array[String] }
+  def find_source_requirements: -> { "ruby" => Array[String] }
+end
+```
+
 ## Resolve a hash source return before dispatching its block overload
 
 ```ruby
@@ -257,5 +287,48 @@ end
 ```rbs
 class MixedHashReceiver
   def kept_settings: -> untyped
+end
+```
+
+## Preserve literal record fields through direct source helpers
+
+```ruby
+class AlertPayloadBuilder
+  def self.build(alert)
+    attrs(alert)
+  end
+
+  def self.attrs(alert)
+    { title: alert.title, count: alert.count }
+  end
+end
+
+class AlertPayload
+  def title
+    "critical"
+  end
+
+  def count
+    1
+  end
+
+  def payload
+    AlertPayloadBuilder.build(self)
+  end
+end
+```
+
+### result
+
+```rbs
+class AlertPayload
+  def title: -> "critical"
+  def count: -> 1
+  def payload: -> { title: "critical", count: 1 }
+end
+
+class AlertPayloadBuilder
+  def self.build: (AlertPayload alert) -> { title: "critical", count: 1 }
+  def self.attrs: (AlertPayload alert) -> { title: "critical", count: 1 }
 end
 ```
