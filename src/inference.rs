@@ -1264,6 +1264,13 @@ struct ClassBodyCollectionOptions {
     singleton_depth: u8,
 }
 
+#[derive(Clone, Copy)]
+struct YieldedBlockDefinitionContext {
+    in_singleton_class: bool,
+    current_visibility: Option<Visibility>,
+    module_function_mode: bool,
+}
+
 impl ClassBodyCollectionOptions {
     fn new(in_singleton_class: bool, class_body_scope: Scope) -> Self {
         Self {
@@ -11575,6 +11582,168 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn collect_yielded_block_method_definitions(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        comments: &[RbsComment],
+        context: YieldedBlockDefinitionContext,
+    ) {
+        if call_node
+            .receiver()
+            .is_some_and(|receiver| !matches!(receiver, Node::SelfNode { .. }))
+        {
+            return;
+        }
+        let method_name = String::from_utf8_lossy(call_node.name().as_slice());
+        let Some((owner, method_is_singleton)) = self
+            .registry
+            .resolve_method_call_owners(class_name, &method_name, true)
+            .into_iter()
+            .next()
+        else {
+            return;
+        };
+        let Some(method) =
+            self.registry
+                .lookup_method_def(&owner, &method_name, method_is_singleton)
+        else {
+            return;
+        };
+        if method.rbs_file_source || method.synthetic_dsl_source {
+            return;
+        }
+        if !self
+            .registry
+            .lookup_method_block_meta(&owner, &method_name, method_is_singleton)
+            .is_some_and(|meta| meta.yields)
+        {
+            return;
+        }
+        let Some(block) = call_node.block().and_then(|block| block.as_block_node()) else {
+            return;
+        };
+        let Some(body) = block.body() else {
+            return;
+        };
+
+        self.collect_method_definitions_from_yielded_block(
+            class_name,
+            &body,
+            parse_result,
+            comments,
+            context,
+        );
+    }
+
+    fn collect_method_definitions_from_yielded_block(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        comments: &[RbsComment],
+        context: YieldedBlockDefinitionContext,
+    ) {
+        match node {
+            Node::StatementsNode { .. } => {
+                let statements = node.as_statements_node().expect("must be StatementsNode");
+                for child in statements.body().iter() {
+                    self.collect_method_definitions_from_yielded_block(
+                        class_name,
+                        &child,
+                        parse_result,
+                        comments,
+                        context,
+                    );
+                }
+            }
+            Node::DefNode { .. } => {
+                let def_node = node.as_def_node().expect("must be DefNode");
+                let (method_owner, cvar_owner) = self.const_receiver_method_owner(
+                    class_name,
+                    &def_node,
+                    parse_result,
+                    context.in_singleton_class,
+                );
+                self.collect_method_def_with_singleton(
+                    &method_owner,
+                    node,
+                    parse_result,
+                    comments,
+                    MethodCollectionOptions {
+                        sig_sources: None,
+                        annotation_anchor_offset: None,
+                        force_singleton: context.in_singleton_class
+                            || def_node.receiver().is_some(),
+                        singleton_class_constants: context.in_singleton_class,
+                        cvar_owner,
+                    },
+                );
+                let method_name = String::from_utf8_lossy(def_node.name().as_slice()).to_string();
+                let mirror_as_module_function = !context.in_singleton_class
+                    && context.module_function_mode
+                    && self.current_scope_is_module(&method_owner);
+                if mirror_as_module_function {
+                    self.mirror_instance_method_as_singleton(&method_owner, &method_name);
+                }
+                if !mirror_as_module_function && let Some(visibility) = context.current_visibility {
+                    let is_singleton = context.in_singleton_class || def_node.receiver().is_some();
+                    self.registry.set_method_visibility(
+                        &method_owner,
+                        &method_name,
+                        is_singleton,
+                        Some(visibility),
+                    );
+                }
+            }
+            Node::IfNode { .. }
+            | Node::UnlessNode { .. }
+            | Node::BeginNode { .. }
+            | Node::CaseNode { .. }
+            | Node::CaseMatchNode { .. } => {
+                for statements in Self::class_body_branch_statement_nodes(node) {
+                    let branch = statements.as_node();
+                    self.collect_method_definitions_from_yielded_block(
+                        class_name,
+                        &branch,
+                        parse_result,
+                        comments,
+                        context,
+                    );
+                }
+            }
+            Node::SingletonClassNode { .. } => {
+                let singleton_class = node
+                    .as_singleton_class_node()
+                    .expect("must be SingletonClassNode");
+                if let Some(body) = singleton_class.body() {
+                    self.collect_method_definitions_from_yielded_block(
+                        class_name,
+                        &body,
+                        parse_result,
+                        comments,
+                        YieldedBlockDefinitionContext {
+                            in_singleton_class: true,
+                            ..context
+                        },
+                    );
+                }
+            }
+            Node::CallNode { .. } => {
+                let call_node = node.as_call_node().expect("must be CallNode");
+                self.collect_yielded_block_method_definitions(
+                    class_name,
+                    &call_node,
+                    parse_result,
+                    comments,
+                    context,
+                );
+            }
+            _ => {}
+        }
+    }
+
     fn class_body_branch_statement_nodes<'b>(
         node: &Node<'b>,
     ) -> Vec<ruby_prism::StatementsNode<'b>> {
@@ -13254,6 +13423,17 @@ impl<'a> InferenceEngine<'a> {
                                         true,
                                     );
                                     if call_node.block().is_some() {
+                                        self.collect_yielded_block_method_definitions(
+                                            class_name,
+                                            &call_node,
+                                            parse_result,
+                                            comments,
+                                            YieldedBlockDefinitionContext {
+                                                in_singleton_class,
+                                                current_visibility,
+                                                module_function_mode,
+                                            },
+                                        );
                                         self.process_call_block_side_effects(
                                             class_name,
                                             &call_node,
