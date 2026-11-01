@@ -528,7 +528,7 @@ class CaseWhenMatcher
 end
 
 class Object < BasicObject
-  def custom_class_case: (String value) -> (String | :matched)
+  def custom_class_case: (String value) -> :matched
 end
 ```
 
@@ -699,11 +699,11 @@ case_before_equality_override
 
 ```rbs
 class Integer < Numeric
-  def self.===: (untyped _value) -> bool
+  def self.===: (untyped _value) -> true
 end
 
 class Object < BasicObject
-  def case_before_equality_override: -> :matched | :other
+  def case_before_equality_override: -> :matched
 end
 ```
 
@@ -738,12 +738,12 @@ invoke_later_equality_case
 
 ```rbs
 class Integer < Numeric
-  def self.===: (untyped _value) -> bool
+  def self.===: (untyped _value) -> true
 end
 
 class Object < BasicObject
-  def invoke_later_equality_case: -> :matched | :other
-  def later_equality_case: (String value) -> (:matched | :other)
+  def invoke_later_equality_case: -> :matched
+  def later_equality_case: (String value) -> :matched
 end
 ```
 

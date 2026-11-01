@@ -1161,6 +1161,32 @@ class Object < BasicObject
 end
 ```
 
+## Array#join returns String after adding a dynamic map result
+
+### update
+
+```ruby
+def created_strategy_message(strategy) = "Created strategy #{strategy}"
+
+def join_after_dynamic_map(feature_flag)
+  message_parts = ["Created feature flag #{feature_flag.name} with description \"#{feature_flag.description}\"."]
+  message_parts += feature_flag.strategies.map do |strategy|
+    created_strategy_message(strategy)
+  end
+  message_parts.join(" ")
+end
+
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def created_strategy_message: (untyped strategy) -> String
+  def join_after_dynamic_map: (untyped feature_flag) -> String
+end
+```
+
 ## Static collection cardinality
 
 ### update

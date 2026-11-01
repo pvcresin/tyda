@@ -211,8 +211,11 @@ impl<'a> InferenceEngine<'a> {
                 | Type::ParamRef(_)
                 | Type::KeywordParamRef(_)
                 | Type::IvarRef(_)
+                | Type::GlobalVariableRef(_)
                 | Type::MethodReturnRef(_, _)
                 | Type::ReceiverMethodRef(_, _)
+                | Type::TruthyProjection(_)
+                | Type::FalsyProjection(_)
         )
     }
 
@@ -248,12 +251,36 @@ impl<'a> InferenceEngine<'a> {
                 continue;
             }
             let HoverTarget::MethodCall {
-                ref result_type, ..
+                ref receiver_type,
+                ref result_type,
+                ..
             } = snap.target
             else {
                 continue;
             };
-            let Some(unresolved_method) = Self::describe_unresolved_ref(result_type) else {
+            let mut resolved_receiver = None;
+            let unresolved_method = Self::describe_unresolved_ref(result_type).or_else(|| {
+                let Type::ReceiverMethodRef(receiver, method) = result_type else {
+                    return None;
+                };
+                if method.as_str() != snap.name {
+                    return None;
+                }
+                let receiver = self.resolve_type_for_hover(
+                    receiver,
+                    &snap.class_context,
+                    snap.method_context.as_deref(),
+                );
+                let receiver = if Self::contains_nil(&receiver) {
+                    Self::remove_nil(&receiver)
+                } else {
+                    receiver.clone()
+                };
+                let class = TypeRegistry::type_to_class_name_pub(&receiver)?;
+                resolved_receiver = Some(receiver);
+                Some(format!("{class}#{method}"))
+            });
+            let Some(unresolved_method) = unresolved_method else {
                 continue;
             };
             if !Self::unresolved_method_matches_snapshot_name(&unresolved_method, &snap.name) {
@@ -277,21 +304,18 @@ impl<'a> InferenceEngine<'a> {
             {
                 continue;
             }
-            if let HoverTarget::MethodCall {
-                ref receiver_type, ..
-            } = snap.target
-            {
-                let resolved_receiver = self.resolve_type_for_hover(
+            let resolved_receiver = resolved_receiver.unwrap_or_else(|| {
+                self.resolve_type_for_hover(
                     receiver_type,
                     &snap.class_context,
                     snap.method_context.as_deref(),
-                );
-                if self
-                    .dsl_plugin_method_return(&resolved_receiver, &snap.name)
-                    .is_some()
-                {
-                    continue;
-                }
+                )
+            });
+            if self
+                .dsl_plugin_method_return(&resolved_receiver, &snap.name)
+                .is_some()
+            {
+                continue;
             }
             if snap.method_context.is_none()
                 && self.dsl_plugin_consumes_class_body_call(&snap.class_context, &snap.name)
@@ -3406,6 +3430,13 @@ impl<'a> InferenceEngine<'a> {
 
         let mut includers: Vec<(String, bool)> = Vec::new();
         self.collect_module_includers(owner, false, &mut includers);
+        if Self::registry_module_is_concern(&self.registry, owner)
+            || self
+                .external_rbs
+                .is_some_and(|registry| Self::registry_module_is_concern(registry, owner))
+        {
+            self.collect_module_includers(owner, true, &mut includers);
+        }
         if let Some(enclosing) = owner.strip_suffix("::ClassMethods") {
             self.collect_module_includers(enclosing, true, &mut includers);
         }
@@ -3469,6 +3500,15 @@ impl<'a> InferenceEngine<'a> {
             }
         }
         false
+    }
+
+    fn registry_module_is_concern(registry: &TypeRegistry, module_name: &str) -> bool {
+        registry.class_data_for(module_name).is_some_and(|data| {
+            data.mixins.iter().any(|mixin| {
+                mixin.kind == MixinKind::Extend
+                    && mixin.module_name.trim_scope_prefix() == "ActiveSupport::Concern"
+            })
+        })
     }
 
     fn includer_has_opaque_mixin_hook(&mut self, includer: &str) -> bool {
@@ -3565,6 +3605,11 @@ impl<'a> InferenceEngine<'a> {
                 false,
                 &Type::IvarRef(*ivar_name),
             ),
+            Type::GlobalVariableRef(name) => self.registry.resolve_deferred_refs_for_context(
+                class_context,
+                false,
+                &Type::GlobalVariableRef(*name),
+            ),
             Type::MethodReturnRef(ref_class, method_name) => {
                 self.resolve_hover_method_return(ref_class, method_name, false)
             }
@@ -3599,6 +3644,16 @@ impl<'a> InferenceEngine<'a> {
                 class_context,
                 method_context,
             )))),
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+                let resolved_inner =
+                    self.resolve_type_for_hover(inner, class_context, method_context);
+                let projected = if matches!(ty, Type::TruthyProjection(_)) {
+                    Type::project_truthy(&resolved_inner)
+                } else {
+                    Type::project_falsy(&resolved_inner)
+                };
+                projected.unwrap_or(Type::Bot)
+            }
             _ => ty.clone(),
         }
     }

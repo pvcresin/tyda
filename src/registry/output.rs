@@ -2,6 +2,70 @@ use super::*;
 use crate::rbs::ir as rbs_ir;
 
 impl TypeRegistry {
+    fn attr_writer_call_site_value_type(
+        &self,
+        class_name: &str,
+        writer: &MethodDef,
+    ) -> Option<Type> {
+        if !matches!(
+            self.method_visibility(class_name, writer.name.as_str(), false),
+            Some(Visibility::Private | Visibility::Protected)
+        ) {
+            return None;
+        }
+        let _visit_guard = AttrWriterCallSiteVisitGuard::enter(class_name, writer.name.as_str())?;
+
+        let data = self.class_data.get(class_name)?;
+        let indexed =
+            self.matching_call_site_indices(class_name, data, writer.name.as_str(), false);
+        let mut values = Vec::new();
+        let mut collect = |call_site: &CallSite| {
+            if call_site.method_name.as_ref() != writer.name.as_str()
+                || call_site.method_is_singleton
+            {
+                return true;
+            }
+            let Some(arg_type) = call_site.arg_types.first() else {
+                return false;
+            };
+            if call_site.caller_context.is_some()
+                && (Self::type_contains_param_ref(arg_type)
+                    || Self::type_needs_deferred_resolution(arg_type))
+            {
+                return false;
+            }
+            let mut visiting = FxHashSet::default();
+            let mut value_type =
+                self.resolve_call_site_type_from_caller_context(call_site, arg_type, &mut visiting);
+            if value_type == Type::Untyped || !Self::is_concrete_for_global_resolve(&value_type) {
+                return false;
+            }
+            if call_site.caller_context.is_none() {
+                value_type = value_type.widen_arg_for_param();
+            }
+            values.push(value_type);
+            true
+        };
+
+        if let Some(indices) = indexed {
+            for index in indices {
+                let Ok(index) = usize::try_from(index) else {
+                    return None;
+                };
+                if !collect(data.call_sites.get(index)) {
+                    return None;
+                }
+            }
+        } else {
+            for call_site in &data.call_sites {
+                if !collect(call_site) {
+                    return None;
+                }
+            }
+        }
+        (!values.is_empty()).then(|| Type::from_type_vec(values))
+    }
+
     pub(super) fn build_method_sigs_for_class(
         &self,
         class_name: &str,
@@ -22,26 +86,30 @@ impl TypeRegistry {
             })
             .collect();
 
-        let external_rbs_sig_indexes: HashMap<String, usize> = all_methods
+        let external_rbs_sig_indexes: HashMap<(String, bool), usize> = all_methods
             .iter()
             .enumerate()
             .filter(|(_, method_sig)| method_sig.is_external_rbs_source())
-            .map(|(index, method_sig)| (method_sig.name.clone(), index))
+            .map(|(index, method_sig)| ((method_sig.name.clone(), method_sig.is_singleton), index))
             .collect();
-        let locally_annotated: HashSet<&str> = data
+        let locally_annotated: HashSet<(&str, bool)> = data
             .methods
             .iter()
             .filter(|method| method.has_annotation() && !method.rbs_file_source)
-            .map(|method| method.name.as_str())
+            .map(|method| (method.name.as_str(), method.is_singleton))
             .collect();
         for method_index in 0..all_methods.len() {
-            let Some(&rbs_sig_index) =
-                external_rbs_sig_indexes.get(all_methods[method_index].name.as_str())
-            else {
+            let Some(&rbs_sig_index) = external_rbs_sig_indexes.get(&(
+                all_methods[method_index].name.clone(),
+                all_methods[method_index].is_singleton,
+            )) else {
                 continue;
             };
             if all_methods[method_index].rbs_file_source
-                || locally_annotated.contains(all_methods[method_index].name.as_str())
+                || locally_annotated.contains(&(
+                    all_methods[method_index].name.as_str(),
+                    all_methods[method_index].is_singleton,
+                ))
                 || method_index == rbs_sig_index
             {
                 continue;
@@ -330,7 +398,7 @@ impl TypeRegistry {
         {
             params.retain(|param| param.kind != ParamKind::Block);
         }
-        let block = self.resolve_method_block(owner_class, method);
+        let block = self.resolve_method_block(owner_class, method, &params);
         let mut return_type = if method.attr_ivar.is_some()
             && method.has_annotation()
             && method.raw_return_type != Type::Untyped
@@ -425,16 +493,24 @@ impl TypeRegistry {
             && let Some(setter) =
                 self.lookup_method_def(receiver_class, &format!("{}=", method.name), false)
             && setter.attr_ivar == method.attr_ivar
+            && !method.has_annotation()
+            && !setter.has_annotation()
         {
-            let setter_params = self.resolve_params(receiver_class, setter);
-            if let Some(value) = setter_params.first()
-                && Self::is_concrete_for_global_resolve(&value.param_type)
+            if let Some(value_type) = self.attr_writer_call_site_value_type(receiver_class, setter)
+                && Self::is_concrete_for_global_resolve(&return_type)
             {
-                return_type = if Self::is_concrete_for_global_resolve(&return_type) {
-                    return_type.union_with(value.param_type.clone()).widen()
-                } else {
-                    value.param_type.clone()
-                };
+                return_type = return_type.union_with(value_type);
+            } else {
+                let setter_params = self.resolve_params(receiver_class, setter);
+                if let Some(value) = setter_params.first()
+                    && Self::is_concrete_for_global_resolve(&value.param_type)
+                {
+                    return_type = if Self::is_concrete_for_global_resolve(&return_type) {
+                        return_type.union_with(value.param_type.clone()).widen()
+                    } else {
+                        value.param_type.clone()
+                    };
+                }
             }
         }
         if method.name.ends_with('=')
@@ -595,14 +671,20 @@ impl TypeRegistry {
         }
     }
 
-    fn resolve_method_block(&self, owner_class: &str, method: &MethodDef) -> Option<HoverBlockSig> {
+    fn resolve_method_block(
+        &self,
+        owner_class: &str,
+        method: &MethodDef,
+        method_params: &[Param],
+    ) -> Option<HoverBlockSig> {
         if let Some(meta) =
             self.lookup_method_block_meta(owner_class, &method.name, method.is_singleton)
             && let Some((forwarded_name, forwarded_singleton)) = &meta.forwarded_block
             && let Some(target) =
                 self.lookup_method_def(owner_class, forwarded_name, *forwarded_singleton)
         {
-            return self.resolve_method_block(owner_class, target);
+            let target_params = self.resolve_params(owner_class, target);
+            return self.resolve_method_block(owner_class, target, &target_params);
         }
 
         if let Some(meta) =
@@ -615,7 +697,7 @@ impl TypeRegistry {
                 .enumerate()
                 .map(|(idx, ty)| Param {
                     name: format!("arg{idx}"),
-                    param_type: ty.clone(),
+                    param_type: self.resolve_param_refs_from_resolved(ty, method_params),
                     kind: ParamKind::Required,
                 })
                 .collect();
@@ -851,4 +933,54 @@ fn build_params_from_function_type(
         });
     }
     params
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn method_def(
+        name: &str,
+        return_type: Type,
+        is_singleton: bool,
+        rbs_file_source: bool,
+    ) -> MethodDef {
+        MethodDef {
+            name: Sym::new(name),
+            param_infos: Vec::new(),
+            raw_return_type: return_type,
+            sorbet_modifier_comments: Vec::new(),
+            rbs_annotated: false,
+            rbs_inline_annotated: false,
+            sig_annotated: false,
+            attr_ivar: None,
+            is_singleton,
+            rbs_file_source,
+            synthetic_dsl_source: false,
+            rbs_method_types: Arc::new(Vec::new()),
+            extra_overloads: Vec::new(),
+            loc: None,
+        }
+    }
+
+    #[test]
+    fn external_instance_signature_does_not_widen_same_named_singleton_method() {
+        let mut registry = TypeRegistry::new();
+        registry.add_method_def("String", method_def("===", Type::Bool, false, true));
+        registry.add_method_def("String", method_def("===", Type::True, true, false));
+
+        let class = registry.class_data.get("String").expect("String class");
+        let methods = registry.build_method_sigs_for_class("String", class);
+        let instance = methods
+            .iter()
+            .find(|method| method.name == "===" && !method.is_singleton)
+            .expect("instance ===");
+        let singleton = methods
+            .iter()
+            .find(|method| method.name == "===" && method.is_singleton)
+            .expect("singleton ===");
+
+        assert_eq!(instance.return_type, Type::Bool);
+        assert_eq!(singleton.return_type, Type::True);
+    }
 }

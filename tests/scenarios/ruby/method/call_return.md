@@ -100,7 +100,7 @@ class Checker
   def object_identity: (untyped x) -> Integer
   def to_string: (untyped x) -> String
   def to_integer: (untyped x) -> Integer
-  def check_pred: (untyped x) -> bool
+  def check_pred: (untyped x) -> untyped
 end
 ```
 
@@ -131,6 +131,46 @@ class Conv
   def flt: (untyped x) -> Float
   def arr: (untyped x) -> Array
   def neg: (untyped x) -> bool
+end
+```
+
+## Keep non-core methods untyped on an untyped receiver
+
+### update
+
+```ruby
+def unresolved_validity(x) = x.valid?
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def unresolved_validity: (untyped x) -> untyped
+end
+```
+
+## Keep overridden core methods untyped on an untyped receiver
+
+### update
+
+```ruby
+class CustomEquality
+  def ==(_other) = "not a boolean"
+end
+
+def unresolved_equality(x) = x == 1
+```
+
+### result
+
+```rbs
+class CustomEquality
+  def ==: (untyped _other) -> "not a boolean"
+end
+
+class Object < BasicObject
+  def unresolved_equality: (untyped x) -> untyped
 end
 ```
 

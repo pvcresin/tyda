@@ -150,6 +150,32 @@ class EmptyArrayTransformations
 end
 ```
 
+## Do not assume an optional empty-array default stays empty
+
+### update
+
+```ruby
+class OptionalArrayDefaultMap
+  attr_reader :values
+
+  def initialize(values: [])
+    @values = values
+  end
+
+  def mapped = values.map { :mapped }
+end
+```
+
+### result
+
+```rbs
+class OptionalArrayDefaultMap
+  def values: -> [ ]
+  def initialize: (?values: [ ]) -> void
+  def mapped: -> Array[:mapped]
+end
+```
+
 ## Source-defined array transformations keep their return types
 
 ```ruby
@@ -211,10 +237,6 @@ end
 ```
 
 ## Keep a block call unknown when part of its receiver is untyped
-
-```yaml
-known_issue: true
-```
 
 ```rbs
 class MixedHashReceiver

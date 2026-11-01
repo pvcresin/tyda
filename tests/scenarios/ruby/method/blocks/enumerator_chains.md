@@ -1108,10 +1108,6 @@ end
 
 ## User iterator enum substitutes call args
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

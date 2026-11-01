@@ -3172,10 +3172,11 @@ impl<'a> InferenceEngine<'a> {
             );
         } else {
             let widened = if is_virtual_attribute {
+                let getter_type = ty.clone().widen_arg_for_param();
                 self.registry
                     .lookup_method_return_type(class_name, attr_name)
-                    .map(|current| current.union_with(ty.clone()))
-                    .unwrap_or_else(|| ty.clone())
+                    .map(|current| current.union_with(getter_type.clone()))
+                    .unwrap_or(getter_type)
             } else {
                 ty.clone()
             };

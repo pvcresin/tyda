@@ -405,10 +405,6 @@ end
 
 ## Collect attr inside visibility wrappers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -439,10 +435,10 @@ item.label
 class Item
   def initialize: -> void
   private def name: -> "item"
-  private def count: -> (1 | 2)
+  private def count: -> 1 | 2
   private def count=: (Integer count) -> Integer
-  def label: -> "item"
   def set_count: -> 2
+  def label: -> "item"
 end
 ```
 

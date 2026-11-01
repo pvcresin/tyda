@@ -1278,16 +1278,52 @@ end
 
 ## Regexp named capture binds local in the matched branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
 class C
   def check
     if /(?<a>foo)/ =~ "foo"
+      a
+    else
+      1
+    end
+  end
+
+  def check_nonmatch
+    if /(?<a>foo)/ =~ "bar"
+      a
+    else
+      :not_matched
+    end
+  end
+
+  def check_dynamic(s)
+    if /(?<a>foo)/ =~ s
+      a
+    else
+      :not_matched
+    end
+  end
+
+  def check_options
+    if /(?<a>foo)/i =~ "FOO"
+      a
+    else
+      1
+    end
+  end
+
+  def check_metacharacter
+    if /(?<a>f.o)/ =~ "foo"
+      a
+    else
+      1
+    end
+  end
+
+  def check_multiple_captures
+    if /(?<a>foo)(?<b>bar)/ =~ "foobar"
       a
     else
       1
@@ -1306,6 +1342,11 @@ end
 ```rbs
 class C
   def check: -> String
+  def check_nonmatch: -> :not_matched
+  def check_dynamic: (untyped s) -> (String | :not_matched)
+  def check_options: -> String | 1
+  def check_metacharacter: -> String | 1
+  def check_multiple_captures: -> String | 1
   def after_match: (untyped s) -> String?
 end
 ```

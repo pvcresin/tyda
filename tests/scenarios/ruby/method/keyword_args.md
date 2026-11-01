@@ -375,10 +375,6 @@ end
 
 ## Preserve Hash method signatures after dynamic keyword splats
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class DynamicHashKeywordSplatCollections
   def collections(**rest) = [rest.keys, rest.values, rest.to_a, rest.entries, rest.to_h, rest.invert]
@@ -390,8 +386,8 @@ end
 
 ```rbs
 class DynamicHashKeywordSplatCollections
-  def collections: (**untyped rest) -> [Array[untyped], Array[untyped], Array[[untyped, untyped]], Array[[untyped, untyped]], Hash[untyped, untyped], Hash[untyped, untyped]]
-  def call: (untyped flag) -> [Array[untyped], Array[untyped], Array[[untyped, untyped]], Array[[untyped, untyped]], Hash[untyped, untyped], Hash[untyped, untyped]]
+  def collections: (**untyped rest) -> [Array[Symbol], Array[untyped], Array[[Symbol, untyped]], Array[[Symbol, untyped]], Hash[Symbol, untyped], Hash[untyped, Symbol]]
+  def call: (untyped flag) -> [Array[Symbol], Array[untyped], Array[[Symbol, untyped]], Array[[Symbol, untyped]], Hash[Symbol, untyped], Hash[untyped, Symbol]]
 end
 ```
 
@@ -441,10 +437,6 @@ end
 
 ## Read an optional key from a keyword rest record union
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class KeywordRestReadWithEmptyRecord
   def target(**rest) = rest[:only]
@@ -463,10 +455,6 @@ end
 
 ## Treat nil keyword splats as empty keyword arguments
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class KeywordRestReadWithNilSplatBranch
   def target(**rest) = rest[:value]
@@ -484,10 +472,6 @@ end
 ```
 
 ## Read from a method called with nil keyword splat
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class KeywordRestReadFromNilSplat
@@ -527,10 +511,6 @@ end
 
 ## Use the fetch fallback for missing keyword rest keys
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class KeywordRestFetchWithMissingKey
   def target(**rest) = rest.fetch(:value, "fallback")
@@ -569,10 +549,6 @@ end
 
 ## Keep keyword rest fetches unknown for dynamic hashes
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class KeywordRestFetchFromDynamicHash
   def target(**rest) = rest.fetch(:value, "fallback")
@@ -590,10 +566,6 @@ end
 ```
 
 ## Use a fetch block only for missing keyword rest keys
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class KeywordRestFetchWithBlock
@@ -675,10 +647,6 @@ end
 
 ## Resolve deferred method returns inside fetch fallbacks
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class KeywordRestFetchWithDeferredFallback
   def fallback(value) = value
@@ -698,10 +666,6 @@ end
 ```
 
 ## Fetch multiple values from caller keyword record variants
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class KeywordRestFetchValuesFromRecordVariants
@@ -741,10 +705,6 @@ end
 
 ## Use fetch_values block results for missing keyword rest keys
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class KeywordRestFetchValuesWithBlock
   def target(**rest) = rest.fetch_values(:value) { |key| key.to_s }
@@ -756,16 +716,12 @@ end
 
 ```rbs
 class KeywordRestFetchValuesWithBlock
-  def target: (**Integer rest) -> [Integer | String]
-  def call: (untyped flag) -> [Integer | String]
+  def target: (**Integer rest) -> [String | 1]
+  def call: (untyped flag) -> [String | 1]
 end
 ```
 
 ## Keep keyword rest values_at results tied to caller record variants
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class KeywordRestValuesAtRecordVariants
@@ -778,16 +734,12 @@ end
 
 ```rbs
 class KeywordRestValuesAtRecordVariants
-  def target: (**(Integer | String) rest) -> ["x"?, 1?]
-  def call: (untyped flag) -> ["x"?, 1?]
+  def target: (**(Integer | String) rest) -> ([nil, 1] | ["x", nil])
+  def call: (untyped flag) -> ([nil, 1] | ["x", nil])
 end
 ```
 
 ## Resolve keyword rest cardinality from caller records
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class KeywordRestStaticCardinality
@@ -815,10 +767,6 @@ end
 ```
 
 ## Resolve keyword rest collection methods from caller records
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class KeywordRestCollectionMethods

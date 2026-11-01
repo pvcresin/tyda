@@ -445,8 +445,12 @@ impl WorkspaceState {
         let t0 = Instant::now();
         let mut registry = TypeRegistry::new_pooled();
         registry.merge_rbs_registry(user_rbs);
+        let mut invalidate_resolved_params = false;
         for entry in self.files.values() {
-            entry.analysis.apply_to_registry(&mut registry);
+            invalidate_resolved_params |= entry.analysis.apply_to_registry_deferred(&mut registry);
+        }
+        if invalidate_resolved_params {
+            registry.invalidate_resolve_cache();
         }
         let t_merge = t0.elapsed();
 
@@ -525,10 +529,15 @@ impl WorkspaceState {
         pool: Option<&rayon::ThreadPool>,
     ) -> Arc<TypeRegistry> {
         let mut registry = base.clone();
+        let mut invalidate_resolved_params = false;
         for file_id in 0..self.paths_by_id.len() as FileId {
             if let Some(entry) = self.files.get(&file_id) {
-                entry.analysis.apply_to_registry(&mut registry);
+                invalidate_resolved_params |=
+                    entry.analysis.apply_to_registry_deferred(&mut registry);
             }
+        }
+        if invalidate_resolved_params {
+            registry.invalidate_resolve_cache();
         }
         Self::resolve_with_profile(&mut registry, ResolutionProfile::Batch, pool);
         Arc::new(registry)
@@ -542,11 +551,15 @@ impl WorkspaceState {
         snapshots: impl IntoIterator<Item = &'a FileAnalysisSnapshot>,
         pool: Option<&rayon::ThreadPool>,
     ) -> Arc<TypeRegistry> {
+        let mut invalidate_resolved_params = false;
         for snapshot in snapshots {
             let mut overlay = snapshot.clone();
             overlay.compact_file_local_facts();
             overlay.strip_base_context();
-            overlay.apply_to_registry(&mut base);
+            invalidate_resolved_params |= overlay.apply_to_registry_deferred(&mut base);
+        }
+        if invalidate_resolved_params {
+            base.invalidate_resolve_cache();
         }
         Self::resolve_with_profile(&mut base, ResolutionProfile::Batch, pool);
         Arc::new(base)
@@ -628,6 +641,7 @@ impl WorkspaceState {
 pub struct BatchProjectionBuilder {
     registry: TypeRegistry,
     applied: usize,
+    invalidate_resolved_params: bool,
 }
 
 impl BatchProjectionBuilder {
@@ -635,6 +649,7 @@ impl BatchProjectionBuilder {
         Self {
             registry: base,
             applied: 0,
+            invalidate_resolved_params: false,
         }
     }
 
@@ -644,7 +659,8 @@ impl BatchProjectionBuilder {
         I: IntoIterator<Item = (String, FileAnalysisSnapshot)>,
     {
         for (_file_path, analysis) in chunk {
-            analysis.apply_to_registry(&mut self.registry);
+            self.invalidate_resolved_params |=
+                analysis.apply_to_registry_deferred(&mut self.registry);
             self.applied += 1;
         }
     }
@@ -654,6 +670,9 @@ impl BatchProjectionBuilder {
     }
 
     pub fn finish(mut self, pool: Option<&rayon::ThreadPool>) -> Arc<TypeRegistry> {
+        if self.invalidate_resolved_params {
+            self.registry.invalidate_resolve_cache();
+        }
         WorkspaceState::resolve_with_profile(&mut self.registry, ResolutionProfile::Batch, pool);
         Arc::new(self.registry)
     }

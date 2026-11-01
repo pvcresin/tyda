@@ -192,7 +192,9 @@ impl Type {
             Type::MethodReturnRef(..)
             | Type::ReceiverMethodRef(..)
             | Type::ParamRef(..)
-            | Type::KeywordParamRef(..) => Some(Type::TruthyProjection(Box::new(ty.clone()))),
+            | Type::KeywordParamRef(..)
+            | Type::IvarRef(..)
+            | Type::GlobalVariableRef(..) => Some(Type::TruthyProjection(Box::new(ty.clone()))),
             Type::TruthyProjection(_) => Some(ty.clone()),
             Type::FalsyProjection(_) => None,
             _ => Some(ty.clone()),
@@ -216,7 +218,9 @@ impl Type {
             Type::MethodReturnRef(..)
             | Type::ReceiverMethodRef(..)
             | Type::ParamRef(..)
-            | Type::KeywordParamRef(..) => Some(Type::FalsyProjection(Box::new(ty.clone()))),
+            | Type::KeywordParamRef(..)
+            | Type::IvarRef(..)
+            | Type::GlobalVariableRef(..) => Some(Type::FalsyProjection(Box::new(ty.clone()))),
             Type::TruthyProjection(_) => None,
             Type::FalsyProjection(_) => Some(ty.clone()),
             _ => None,

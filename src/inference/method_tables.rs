@@ -45,6 +45,20 @@ pub const UNIVERSAL_BOOL_METHODS: &[&str] = &[
     "odd?",
 ];
 
+pub const RBS_CORE_BOOL_METHODS: &[&str] = &[
+    "nil?",
+    "is_a?",
+    "kind_of?",
+    "instance_of?",
+    "respond_to?",
+    "equal?",
+    "eql?",
+    "frozen?",
+    "==",
+    "!=",
+    "===",
+];
+
 pub const IDENTITY_METHODS: &[&str] = &["dup", "clone", "itself", "tap"];
 
 pub const RAILS_HASH_IDENTITY_METHODS: &[&str] = &[

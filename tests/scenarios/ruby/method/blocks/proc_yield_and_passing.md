@@ -615,7 +615,7 @@ end
 
 ```rbs
 class PairSource
-  def each_pair: (String left, Integer right) { (untyped, untyped) -> ("name" | [String, String]) } -> ("name" | [String, String])
+  def each_pair: (String left, Integer right) { (String, Integer) -> ("name" | [String, String]) } -> ("name" | [String, String])
 end
 
 class PairSourceCaller
@@ -629,6 +629,6 @@ class WhileYieldCaller
 end
 
 class WhileYieldSource
-  def each_value: ((String | Symbol)? value) { (untyped) -> String? } -> nil
+  def each_value: ((String | Symbol)? value) { ((String | Symbol)) -> String? } -> nil
 end
 ```

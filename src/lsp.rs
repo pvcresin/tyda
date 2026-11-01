@@ -7764,6 +7764,7 @@ end
             .map(str::to_string)
             .collect();
         file_paths.sort();
+        let mut invalidate_resolved_params = false;
         for file_path in file_paths {
             if file_path == consumer_path_string {
                 continue;
@@ -7772,11 +7773,15 @@ end
                 .workspace_state
                 .workspace_file(&file_path)
                 .expect("entry must exist for sorted path");
-            entry
+            invalidate_resolved_params |= entry
                 .analysis
-                .apply_to_registry(&mut enriched_workspace_registry);
+                .apply_to_registry_deferred(&mut enriched_workspace_registry);
         }
-        consumer_analysis.apply_to_registry(&mut enriched_workspace_registry);
+        invalidate_resolved_params |=
+            consumer_analysis.apply_to_registry_deferred(&mut enriched_workspace_registry);
+        if invalidate_resolved_params {
+            enriched_workspace_registry.invalidate_resolve_cache();
+        }
         enriched_workspace_registry.propagate_call_sites_for_hover();
         let enriched_analysis = crate::analysis::analyze_cached_file_with_deps(
             consumer_source,

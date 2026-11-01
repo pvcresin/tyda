@@ -105,7 +105,7 @@ class CaseTarget
 end
 
 class Object < BasicObject
-  def class_case_equality_override: (untyped flag) -> (1 | "value" | :other)
+  def class_case_equality_override: (untyped flag) -> (1 | "value")
 end
 ```
 

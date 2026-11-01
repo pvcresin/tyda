@@ -77,10 +77,6 @@ end
 
 ## rescue => e
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -98,7 +94,93 @@ end
 
 ```rbs
 class Object < BasicObject
-  def rescue_var: -> (:normal | ZeroDivisionError)
+  def rescue_var: -> :normal | ZeroDivisionError
+end
+```
+
+## rescue => e keeps StandardError for a dynamic raise
+
+### update
+
+```ruby
+def rescue_dynamic(error_class)
+  begin
+    raise error_class if [true, false].sample
+    :normal
+  rescue => e
+    e
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def rescue_dynamic: (untyped error_class) -> (:normal | StandardError)
+end
+```
+
+## fail class argument narrows bare rescue
+
+### update
+
+```ruby
+def fail_rescue_var
+  begin
+    fail TypeError if [true, false].sample
+    :normal
+  rescue => error
+    error
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def fail_rescue_var: -> :normal | TypeError
+end
+```
+
+## Source-defined raise and fail calls do not narrow rescue types
+
+### update
+
+```ruby
+class SourceDefinedRaiseMethods
+  def raise(_error_class) = :returned
+  def fail(_error_class) = :returned
+
+  def after_raise
+    begin
+      raise ArgumentError
+      :after_raise
+    rescue => error
+      error
+    end
+  end
+
+  def after_fail
+    begin
+      fail TypeError
+      :after_fail
+    rescue => error
+      error
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class SourceDefinedRaiseMethods
+  def raise: (singleton(ArgumentError) _error_class) -> :returned
+  def fail: (singleton(TypeError) _error_class) -> :returned
+  def after_raise: -> :after_raise | StandardError
+  def after_fail: -> :after_fail | StandardError
 end
 ```
 

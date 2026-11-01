@@ -984,10 +984,6 @@ end
 
 ## A method call supplies yielded argument types to its block
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1013,10 +1009,6 @@ end
 ```
 
 ## Yield types resolve positional and keyword method parameters
-
-```yaml
-known_issue: true
-```
 
 ### update
 

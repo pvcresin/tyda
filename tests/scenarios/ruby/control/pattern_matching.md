@@ -225,10 +225,6 @@ end
 
 ## Use hash pattern as condition
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -332,6 +328,33 @@ check_text(:AAA)
 class Object < BasicObject
   def check_interpolation: (untyped x) -> nil
   def check_text: (Symbol x) -> (:interpolated_symbol | :zzz)
+end
+```
+
+## Keep open symbols in literal symbol patterns
+
+### update
+
+```ruby
+def check_open_symbol(value)
+  case value
+  in "foo"
+    :string
+  in :foo
+    :symbol
+  else
+    :zzz
+  end
+end
+
+check_open_symbol(:AAA)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def check_open_symbol: (Symbol value) -> (:symbol | :zzz)
 end
 ```
 
@@ -787,10 +810,6 @@ end
 
 ## Narrow a Hash capture pattern within a Record union
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -888,14 +907,6 @@ class PatternMatchExpressionBindings
     payload
   end
 
-  def parenthesized_if(value)
-    if (value in Integer => number)
-      number
-    else
-      nil
-    end
-  end
-
   def parenthesized_ternary(value)
     (value in [Integer => number]) ? number : nil
   end
@@ -942,13 +953,6 @@ class PatternMatchExpressionBindings
 
   def short_circuit_or_rhs(value, flag)
     flag || (value in Integer => number)
-    number
-  end
-
-  def capture_after_parenthesized_if(value)
-    if (value in Integer => number)
-      :matched
-    end
     number
   end
 
@@ -1031,7 +1035,6 @@ end
 class PatternMatchExpressionBindings
   def assigned: (untyped value) -> Integer?
   def assigned_hash: (untyped value) -> Integer?
-  def parenthesized_if: (untyped value) -> Integer?
   def parenthesized_ternary: (untyped value) -> Integer?
   def short_circuit_and: (untyped value) -> (Integer | false)
   def negated_else: (untyped value) -> Integer?
@@ -1041,7 +1044,6 @@ class PatternMatchExpressionBindings
   def short_circuit_and_rhs: (untyped value, untyped flag) -> Integer?
   def short_circuit_or: (untyped value) -> Integer?
   def short_circuit_or_rhs: (untyped value, untyped flag) -> Integer?
-  def capture_after_parenthesized_if: (untyped value) -> Integer?
   def capture_in_or_condition: (untyped value, untyped flag) -> Integer?
   def capture_after_case_match: (untyped value) -> Integer
   def capture_in_case_else: (untyped value) -> :matched?
@@ -1051,6 +1053,53 @@ class PatternMatchExpressionBindings
   def parenthesized_local_assignment: -> 1
   def assignment_preserves_existing: (untyped value) -> (Integer | :before)
   def assignment_keeps_statically_matched_literal: -> "x"
+end
+```
+
+## Bind captures in a parenthesized pattern condition
+
+### update
+
+```ruby
+class PatternMatchExpressionBindings
+  def parenthesized_if(value)
+    if (value in Integer => number)
+      number
+    else
+      nil
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchExpressionBindings
+  def parenthesized_if: (untyped value) -> Integer?
+end
+```
+
+## Preserve captures after a parenthesized pattern condition
+
+### update
+
+```ruby
+class PatternMatchExpressionBindings
+  def capture_after_parenthesized_if(value)
+    if (value in Integer => number)
+      :matched
+    end
+    number
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchExpressionBindings
+  def capture_after_parenthesized_if: (untyped value) -> Integer?
 end
 ```
 

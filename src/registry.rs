@@ -77,6 +77,8 @@ thread_local! {
     // ivar type inference from `initialize` also recurses mutually via a separate path, so cut it off via `visiting`.
     static ATTR_INIT_VISITING: std::cell::RefCell<HashSet<(String, String)>> =
         std::cell::RefCell::new(HashSet::new());
+    static ATTR_WRITER_CALL_SITE_VISITING: std::cell::RefCell<HashSet<(String, String)>> =
+        std::cell::RefCell::new(HashSet::new());
 }
 
 struct AttrInitVisitGuard {
@@ -94,6 +96,27 @@ impl AttrInitVisitGuard {
 impl Drop for AttrInitVisitGuard {
     fn drop(&mut self) {
         ATTR_INIT_VISITING.with(|cell| {
+            cell.borrow_mut().remove(&self.key);
+        });
+    }
+}
+
+struct AttrWriterCallSiteVisitGuard {
+    key: (String, String),
+}
+
+impl AttrWriterCallSiteVisitGuard {
+    fn enter(class_name: &str, writer_name: &str) -> Option<Self> {
+        let key = (class_name.to_string(), writer_name.to_string());
+        let inserted =
+            ATTR_WRITER_CALL_SITE_VISITING.with(|cell| cell.borrow_mut().insert(key.clone()));
+        inserted.then_some(Self { key })
+    }
+}
+
+impl Drop for AttrWriterCallSiteVisitGuard {
+    fn drop(&mut self) {
+        ATTR_WRITER_CALL_SITE_VISITING.with(|cell| {
             cell.borrow_mut().remove(&self.key);
         });
     }
@@ -334,6 +357,7 @@ fn call_site_fingerprint(call_site: &CallSite) -> u64 {
         keyword_acc ^= kw_hasher.finish();
     }
     keyword_acc.hash(&mut hasher);
+    call_site.keyword_rest_shape.hash(&mut hasher);
     call_site.block.hash(&mut hasher);
     if let Some(context) = call_site.caller_context.as_deref() {
         context.class_name.hash(&mut hasher);
@@ -349,6 +373,8 @@ pub struct CallSite {
     pub method_is_singleton: bool,
     pub arg_types: Vec<Type>,
     pub keyword_arg_types: KeywordArgTypes,
+    // Preserve optional record fields from `**record` for named `**rest` parameters.
+    pub keyword_rest_shape: Option<Box<Type>>,
     // `block` only applies to a few sites, so box it to keep `CallSite` small.
     pub block: Option<Box<HoverBlockSig>>,
     // same for `caller_context` (generic param forwarding is rare).
@@ -403,6 +429,7 @@ struct CallSiteSummaryAccumulator {
     template: CallSite,
     arg_slots: Vec<TypeSlotAccumulator>,
     keyword_slots: HashMap<SharedName, TypeSlotAccumulator>,
+    keyword_rest_shape: Option<TypeSlotAccumulator>,
     block_return: Option<TypeSlotAccumulator>,
     block_required: bool,
 }
@@ -419,6 +446,10 @@ impl CallSiteSummaryAccumulator {
             .drain()
             .map(|(name, ty)| (name, TypeSlotAccumulator::from_type(ty)))
             .collect();
+        let keyword_rest_shape = site
+            .keyword_rest_shape
+            .take()
+            .map(|shape| TypeSlotAccumulator::from_type(*shape));
         let (block_return, block_required) = match &mut site.block {
             Some(block) => (
                 Some(TypeSlotAccumulator::from_type(std::mem::replace(
@@ -433,6 +464,7 @@ impl CallSiteSummaryAccumulator {
             template: site,
             arg_slots,
             keyword_slots,
+            keyword_rest_shape,
             block_return,
             block_required,
         }
@@ -455,6 +487,12 @@ impl CallSiteSummaryAccumulator {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(TypeSlotAccumulator::from_type(ty));
                 }
+            }
+        }
+        if let Some(shape) = other.keyword_rest_shape {
+            match &mut self.keyword_rest_shape {
+                Some(acc) => acc.add(*shape),
+                None => self.keyword_rest_shape = Some(TypeSlotAccumulator::from_type(*shape)),
             }
         }
         if let Some(mut other_block) = other.block {
@@ -483,6 +521,7 @@ impl CallSiteSummaryAccumulator {
             .into_iter()
             .map(|(name, acc)| (name, acc.finish()))
             .collect();
+        site.keyword_rest_shape = self.keyword_rest_shape.map(|acc| Box::new(acc.finish()));
         if let (Some(block), Some(acc)) = (&mut site.block, self.block_return) {
             block.return_type = acc.finish();
             block.required = self.block_required;
@@ -500,6 +539,7 @@ impl std::hash::Hash for CallSite {
             key.hash(state);
             value.hash(state);
         }
+        self.keyword_rest_shape.hash(state);
         self.block.hash(state);
         self.caller_context.hash(state);
     }
@@ -1260,6 +1300,9 @@ impl CallSite {
                 .values()
                 .map(Type::deep_extra_bytes)
                 .sum::<usize>();
+        }
+        if let Some(shape) = &self.keyword_rest_shape {
+            bytes += std::mem::size_of::<Type>() + shape.deep_extra_bytes();
         }
         if let Some(block) = &self.block {
             bytes += std::mem::size_of::<HoverBlockSig>();
@@ -5976,6 +6019,19 @@ impl TypeRegistry {
             .collect()
     }
 
+    pub(crate) fn method_call_has_user_source_definition(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        method_is_singleton: bool,
+    ) -> bool {
+        self.first_method_call_owner_cached(class_name, method_name, method_is_singleton)
+            .and_then(|(owner, is_singleton)| {
+                self.lookup_method_def(&owner, method_name, is_singleton)
+            })
+            .is_some_and(|method| !method.rbs_file_source)
+    }
+
     fn resolve_method_call_owner_ref<'a>(
         &'a self,
         class_name: &'a str,
@@ -7189,6 +7245,7 @@ impl TypeRegistry {
                 let mut visiting = FxHashSet::default();
                 let mut memo = FxHashMap::default();
                 visiting.insert((class_name, Sym::new(method.name)));
+                let _caller_ctx_memo_scope = CallerCtxMemoScope::enter();
                 RETURN_TYPE_READS.with(|cell| {
                     *cell.borrow_mut() = Some(FxHashSet::default());
                 });
@@ -8014,6 +8071,15 @@ impl TypeRegistry {
                 return_type: Box::new(self.resolve_param_refs_from_resolved(return_type, params)),
                 param_count: *param_count,
             },
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+                let resolved_inner = self.resolve_param_refs_from_resolved(inner, params);
+                let projection = if matches!(ty, Type::TruthyProjection(_)) {
+                    Type::project_truthy(&resolved_inner)
+                } else {
+                    Type::project_falsy(&resolved_inner)
+                };
+                projection.unwrap_or(Type::Bot)
+            }
             _ => ty.clone(),
         }
     }
@@ -8838,7 +8904,7 @@ impl TypeRegistry {
                     .iter()
                     .map(|t| Self::substitute_self_type(t, receiver_type))
                     .collect();
-                Type::from_type_vec(resolved)
+                Type::from_type_vec_preserve_untyped(resolved)
             }
             Type::Intersection(parts) => Type::Intersection(
                 parts
@@ -8874,33 +8940,45 @@ impl TypeRegistry {
         }
     }
 
-    /// The caller-context walk only rewrites `ParamRef` / `KeywordParamRef`. Every other
+    /// The caller-context walk resolves parameter and source-method return refs. Every other
     /// node is rebuilt from its children, which reproduces the input exactly — except
     /// `Type::Union`, which goes back through `from_type_vec_preserve_untyped` and can
     /// come out re-normalized. A subtree with neither is handed straight back.
-    fn call_site_walk_is_identity(ty: &Type) -> bool {
+    fn call_site_walk_is_identity(ty: &Type, resolve_method_return_refs: bool) -> bool {
         match ty {
-            Type::ParamRef(_) | Type::KeywordParamRef(_) | Type::Union(_) => false,
-            Type::Intersection(parts) | Type::Tuple(parts) => {
-                parts.iter().all(Self::call_site_walk_is_identity)
-            }
-            Type::Array(Some(inner)) => Self::call_site_walk_is_identity(inner),
-            Type::Hash(key, value) => {
-                key.as_deref().is_none_or(Self::call_site_walk_is_identity)
-                    && value
-                        .as_deref()
-                        .is_none_or(Self::call_site_walk_is_identity)
-            }
-            Type::Record(fields) => fields
+            Type::ParamRef(_)
+            | Type::KeywordParamRef(_)
+            | Type::Union(_)
+            | Type::TruthyProjection(..)
+            | Type::FalsyProjection(..) => false,
+            Type::MethodReturnRef(..) => !resolve_method_return_refs,
+            Type::Intersection(parts) | Type::Tuple(parts) => parts
                 .iter()
-                .all(|field| Self::call_site_walk_is_identity(&field.value)),
+                .all(|part| Self::call_site_walk_is_identity(part, resolve_method_return_refs)),
+            Type::Array(Some(inner)) => {
+                Self::call_site_walk_is_identity(inner, resolve_method_return_refs)
+            }
+            Type::Hash(key, value) => {
+                key.as_deref().is_none_or(|key| {
+                    Self::call_site_walk_is_identity(key, resolve_method_return_refs)
+                }) && value.as_deref().is_none_or(|value| {
+                    Self::call_site_walk_is_identity(value, resolve_method_return_refs)
+                })
+            }
+            Type::Record(fields) => fields.iter().all(|field| {
+                Self::call_site_walk_is_identity(&field.value, resolve_method_return_refs)
+            }),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _)
-            | Type::ReceiverMethodRef(subject, _) => Self::call_site_walk_is_identity(subject),
-            Type::Proc { return_type, .. } => Self::call_site_walk_is_identity(return_type),
+            | Type::ReceiverMethodRef(subject, _) => {
+                Self::call_site_walk_is_identity(subject, resolve_method_return_refs)
+            }
+            Type::Proc { return_type, .. } => {
+                Self::call_site_walk_is_identity(return_type, resolve_method_return_refs)
+            }
             _ => true,
         }
     }
@@ -8911,7 +8989,7 @@ impl TypeRegistry {
         ty: &Type,
         visiting: &mut FxHashSet<(String, String, bool)>,
     ) -> Type {
-        if Self::call_site_walk_is_identity(ty) {
+        if Self::call_site_walk_is_identity(ty, true) {
             return ty.clone();
         }
         let memo_key = call_site.caller_context.as_deref().map(|ctx| {
@@ -8951,6 +9029,19 @@ impl TypeRegistry {
         visiting: &mut FxHashSet<(String, String, bool)>,
     ) -> Type {
         match ty {
+            Type::MethodReturnRef(class_name, method_name) => {
+                let key = (class_name.to_string(), method_name.to_string(), false);
+                if !visiting.insert(key.clone()) {
+                    return ty.clone();
+                }
+                let resolved = self.resolve_deferred_refs_for_context(class_name, false, ty);
+                visiting.remove(&key);
+                if !Self::is_concrete_for_global_resolve(&resolved) {
+                    ty.clone()
+                } else {
+                    resolved
+                }
+            }
             Type::ParamRef(idx) => self
                 .resolve_caller_positional_param_type(call_site, *idx, visiting)
                 .unwrap_or(Type::Untyped),
@@ -9064,6 +9155,26 @@ impl TypeRegistry {
                 )),
                 param_count: *param_count,
             },
+            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+                let resolved_inner =
+                    self.resolve_call_site_type_from_caller_context(call_site, inner, visiting);
+                if Self::type_contains_param_ref(&resolved_inner)
+                    || Self::type_needs_deferred_resolution(&resolved_inner)
+                {
+                    if matches!(ty, Type::TruthyProjection(_)) {
+                        Type::TruthyProjection(Box::new(resolved_inner))
+                    } else {
+                        Type::FalsyProjection(Box::new(resolved_inner))
+                    }
+                } else {
+                    let projected = if matches!(ty, Type::TruthyProjection(_)) {
+                        Type::project_truthy(&resolved_inner)
+                    } else {
+                        Type::project_falsy(&resolved_inner)
+                    };
+                    projected.unwrap_or(Type::Bot)
+                }
+            }
             _ => ty.clone(),
         }
     }
@@ -9126,14 +9237,21 @@ impl TypeRegistry {
         visiting: &mut FxHashSet<(String, String, bool)>,
     ) -> Option<Vec<Param>> {
         let _guard = ResolveDepthGuard::enter()?;
+        let table_key = (
+            self.shared_name(class_name),
+            self.shared_name(method_name),
+            is_singleton,
+        );
         if PARAM_TABLE_MODE.with(|cell| cell.get()) {
-            let table_key = (
-                self.shared_name(class_name),
-                self.shared_name(method_name),
-                is_singleton,
-            );
             note_param_table_read(table_key.clone());
             return self.resolve_params_cache.get(&table_key);
+        }
+        if self
+            .resolve_params_cache_frozen
+            .load(std::sync::atomic::Ordering::Acquire)
+            && let Some(params) = self.resolve_params_cache.get(&table_key)
+        {
+            return Some(params);
         }
         let key = (
             class_name.to_string(),
@@ -9684,6 +9802,31 @@ impl TypeRegistry {
                                 }
                                 values.push(ty.clone());
                             }
+                            if let Some(shape) = site.keyword_rest_shape.as_deref() {
+                                let mut append_record_values = |fields: &[RecordField]| {
+                                    for field in fields {
+                                        if let RecordKey::Symbol(name) = &field.key
+                                            && !named.contains(name.as_str())
+                                        {
+                                            values.push(field.value.clone());
+                                        }
+                                    }
+                                };
+                                match shape {
+                                    Type::Record(fields) => append_record_values(fields),
+                                    Type::Union(parts) => {
+                                        for part in parts {
+                                            if let Type::Record(fields) = part {
+                                                append_record_values(fields);
+                                            }
+                                        }
+                                    }
+                                    Type::Hash(_, Some(value)) => {
+                                        values.push(value.as_ref().clone())
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                         let ty = if values.is_empty() {
                             Type::Untyped
@@ -10164,6 +10307,7 @@ impl TypeRegistry {
                     method_is_singleton: true,
                     arg_types: vec![Type::Singleton(target_class)],
                     keyword_arg_types: KeywordArgTypes::new(),
+                    keyword_rest_shape: None,
                     block: None,
                     caller_context: None,
                 },
@@ -11300,9 +11444,26 @@ mod tests {
             method_is_singleton: false,
             arg_types: Vec::new(),
             keyword_arg_types: KeywordArgTypes::new(),
+            keyword_rest_shape: None,
             block: None,
             caller_context: None,
         }
+    }
+
+    #[test]
+    fn call_site_deep_bytes_includes_keyword_rest_shape() {
+        let mut call_site = test_call_site("target");
+        let shape = Type::Record(vec![RecordField {
+            key: RecordKey::Symbol("value".to_string()),
+            value: Type::Array(Some(Box::new(Type::String))),
+            optional: true,
+        }]);
+        let expected_extra = std::mem::size_of::<Type>() + shape.deep_extra_bytes();
+
+        let without_shape = call_site.deep_bytes();
+        call_site.keyword_rest_shape = Some(Box::new(shape));
+
+        assert_eq!(call_site.deep_bytes(), without_shape + expected_extra);
     }
 
     /// finalize also resolves nominals inside compound types in lexical order (unresolved ones stay pending -> cross-file finalize).
@@ -11903,6 +12064,7 @@ mod tests {
                 method_is_singleton: false,
                 arg_types: Vec::new(),
                 keyword_arg_types: KeywordArgTypes::new(),
+                keyword_rest_shape: None,
                 block: None,
                 caller_context: None,
             },
@@ -11965,6 +12127,42 @@ mod tests {
         let bar = registry.class_data_for("Bar").expect("bar data");
         assert_eq!(bar.call_sites.len(), 1);
         assert!(!bar.has_pending_call_site_summary);
+    }
+
+    #[test]
+    fn applying_method_body_summary_invalidates_resolved_parameter_cache() {
+        let mut registry = TypeRegistry::new();
+        let mut method = test_method("consume", Type::Untyped);
+        method.is_singleton = true;
+        method.param_infos.push(ParamInfo {
+            name: "value".to_string(),
+            kind: ParamKind::Optional,
+            default_type: Some(Type::Nil),
+        });
+        registry.add_method_def("Receiver", method);
+
+        let before = registry
+            .lookup_method_sig_with_hint("Receiver", "consume", true)
+            .expect("method signature should be available");
+        assert_eq!(before.params[0].param_type, Type::Nil);
+
+        let mut call_site = test_call_site("consume");
+        call_site.method_is_singleton = true;
+        call_site.arg_types.push(Type::Class(Sym::new("Item")));
+        registry.apply_method_body_summary(&MethodBodySummary {
+            call_sites_by_class: vec![("Receiver".into(), Arc::from(vec![call_site]))],
+            ..MethodBodySummary::default()
+        });
+
+        let after = registry
+            .lookup_method_sig_with_hint("Receiver", "consume", true)
+            .expect("method signature should remain available");
+        assert!(matches!(
+            &after.params[0].param_type,
+            Type::Union(parts)
+                if parts.contains(&Type::Nil)
+                    && parts.contains(&Type::Class(Sym::new("Item")))
+        ));
     }
 
     /// accumulation during grouping (unnormalized union buildup) gets canonicalized on write-back,

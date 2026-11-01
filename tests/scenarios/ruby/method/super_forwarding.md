@@ -172,10 +172,6 @@ end
 
 ## A block literal on explicit super is forwarded to the parent
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -208,10 +204,6 @@ end
 
 ## A block literal on implicit super replaces the caller's block
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -243,10 +235,6 @@ end
 ```
 
 ## An explicit empty super still forwards its attached block
-
-```yaml
-known_issue: true
-```
 
 ### update
 
