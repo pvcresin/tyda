@@ -520,3 +520,35 @@ class ResultBuilder
   def self.build_with_keyword: (value: untyped) -> :built
 end
 ```
+
+## Unreachable local arguments stay bot beside other calls
+
+### update
+
+```ruby
+class BotArgumentFactory
+  def self.build(value, decoration) = :built
+end
+
+class BotArgumentBoundary
+  def decoration = :decorated
+
+  def unreachable_call
+    value = raise "stop"
+    BotArgumentFactory.build(value, decoration)
+  end
+end
+```
+
+### result
+
+```rbs
+class BotArgumentBoundary
+  def decoration: -> :decorated
+  def unreachable_call: -> bot
+end
+
+class BotArgumentFactory
+  def self.build: (untyped value, untyped decoration) -> :built
+end
+```

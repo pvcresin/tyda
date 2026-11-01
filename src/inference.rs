@@ -5185,78 +5185,92 @@ impl<'a> InferenceEngine<'a> {
         })
     }
 
-    fn call_arguments_include_method_call(call: &ruby_prism::CallNode<'_>) -> bool {
-        call.arguments().is_some_and(|arguments| {
-            arguments.arguments().iter().any(|argument| match argument {
-                Node::CallNode { .. } => true,
-                Node::SplatNode { .. } => argument
-                    .as_splat_node()
-                    .and_then(|splat| splat.expression())
-                    .is_some_and(|expression| matches!(expression, Node::CallNode { .. })),
-                Node::KeywordHashNode { .. } => {
-                    argument.as_keyword_hash_node().is_some_and(|keyword_hash| {
-                        keyword_hash.elements().iter().any(|element| match element {
-                            Node::AssocNode { .. } => {
-                                element.as_assoc_node().is_some_and(|association| {
-                                    matches!(association.value(), Node::CallNode { .. })
-                                })
-                            }
-                            Node::AssocSplatNode { .. } => element
-                                .as_assoc_splat_node()
-                                .and_then(|association| association.value())
-                                .is_some_and(|expression| {
-                                    matches!(expression, Node::CallNode { .. })
-                                }),
-                            _ => false,
-                        })
-                    })
-                }
-                _ => false,
-            })
+    fn node_is_implicit_self_method_call(node: &Node<'_>) -> bool {
+        node.as_call_node().is_some_and(|call| {
+            call.receiver()
+                .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }))
         })
     }
 
-    fn node_contains_implicit_method_call(node: &Node<'_>) -> bool {
-        match node {
-            Node::CallNode { .. } => {
-                let call = node.as_call_node().expect("must be CallNode");
-                let method = call.name().as_slice();
-                let implicit_self = call
-                    .receiver()
-                    .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }));
-                (implicit_self && !matches!(method, b"raise" | b"fail" | b"exit" | b"abort"))
-                    || call
-                        .receiver()
-                        .is_some_and(|receiver| Self::node_contains_implicit_method_call(&receiver))
-                    || call.arguments().is_some_and(|arguments| {
-                        arguments
-                            .arguments()
-                            .iter()
-                            .any(|argument| Self::node_contains_implicit_method_call(&argument))
-                    })
+    fn call_arguments_include_bot_implicit_self_call(
+        &self,
+        call: &ruby_prism::CallNode<'_>,
+        positional_types: &[Type],
+        keyword_types: &HashMap<String, Type>,
+        parse_result: &ParseResult<'_>,
+    ) -> bool {
+        let Some(arguments) = call.arguments() else {
+            return false;
+        };
+
+        let mut positional_index: usize = 0;
+        let mut positional_indices_match = true;
+        for argument in arguments.arguments().iter() {
+            match argument {
+                Node::KeywordHashNode { .. } => {
+                    let Some(keyword_hash) = argument.as_keyword_hash_node() else {
+                        continue;
+                    };
+                    let is_positional_hash = keyword_hash.elements().iter().any(|element| {
+                        element.as_assoc_node().is_some_and(|association| {
+                            Self::node_to_symbol_or_label(&association.key(), parse_result)
+                                .is_none()
+                        })
+                    });
+                    if is_positional_hash {
+                        let Some(next_index) = positional_index.checked_add(1) else {
+                            return false;
+                        };
+                        positional_index = next_index;
+                        continue;
+                    }
+
+                    for element in keyword_hash.elements().iter() {
+                        let Some(association) = element.as_assoc_node() else {
+                            continue;
+                        };
+                        let Some(name) =
+                            Self::node_to_symbol_or_label(&association.key(), parse_result)
+                        else {
+                            continue;
+                        };
+                        if keyword_types.get(&name) == Some(&Type::Bot)
+                            && Self::node_is_implicit_self_method_call(&association.value())
+                        {
+                            return true;
+                        }
+                    }
+                }
+                Node::SplatNode { .. } => {
+                    if positional_indices_match
+                        && positional_types.get(positional_index) == Some(&Type::Bot)
+                        && argument
+                            .as_splat_node()
+                            .and_then(|splat| splat.expression())
+                            .is_some_and(|expression| {
+                                Self::node_is_implicit_self_method_call(&expression)
+                            })
+                    {
+                        return true;
+                    }
+                    positional_indices_match = false;
+                }
+                Node::ForwardingArgumentsNode { .. } => positional_indices_match = false,
+                _ => {
+                    if positional_indices_match
+                        && positional_types.get(positional_index) == Some(&Type::Bot)
+                        && Self::node_is_implicit_self_method_call(&argument)
+                    {
+                        return true;
+                    }
+                    let Some(next_index) = positional_index.checked_add(1) else {
+                        return false;
+                    };
+                    positional_index = next_index;
+                }
             }
-            Node::KeywordHashNode { .. } => {
-                node.as_keyword_hash_node().is_some_and(|keyword_hash| {
-                    keyword_hash
-                        .elements()
-                        .iter()
-                        .any(|element| Self::node_contains_implicit_method_call(&element))
-                })
-            }
-            Node::AssocNode { .. } => node.as_assoc_node().is_some_and(|association| {
-                Self::node_contains_implicit_method_call(&association.key())
-                    || Self::node_contains_implicit_method_call(&association.value())
-            }),
-            Node::AssocSplatNode { .. } => node
-                .as_assoc_splat_node()
-                .and_then(|association| association.value())
-                .is_some_and(|value| Self::node_contains_implicit_method_call(&value)),
-            Node::SplatNode { .. } => node
-                .as_splat_node()
-                .and_then(|splat| splat.expression())
-                .is_some_and(|expression| Self::node_contains_implicit_method_call(&expression)),
-            _ => false,
         }
+        false
     }
 
     fn statements_last_is_break(statements: &ruby_prism::StatementsNode<'_>) -> bool {
@@ -26060,7 +26074,7 @@ impl<'a> InferenceEngine<'a> {
                         self.infer_node_type(class_name, &receiver, parse_result, scope);
                     if receiver_type == Type::Bot
                         && !self.node_always_exits_in_method_scope(class_name, scope, &receiver)
-                        && Self::node_contains_implicit_method_call(&receiver)
+                        && Self::node_is_implicit_self_method_call(&receiver)
                     {
                         receiver_type = Type::Untyped;
                     }
@@ -27215,7 +27229,12 @@ impl<'a> InferenceEngine<'a> {
                                     || kw_types.values().any(|ty| matches!(ty, Type::Bot));
                             if has_bot_argument
                                 && (self.call_argument_always_exits(class_name, scope, &call_node)
-                                    || !Self::call_arguments_include_method_call(&call_node))
+                                    || !self.call_arguments_include_bot_implicit_self_call(
+                                        &call_node,
+                                        &arg_types,
+                                        &kw_types,
+                                        parse_result,
+                                    ))
                             {
                                 break 'recv Type::Bot;
                             }
