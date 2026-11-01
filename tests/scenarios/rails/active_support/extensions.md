@@ -18,6 +18,7 @@ class Probe
   def safe_constantize = "String".safe_constantize
   def truncate = "a long title".truncate(4)
   def ends_with = "rails".ends_with?("ls")
+  def starts_with = "rails".starts_with?("ra")
   def ordinalize = 4.ordinalize
   def first_character = "rails".first
   def last_character = "rails".last
@@ -43,6 +44,7 @@ class Probe
   def safe_constantize: -> singleton(String)
   def truncate: -> String
   def ends_with: -> bool
+  def starts_with: -> bool
   def ordinalize: -> String
   def first_character: -> String
   def last_character: -> String

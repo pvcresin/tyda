@@ -207,7 +207,7 @@ pub(in crate::inference) fn synthetic_method_return(
         Type::String | Type::LiteralString(_) => match method_name {
             "constantize" | "safe_constantize" => Some(Type::Untyped),
             "truncate" => Some(Type::String),
-            "ends_with?" => Some(Type::Bool),
+            "ends_with?" | "starts_with?" => Some(Type::Bool),
             _ => None,
         },
         Type::Singleton(name) if name.as_str() == "Time" => match method_name {

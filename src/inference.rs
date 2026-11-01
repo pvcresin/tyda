@@ -1326,6 +1326,7 @@ enum NamespaceLookup {
 #[derive(Debug, Default)]
 struct BodyScanSummary {
     yields: bool,
+    block_param_written: bool,
     yield_param_types: Vec<Vec<Type>>,
 }
 
@@ -5145,6 +5146,119 @@ impl<'a> InferenceEngine<'a> {
         Self::node_always_exits(node)
     }
 
+    fn call_argument_always_exits(
+        &self,
+        class_name: &str,
+        scope: &Scope,
+        call: &ruby_prism::CallNode<'_>,
+    ) -> bool {
+        call.arguments().is_some_and(|arguments| {
+            arguments.arguments().iter().any(|argument| match argument {
+                Node::KeywordHashNode { .. } => {
+                    let keyword_hash = argument
+                        .as_keyword_hash_node()
+                        .expect("must be KeywordHashNode");
+                    keyword_hash.elements().iter().any(|element| match element {
+                        Node::AssocNode { .. } => {
+                            let association = element.as_assoc_node().expect("must be AssocNode");
+                            self.node_always_exits_in_method_scope(
+                                class_name,
+                                scope,
+                                &association.key(),
+                            ) || self.node_always_exits_in_method_scope(
+                                class_name,
+                                scope,
+                                &association.value(),
+                            )
+                        }
+                        _ => self.node_always_exits_in_method_scope(class_name, scope, &element),
+                    })
+                }
+                Node::SplatNode { .. } => argument
+                    .as_splat_node()
+                    .and_then(|splat| splat.expression())
+                    .is_some_and(|expression| {
+                        self.node_always_exits_in_method_scope(class_name, scope, &expression)
+                    }),
+                _ => self.node_always_exits_in_method_scope(class_name, scope, &argument),
+            })
+        })
+    }
+
+    fn call_arguments_include_method_call(call: &ruby_prism::CallNode<'_>) -> bool {
+        call.arguments().is_some_and(|arguments| {
+            arguments.arguments().iter().any(|argument| match argument {
+                Node::CallNode { .. } => true,
+                Node::SplatNode { .. } => argument
+                    .as_splat_node()
+                    .and_then(|splat| splat.expression())
+                    .is_some_and(|expression| matches!(expression, Node::CallNode { .. })),
+                Node::KeywordHashNode { .. } => {
+                    argument.as_keyword_hash_node().is_some_and(|keyword_hash| {
+                        keyword_hash.elements().iter().any(|element| match element {
+                            Node::AssocNode { .. } => {
+                                element.as_assoc_node().is_some_and(|association| {
+                                    matches!(association.value(), Node::CallNode { .. })
+                                })
+                            }
+                            Node::AssocSplatNode { .. } => element
+                                .as_assoc_splat_node()
+                                .and_then(|association| association.value())
+                                .is_some_and(|expression| {
+                                    matches!(expression, Node::CallNode { .. })
+                                }),
+                            _ => false,
+                        })
+                    })
+                }
+                _ => false,
+            })
+        })
+    }
+
+    fn node_contains_implicit_method_call(node: &Node<'_>) -> bool {
+        match node {
+            Node::CallNode { .. } => {
+                let call = node.as_call_node().expect("must be CallNode");
+                let method = call.name().as_slice();
+                let implicit_self = call
+                    .receiver()
+                    .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }));
+                (implicit_self && !matches!(method, b"raise" | b"fail" | b"exit" | b"abort"))
+                    || call
+                        .receiver()
+                        .is_some_and(|receiver| Self::node_contains_implicit_method_call(&receiver))
+                    || call.arguments().is_some_and(|arguments| {
+                        arguments
+                            .arguments()
+                            .iter()
+                            .any(|argument| Self::node_contains_implicit_method_call(&argument))
+                    })
+            }
+            Node::KeywordHashNode { .. } => {
+                node.as_keyword_hash_node().is_some_and(|keyword_hash| {
+                    keyword_hash
+                        .elements()
+                        .iter()
+                        .any(|element| Self::node_contains_implicit_method_call(&element))
+                })
+            }
+            Node::AssocNode { .. } => node.as_assoc_node().is_some_and(|association| {
+                Self::node_contains_implicit_method_call(&association.key())
+                    || Self::node_contains_implicit_method_call(&association.value())
+            }),
+            Node::AssocSplatNode { .. } => node
+                .as_assoc_splat_node()
+                .and_then(|association| association.value())
+                .is_some_and(|value| Self::node_contains_implicit_method_call(&value)),
+            Node::SplatNode { .. } => node
+                .as_splat_node()
+                .and_then(|splat| splat.expression())
+                .is_some_and(|expression| Self::node_contains_implicit_method_call(&expression)),
+            _ => false,
+        }
+    }
+
     fn statements_last_is_break(statements: &ruby_prism::StatementsNode<'_>) -> bool {
         statements
             .body()
@@ -6439,13 +6553,13 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         body: &Node<'_>,
         block_param_name: Option<&str>,
+        block_param_written: bool,
         method_is_singleton: bool,
     ) -> Option<bool> {
         let mut found_yield = false;
         let trust_block_given_guard =
             self.block_given_guard_is_trusted(class_name, method_is_singleton);
-        let trust_block_param_guard =
-            block_param_name.is_some_and(|name| !Self::method_body_writes_local(body, name));
+        let trust_block_param_guard = block_param_name.is_some() && !block_param_written;
         let requires_block = Self::node_yield_requires_block(
             body,
             block_param_name,
@@ -6455,58 +6569,6 @@ impl<'a> InferenceEngine<'a> {
             &mut found_yield,
         );
         found_yield.then_some(requires_block)
-    }
-
-    fn method_body_writes_local(body: &Node<'_>, name: &str) -> bool {
-        struct LocalWriteVisitor {
-            name: String,
-            found: bool,
-        }
-
-        impl LocalWriteVisitor {
-            fn sees_write(&self, node: Node<'_>) -> bool {
-                match node {
-                    Node::LocalVariableWriteNode { .. } => node
-                        .as_local_variable_write_node()
-                        .is_some_and(|write| write.name().as_slice() == self.name.as_bytes()),
-                    Node::LocalVariableAndWriteNode { .. } => node
-                        .as_local_variable_and_write_node()
-                        .is_some_and(|write| write.name().as_slice() == self.name.as_bytes()),
-                    Node::LocalVariableOrWriteNode { .. } => node
-                        .as_local_variable_or_write_node()
-                        .is_some_and(|write| write.name().as_slice() == self.name.as_bytes()),
-                    Node::LocalVariableOperatorWriteNode { .. } => node
-                        .as_local_variable_operator_write_node()
-                        .is_some_and(|write| write.name().as_slice() == self.name.as_bytes()),
-                    _ => false,
-                }
-            }
-        }
-
-        impl<'pr> ruby_prism::Visit<'pr> for LocalWriteVisitor {
-            fn visit_branch_node_enter(&mut self, node: Node<'pr>) {
-                self.found |= self.sees_write(node);
-            }
-
-            fn visit_leaf_node_enter(&mut self, node: Node<'pr>) {
-                self.found |= self.sees_write(node);
-            }
-
-            fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
-
-            fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
-
-            fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
-
-            fn visit_singleton_class_node(&mut self, _node: &ruby_prism::SingletonClassNode<'pr>) {}
-        }
-
-        let mut visitor = LocalWriteVisitor {
-            name: name.to_string(),
-            found: false,
-        };
-        ruby_prism::Visit::visit(&mut visitor, body);
-        visitor.found
     }
 
     fn node_yield_requires_block(
@@ -15536,6 +15598,9 @@ impl<'a> InferenceEngine<'a> {
                     class_name,
                     &body,
                     scope.current_block_param_name.as_deref(),
+                    body_scan_summary
+                        .as_ref()
+                        .is_some_and(|summary| summary.block_param_written),
                     is_singleton,
                 )
             })
@@ -15869,30 +15934,57 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> BodyScanSummary {
+        let (yields, block_param_written) =
+            Self::method_body_scan_flags(body, scope.current_block_param_name.as_deref());
         let mut summary = BodyScanSummary {
-            yields: Self::method_body_contains_yield(body),
+            yields,
+            block_param_written,
             ..BodyScanSummary::default()
         };
         self.scan_method_body_summary_node(class_name, body, parse_result, scope, &mut summary);
         summary
     }
 
-    fn method_body_contains_yield(body: &Node<'_>) -> bool {
-        struct YieldVisitor {
-            found: bool,
+    fn method_body_scan_flags(body: &Node<'_>, block_param_name: Option<&str>) -> (bool, bool) {
+        struct BodyFlagsVisitor<'a> {
+            block_param_name: Option<&'a [u8]>,
+            yields: bool,
+            block_param_written: bool,
         }
 
-        impl<'pr> ruby_prism::Visit<'pr> for YieldVisitor {
-            fn visit_branch_node_enter(&mut self, node: Node<'pr>) {
+        impl BodyFlagsVisitor<'_> {
+            fn visit_node(&mut self, node: Node<'_>) {
                 if matches!(node, Node::YieldNode { .. }) {
-                    self.found = true;
+                    self.yields = true;
                 }
+                let Some(name) = self.block_param_name else {
+                    return;
+                };
+                self.block_param_written |= match node {
+                    Node::LocalVariableWriteNode { .. } => node
+                        .as_local_variable_write_node()
+                        .is_some_and(|write| write.name().as_slice() == name),
+                    Node::LocalVariableAndWriteNode { .. } => node
+                        .as_local_variable_and_write_node()
+                        .is_some_and(|write| write.name().as_slice() == name),
+                    Node::LocalVariableOrWriteNode { .. } => node
+                        .as_local_variable_or_write_node()
+                        .is_some_and(|write| write.name().as_slice() == name),
+                    Node::LocalVariableOperatorWriteNode { .. } => node
+                        .as_local_variable_operator_write_node()
+                        .is_some_and(|write| write.name().as_slice() == name),
+                    _ => false,
+                };
+            }
+        }
+
+        impl<'pr> ruby_prism::Visit<'pr> for BodyFlagsVisitor<'_> {
+            fn visit_branch_node_enter(&mut self, node: Node<'pr>) {
+                self.visit_node(node);
             }
 
             fn visit_leaf_node_enter(&mut self, node: Node<'pr>) {
-                if matches!(node, Node::YieldNode { .. }) {
-                    self.found = true;
-                }
+                self.visit_node(node);
             }
 
             fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
@@ -15904,9 +15996,13 @@ impl<'a> InferenceEngine<'a> {
             fn visit_singleton_class_node(&mut self, _node: &ruby_prism::SingletonClassNode<'pr>) {}
         }
 
-        let mut visitor = YieldVisitor { found: false };
+        let mut visitor = BodyFlagsVisitor {
+            block_param_name: block_param_name.map(str::as_bytes),
+            yields: false,
+            block_param_written: false,
+        };
         ruby_prism::Visit::visit(&mut visitor, body);
-        visitor.found
+        (visitor.yields, visitor.block_param_written)
     }
 
     fn scan_method_body_summary_node(
@@ -25960,8 +26056,14 @@ impl<'a> InferenceEngine<'a> {
                     result
                 } else {
                     let receiver = call_node.receiver().unwrap();
-                    let receiver_type =
+                    let mut receiver_type =
                         self.infer_node_type(class_name, &receiver, parse_result, scope);
+                    if receiver_type == Type::Bot
+                        && !self.node_always_exits_in_method_scope(class_name, scope, &receiver)
+                        && Self::node_contains_implicit_method_call(&receiver)
+                    {
+                        receiver_type = Type::Untyped;
+                    }
                     let receiver_type = if receiver_type == Type::Untyped
                         && matches!(
                             receiver,
@@ -26026,7 +26128,9 @@ impl<'a> InferenceEngine<'a> {
                     };
 
                     let result = 'recv: {
-                        if receiver_type == Type::Bot {
+                        if receiver_type == Type::Bot
+                            && self.node_always_exits_in_method_scope(class_name, scope, &receiver)
+                        {
                             break 'recv Type::Bot;
                         }
                         if nil_safe_dispatch && safe_nav_receiver_type == Type::Bot {
@@ -27097,7 +27201,7 @@ impl<'a> InferenceEngine<'a> {
                         }
                         if let Some(target_class) = self.type_to_class_name(&safe_nav_receiver_type)
                         {
-                            let (arg_types, kw_types, keyword_rest_shape) =
+                            let (mut arg_types, mut kw_types, mut keyword_rest_shape) =
                                 scoped_call_args.take().unwrap_or_else(|| {
                                     self.collect_call_arg_types_scoped_with_rest_shape(
                                         node,
@@ -27106,10 +27210,30 @@ impl<'a> InferenceEngine<'a> {
                                         scope,
                                     )
                                 });
-                            if arg_types.iter().any(|ty| matches!(ty, Type::Bot))
-                                || kw_types.values().any(|ty| matches!(ty, Type::Bot))
+                            let has_bot_argument =
+                                arg_types.iter().any(|ty| matches!(ty, Type::Bot))
+                                    || kw_types.values().any(|ty| matches!(ty, Type::Bot));
+                            if has_bot_argument
+                                && (self.call_argument_always_exits(class_name, scope, &call_node)
+                                    || !Self::call_arguments_include_method_call(&call_node))
                             {
                                 break 'recv Type::Bot;
+                            }
+                            for ty in &mut arg_types {
+                                if matches!(ty, Type::Bot) {
+                                    *ty = Type::Untyped;
+                                }
+                            }
+                            for ty in kw_types.values_mut() {
+                                if matches!(ty, Type::Bot) {
+                                    *ty = Type::Untyped;
+                                }
+                            }
+                            if keyword_rest_shape
+                                .as_deref()
+                                .is_some_and(|ty| matches!(ty, Type::Bot))
+                            {
+                                keyword_rest_shape = Some(Box::new(Type::Untyped));
                             }
                             call_arg_types_for_generic = arg_types.clone();
                             call_kw_arg_types_for_generic = kw_types.clone();

@@ -482,3 +482,41 @@ class UnknownBuilder
   def self.make: -> untyped
 end
 ```
+
+## Abstract method arguments do not hide callee returns
+
+### update
+
+```ruby
+class ResultBuilder
+  def self.build(value) = :built
+  def self.build_with_keyword(value:) = :built
+end
+
+class AbstractSource
+  def value = raise NotImplementedError
+  def build = ResultBuilder.build(value)
+  def build_with_keyword = ResultBuilder.build_with_keyword(value: value)
+  def value_as_string = value.to_s
+  def build_after_raise = ResultBuilder.build(raise "stop")
+  def build_after_keyword_raise = ResultBuilder.build_with_keyword(value: raise("stop"))
+end
+```
+
+### result
+
+```rbs
+class AbstractSource
+  def value: -> bot
+  def build: -> :built
+  def build_with_keyword: -> :built
+  def value_as_string: -> String
+  def build_after_raise: -> bot
+  def build_after_keyword_raise: -> bot
+end
+
+class ResultBuilder
+  def self.build: (untyped value) -> :built
+  def self.build_with_keyword: (value: untyped) -> :built
+end
+```
