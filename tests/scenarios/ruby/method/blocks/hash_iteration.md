@@ -202,6 +202,40 @@ class Object < BasicObject
 end
 ```
 
+## Recursive Hash and Array traversal
+
+### update
+
+```ruby
+class RecursiveContainerTraversal
+  def visit(value)
+    case value
+    when Hash then visit_hash(value)
+    when Array then visit_array(value)
+    else value.to_s
+    end
+  end
+
+  def visit_hash(hash)
+    hash.each { |_key, value| visit(value) }
+  end
+
+  def visit_array(array)
+    array.each { |value| visit(value) }
+  end
+end
+```
+
+### result
+
+```rbs
+class RecursiveContainerTraversal
+  def visit: (untyped value) -> (String | Array | Hash)
+  def visit_hash: (Hash hash) -> Hash
+  def visit_array: (Array array) -> Array
+end
+```
+
 ## Hash destructive filters update receiver
 
 ### update

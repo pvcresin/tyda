@@ -8983,6 +8983,45 @@ impl TypeRegistry {
         }
     }
 
+    fn type_contains_receiver_method_ref(ty: &Type, method_name: Sym) -> bool {
+        match ty {
+            Type::ReceiverMethodRef(receiver, name) => {
+                *name == method_name
+                    || Self::type_contains_receiver_method_ref(receiver, method_name)
+            }
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => parts
+                .iter()
+                .any(|part| Self::type_contains_receiver_method_ref(part, method_name)),
+            Type::Array(Some(inner)) => Self::type_contains_receiver_method_ref(inner, method_name),
+            Type::Hash(key, value) => {
+                key.as_deref()
+                    .is_some_and(|ty| Self::type_contains_receiver_method_ref(ty, method_name))
+                    || value
+                        .as_deref()
+                        .is_some_and(|ty| Self::type_contains_receiver_method_ref(ty, method_name))
+            }
+            Type::Record(fields) => fields
+                .iter()
+                .any(|field| Self::type_contains_receiver_method_ref(&field.value, method_name)),
+            Type::PatternIndexRef(inner, _)
+            | Type::PatternRestRef(inner)
+            | Type::PatternTrailingRef(inner, _)
+            | Type::PatternKeyRef(inner, _)
+            | Type::PatternKeyRestRef(inner, _)
+            | Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner) => {
+                Self::type_contains_receiver_method_ref(inner, method_name)
+            }
+            Type::Proc { return_type, .. } => {
+                Self::type_contains_receiver_method_ref(return_type, method_name)
+            }
+            Type::Generic { args, .. } => args
+                .iter()
+                .any(|arg| Self::type_contains_receiver_method_ref(arg, method_name)),
+            _ => false,
+        }
+    }
+
     fn resolve_call_site_type_from_caller_context(
         &self,
         call_site: &CallSite,
@@ -9136,14 +9175,20 @@ impl TypeRegistry {
                 ),
                 keys.clone(),
             ),
-            Type::ReceiverMethodRef(receiver_type, method_name) => Type::ReceiverMethodRef(
-                Box::new(self.resolve_call_site_type_from_caller_context(
+            Type::ReceiverMethodRef(receiver_type, method_name) => {
+                let resolved_receiver = self.resolve_call_site_type_from_caller_context(
                     call_site,
                     receiver_type,
                     visiting,
-                )),
-                *method_name,
-            ),
+                );
+                if PARAM_TABLE_MODE.with(|cell| cell.get())
+                    && Self::type_contains_receiver_method_ref(&resolved_receiver, *method_name)
+                {
+                    Type::Untyped
+                } else {
+                    Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+                }
+            }
             Type::Proc {
                 return_type,
                 param_count,
