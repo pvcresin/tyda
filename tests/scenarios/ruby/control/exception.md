@@ -791,10 +791,6 @@ end
 
 ## Source-defined control-flow method names remain ordinary calls
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

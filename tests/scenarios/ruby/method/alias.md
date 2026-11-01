@@ -96,10 +96,6 @@ end
 
 ## alias_method preserves keywords
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

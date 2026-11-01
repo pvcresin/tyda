@@ -232,6 +232,7 @@ impl TypeRegistry {
                 call_site
             })
             .collect();
+        let method_aliases = rbs_data.cold().method_aliases.clone();
         let is_user_defined = self
             .class_data
             .get(class_name)
@@ -239,6 +240,15 @@ impl TypeRegistry {
         if !rbs_data.cold().includer_bound_dsl.is_empty() {
             self.has_includer_bound_dsl = true;
             self.includer_bound_dsl_applied = false;
+        }
+        for alias in method_aliases {
+            self.record_method_alias(
+                class_name,
+                alias.new_name,
+                alias.old_name,
+                alias.is_singleton,
+                alias.loc,
+            );
         }
         let data = self.class_data_mut(class_name);
         if data.loc.is_none() {

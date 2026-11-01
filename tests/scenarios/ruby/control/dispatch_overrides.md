@@ -2,22 +2,18 @@
 
 ## Array index and slice facts require standard dispatch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
 def overridden_index_after_nonempty_guard
-  values = Array.new(1, 1)
+  values = [1]
   def values.[](_index) = nil
   return :empty if values.empty?
   values[0]
 end
 
 def overridden_slice_after_nonempty_guard
-  values = Array.new(1, 1)
+  values = [1]
   def values.slice(_index) = nil
   return :empty if values.empty?
   values.slice(0)

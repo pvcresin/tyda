@@ -4814,6 +4814,14 @@ impl<'a> InferenceEngine<'a> {
             .is_some_and(|n| Self::node_always_exits(&n))
     }
 
+    fn block_always_returns_from_method(block: &ruby_prism::BlockNode<'_>) -> bool {
+        block
+            .body()
+            .and_then(|body| body.as_statements_node())
+            .and_then(|statements| statements.body().iter().last())
+            .is_some_and(|node| matches!(node, Node::ReturnNode { .. }))
+    }
+
     fn type_never_returns(ty: &Type) -> bool {
         match ty {
             Type::Bot => true,
@@ -5021,6 +5029,19 @@ impl<'a> InferenceEngine<'a> {
             let is_current_self = call
                 .receiver()
                 .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }));
+            let block_always_exits = call
+                .block()
+                .and_then(|block| block.as_block_node())
+                .is_some_and(|block| Self::block_always_returns_from_method(&block));
+            if is_current_self
+                && block_always_exits
+                && self
+                    .registry
+                    .lookup_method_block_meta(class_name, &method_name, scope.singleton_dispatch)
+                    .is_some_and(|meta| meta.yields_at_least_once)
+            {
+                return true;
+            }
             if is_current_self
                 && matches!(method_name.as_ref(), "raise" | "fail" | "exit" | "abort")
                 && self.registry.method_call_has_user_source_definition(
@@ -14294,10 +14315,9 @@ impl<'a> InferenceEngine<'a> {
                     || body_scan_summary
                         .as_ref()
                         .is_some_and(|summary| summary.yields),
-                yields_at_least_once: method_name == "each"
-                    && def_node
-                        .body()
-                        .is_some_and(|body| Self::method_body_yields_at_least_once(&body)),
+                yields_at_least_once: def_node
+                    .body()
+                    .is_some_and(|body| Self::method_body_yields_at_least_once(&body)),
             },
         );
         self.record_method_definition_hover_snapshot(
@@ -17487,6 +17507,34 @@ impl<'a> InferenceEngine<'a> {
         let Some(body) = block.body() else {
             return;
         };
+        let method_name = String::from_utf8_lossy(call_node.name().as_slice());
+        let is_current_self = call_node
+            .receiver()
+            .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }));
+        if is_current_self
+            && scope.self_override.is_none()
+            && !matches!(method_name.as_ref(), "proc" | "lambda")
+            && self.registry.method_call_has_user_source_definition(
+                class_name,
+                &method_name,
+                scope.singleton_dispatch,
+            )
+            && !self.method_has_explicit_block_param(
+                class_name,
+                &method_name,
+                scope.singleton_dispatch,
+            )
+            && self
+                .registry
+                .lookup_method_block_meta(class_name, &method_name, scope.singleton_dispatch)
+                .is_some_and(|meta| {
+                    !meta.yields
+                        && meta.yield_param_types.is_empty()
+                        && meta.forwarded_block.is_none()
+                })
+        {
+            return;
+        }
         if std::env::var_os("TYDA_BLOCK_WALK_STATS").is_some() {
             use std::sync::atomic::{AtomicU64, Ordering};
             static WALKS: AtomicU64 = AtomicU64::new(0);
@@ -17503,7 +17551,6 @@ impl<'a> InferenceEngine<'a> {
         let mut block_scope = scope.clone();
         self.mark_callback_record_arguments_may_mutate(call_node, scope, &mut block_scope);
         let block_local_names = Self::block_scoped_local_names(&block, parse_result);
-        let method_name = String::from_utf8_lossy(call_node.name().as_slice());
         let mut block_self_type = None;
         let named_requireds =
             Self::extract_block_required_param_infos_from_source(&block, parse_result);
@@ -19543,6 +19590,21 @@ impl<'a> InferenceEngine<'a> {
         if Self::call_is_sorbet_sig_dsl(call_node) {
             return None;
         }
+        let method_returns_block_result = self
+            .registry
+            .lookup_method_def(owner_class, method_name, method_is_singleton)
+            .is_some_and(|method| Self::type_contains_block_return_ref(&method.raw_return_type));
+        if self
+            .registry
+            .lookup_method_block_meta(owner_class, method_name, method_is_singleton)
+            .is_some_and(|meta| {
+                !meta.yields && meta.yield_param_types.is_empty() && meta.forwarded_block.is_none()
+            })
+            && !self.method_has_explicit_block_param(owner_class, method_name, method_is_singleton)
+            && !method_returns_block_result
+        {
+            return None;
+        }
         let block_param_types = self
             .resolve_user_defined_block_param_types(
                 owner_class,
@@ -19677,6 +19739,22 @@ impl<'a> InferenceEngine<'a> {
             return_type,
             required: true,
         })
+    }
+
+    fn method_has_explicit_block_param(
+        &self,
+        owner_class: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        self.registry
+            .lookup_method_def(owner_class, method_name, is_singleton)
+            .is_some_and(|method| {
+                method
+                    .param_infos
+                    .iter()
+                    .any(|param| matches!(param.kind, ParamKind::Block))
+            })
     }
 
     fn infer_memoize_block_return(
@@ -47414,9 +47492,12 @@ impl<'a> InferenceEngine<'a> {
         {
             return result;
         }
+        let method_name_for_lookup =
+            self.registry
+                .canonical_method_name(class_name, effective_method_name, is_singleton);
         let lookup = self.registry.lookup_method_return_type_with_hint(
             class_name,
-            effective_method_name,
+            &method_name_for_lookup,
             is_singleton,
         );
         let ret = match lookup {
@@ -47430,7 +47511,7 @@ impl<'a> InferenceEngine<'a> {
             Some(_) => {
                 if let Some(ivar_ty) = self.registry.resolve_attr_reader_return_type(
                     class_name,
-                    effective_method_name,
+                    &method_name_for_lookup,
                     is_singleton,
                 ) {
                     ivar_ty
