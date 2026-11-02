@@ -1695,6 +1695,7 @@ impl<'a> InferenceEngine<'a> {
                     ) {
                         Some(true) => break,
                         Some(false) => continue,
+                        None if !Self::iterator_conditional_may_change_bindings(&node) => continue,
                         None => break 'bindings,
                     }
                 }
@@ -1962,6 +1963,105 @@ impl<'a> InferenceEngine<'a> {
         let truthy =
             self.branch_truthiness(class_name, &predicate, &condition_type, parse_result, scope)?;
         Some(if next_when_truthy { truthy } else { !truthy })
+    }
+
+    fn iterator_conditional_may_change_bindings(node: &Node<'_>) -> bool {
+        struct ConditionalEffectVisitor {
+            found: bool,
+        }
+
+        impl ConditionalEffectVisitor {
+            fn visit_node(&mut self, node: Node<'_>) {
+                if matches!(
+                    node,
+                    Node::LocalVariableWriteNode { .. }
+                        | Node::LocalVariableOrWriteNode { .. }
+                        | Node::LocalVariableAndWriteNode { .. }
+                        | Node::LocalVariableOperatorWriteNode { .. }
+                        | Node::InstanceVariableWriteNode { .. }
+                        | Node::InstanceVariableOrWriteNode { .. }
+                        | Node::InstanceVariableAndWriteNode { .. }
+                        | Node::InstanceVariableOperatorWriteNode { .. }
+                        | Node::ClassVariableWriteNode { .. }
+                        | Node::ClassVariableOrWriteNode { .. }
+                        | Node::ClassVariableAndWriteNode { .. }
+                        | Node::ClassVariableOperatorWriteNode { .. }
+                        | Node::ConstantWriteNode { .. }
+                        | Node::ConstantOrWriteNode { .. }
+                        | Node::ConstantAndWriteNode { .. }
+                        | Node::ConstantOperatorWriteNode { .. }
+                        | Node::ConstantPathWriteNode { .. }
+                        | Node::ConstantPathOrWriteNode { .. }
+                        | Node::ConstantPathAndWriteNode { .. }
+                        | Node::ConstantPathOperatorWriteNode { .. }
+                        | Node::DefNode { .. }
+                        | Node::ClassNode { .. }
+                        | Node::ModuleNode { .. }
+                        | Node::SingletonClassNode { .. }
+                        | Node::AliasMethodNode { .. }
+                        | Node::UndefNode { .. }
+                        | Node::BreakNode { .. }
+                        | Node::ReturnNode { .. }
+                        | Node::RedoNode { .. }
+                        | Node::RetryNode { .. }
+                        | Node::NextNode { .. }
+                ) {
+                    self.found = true;
+                    return;
+                }
+
+                let Some(call) = node.as_call_node() else {
+                    return;
+                };
+                if matches!(
+                    call.name().as_slice(),
+                    b"attr"
+                        | b"attr_reader"
+                        | b"attr_writer"
+                        | b"attr_accessor"
+                        | b"define_method"
+                        | b"define_singleton_method"
+                        | b"alias_method"
+                        | b"remove_method"
+                        | b"undef_method"
+                        | b"include"
+                        | b"prepend"
+                        | b"extend"
+                        | b"module_function"
+                        | b"private"
+                        | b"protected"
+                        | b"public"
+                        | b"private_class_method"
+                        | b"public_class_method"
+                        | b"class_eval"
+                        | b"module_eval"
+                        | b"class_exec"
+                        | b"module_exec"
+                        | b"raise"
+                        | b"fail"
+                        | b"throw"
+                        | b"exit"
+                        | b"exit!"
+                        | b"abort"
+                ) {
+                    self.found = true;
+                }
+            }
+        }
+
+        impl<'pr> ruby_prism::Visit<'pr> for ConditionalEffectVisitor {
+            fn visit_branch_node_enter(&mut self, node: Node<'pr>) {
+                self.visit_node(node);
+            }
+
+            fn visit_leaf_node_enter(&mut self, node: Node<'pr>) {
+                self.visit_node(node);
+            }
+        }
+
+        let mut visitor = ConditionalEffectVisitor { found: false };
+        ruby_prism::Visit::visit(&mut visitor, node);
+        visitor.found
     }
 
     fn define_method_call_info<'b>(node: &Node<'b>) -> Option<DynamicDefineMethodInfo<'b>> {

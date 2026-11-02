@@ -825,9 +825,9 @@ impl<'a> InferenceEngine<'a> {
             Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
                 Self::type_contains_param_ref(subject)
             }
-            Type::TruthyProjection(subject) | Type::FalsyProjection(subject) => {
-                Self::type_contains_param_ref(subject)
-            }
+            Type::TruthyProjection(subject)
+            | Type::FalsyProjection(subject)
+            | Type::NonNilProjection(subject) => Self::type_contains_param_ref(subject),
             Type::ReceiverMethodRef(receiver_type, _) => {
                 Self::type_contains_param_ref(receiver_type)
             }
@@ -1555,20 +1555,28 @@ impl<'a> InferenceEngine<'a> {
                 );
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
             }
-            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
                 let resolved_inner =
                     Self::substitute_param_refs_with_keywords(inner, param_types, keyword_types);
                 if Self::type_contains_param_ref(&resolved_inner) {
-                    if matches!(ty, Type::TruthyProjection(_)) {
-                        Type::TruthyProjection(Box::new(resolved_inner))
-                    } else {
-                        Type::FalsyProjection(Box::new(resolved_inner))
+                    match ty {
+                        Type::TruthyProjection(_) => {
+                            Type::TruthyProjection(Box::new(resolved_inner))
+                        }
+                        Type::FalsyProjection(_) => Type::FalsyProjection(Box::new(resolved_inner)),
+                        Type::NonNilProjection(_) => {
+                            Type::NonNilProjection(Box::new(resolved_inner))
+                        }
+                        _ => unreachable!(),
                     }
                 } else {
-                    let projected = if matches!(ty, Type::TruthyProjection(_)) {
-                        Type::project_truthy(&resolved_inner)
-                    } else {
-                        Type::project_falsy(&resolved_inner)
+                    let projected = match ty {
+                        Type::TruthyProjection(_) => Type::project_truthy(&resolved_inner),
+                        Type::FalsyProjection(_) => Type::project_falsy(&resolved_inner),
+                        Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
+                        _ => unreachable!(),
                     };
                     projected.unwrap_or(Type::Bot)
                 }
@@ -1755,6 +1763,41 @@ impl<'a> InferenceEngine<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_nil_projection_applies_after_parameter_substitution() {
+        let projection = Type::NonNilProjection(Box::new(Type::ParamRef(0)));
+        let string_or_nil = Type::Union(vec![Type::String, Type::Nil]);
+        assert_eq!(
+            InferenceEngine::substitute_param_refs_with_keywords(
+                &projection,
+                std::slice::from_ref(&string_or_nil),
+                &std::collections::HashMap::new(),
+            ),
+            Type::String
+        );
+
+        let false_or_nil = Type::Union(vec![Type::False, Type::Nil]);
+        assert_eq!(
+            InferenceEngine::substitute_param_refs_with_keywords(
+                &projection,
+                &[false_or_nil],
+                &std::collections::HashMap::new(),
+            ),
+            Type::False
+        );
+
+        let keyword_projection =
+            Type::NonNilProjection(Box::new(Type::KeywordParamRef(Sym::new("value"))));
+        assert_eq!(
+            InferenceEngine::substitute_param_refs_with_keywords(
+                &keyword_projection,
+                &[],
+                &std::collections::HashMap::from([("value".to_string(), string_or_nil,)]),
+            ),
+            Type::String
+        );
+    }
 
     #[test]
     fn method_needs_parameter_reference_resolution_only_for_param_refs() {

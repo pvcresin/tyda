@@ -26,10 +26,16 @@ impl Plugin for RackAttack {
             return;
         }
 
-        if cx.registry_mut().get_superclass(class_name).is_none() {
-            cx.registry_mut()
-                .set_superclass(class_name, "Rack::Request");
+        let inherits_from_rack_request = match cx.registry().get_superclass(class_name) {
+            None => {
+                cx.registry_mut()
+                    .set_superclass(class_name, "Rack::Request");
+                true
+            }
+            Some(superclass) => superclass == "Rack::Request",
+        };
+        if inherits_from_rack_request {
+            cx.add_simple_method_if_missing("Rack::Request", "params", Type::Untyped, false, loc);
         }
-        cx.add_simple_method_if_missing("Rack::Request", "params", Type::Untyped, false, loc);
     }
 }

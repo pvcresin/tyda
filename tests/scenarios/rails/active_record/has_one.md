@@ -16,9 +16,9 @@ end
 class A
   def item: -> Item?
   def item=: (Item item) -> Item
-  def build_item: -> Item
-  def create_item: -> Item
-  def create_item!: -> Item
+  def build_item: (?Hash[String | Symbol, untyped] attributes) -> Item
+  def create_item: (?Hash[String | Symbol, untyped] attributes) -> Item
+  def create_item!: (?Hash[String | Symbol, untyped] attributes) -> Item
 end
 ```
 
@@ -38,8 +38,8 @@ end
 class A
   def item: -> B?
   def item=: (B item) -> B
-  def build_item: -> B
-  def create_item: -> B
-  def create_item!: -> B
+  def build_item: (?Hash[String | Symbol, untyped] attributes) -> B
+  def create_item: (?Hash[String | Symbol, untyped] attributes) -> B
+  def create_item!: (?Hash[String | Symbol, untyped] attributes) -> B
 end
 ```

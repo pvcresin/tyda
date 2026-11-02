@@ -116,6 +116,7 @@ pub enum Type {
     Tuple(Vec<Type>),
     TruthyProjection(Box<Type>),
     FalsyProjection(Box<Type>),
+    NonNilProjection(Box<Type>),
     // `args` is stored as `Box<[Type]>` rather than `Vec` for a narrower slot.
     Generic {
         base: Sym,
@@ -172,9 +173,9 @@ impl Type {
             Type::DeferredSafeNavigation(receiver, result) => {
                 SLOT + receiver.deep_extra_bytes() + result.deep_extra_bytes()
             }
-            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
-                SLOT + inner.deep_extra_bytes()
-            }
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => SLOT + inner.deep_extra_bytes(),
             Type::Proc { return_type, .. } => SLOT + return_type.deep_extra_bytes(),
             _ => 0,
         }
@@ -198,8 +199,15 @@ impl Type {
             | Type::DeferredSafeNavigation(..)
             | Type::ParamRef(..)
             | Type::KeywordParamRef(..)
+            | Type::BlockReturnRef
+            | Type::PatternIndexRef(..)
+            | Type::PatternRestRef(..)
+            | Type::PatternTrailingRef(..)
+            | Type::PatternKeyRef(..)
+            | Type::PatternKeyRestRef(..)
             | Type::IvarRef(..)
-            | Type::GlobalVariableRef(..) => Some(Type::TruthyProjection(Box::new(ty.clone()))),
+            | Type::GlobalVariableRef(..)
+            | Type::NonNilProjection(..) => Some(Type::TruthyProjection(Box::new(ty.clone()))),
             Type::TruthyProjection(_) => Some(ty.clone()),
             Type::FalsyProjection(_) => None,
             _ => Some(ty.clone()),
@@ -226,10 +234,45 @@ impl Type {
             | Type::ParamRef(..)
             | Type::KeywordParamRef(..)
             | Type::IvarRef(..)
-            | Type::GlobalVariableRef(..) => Some(Type::FalsyProjection(Box::new(ty.clone()))),
+            | Type::GlobalVariableRef(..)
+            | Type::NonNilProjection(..) => Some(Type::FalsyProjection(Box::new(ty.clone()))),
             Type::TruthyProjection(_) => None,
             Type::FalsyProjection(_) => Some(ty.clone()),
             _ => None,
+        }
+    }
+
+    pub(crate) fn project_non_nil(ty: &Type) -> Type {
+        match ty {
+            Type::Nil => Type::Bot,
+            Type::Union(parts) => {
+                let projected: Vec<Type> = parts
+                    .iter()
+                    .filter(|part| **part != Type::Nil)
+                    .map(Self::project_non_nil)
+                    .collect();
+                match projected.len() {
+                    0 => Type::Bot,
+                    1 => projected.into_iter().next().unwrap(),
+                    _ => Type::from_type_vec_preserve_untyped(projected),
+                }
+            }
+            Type::MethodReturnRef(..)
+            | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..)
+            | Type::ParamRef(..)
+            | Type::KeywordParamRef(..)
+            | Type::BlockReturnRef
+            | Type::PatternIndexRef(..)
+            | Type::PatternRestRef(..)
+            | Type::PatternTrailingRef(..)
+            | Type::PatternKeyRef(..)
+            | Type::PatternKeyRestRef(..)
+            | Type::IvarRef(..)
+            | Type::GlobalVariableRef(..)
+            | Type::FalsyProjection(..) => Type::NonNilProjection(Box::new(ty.clone())),
+            Type::TruthyProjection(..) | Type::NonNilProjection(..) => ty.clone(),
+            _ => ty.clone(),
         }
     }
 
@@ -246,9 +289,9 @@ impl Type {
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::contains_deferred_receiver_ref)
             }
-            Type::TruthyProjection(subject) | Type::FalsyProjection(subject) => {
-                Self::contains_deferred_receiver_ref(subject)
-            }
+            Type::TruthyProjection(subject)
+            | Type::FalsyProjection(subject)
+            | Type::NonNilProjection(subject) => Self::contains_deferred_receiver_ref(subject),
             _ => false,
         }
     }
@@ -344,7 +387,8 @@ impl PartialEq for Type {
                 r1 == r2 && v1 == v2
             }
             (Type::TruthyProjection(t1), Type::TruthyProjection(t2))
-            | (Type::FalsyProjection(t1), Type::FalsyProjection(t2)) => t1 == t2,
+            | (Type::FalsyProjection(t1), Type::FalsyProjection(t2))
+            | (Type::NonNilProjection(t1), Type::NonNilProjection(t2)) => t1 == t2,
             (
                 Type::Proc {
                     return_type: r1,
@@ -415,7 +459,9 @@ impl std::hash::Hash for Type {
                 receiver.hash(state);
                 result.hash(state);
             }
-            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => inner.hash(state),
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => inner.hash(state),
             Type::Proc {
                 return_type,
                 param_count,
@@ -488,6 +534,7 @@ impl Type {
             Type::DeferredSafeNavigation(_, _) => 42,
             Type::TruthyProjection(_) => 40,
             Type::FalsyProjection(_) => 41,
+            Type::NonNilProjection(_) => 43,
             Type::SelfType => 31,
             Type::InstanceType => 38,
             Type::Proc { .. } => 32,
@@ -548,7 +595,8 @@ impl Type {
                 r1.cmp(r2).then(v1.cmp(v2))
             }
             (Type::TruthyProjection(t1), Type::TruthyProjection(t2))
-            | (Type::FalsyProjection(t1), Type::FalsyProjection(t2)) => t1.cmp(t2),
+            | (Type::FalsyProjection(t1), Type::FalsyProjection(t2))
+            | (Type::NonNilProjection(t1), Type::NonNilProjection(t2)) => t1.cmp(t2),
             (
                 Type::Proc {
                     return_type: a,
@@ -629,6 +677,9 @@ impl Type {
             Type::FalsyProjection(inner) => {
                 Type::FalsyProjection(Box::new(inner.replace_self_type(self_type)))
             }
+            Type::NonNilProjection(inner) => {
+                Type::NonNilProjection(Box::new(inner.replace_self_type(self_type)))
+            }
             Type::DeferredSafeNavigation(receiver, result) => Type::DeferredSafeNavigation(
                 Box::new(receiver.replace_self_type(self_type)),
                 Box::new(result.replace_self_type(self_type)),
@@ -664,9 +715,9 @@ impl Type {
                     || value.as_deref().is_some_and(Type::contains_instance_type)
             }
             Type::Record(fields) => fields.iter().any(|f| f.value.contains_instance_type()),
-            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
-                inner.contains_instance_type()
-            }
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => inner.contains_instance_type(),
             Type::DeferredSafeNavigation(receiver, result) => {
                 receiver.contains_instance_type() || result.contains_instance_type()
             }
@@ -725,6 +776,9 @@ impl Type {
             }
             Type::FalsyProjection(inner) => {
                 Type::FalsyProjection(Box::new(inner.replace_instance_type(instance_type)))
+            }
+            Type::NonNilProjection(inner) => {
+                Type::NonNilProjection(Box::new(inner.replace_instance_type(instance_type)))
             }
             Type::DeferredSafeNavigation(receiver, result) => Type::DeferredSafeNavigation(
                 Box::new(receiver.replace_instance_type(instance_type)),
@@ -1328,7 +1382,9 @@ impl fmt::Display for Type {
             Type::PatternKeyRestRef(_, _) => write!(f, "untyped"),
             Type::ReceiverMethodRef(_, _) => write!(f, "untyped"),
             Type::DeferredSafeNavigation(_, _) => write!(f, "untyped"),
-            Type::TruthyProjection(_) | Type::FalsyProjection(_) => write!(f, "untyped"),
+            Type::TruthyProjection(_) | Type::FalsyProjection(_) | Type::NonNilProjection(_) => {
+                write!(f, "untyped")
+            }
             Type::SelfType => write!(f, "self"),
             Type::InstanceType => write!(f, "instance"),
             Type::Proc { .. } => write!(f, "Proc"),
@@ -1464,7 +1520,7 @@ pub struct MethodAliasSig {
 
 #[cfg(test)]
 mod tests {
-    use super::Type;
+    use super::{RecordKey, Type};
 
     #[test]
     fn display_deduplicates_union_members() {
@@ -1516,6 +1572,47 @@ mod tests {
     fn display_keeps_true_nil_union_explicit() {
         let ty = Type::Union(vec![Type::True, Type::Nil]);
         assert_eq!(ty.to_string(), "true | nil");
+    }
+
+    #[test]
+    fn non_nil_projection_removes_only_nil() {
+        assert_eq!(Type::project_non_nil(&Type::Nil), Type::Bot);
+        assert_eq!(
+            Type::project_non_nil(&Type::Union(vec![Type::String, Type::Nil])),
+            Type::String
+        );
+        assert_eq!(
+            Type::project_non_nil(&Type::Union(vec![Type::False, Type::Nil])),
+            Type::False
+        );
+        assert_eq!(Type::project_non_nil(&Type::Bool), Type::Bool);
+    }
+
+    #[test]
+    fn non_nil_projection_is_deferred_for_parameter_refs() {
+        let param = Type::ParamRef(0);
+        assert_eq!(
+            Type::project_non_nil(&param),
+            Type::NonNilProjection(Box::new(param))
+        );
+
+        let subject = Box::new(Type::Union(vec![Type::String, Type::Nil]));
+        let key = RecordKey::Symbol("key".to_string());
+        let deferred_refs = [
+            Type::BlockReturnRef,
+            Type::PatternIndexRef(subject.clone(), 0),
+            Type::PatternRestRef(subject.clone()),
+            Type::PatternTrailingRef(subject.clone(), 0),
+            Type::PatternKeyRef(subject.clone(), Box::new(key.clone())),
+            Type::PatternKeyRestRef(subject, vec![key].into_boxed_slice()),
+        ];
+
+        for deferred in deferred_refs {
+            assert_eq!(
+                Type::project_non_nil(&deferred),
+                Type::NonNilProjection(Box::new(deferred))
+            );
+        }
     }
 
     #[test]

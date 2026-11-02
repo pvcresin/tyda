@@ -120,6 +120,7 @@ pub enum DslLibrary {
     Oj,
     Paperclip,
     Protobuf,
+    Rake,
     RackAttack,
     RailsGenerators,
     SidekiqWorker,
@@ -253,6 +254,7 @@ impl DslLibrary {
             Self::Oj => "oj",
             Self::Paperclip => "paperclip",
             Self::Protobuf => "protobuf",
+            Self::Rake => "rake",
             Self::RackAttack => "rack_attack",
             Self::RailsGenerators => "rails_generators",
             Self::SidekiqWorker => "sidekiq_worker",
@@ -316,6 +318,7 @@ impl DslLibrary {
             Self::Oj,
             Self::Paperclip,
             Self::Protobuf,
+            Self::Rake,
             Self::RackAttack,
             Self::RailsGenerators,
             Self::SidekiqWorker,
@@ -397,6 +400,7 @@ impl DslLibrary {
                 | Self::Oj
                 | Self::Paperclip
                 | Self::Protobuf
+                | Self::Rake
                 | Self::RackAttack
                 | Self::Shrine
                 | Self::SidekiqWorker

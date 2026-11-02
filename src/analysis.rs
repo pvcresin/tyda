@@ -1825,11 +1825,23 @@ impl<'pr> prism::Visit<'pr> for CaseEqualityOverrideScan {
     fn visit_singleton_class_node(&mut self, _node: &prism::SingletonClassNode<'pr>) {}
 }
 
-fn source_may_define_instance_equality_override(source: &str) -> bool {
-    if source.contains("alias") && source.contains("==") {
-        return true;
-    }
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SourceOverrideCandidates {
+    equality: bool,
+    block_given: bool,
+}
 
+impl SourceOverrideCandidates {
+    fn is_empty(self) -> bool {
+        !self.equality && !self.block_given
+    }
+}
+
+fn source_override_candidates(source: &str) -> SourceOverrideCandidates {
+    let mut candidates = SourceOverrideCandidates {
+        equality: source.contains("alias") && source.contains("=="),
+        block_given: false,
+    };
     let bytes = source.as_bytes();
     let mut offset = 0;
     while let Some(relative) = source[offset..].find("def") {
@@ -1850,36 +1862,15 @@ fn source_may_define_instance_equality_override(source: &str) -> bool {
         if method.starts_with(b"===")
             || (method.starts_with(b"==") && method.get(2).is_none_or(|byte| *byte != b'='))
         {
-            return true;
+            candidates.equality = true;
         }
+        candidates.block_given |= method.starts_with(b"block_given?");
         offset = cursor;
+        if candidates.equality && candidates.block_given {
+            break;
+        }
     }
-    false
-}
-
-fn source_may_define_block_given_override(source: &str) -> bool {
-    let bytes = source.as_bytes();
-    let mut offset = 0;
-    while let Some(relative) = source[offset..].find("def") {
-        let start = offset + relative;
-        let before_is_identifier =
-            start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
-        let mut cursor = start + 3;
-        let has_keyword_boundary = cursor == bytes.len()
-            || !(bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_');
-        if before_is_identifier || !has_keyword_boundary {
-            offset = cursor;
-            continue;
-        }
-        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
-            cursor += 1;
-        }
-        if bytes[cursor..].starts_with(b"block_given?") {
-            return true;
-        }
-        offset = cursor;
-    }
-    false
+    candidates
 }
 
 fn source_case_equality_overrides_in_root(root: &Node<'_>) -> SourceCaseEqualityOverrides {
@@ -1893,9 +1884,7 @@ fn source_case_equality_overrides_in_root(root: &Node<'_>) -> SourceCaseEquality
 }
 
 pub fn source_case_equality_overrides(source: &str) -> SourceCaseEqualityOverrides {
-    if !source_may_define_instance_equality_override(source)
-        && !source_may_define_block_given_override(source)
-    {
+    if source_override_candidates(source).is_empty() {
         return SourceCaseEqualityOverrides::default();
     }
     let parse_result = prism::parse(source.as_bytes());
@@ -1953,10 +1942,61 @@ fn collect_required_stdlib_features(node: &Node<'_>, features: &mut BTreeSet<Str
     }
 }
 
+fn source_defines_require_override(root: &Node<'_>) -> bool {
+    struct RequireOverrideVisitor {
+        scope_depth: usize,
+        scope_stack: Vec<bool>,
+        found: bool,
+    }
+
+    impl<'pr> ruby_prism::Visit<'pr> for RequireOverrideVisitor {
+        fn visit_branch_node_enter(&mut self, node: Node<'pr>) {
+            if self.scope_depth == 0
+                && let Some(definition) = node.as_def_node()
+                && definition.name().as_slice() == b"require"
+            {
+                self.found = true;
+            }
+
+            let root_singleton_class = self.scope_depth == 0
+                && node
+                    .as_singleton_class_node()
+                    .is_some_and(|singleton_class| {
+                        singleton_class.expression().as_self_node().is_some()
+                    });
+            let opens_scope = (node.as_def_node().is_some()
+                || node.as_class_node().is_some()
+                || node.as_module_node().is_some()
+                || node.as_singleton_class_node().is_some())
+                && !root_singleton_class;
+            self.scope_stack.push(opens_scope);
+            self.scope_depth += usize::from(opens_scope);
+        }
+
+        fn visit_branch_node_leave(&mut self) {
+            if self.scope_stack.pop().unwrap_or(false) {
+                self.scope_depth -= 1;
+            }
+        }
+    }
+
+    let mut visitor = RequireOverrideVisitor {
+        scope_depth: 0,
+        scope_stack: Vec::new(),
+        found: false,
+    };
+    ruby_prism::Visit::visit(&mut visitor, root);
+    visitor.found
+}
+
 fn statically_required_stdlib_features(root: &Node<'_>) -> BTreeSet<String> {
     let mut features = BTreeSet::new();
     collect_required_stdlib_features(root, &mut features);
-    features
+    if features.is_empty() || source_defines_require_override(root) {
+        BTreeSet::new()
+    } else {
+        features
+    }
 }
 
 fn build_engine_with_timings<'a>(
@@ -1987,9 +2027,7 @@ fn build_engine_with_timings<'a>(
     let root = parse_result.node();
 
     let mut engine = InferenceEngine::new();
-    if source_may_define_instance_equality_override(source)
-        || source_may_define_block_given_override(source)
-    {
+    if !source_override_candidates(source).is_empty() {
         let overrides = source_case_equality_overrides_in_root(&root);
         engine.record_source_case_equality_overrides(
             overrides.base_class_dispatch,
@@ -2035,11 +2073,11 @@ fn build_engine_with_timings<'a>(
 
     if let Some(loader) = lazy_loader {
         engine.set_lazy_loader(loader);
-        let feature_load_started = Instant::now();
-        for feature in statically_required_stdlib_features(&root) {
-            engine.merge_stdlib_feature(&feature);
+        if source.contains("require") {
+            let feature_load_started = Instant::now();
+            engine.merge_required_stdlib_features(statically_required_stdlib_features(&root));
+            timings.preload += feature_load_started.elapsed();
         }
-        timings.preload += feature_load_started.elapsed();
     }
 
     if let Some(loader) = lazy_rbi_loader {
@@ -2246,6 +2284,22 @@ mod tests {
     }
 
     #[test]
+    fn literal_requires_are_not_assumed_when_top_level_require_is_redefined() {
+        let parse_result =
+            prism::parse(b"def require(feature) = false\nrequire \"shellwords\"\n".as_slice());
+        assert!(statically_required_stdlib_features(&parse_result.node()).is_empty());
+
+        let parse_result = prism::parse(
+            b"class LocalLoader\n  def require(feature) = false\nend\nrequire \"shellwords\"\n"
+                .as_slice(),
+        );
+        assert_eq!(
+            statically_required_stdlib_features(&parse_result.node()),
+            BTreeSet::from(["shellwords".to_string()])
+        );
+    }
+
+    #[test]
     fn required_stdlib_feature_surfaces_follow_literal_require() {
         let vendor_rbs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs");
         let loader =
@@ -2279,6 +2333,55 @@ end
         assert_eq!(
             not_loaded.lookup_method_return_type("String", "shellescape"),
             None
+        );
+    }
+
+    #[test]
+    fn cli_diagnostic_replay_retains_required_stdlib_features() {
+        let vendor_rbs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs");
+        let loader =
+            LazyRbsLoader::from_rbs_roots(vec![vendor_rbs.join("core"), vendor_rbs.join("stdlib")]);
+        let source = concat!(
+            "require \"shellwords\"\n",
+            "class ShellwordsProbe\n",
+            "  def self.escape = \"tool name\".shellescape\n",
+            "end\n",
+        );
+        let (snapshot, _) = analyze_cli_diagnostic_target_snapshot_timed(
+            source,
+            None,
+            &loader,
+            None,
+            "shellwords.rb",
+            AnalysisOptions::default(),
+            true,
+        );
+        assert_eq!(
+            snapshot
+                .registry()
+                .lookup_method_return_type("String", "shellescape"),
+            None,
+            "compacted snapshots should not retain external feature shapes"
+        );
+
+        let diagnostics =
+            cli_diagnostics_from_snapshot(&snapshot, source, "shellwords.rb", &loader, None, None);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+
+        let diagnostics = cli_diagnostics_from_snapshot_owned(
+            snapshot,
+            source,
+            "shellwords.rb",
+            &loader,
+            None,
+            None,
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
         );
     }
 

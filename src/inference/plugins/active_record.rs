@@ -2,8 +2,8 @@ use super::super::InferenceEngine;
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
 use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
-use crate::registry::IncluderBoundDsl;
-use crate::types::Type;
+use crate::registry::{IncluderBoundDsl, ParamInfo};
+use crate::types::{ParamKind, Type};
 use ruby_prism::{CallNode, ParseResult};
 
 const CLASS_BODY_METHODS: &[&str] = &[
@@ -33,6 +33,17 @@ const STORE_LIBRARIES: &[DslLibrary] = &[
     DslLibrary::ActiveRecordStore,
     DslLibrary::ActiveRecordTypedStore,
 ];
+
+fn association_attributes_param() -> ParamInfo {
+    ParamInfo {
+        name: "attributes".to_string(),
+        kind: ParamKind::Optional,
+        default_type: Some(Type::Hash(
+            Some(Box::new(Type::Union(vec![Type::Symbol, Type::String]))),
+            Some(Box::new(Type::Untyped)),
+        )),
+    }
+}
 
 pub(super) struct ActiveRecord;
 
@@ -708,7 +719,7 @@ impl<'a> InferenceEngine<'a> {
                 class_name,
                 MethodDef {
                     name: Sym::new(method_name),
-                    param_infos: Vec::new(),
+                    param_infos: vec![association_attributes_param()],
                     raw_return_type: Type::Class(Sym::new(&target_class)),
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
@@ -923,7 +934,7 @@ impl<'a> InferenceEngine<'a> {
                 class_name,
                 MethodDef {
                     name: Sym::new(method_name),
-                    param_infos: Vec::new(),
+                    param_infos: vec![association_attributes_param()],
                     raw_return_type: Type::Class(Sym::new(&target_class)),
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,

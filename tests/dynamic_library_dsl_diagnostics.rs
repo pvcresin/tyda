@@ -40,11 +40,19 @@ end
 
 Plain.build.file
 Owner.new.create_configuration!
+Owner.new.create_configuration!(name: "settings")
 Rack::Attack::Request.new.params
 Rack::Attack::Request.new.not_a_rack_request_method
 "#;
 
 fn diagnostics_for(
+    source: &str,
+    dsl_activation: DslActivation,
+) -> Vec<tyda::diagnostics::TypeDiagnostic> {
+    diagnostics_for_source(source, dsl_activation)
+}
+
+fn diagnostics_for_source(
     source: &str,
     dsl_activation: DslActivation,
 ) -> Vec<tyda::diagnostics::TypeDiagnostic> {
@@ -108,6 +116,13 @@ fn generated_dynamic_library_methods_are_scoped_and_unknowns_stay_missing() {
             "unexpected missing method: {method}; {missing:?}"
         );
     }
+    assert!(
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "argument_type_mismatch"
+                && diagnostic.unresolved_method == "Owner#create_configuration!"
+        }),
+        "unexpected association attribute mismatch: {diagnostics:?}"
+    );
 }
 
 #[test]
@@ -118,6 +133,28 @@ fn rack_attack_request_integration_is_disabled_when_the_feature_is_forced_off() 
     activation.forced_off.insert(DslLibrary::RackAttack);
 
     let diagnostics = diagnostics_for(SOURCE, activation);
+    let missing = missing_methods(&diagnostics);
+    assert!(
+        missing.contains("Rack::Attack::Request#params"),
+        "{missing:?}"
+    );
+}
+
+#[test]
+fn rack_attack_does_not_replace_an_explicit_request_superclass() {
+    let source = r#"
+class PlainRequest
+end
+
+class Rack::Attack::Request < PlainRequest
+end
+
+Rack::Attack::Request.new.params
+"#;
+    let mut detected = BTreeSet::new();
+    detect_dsl_from_source_text(source, &mut detected);
+
+    let diagnostics = diagnostics_for_source(source, DslActivation::with_auto_detected(detected));
     let missing = missing_methods(&diagnostics);
     assert!(
         missing.contains("Rack::Attack::Request#params"),

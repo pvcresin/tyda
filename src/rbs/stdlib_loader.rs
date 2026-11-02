@@ -257,7 +257,13 @@ impl LazyRbsLoader {
     }
 
     pub fn merge_feature_into(&self, feature: &str, target: &mut TypeRegistry) -> bool {
-        let Some(shape) = self.shared_feature_shape(feature) else {
+        let shape = self.shared_feature_shape(feature).or_else(|| {
+            feature
+                .contains('/')
+                .then(|| feature.replace('/', "-"))
+                .and_then(|normalized| self.shared_feature_shape(&normalized))
+        });
+        let Some(shape) = shape else {
             return false;
         };
         target.merge_stdlib_rbs_registry(&shape);
@@ -1283,6 +1289,41 @@ mod tests {
         assert_eq!(
             registry.lookup_method_return_type("String", "shellescape"),
             Some(crate::types::Type::String)
+        );
+    }
+
+    #[test]
+    fn slash_separated_require_features_match_hyphenated_stdlib_dirs() {
+        let dir = tempdir().expect("tempdir");
+        let stdlib = dir.path().join("stdlib");
+        let io_feature_dir = stdlib.join("io-console").join("0");
+        let http_feature_dir = stdlib.join("net-http").join("0");
+        std::fs::create_dir_all(&io_feature_dir).expect("mkdir io-console feature directory");
+        std::fs::create_dir_all(&http_feature_dir).expect("mkdir net-http feature directory");
+        std::fs::write(
+            io_feature_dir.join("io-console.rbs"),
+            "class IO\n  def console: -> String\nend\n",
+        )
+        .expect("write io-console rbs");
+        std::fs::write(
+            http_feature_dir.join("net-http.rbs"),
+            "module Net\n  class HTTP\n    def start: -> String\n  end\nend\n",
+        )
+        .expect("write net-http rbs");
+
+        let loader = LazyRbsLoader::new(stdlib);
+        let mut registry = TypeRegistry::new();
+        assert!(loader.merge_feature_into("io/console", &mut registry));
+        assert!(loader.merge_feature_into("net/http", &mut registry));
+        assert!(
+            registry
+                .lookup_method_return_type("IO", "console")
+                .is_some()
+        );
+        assert!(
+            registry
+                .lookup_method_return_type("Net::HTTP", "start")
+                .is_some()
         );
     }
 

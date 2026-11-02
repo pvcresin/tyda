@@ -24,8 +24,8 @@ BulkImport.new.create_offline_configuration!
 class BulkImport < ActiveRecord::Base
   def offline_configuration: -> Configuration?
   def offline_configuration=: (Configuration offline_configuration) -> Configuration
-  def build_offline_configuration: -> Configuration
-  def create_offline_configuration: -> Configuration
-  def create_offline_configuration!: -> Configuration
+  def build_offline_configuration: (?Hash[String | Symbol, untyped] attributes) -> Configuration
+  def create_offline_configuration: (?Hash[String | Symbol, untyped] attributes) -> Configuration
+  def create_offline_configuration!: (?Hash[String | Symbol, untyped] attributes) -> Configuration
 end
 ```

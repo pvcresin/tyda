@@ -91,6 +91,7 @@ end
 
 ```ruby
 class IteratorAttributeReaders
+  DEFAULT_OPTIONS = {}
   options = {
     video: {
       frames: { default: 1 },
@@ -101,6 +102,7 @@ class IteratorAttributeReaders
   options.each_value do |group|
     group.each do |name, option|
       next if option[:shortcut]
+      DEFAULT_OPTIONS[name] = option[:default] if option.key?(:default)
       attr_reader name
     end
   end
@@ -117,6 +119,8 @@ def read_iterator_attribute = IteratorAttributeReaders.new.frames
 
 ```rbs
 class IteratorAttributeReaders
+  DEFAULT_OPTIONS: Hash[:frames | :shortcut, 1 | untyped]
+
   def frames: -> 1
   def initialize: -> void
 end
@@ -124,6 +128,91 @@ end
 class Object < BasicObject
   def read_iterator_attribute: -> 1
 end
+```
+
+## Do not expand an iterator overridden on its local receiver
+
+```ruby
+class IteratorOverride
+  options = { fake: {} }
+  options.define_singleton_method(:each) { nil }
+  options.each { |name, _value| attr_reader name }
+
+  def value = 1
+end
+```
+
+### result
+
+```rbs
+class IteratorOverride
+  def value: -> 1
+end
+```
+
+## Preserve record fields in nested constant iterators
+
+```ruby
+module Optcarrot
+class Config
+  OPTIONS = {
+    optimization: {
+      opt_ppu: { type: :opts, candidates: Missing::OPTIONS, default: nil },
+      opt: { shortcut: ["--opt-ppu=all", "--opt-cpu=all"] },
+    },
+    emulation: {
+      sprite_limit: { type: :switch, default: false },
+      frames: { type: :int, default: 0, aliases: [:f, :frame] },
+    },
+    profiling: {
+      print_fps: { type: :switch, default: false },
+      stackprof_mode: { type: "MODE", default: nil },
+      stackprof: { shortcut: "--stackprof-mode=cpu" },
+    },
+    misc: {
+      loglevel: { type: :int, default: 1 },
+      quiet: { shortcut: "--loglevel=0", aliases: :q },
+    },
+  }
+  DEFAULT_OPTIONS = {}
+
+  OPTIONS.each_value do |group|
+    group.each do |name, option|
+      next if option[:shortcut]
+      DEFAULT_OPTIONS[name] = option[:default] if option.key?(:default)
+      attr_reader name
+    end
+  end
+
+  def initialize
+    @frames = 0
+  end
+end
+end
+
+def read_constant_iterator_attribute = Optcarrot::Config.new.frames
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def read_constant_iterator_attribute: -> 0
+end
+
+class Optcarrot::Config
+  DEFAULT_OPTIONS: Hash[:frames | :loglevel | :opt | :opt_ppu | :print_fps | :quiet | :sprite_limit | :stackprof | :stackprof_mode, (false | 0 | 1 | untyped)?]
+  OPTIONS: { optimization: { opt_ppu: { type: :opts, candidates: untyped, default: nil }, opt: { shortcut: ["--opt-ppu=all", "--opt-cpu=all"] } }, emulation: { sprite_limit: { type: :switch, default: false }, frames: { type: :int, default: 0, aliases: [:f, :frame] } }, profiling: { print_fps: { type: :switch, default: false }, stackprof_mode: { type: "MODE", default: nil }, stackprof: { shortcut: "--stackprof-mode=cpu" } }, misc: { loglevel: { type: :int, default: 1 }, quiet: { shortcut: "--loglevel=0", aliases: :q } } }
+
+  def opt_ppu: -> untyped
+  def sprite_limit: -> untyped
+  def frames: -> 0
+  def print_fps: -> untyped
+  def stackprof_mode: -> untyped
+  def loglevel: -> untyped
+  def initialize: -> void
+end
+
 ```
 
 ## Skip iterator attributes after an unsupported side exit

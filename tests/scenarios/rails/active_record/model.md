@@ -25,18 +25,18 @@ end
 class Product
   def category: -> Category
   def category=: (Category category) -> Category
-  def build_category: -> Category
-  def create_category: -> Category
-  def create_category!: -> Category
+  def build_category: (?Hash[String | Symbol, untyped] attributes) -> Category
+  def create_category: (?Hash[String | Symbol, untyped] attributes) -> Category
+  def create_category!: (?Hash[String | Symbol, untyped] attributes) -> Category
   def reviews: -> ActiveRecord::Associations::CollectionProxy[Review]
   def review_ids: -> Array[Integer]
   def review_ids=: (Array[Integer] review_ids) -> Array[Integer]
   def reviews=: (Array[Review] reviews) -> ActiveRecord::Associations::CollectionProxy[Review]
   def detail: -> Detail?
   def detail=: (Detail detail) -> Detail
-  def build_detail: -> Detail
-  def create_detail: -> Detail
-  def create_detail!: -> Detail
+  def build_detail: (?Hash[String | Symbol, untyped] attributes) -> Detail
+  def create_detail: (?Hash[String | Symbol, untyped] attributes) -> Detail
+  def create_detail!: (?Hash[String | Symbol, untyped] attributes) -> Detail
   def self.available: -> ActiveRecord::Relation[Product]
   def self.featured: -> ActiveRecord::Relation[Product]
   def status: -> String
@@ -74,9 +74,9 @@ end
 class Post
   def author: -> User
   def author=: (User author) -> User
-  def build_author: -> User
-  def create_author: -> User
-  def create_author!: -> User
+  def build_author: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_author: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_author!: (?Hash[String | Symbol, untyped] attributes) -> User
   def comments: -> ActiveRecord::Associations::CollectionProxy[Comment]
   def comment_ids: -> Array[Integer]
   def comment_ids=: (Array[Integer] comment_ids) -> Array[Integer]
@@ -116,9 +116,9 @@ end
 class Invoice
   def customer: -> Customer
   def customer=: (Customer customer) -> Customer
-  def build_customer: -> Customer
-  def create_customer: -> Customer
-  def create_customer!: -> Customer
+  def build_customer: (?Hash[String | Symbol, untyped] attributes) -> Customer
+  def create_customer: (?Hash[String | Symbol, untyped] attributes) -> Customer
+  def create_customer!: (?Hash[String | Symbol, untyped] attributes) -> Customer
   def line_items: -> ActiveRecord::Associations::CollectionProxy[LineItem]
   def line_item_ids: -> Array[Integer]
   def line_item_ids=: (Array[Integer] line_item_ids) -> Array[Integer]
@@ -573,9 +573,9 @@ class Order
   def items=: (Array[Item] items) -> ActiveRecord::Associations::CollectionProxy[Item]
   def invoice: -> Invoice?
   def invoice=: (Invoice invoice) -> Invoice
-  def build_invoice: -> Invoice
-  def create_invoice: -> Invoice
-  def create_invoice!: -> Invoice
+  def build_invoice: (?Hash[String | Symbol, untyped] attributes) -> Invoice
+  def create_invoice: (?Hash[String | Symbol, untyped] attributes) -> Invoice
+  def create_invoice!: (?Hash[String | Symbol, untyped] attributes) -> Invoice
 end
 ```
 
@@ -604,9 +604,9 @@ class Project
   def tasks=: (Array[Task] tasks) -> ActiveRecord::Associations::CollectionProxy[Task]
   def owner: -> User?
   def owner=: (User owner) -> User
-  def build_owner: -> User
-  def create_owner: -> User
-  def create_owner!: -> User
+  def build_owner: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_owner: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_owner!: (?Hash[String | Symbol, untyped] attributes) -> User
 end
 ```
 
@@ -634,9 +634,9 @@ end
 class Post < ApplicationRecord
   def author: -> User
   def author=: (User author) -> User
-  def build_author: -> User
-  def create_author: -> User
-  def create_author!: -> User
+  def build_author: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_author: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_author!: (?Hash[String | Symbol, untyped] attributes) -> User
 end
 
 class PostManager
@@ -695,14 +695,14 @@ end
 class Appeal < ApplicationRecord
   def approved_by_account: -> Account?
   def approved_by_account=: (Account approved_by_account) -> Account
-  def build_approved_by_account: -> Account
-  def create_approved_by_account: -> Account
-  def create_approved_by_account!: -> Account
+  def build_approved_by_account: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def create_approved_by_account: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def create_approved_by_account!: (?Hash[String | Symbol, untyped] attributes) -> Account
   def rejected_by_account: -> Account?
   def rejected_by_account=: (Account rejected_by_account) -> Account
-  def build_rejected_by_account: -> Account
-  def create_rejected_by_account: -> Account
-  def create_rejected_by_account!: -> Account
+  def build_rejected_by_account: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def create_rejected_by_account: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def create_rejected_by_account!: (?Hash[String | Symbol, untyped] attributes) -> Account
 end
 ```
 

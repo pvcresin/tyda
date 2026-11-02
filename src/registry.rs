@@ -6846,7 +6846,8 @@ impl TypeRegistry {
             | Type::PatternKeyRestRef(subject, _)
             | Type::ReceiverMethodRef(subject, _)
             | Type::TruthyProjection(subject)
-            | Type::FalsyProjection(subject) => Self::type_contains_param_ref_static(subject),
+            | Type::FalsyProjection(subject)
+            | Type::NonNilProjection(subject) => Self::type_contains_param_ref_static(subject),
             Type::DeferredSafeNavigation(receiver, result) => {
                 Self::type_contains_param_ref_static(receiver)
                     || Self::type_contains_param_ref_static(result)
@@ -7129,7 +7130,8 @@ impl TypeRegistry {
             | Type::PatternKeyRef(inner, _)
             | Type::PatternKeyRestRef(inner, _)
             | Type::TruthyProjection(inner)
-            | Type::FalsyProjection(inner) => Self::type_contains_subclass_ref_candidate(inner),
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => Self::type_contains_subclass_ref_candidate(inner),
             Type::Proc { return_type, .. } => {
                 Self::type_contains_subclass_ref_candidate(return_type)
             }
@@ -7194,12 +7196,15 @@ impl TypeRegistry {
                 let resolved_result = self.resolve_subclass_refs_in_type(result_type);
                 Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
-            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
                 let resolved_inner = self.resolve_subclass_refs_in_type(inner);
-                let projection = if matches!(ty, Type::TruthyProjection(_)) {
-                    Type::project_truthy(&resolved_inner)
-                } else {
-                    Type::project_falsy(&resolved_inner)
+                let projection = match ty {
+                    Type::TruthyProjection(_) => Type::project_truthy(&resolved_inner),
+                    Type::FalsyProjection(_) => Type::project_falsy(&resolved_inner),
+                    Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
+                    _ => unreachable!(),
                 };
                 projection.unwrap_or(Type::Bot)
             }
@@ -7488,7 +7493,8 @@ impl TypeRegistry {
             | Type::PatternKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _)
             | Type::TruthyProjection(subject)
-            | Type::FalsyProjection(subject) => Self::global_type_contains_ref(subject),
+            | Type::FalsyProjection(subject)
+            | Type::NonNilProjection(subject) => Self::global_type_contains_ref(subject),
             _ => false,
         }
     }
@@ -7505,6 +7511,7 @@ impl TypeRegistry {
                 | Type::KeywordParamRef(_)
                 | Type::TruthyProjection(..)
                 | Type::FalsyProjection(..)
+                | Type::NonNilProjection(..)
         )
     }
 
@@ -8264,6 +8271,10 @@ impl TypeRegistry {
                 };
                 projection.unwrap_or(Type::Bot)
             }
+            Type::NonNilProjection(inner) => {
+                let resolved_inner = self.resolve_param_refs_from_resolved(inner, params);
+                Type::project_non_nil(&resolved_inner)
+            }
             _ => ty.clone(),
         }
     }
@@ -8306,7 +8317,8 @@ impl TypeRegistry {
             | Type::PatternKeyRef(..)
             | Type::PatternKeyRestRef(..)
             | Type::TruthyProjection(..)
-            | Type::FalsyProjection(..) => true,
+            | Type::FalsyProjection(..)
+            | Type::NonNilProjection(..) => true,
             Type::Union(parts) | Type::Intersection(parts) => parts
                 .iter()
                 .any(|part| Self::type_needs_deferred_resolution_depth(part, depth + 1)),
@@ -8587,7 +8599,9 @@ impl TypeRegistry {
                 );
                 Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
-            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
                 let resolved_inner = self.resolve_deferred_refs_depth(
                     class_name,
                     singleton_context,
@@ -8596,10 +8610,11 @@ impl TypeRegistry {
                     memo,
                     visiting,
                 );
-                let projected = if matches!(ty, Type::TruthyProjection(_)) {
-                    Type::project_truthy(&resolved_inner)
-                } else {
-                    Type::project_falsy(&resolved_inner)
+                let projected = match ty {
+                    Type::TruthyProjection(_) => Type::project_truthy(&resolved_inner),
+                    Type::FalsyProjection(_) => Type::project_falsy(&resolved_inner),
+                    Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
+                    _ => unreachable!(),
                 };
                 projected.unwrap_or(Type::Bot)
             }
@@ -8661,7 +8676,12 @@ impl TypeRegistry {
             // children with no deferred ref pass through as-is; skip re-normalizing if nothing changed (avoids sorting huge param unions on every wake).
             Type::Union(parts) => {
                 let has_short_circuit_projection = parts.iter().any(|part| {
-                    matches!(part, Type::TruthyProjection(_) | Type::FalsyProjection(_))
+                    matches!(
+                        part,
+                        Type::TruthyProjection(_)
+                            | Type::FalsyProjection(_)
+                            | Type::NonNilProjection(_)
+                    )
                 });
                 let resolved: Vec<Type> = parts
                     .iter()
@@ -9173,6 +9193,7 @@ impl TypeRegistry {
             | Type::Union(_)
             | Type::TruthyProjection(..)
             | Type::FalsyProjection(..)
+            | Type::NonNilProjection(..)
             | Type::DeferredSafeNavigation(..) => false,
             Type::MethodReturnRef(..) => !resolve_method_return_refs,
             Type::Intersection(parts) | Type::Tuple(parts) => parts
@@ -9236,7 +9257,8 @@ impl TypeRegistry {
             | Type::PatternKeyRef(inner, _)
             | Type::PatternKeyRestRef(inner, _)
             | Type::TruthyProjection(inner)
-            | Type::FalsyProjection(inner) => {
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
                 Self::type_contains_receiver_method_ref(inner, method_name)
             }
             Type::Proc { return_type, .. } => {
@@ -9448,22 +9470,30 @@ impl TypeRegistry {
                 )),
                 param_count: *param_count,
             },
-            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
                 let resolved_inner =
                     self.resolve_call_site_type_from_caller_context(call_site, inner, visiting);
                 if Self::type_contains_param_ref(&resolved_inner)
                     || Self::type_needs_deferred_resolution(&resolved_inner)
                 {
-                    if matches!(ty, Type::TruthyProjection(_)) {
-                        Type::TruthyProjection(Box::new(resolved_inner))
-                    } else {
-                        Type::FalsyProjection(Box::new(resolved_inner))
+                    match ty {
+                        Type::TruthyProjection(_) => {
+                            Type::TruthyProjection(Box::new(resolved_inner))
+                        }
+                        Type::FalsyProjection(_) => Type::FalsyProjection(Box::new(resolved_inner)),
+                        Type::NonNilProjection(_) => {
+                            Type::NonNilProjection(Box::new(resolved_inner))
+                        }
+                        _ => unreachable!(),
                     }
                 } else {
-                    let projected = if matches!(ty, Type::TruthyProjection(_)) {
-                        Type::project_truthy(&resolved_inner)
-                    } else {
-                        Type::project_falsy(&resolved_inner)
+                    let projected = match ty {
+                        Type::TruthyProjection(_) => Type::project_truthy(&resolved_inner),
+                        Type::FalsyProjection(_) => Type::project_falsy(&resolved_inner),
+                        Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
+                        _ => unreachable!(),
                     };
                     projected.unwrap_or(Type::Bot)
                 }
@@ -11141,6 +11171,7 @@ impl TypeRegistry {
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 Self::type_contains_param_ref(inner)
             }
+            Type::NonNilProjection(inner) => Self::type_contains_param_ref(inner),
             Type::Proc { return_type, .. } => Self::type_contains_param_ref(return_type),
             _ => false,
         }

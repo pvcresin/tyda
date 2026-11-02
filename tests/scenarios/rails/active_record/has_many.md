@@ -131,9 +131,9 @@ end
 class A < ApplicationRecord
   def item: -> B
   def item=: (B item) -> B
-  def build_item: -> B
-  def create_item: -> B
-  def create_item!: -> B
+  def build_item: (?Hash[String | Symbol, untyped] attributes) -> B
+  def create_item: (?Hash[String | Symbol, untyped] attributes) -> B
+  def create_item!: (?Hash[String | Symbol, untyped] attributes) -> B
 end
 
 class B < ApplicationRecord

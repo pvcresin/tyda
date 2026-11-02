@@ -218,6 +218,7 @@ impl<'a> InferenceEngine<'a> {
                 | Type::DeferredSafeNavigation(_, _)
                 | Type::TruthyProjection(_)
                 | Type::FalsyProjection(_)
+                | Type::NonNilProjection(_)
         )
     }
 
@@ -1487,6 +1488,10 @@ impl<'a> InferenceEngine<'a> {
                 .registry
                 .lookup_method_return_type_with_hint(&class, &snap.name, prefer_singleton)
                 .is_some()
+                || (self.rails_feature_enabled()
+                    && class == "String"
+                    && super::method_tables::RAILS_STRING_RETURNING_METHODS
+                        .contains(&snap.name.as_str()))
                 || self.external_rbs.is_some_and(|registry| {
                     registry
                         .lookup_method_return_type_via_including_classes(&class, &snap.name)
@@ -3705,13 +3710,16 @@ impl<'a> InferenceEngine<'a> {
                 class_context,
                 method_context,
             )))),
-            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
                 let resolved_inner =
                     self.resolve_type_for_hover(inner, class_context, method_context);
-                let projected = if matches!(ty, Type::TruthyProjection(_)) {
-                    Type::project_truthy(&resolved_inner)
-                } else {
-                    Type::project_falsy(&resolved_inner)
+                let projected = match ty {
+                    Type::TruthyProjection(_) => Type::project_truthy(&resolved_inner),
+                    Type::FalsyProjection(_) => Type::project_falsy(&resolved_inner),
+                    Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
+                    _ => unreachable!(),
                 };
                 projected.unwrap_or(Type::Bot)
             }
@@ -5529,6 +5537,50 @@ mod arg_compat_tests {
                 .collect::<Vec<_>>(),
             ["String#not_a_method"]
         );
+    }
+
+    #[test]
+    fn rails_string_extension_is_not_reported_missing_on_union_member() {
+        for (rails_enabled, expected) in [(true, Vec::new()), (false, vec!["String#underscore"])] {
+            let mut e = engine();
+            e.set_rails_mode(rails_enabled);
+            e.registry.mark_user_defined("String");
+            e.registry.add_method_def("String", method_def("upcase"));
+            e.registry.mark_user_defined("UnderscoreProvider");
+            e.registry
+                .add_method_def("UnderscoreProvider", method_def("underscore"));
+
+            let receiver = Type::Union(vec![
+                Type::Class(Sym::new("String")),
+                Type::Class(Sym::new("UnderscoreProvider")),
+            ]);
+            e.var_snapshots.push(HoverSnapshot {
+                start: 0,
+                end: "underscore".len(),
+                name: "underscore".to_string(),
+                target: HoverTarget::MethodCall {
+                    receiver_type: receiver.clone(),
+                    result_type: Type::ReceiverMethodRef(
+                        Box::new(receiver),
+                        Sym::new("underscore"),
+                    ),
+                    has_block: false,
+                    safe_navigation: false,
+                    respond_to_guards: Vec::new(),
+                },
+                class_context: "UnderscoreProvider".to_string(),
+                method_context: Some("call".to_string()),
+            });
+
+            let calls = e.unresolved_method_calls_for_snapshots();
+            assert_eq!(
+                calls
+                    .iter()
+                    .map(|call| call.unresolved_method.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
     }
 
     fn opt(t: Type) -> Type {

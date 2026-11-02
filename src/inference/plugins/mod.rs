@@ -29,6 +29,7 @@ pub(super) mod properties;
 pub(super) mod protobuf;
 pub(super) mod rack_attack;
 pub(super) mod rails_configure;
+pub(super) mod rake;
 pub(super) mod settingslogic;
 pub(super) mod shrine;
 pub(super) mod sidekiq;
@@ -172,6 +173,7 @@ static PLUGINS: &[&dyn Plugin] = &[
     &kredis::Kredis,
     &oj::Oj,
     &paperclip::Paperclip,
+    &rake::Rake,
     &rack_attack::RackAttack,
     &draper::Draper,
     &properties::Properties,

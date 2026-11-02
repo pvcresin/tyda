@@ -737,6 +737,7 @@ pub struct InferenceEngine<'a> {
     lazy_loader: Option<&'a LazyRbsLoader>,
     lazy_rbi_loader: Option<&'a LazyRbiLoader>,
     merged_stdlib_classes: FxHashSet<String>,
+    required_stdlib_features: Vec<String>,
     external_rbs: Option<&'a TypeRegistry>,
     merged_external_classes: FxHashSet<String>,
     file_path: Option<SharedPath>,
@@ -938,6 +939,7 @@ struct MethodBodyContext {
 struct DiagnosticReplayMeta {
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
+    required_stdlib_features: Vec<String>,
     rails_mode: bool,
     dsl_activation: DslActivation,
     ruby_version: Option<RubyVersion>,
@@ -952,6 +954,7 @@ pub struct FileAnalysisSnapshot {
     pub(crate) coverage: Option<crate::coverage::CoverageFile>,
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
+    required_stdlib_features: Vec<String>,
     rails_mode: bool,
     dsl_activation: DslActivation,
     ruby_version: Option<RubyVersion>,
@@ -967,6 +970,7 @@ impl FileAnalysisSnapshot {
             coverage: None,
             file_path: None,
             project_root: None,
+            required_stdlib_features: Vec::new(),
             rails_mode: false,
             dsl_activation: DslActivation::default(),
             ruby_version: None,
@@ -982,6 +986,7 @@ impl FileAnalysisSnapshot {
             coverage: None,
             file_path: None,
             project_root: None,
+            required_stdlib_features: Vec::new(),
             rails_mode: false,
             dsl_activation: DslActivation::default(),
             ruby_version: None,
@@ -1003,6 +1008,7 @@ impl FileAnalysisSnapshot {
             coverage: None,
             file_path: self.file_path.clone(),
             project_root: self.project_root.clone(),
+            required_stdlib_features: self.required_stdlib_features.clone(),
             rails_mode: self.rails_mode,
             dsl_activation: self.dsl_activation.clone(),
             ruby_version: self.ruby_version,
@@ -1033,6 +1039,7 @@ impl FileAnalysisSnapshot {
             DiagnosticReplayMeta {
                 file_path: self.file_path,
                 project_root: self.project_root,
+                required_stdlib_features: self.required_stdlib_features,
                 rails_mode: self.rails_mode,
                 dsl_activation: self.dsl_activation,
                 ruby_version: self.ruby_version,
@@ -1886,9 +1893,9 @@ impl<'a> InferenceEngine<'a> {
             Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
                 Self::type_contains_call_site_param_ref(subject)
             }
-            Type::TruthyProjection(subject) | Type::FalsyProjection(subject) => {
-                Self::type_contains_call_site_param_ref(subject)
-            }
+            Type::TruthyProjection(subject)
+            | Type::FalsyProjection(subject)
+            | Type::NonNilProjection(subject) => Self::type_contains_call_site_param_ref(subject),
             Type::ReceiverMethodRef(receiver_type, _) => {
                 Self::type_contains_call_site_param_ref(receiver_type)
             }
@@ -2000,6 +2007,7 @@ impl<'a> InferenceEngine<'a> {
             DiagnosticReplayMeta {
                 file_path: cached.file_path.clone(),
                 project_root: cached.project_root.clone(),
+                required_stdlib_features: cached.required_stdlib_features.clone(),
                 rails_mode: cached.rails_mode,
                 dsl_activation: cached.dsl_activation.clone(),
                 ruby_version: cached.ruby_version,
@@ -2018,11 +2026,15 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn from_materialized_snapshot(
-        registry: TypeRegistry,
+        mut registry: TypeRegistry,
         hover_index: HoverIndex,
         meta: DiagnosticReplayMeta,
         lazy_loader: &'a LazyRbsLoader,
     ) -> Self {
+        let required_stdlib_features = meta.required_stdlib_features;
+        for feature in &required_stdlib_features {
+            lazy_loader.merge_feature_into(feature, &mut registry);
+        }
         Self {
             registry,
             constants: HashMap::new(),
@@ -2030,6 +2042,7 @@ impl<'a> InferenceEngine<'a> {
             lazy_loader: Some(lazy_loader),
             lazy_rbi_loader: None,
             merged_stdlib_classes: FxHashSet::default(),
+            required_stdlib_features,
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             file_path: meta.file_path,
@@ -2095,6 +2108,7 @@ impl<'a> InferenceEngine<'a> {
             lazy_loader: None,
             lazy_rbi_loader: None,
             merged_stdlib_classes: FxHashSet::default(),
+            required_stdlib_features: Vec::new(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             file_path: None,
@@ -2161,6 +2175,17 @@ impl<'a> InferenceEngine<'a> {
 
     pub(in crate::inference) fn is_collecting_concern_included(&self) -> bool {
         self.collecting_concern_included
+    }
+
+    pub(crate) fn merge_required_stdlib_features(
+        &mut self,
+        features: impl IntoIterator<Item = String>,
+    ) {
+        for feature in features {
+            if self.merge_stdlib_feature(&feature) {
+                self.required_stdlib_features.push(feature);
+            }
+        }
     }
 
     pub fn set_record_hover_snapshots(&mut self, enabled: bool) {
@@ -11078,6 +11103,7 @@ impl<'a> InferenceEngine<'a> {
                 .map(|recorder| recorder.finish()),
             file_path: self.file_path,
             project_root: self.project_root,
+            required_stdlib_features: self.required_stdlib_features,
             rails_mode: self.rails_mode,
             dsl_activation: self.dsl_activation,
             ruby_version: self.ruby_version,
@@ -11158,6 +11184,7 @@ impl<'a> InferenceEngine<'a> {
                 .map(|recorder| recorder.finish()),
             file_path: self.file_path,
             project_root: self.project_root,
+            required_stdlib_features: self.required_stdlib_features,
             rails_mode: self.rails_mode,
             dsl_activation: self.dsl_activation,
             ruby_version: self.ruby_version,
@@ -13599,6 +13626,12 @@ impl<'a> InferenceEngine<'a> {
                                     in_singleton_class,
                                     true,
                                 ) {
+                                    self.register_local_singleton_iterator_override(
+                                        class_name,
+                                        &call_node,
+                                        parse_result,
+                                        &mut class_body_scope,
+                                    );
                                     self.collect_top_level_calls(
                                         class_name,
                                         &node,
@@ -21808,6 +21841,65 @@ impl<'a> InferenceEngine<'a> {
         );
     }
 
+    fn register_local_singleton_iterator_override(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        let Some(receiver) = call_node
+            .receiver()
+            .and_then(|receiver| receiver.as_local_variable_read_node())
+        else {
+            return;
+        };
+        let Some(first_arg) = call_node
+            .arguments()
+            .and_then(|arguments| arguments.arguments().iter().next())
+        else {
+            return;
+        };
+
+        fn append_literal_names(ty: &Type, names: &mut Vec<String>) {
+            match ty {
+                Type::LiteralSymbol(name) => names.push(name.to_string()),
+                Type::LiteralString(name) => names.push(name.clone()),
+                Type::Union(types) => {
+                    for ty in types {
+                        append_literal_names(ty, names);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let name_type = self.infer_node_type(class_name, &first_arg, parse_result, scope);
+        let mut method_names = Vec::new();
+        append_literal_names(&name_type, &mut method_names);
+        if method_names.is_empty() {
+            method_names
+                .extend(["each", "each_key", "each_value", "each_pair"].map(str::to_string));
+        }
+
+        let receiver_name = String::from_utf8_lossy(receiver.name().as_slice()).to_string();
+        for method_name in method_names {
+            if matches!(
+                method_name.as_str(),
+                "each" | "each_key" | "each_value" | "each_pair"
+            ) {
+                scope.set_local_singleton_method(
+                    &receiver_name,
+                    &method_name,
+                    LocalSingletonMethod {
+                        param_infos: Vec::new(),
+                        raw_return_type: Type::Untyped,
+                    },
+                );
+            }
+        }
+    }
+
     fn resolve_local_singleton_method_call(
         &mut self,
         class_name: &str,
@@ -26614,7 +26706,11 @@ impl<'a> InferenceEngine<'a> {
                         && self.rails_feature_enabled();
                     let nil_safe_dispatch = is_safe_nav || active_support_try;
                     let safe_nav_receiver_type = if nil_safe_dispatch {
-                        Self::remove_nil(&receiver_type)
+                        if Type::contains_deferred_receiver_ref(&receiver_type) {
+                            receiver_type.clone()
+                        } else {
+                            Self::remove_nil(&receiver_type)
+                        }
                     } else {
                         receiver_type.clone()
                     };
@@ -49773,6 +49869,7 @@ impl<'a> InferenceEngine<'a> {
                 | Type::PatternKeyRestRef(_, _)
                 | Type::TruthyProjection(_)
                 | Type::FalsyProjection(_)
+                | Type::NonNilProjection(_)
         )
     }
 
@@ -50708,27 +50805,40 @@ impl<'a> InferenceEngine<'a> {
                 );
                 Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
-            Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
                 let resolved_inner =
                     self.resolve_receiver_method_refs_depth(inner, depth + 1, memo, visiting, true);
                 if Self::type_contains_receiver_resolution_ref(&resolved_inner) {
-                    if matches!(ty, Type::TruthyProjection(_)) {
-                        Type::TruthyProjection(Box::new(resolved_inner))
-                    } else {
-                        Type::FalsyProjection(Box::new(resolved_inner))
+                    match ty {
+                        Type::TruthyProjection(_) => {
+                            Type::TruthyProjection(Box::new(resolved_inner))
+                        }
+                        Type::FalsyProjection(_) => Type::FalsyProjection(Box::new(resolved_inner)),
+                        Type::NonNilProjection(_) => {
+                            Type::NonNilProjection(Box::new(resolved_inner))
+                        }
+                        _ => unreachable!(),
                     }
                 } else {
-                    let projected = if matches!(ty, Type::TruthyProjection(_)) {
-                        Type::project_truthy(&resolved_inner)
-                    } else {
-                        Type::project_falsy(&resolved_inner)
+                    let projected = match ty {
+                        Type::TruthyProjection(_) => Type::project_truthy(&resolved_inner),
+                        Type::FalsyProjection(_) => Type::project_falsy(&resolved_inner),
+                        Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
+                        _ => unreachable!(),
                     };
                     projected.unwrap_or(Type::Bot)
                 }
             }
             Type::Union(parts) => {
                 let has_short_circuit_projection = parts.iter().any(|part| {
-                    matches!(part, Type::TruthyProjection(_) | Type::FalsyProjection(_))
+                    matches!(
+                        part,
+                        Type::TruthyProjection(_)
+                            | Type::FalsyProjection(_)
+                            | Type::NonNilProjection(_)
+                    )
                 });
                 let preserve_short_circuit_array_shape =
                     has_short_circuit_projection || Type::is_short_circuit_array_shape_union(ty);
@@ -51185,6 +51295,7 @@ impl<'a> InferenceEngine<'a> {
             | Type::DeferredSafeNavigation(_, _)
             | Type::TruthyProjection(_)
             | Type::FalsyProjection(_)
+            | Type::NonNilProjection(_)
             | Type::SelfType
             | Type::InstanceType => false,
             Type::Union(parts) => parts.iter().all(Self::is_concrete),
@@ -51259,7 +51370,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _)
             | Type::TruthyProjection(subject)
-            | Type::FalsyProjection(subject) => {
+            | Type::FalsyProjection(subject)
+            | Type::NonNilProjection(subject) => {
                 Self::type_contains_receiver_resolution_ref(subject)
             }
             _ => false,
@@ -53469,7 +53581,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::ReceiverMethodRef(_, _)
             | Type::DeferredSafeNavigation(_, _)
             | Type::TruthyProjection(_)
-            | Type::FalsyProjection(_) => true,
+            | Type::FalsyProjection(_)
+            | Type::NonNilProjection(_) => true,
             _ => false,
         }
     }
@@ -55502,7 +55615,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::ReceiverMethodRef(_, _)
             | Type::DeferredSafeNavigation(_, _)
             | Type::TruthyProjection(_)
-            | Type::FalsyProjection(_) => Type::project_falsy(ty),
+            | Type::FalsyProjection(_)
+            | Type::NonNilProjection(_) => Type::project_falsy(ty),
             _ => None,
         }
     }
@@ -55528,7 +55642,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::ReceiverMethodRef(_, _)
             | Type::DeferredSafeNavigation(_, _)
             | Type::TruthyProjection(_)
-            | Type::FalsyProjection(_) => Type::project_truthy(ty),
+            | Type::FalsyProjection(_)
+            | Type::NonNilProjection(_) => Type::project_truthy(ty),
             _ => Some(ty.clone()),
         }
     }
@@ -55764,21 +55879,7 @@ impl<'a> InferenceEngine<'a> {
     }
 
     pub(crate) fn remove_nil(ty: &Type) -> Type {
-        match ty {
-            Type::Union(parts) => {
-                let filtered: Vec<Type> =
-                    parts.iter().filter(|t| **t != Type::Nil).cloned().collect();
-                if filtered.is_empty() {
-                    Type::Nil
-                } else if filtered.len() == 1 {
-                    filtered.into_iter().next().unwrap()
-                } else {
-                    Type::Union(filtered)
-                }
-            }
-            Type::Nil => Type::Bot,
-            other => other.clone(),
-        }
+        Type::project_non_nil(ty)
     }
 
     fn resolve_self_class_const_path(

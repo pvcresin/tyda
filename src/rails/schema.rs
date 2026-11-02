@@ -302,6 +302,7 @@ fn parse_create_table(
             nullable: false,
         },
     ];
+    let mut non_nullable_columns = Vec::new();
 
     if let Some(block_raw) = call.block()
         && let Some(block) = block_raw.as_block_node()
@@ -319,11 +320,28 @@ fn parse_create_table(
                     }
                 } else if let Some(receiver) = col_call.receiver()
                     && is_t_receiver(&receiver)
-                    && let Some(parsed) = parse_column_call(&method, &col_call, parse_result)
                 {
-                    columns.extend(parsed);
+                    if method == "check_constraint" {
+                        if let Some(expression) = col_call
+                            .arguments()
+                            .and_then(|args| args.arguments().iter().next())
+                            .and_then(|arg| extract_string_value(&arg, parse_result))
+                            && let Some(column) = check_constraint_non_null_column(&expression)
+                        {
+                            non_nullable_columns.push(column);
+                        }
+                    } else if let Some(parsed) = parse_column_call(&method, &col_call, parse_result)
+                    {
+                        columns.extend(parsed);
+                    }
                 }
             }
+        }
+    }
+
+    for column in &mut columns {
+        if non_nullable_columns.iter().any(|name| name == &column.name) {
+            column.nullable = false;
         }
     }
 
@@ -334,6 +352,30 @@ fn parse_create_table(
         columns,
         associations,
     })
+}
+
+fn check_constraint_non_null_column(expression: &str) -> Option<String> {
+    let expression = expression.trim().trim_matches(|ch| matches!(ch, '(' | ')'));
+    let mut parts = expression.split_whitespace();
+    let column = parts.next()?;
+    if !parts.next()?.eq_ignore_ascii_case("IS")
+        || !parts.next()?.eq_ignore_ascii_case("NOT")
+        || !parts.next()?.eq_ignore_ascii_case("NULL")
+        || parts.next().is_some()
+    {
+        return None;
+    }
+
+    let column = column.rsplit('.').next()?;
+    let column = unquote_sql_ident(column);
+    let mut bytes = column.bytes();
+    let first = bytes.next()?;
+    (first == b'_' || first.is_ascii_alphabetic())
+        .then(|| column.to_string())
+        .filter(|name| {
+            name.bytes()
+                .all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+        })
 }
 
 fn parse_structure_table_start(line: &str) -> Option<String> {
@@ -1013,6 +1055,27 @@ mod tests {
         assert_eq!(col.name, "person_id");
         assert_eq!(col.col_type, Type::Integer);
         assert!(!col.nullable);
+    }
+
+    #[test]
+    fn schema_check_constraint_marks_column_non_nullable() {
+        assert!(check_constraint_non_null_column("scopes IS NULL").is_none());
+        assert!(check_constraint_non_null_column("scopes IS NOT NULL OR active").is_none());
+
+        let schema = r#"
+create_table "api_keys" do |t|
+  t.string "scopes", array: true
+  t.check_constraint "scopes IS NOT NULL", name: "api_keys_scopes_null"
+end
+"#;
+        let tables = parse_schema(schema, Path::new("/nonexistent"));
+        let scopes = tables
+            .iter()
+            .flat_map(|table| &table.columns)
+            .find(|column| column.name == "scopes")
+            .expect("scopes column");
+        assert!(!scopes.nullable);
+        assert_eq!(scopes.col_type, Type::Array(Some(Box::new(Type::String))));
     }
 
     #[test]
