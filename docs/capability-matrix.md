@@ -17,7 +17,7 @@
 | block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy |
 | collection shape | supported | Array、Hash、Set、Tuple、Record（静的 symbol key を持つキーワード splat の Record union を含む） |
 | pattern matching | partial | version gate、array / hash / find binding、閉じた Record union では必須のリテラルキーを持つ hash pattern で枝を絞り込み、literal / expression subject のcapture型維持、guard 内の capture、rightward assignment の正常経路で subject local を絞り込み、`case/in` の不一致は例外経路 |
-| 動的定義 | partial | 静的な名前の `define_method`、yield する source method に渡した class-body block 内の `def`、`attr_*`、`Struct.new`、`Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） |
+| 動的定義 | partial | 静的な名前の `define_method`、yield する source method に渡した class-body block 内の `def`、`attr_*`（静的な Record / Tuple iterator 内の束縛名と、判定可能な `next if` / `next unless` を含む）、`Struct.new`、`Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） |
 | runtime-only meta programming | partial | 未知の名前・object identity は `untyped` |
 | 深さ・union・shape の制限 | supported | 上限超過時は安全に `untyped` |
 

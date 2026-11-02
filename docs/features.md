@@ -31,10 +31,10 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
   全経路で yield が保証される場合だけ本体が必ず実行されると扱い、そのblock末尾のnon-local `return` 後は呼び出し後の処理を到達不能とする。Array / Tuple の `sort_by(&:method)` は要素型を保つ。yield 型が不明な
   block 引数は `untyped` にする）
 - Array / Hash / Set / Tuple / Record の要素型と shape。unknown な値を `Kernel.Array` に渡した結果は `Array[untyped]` を保ち、unknown な添字の Array index は `untyped` を保つ。型引数のない `Hash` の iteration も key/value を別々の `untyped` block 引数として扱い、keyword-rest の caller record が持つ optional key を保持して `Hash#[]` の `nil` と `Hash#fetch` の fallback / block を反映する。`Hash#delete` は既知のvalue型に `nil` を加え、value型がunknownなら `nil` だけに誤縮退しない。Record の `Hash#fetch` / `Hash#fetch_values` は欠落キーと fallback を反映し、`Array#clear` の呼び出し結果は空 Tuple にし、instance variable の共有要素型は維持
-- if / case / rescue / safe navigation / pattern matching の flow narrowing。`is_a?` / `kind_of?` / `instance_of?` と標準 `Class#===` はclass constantをlexical scopeで解決して条件の型を絞り、既知の親型は判定対象の既知の子型まで絞る。双方の継承関係が明確に不一致な分岐は到達不能として扱い、対象クラスの祖先が不明な場合はtrue branchをuntypedとして保つ。継承関係が不明な型や有効なrefinementが対象predicateを変える場合は分岐を絞らない。静的に到達不能な `if` 分岐は推論せず、結果が静的に決まる no-arg `empty?` による分岐も絞り、終了分岐の local を後続へ混ぜず、片側だけで代入された local は未代入経路の `nil` を含める。標準の `Class#===` による postfix の local 代入条件や、pure な no-arg ivar reader の再呼び出しも扱い、安定した primitive 型で分岐先を区別できる場合は、片側だけで初期化された local を含む相関も反映。標準RBSの `nil` / `true` / `false` literal pattern と class pattern は一致する型と残りの型を分け、source-defined case equality ではクラス型による絞り込みをしない。閉じた型の rightward assignment は成功後の subject local を一致型へ絞る。括弧で囲んだ pattern predicate の capture も true branch に反映。裸の `rescue => e` は静的に分かる `raise` / `fail` の StandardError subclass を反映し、不明な raise は `StandardError` にする。ASCII の単純な literal regex と literal string の `=~` は分岐を絞り、option / metacharacter / 複数capture / 動的な文字列は unknown にする。optional parameter の default だけが確定している場合は参照を早期解決せず、snapshot replay で parameter / method return / variable reference を解決してから truthy / falsy projection を適用する。truthy 条件が `bot` になる receiver は missing-method 診断の対象にしない
+- if / case / rescue / safe navigation / pattern matching の flow narrowing。`is_a?` / `kind_of?` / `instance_of?` と標準 `Class#===` はclass constantをlexical scopeで解決して条件の型を絞り、既知の親型は判定対象の既知の子型まで絞る。`is_a?` / `kind_of?` と標準 `Class#===` では、クラスが分かっているgeneric型の型引数が `untyped` でも外側の継承関係で判定する。双方の継承関係が明確に不一致な分岐は到達不能として扱う。継承関係が不明な既知型は安全側に保ち、標準のclass predicateでunknown inputを検査した真側は対象クラスまで絞る。有効なrefinementがpredicateを変える場合は分岐を絞らない。静的に到達不能な `if` 分岐は推論せず、結果が静的に決まる no-arg `empty?` による分岐も絞り、終了分岐の local を後続へ混ぜず、片側だけで代入された local は未代入経路の `nil` を含める。標準の `Class#===` による postfix の local 代入条件や、pure な no-arg ivar reader の再呼び出しも扱い、安定した primitive 型で分岐先を区別できる場合は、片側だけで初期化された local を含む相関も反映。標準RBSの `nil` / `true` / `false` literal pattern と class pattern は一致する型と残りの型を分け、source-defined case equality ではクラス型による絞り込みをしない。閉じた型の rightward assignment は成功後の subject local を一致型へ絞る。括弧で囲んだ pattern predicate の capture も true branch に反映。裸の `rescue => e` は静的に分かる `raise` / `fail` の StandardError subclass を反映し、不明な raise は `StandardError` にする。ASCII の単純な literal regex と literal string の `=~` は分岐を絞り、option / metacharacter / 複数capture / 動的な文字列は unknown にする。optional parameter の default だけが確定している場合は参照を早期解決せず、snapshot replay で parameter / method return / variable reference を解決してから truthy / falsy projection を適用する。truthy 条件が `bot` になる receiver は missing-method 診断の対象にしない
 - 多重代入、右辺型を使った RBS operator overload の選択と source-defined operator を優先する operator-write、method 内の instance variable 再代入、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播。Queue は未解決の要素型を既知の sentinel 要素で上書きしない
-- 静的に名前を求められる `alias` / `define_method` / `attr_*`（生成 writer の戻り値は引数型に一致し、代入値は対応する reader にも反映） /
+- 静的に名前を求められる `alias` / `define_method` / `attr_*`（Record / Tuple の静的 iterator 内で束縛された属性名と、静的に判定できる `next if` / `next unless` を含む。生成 writer の戻り値は引数型に一致し、代入値は対応する reader にも反映） /
   `Struct.new` / `Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） / `Forwardable` / `send` / `const_get`
 
 実行時にしか決まらない名前、object identity、method surface は推測せず `untyped` にする。
@@ -44,7 +44,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 ### RBS
 
-- `.rbs` の自動発見、stdlib の lazy load、generic、overload、interface、alias
+- `.rbs` の自動発見、stdlib の lazy load、文字列リテラルによる静的な `require` に対応する stdlib feature RBS の読み込み、generic、overload、interface、alias。条件分岐・メソッド内・動的な `require` は feature RBS の読み込み対象外
 - inline RBS（`#:` / `# @rbs`）の単一・複数行宣言、block signature、type alias
 - `self` / `instance` を call site の受け手へ解決する factory 型
 
@@ -116,13 +116,14 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 個別 gem の一覧をこの文書に重複して持たない。
 
 - schema / `attribute` / relation から model の型を補う
-- Concern、association、scope、enum（plural map method、文字列キーを返すreader、静的に読めるHash/Array/`HashWithIndifferentAccess.new`定数mappingを含む）、delegate などの静的な DSL を展開する。`structure.sql` の外部キー先は明示的な `self.table_name` も参照する
+- Concern、association（`belongs_to` / `has_one` の `build_*` / `create_*` / `create_*!` を含む）、scope、enum（plural map method、文字列キーを返すreader、静的に読めるHash/Array/`HashWithIndifferentAccess.new`定数mappingを含む）、delegate などの静的な DSL を展開する。`alias_attribute` は reader / writer / predicate を追加する。`structure.sql` の外部キー先は明示的な `self.table_name` も参照する
 - `serialize` は `type:` がある場合だけその型を使い、型指定のないserialized attributeは `untyped` として扱う。明示されたsource/RBS methodの型は保持する
 - ActionController の `tag` helper は、引数なしでは `TagBuilder`、生成したタグ名の呼び出しでは `String` として推論する
 - ActiveRecord の `find` は単一 ID、ID 配列、複数 ID の overload とモデル／配列の戻り値を出力する
 - ActiveRecord relation と association proxy の `count` / `size` / `length` は `Integer` を返す
 - ActiveRecord model の `reflections` / `base_class` と instance の `readonly!` は既知 API として扱い、返り値は未解決なら `untyped` にする
 - StateMachines は `state_machine` reader、`<attribute>_name`、state predicate、event method を追加する。machine descriptor の内部 API は `untyped` にする
+- Devise は `devise` に指定した module に対応する model instance method を追加し、Paperclip は ActiveRecord model の `has_attached_file` から attachment reader を追加する。Rack::Attack が有効な場合、`Rack::Attack::Request` は `Rack::Request` の request method surface を継承する
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
 - GitLab in-tree の Presenter / CurrentSettings / Metrics / EE 拡張を検出する

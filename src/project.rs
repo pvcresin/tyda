@@ -118,7 +118,9 @@ pub enum DslLibrary {
     Kredis,
     MixedInClassAttributes,
     Oj,
+    Paperclip,
     Protobuf,
+    RackAttack,
     RailsGenerators,
     SidekiqWorker,
     Shrine,
@@ -249,7 +251,9 @@ impl DslLibrary {
             Self::Kredis => "kredis",
             Self::MixedInClassAttributes => "mixed_in_class_attributes",
             Self::Oj => "oj",
+            Self::Paperclip => "paperclip",
             Self::Protobuf => "protobuf",
+            Self::RackAttack => "rack_attack",
             Self::RailsGenerators => "rails_generators",
             Self::SidekiqWorker => "sidekiq_worker",
             Self::Shrine => "shrine",
@@ -310,7 +314,9 @@ impl DslLibrary {
             Self::Kredis,
             Self::MixedInClassAttributes,
             Self::Oj,
+            Self::Paperclip,
             Self::Protobuf,
+            Self::RackAttack,
             Self::RailsGenerators,
             Self::SidekiqWorker,
             Self::Shrine,
@@ -389,7 +395,9 @@ impl DslLibrary {
                 | Self::JsonApiClientResource
                 | Self::Kredis
                 | Self::Oj
+                | Self::Paperclip
                 | Self::Protobuf
+                | Self::RackAttack
                 | Self::Shrine
                 | Self::SidekiqWorker
                 | Self::SmartProperties
@@ -874,6 +882,7 @@ const DSL_MARKERS: &[&str] = &[
     "GraphQL::Schema::InputObject",
     "GraphQL::Schema::Mutation",
     "JsonApiClient::Resource",
+    "Rack::Attack",
     "Shrine::Attachment(",
     "aasm do",
     "after_action",
@@ -898,6 +907,7 @@ const DSL_MARKERS: &[&str] = &[
     "enum :",
     "extend Discard::Model::ClassMethods",
     "field :",
+    "has_attached_file",
     "has_many ",
     "has_many_attached",
     "has_many_rich_texts",
@@ -1130,6 +1140,12 @@ fn detect_dsl_libraries_from_source_text(source: &str, detected: &mut BTreeSet<D
     }
     if contains_any(&["devise :", "devise(", "current_user", "authenticate_user!"]) {
         detected.insert(DslLibrary::Devise);
+    }
+    if hits.contains("has_attached_file", haystack) {
+        detected.insert(DslLibrary::Paperclip);
+    }
+    if hits.contains("Rack::Attack", haystack) {
+        detected.insert(DslLibrary::RackAttack);
     }
     if contains_any(&[
         "include Discard::Model",

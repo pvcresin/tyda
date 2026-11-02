@@ -18,6 +18,7 @@ class Comment
   def post=: (Post post) -> Post
   def build_post: -> Post
   def create_post: -> Post
+  def create_post!: -> Post
 end
 ```
 
@@ -39,6 +40,7 @@ class Order
   def coupon=: (Coupon coupon) -> Coupon
   def build_coupon: -> Coupon
   def create_coupon: -> Coupon
+  def create_coupon!: -> Coupon
 end
 ```
 
@@ -60,6 +62,7 @@ class Comment
   def author=: (User author) -> User
   def build_author: -> User
   def create_author: -> User
+  def create_author!: -> User
 end
 ```
 
@@ -116,6 +119,7 @@ class A < ApplicationRecord
   def b=: (B? b) -> B
   def build_b: -> B
   def create_b: -> B
+  def create_b!: -> B
   def foo=: (untyped x) -> B
 end
 

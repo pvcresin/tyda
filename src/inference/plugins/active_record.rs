@@ -505,6 +505,14 @@ impl<'a> InferenceEngine<'a> {
                 loc: Some(loc),
             },
         );
+
+        self.add_simple_method_if_missing(
+            class_name,
+            &format!("{new_name}?"),
+            Type::Bool,
+            false,
+            loc,
+        );
     }
 
     pub(in crate::inference) fn collect_serialized_attribute_dsl(
@@ -691,11 +699,15 @@ impl<'a> InferenceEngine<'a> {
             },
         );
 
-        for prefix in ["build_", "create_"] {
+        for method_name in [
+            format!("build_{assoc_name}"),
+            format!("create_{assoc_name}"),
+            format!("create_{assoc_name}!"),
+        ] {
             self.registry.add_method_def(
                 class_name,
                 MethodDef {
-                    name: Sym::new(format!("{prefix}{assoc_name}")),
+                    name: Sym::new(method_name),
                     param_infos: Vec::new(),
                     raw_return_type: Type::Class(Sym::new(&target_class)),
                     sorbet_modifier_comments: Vec::new(),
@@ -902,11 +914,15 @@ impl<'a> InferenceEngine<'a> {
             },
         );
 
-        for prefix in ["build_", "create_"] {
+        for method_name in [
+            format!("build_{assoc_name}"),
+            format!("create_{assoc_name}"),
+            format!("create_{assoc_name}!"),
+        ] {
             self.registry.add_method_def(
                 class_name,
                 MethodDef {
-                    name: Sym::new(format!("{prefix}{assoc_name}")),
+                    name: Sym::new(method_name),
                     param_infos: Vec::new(),
                     raw_return_type: Type::Class(Sym::new(&target_class)),
                     sorbet_modifier_comments: Vec::new(),

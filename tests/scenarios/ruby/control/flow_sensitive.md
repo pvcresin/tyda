@@ -228,6 +228,56 @@ class ScopedClassNarrowing::LocalRead < Base
 end
 ```
 
+## Resolve type-test targets across project files
+
+### update
+
+`app/models/narrowing.rb`
+
+```ruby
+module TypeProf::Core
+  class Narrowing
+    class Constraint
+      def marker = :ok
+    end
+  end
+end
+```
+
+`app/models/local_env.rb`
+
+```ruby
+module TypeProf::Core
+  class LocalEnv
+    def initialize
+      @ivar_narrowings = {}
+    end
+
+    def push_ivar_narrowing(name, narrowing)
+      raise unless narrowing.is_a?(Narrowing::Constraint)
+      (@ivar_narrowings[name] ||= []) << narrowing
+    end
+  end
+end
+```
+
+```ruby
+def read_ivar_narrowing
+  TypeProf::Core::LocalEnv.new.push_ivar_narrowing(
+    :value,
+    TypeProf::Core::Narrowing::Constraint.new,
+  )
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def read_ivar_narrowing: -> [Narrowing::Constraint]
+end
+```
+
 ## Narrow a parent type to a checked subclass
 
 ### update
@@ -263,6 +313,44 @@ end
 
 class ParentTypePredicate::Child < Base
   def child_only: -> :child
+end
+```
+
+## Ignore generic arguments when excluding unrelated classes
+
+### update
+
+```ruby
+class GenericTypeGuard
+end
+
+def value_after_generic_type_guard(value)
+  result = {}
+  if value.is_a?(GenericTypeGuard)
+    result[value] = true
+  end
+  result
+end
+
+def hash_after_generic_type_guard(value)
+  result = {}
+  if value.is_a?(GenericTypeGuard)
+    result[value] = true
+  end
+  result
+end
+
+value_after_generic_type_guard({})
+value_after_generic_type_guard(GenericTypeGuard.new)
+hash_after_generic_type_guard({})
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def value_after_generic_type_guard: ((Hash[untyped, untyped] | GenericTypeGuard) value) -> (Hash[untyped, untyped] | Hash[GenericTypeGuard, true])
+  def hash_after_generic_type_guard: (Hash[untyped, untyped] value) -> Hash[untyped, untyped]
 end
 ```
 
@@ -2221,4 +2309,89 @@ class Object < BasicObject
   def read_refined_is_a: (String value) -> untyped
   def read_refined_case_equality: (String value) -> untyped
 end
+```
+
+## Class equality narrows an untyped input on its true branch
+
+### update
+
+```ruby
+class UnknownCaseEqualityTarget
+  #: -> String
+  def version = "1.0"
+end
+
+class UnknownCaseEqualityGuard
+  #: (untyped value) -> String?
+  def read(value)
+    return unless UnknownCaseEqualityTarget === value
+
+    value.version
+  end
+
+  def inferred_case_equality_return(value)
+    return :other unless UnknownCaseEqualityTarget === value
+
+    value.version
+  end
+
+  #: (untyped value) -> String?
+  def read_with_is_a(value)
+    return unless value.is_a?(UnknownCaseEqualityTarget)
+
+    value.version
+  end
+end
+```
+
+### result
+
+```rbs
+class UnknownCaseEqualityGuard
+  def read: (untyped value) -> String?
+  def inferred_case_equality_return: (untyped value) -> (String | :other)
+  def read_with_is_a: (untyped value) -> String?
+end
+
+class UnknownCaseEqualityTarget
+  def version: -> String
+end
+```
+
+## Keep unknown instance_of? open when its method can be overridden
+
+### update
+
+```ruby
+class UnknownInstanceOfTarget
+  #: -> String
+  def version = "1.0"
+end
+
+module AlwaysMatchStringInstanceOf
+  refine String do
+    def instance_of?(_target) = true
+  end
+end
+
+using AlwaysMatchStringInstanceOf
+
+def inferred_instance_of_return(value = eval("String.new"))
+  return :other unless value.instance_of?(UnknownInstanceOfTarget)
+
+  value.version
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def inferred_instance_of_return: (?untyped value) -> (untyped | :other)
+end
+
+class UnknownInstanceOfTarget
+  def version: -> String
+end
+```
 ```

@@ -682,3 +682,230 @@ class ProjectTarget
   def name: -> "project"
 end
 ```
+
+## Resolve type-test constants in the current namespace
+
+### update
+
+```ruby
+module FirstNamespace
+  class Foo
+    def first_only = :first
+  end
+
+  def self.narrow(value)
+    if value.is_a?(Foo)
+      value.first_only
+    else
+      :other
+    end
+  end
+end
+
+module SecondNamespace
+  class Foo
+    def second_only = :second
+  end
+end
+
+FirstNamespace.narrow(FirstNamespace::Foo.new)
+FirstNamespace.narrow(SecondNamespace::Foo.new)
+```
+
+### result
+
+```rbs
+module FirstNamespace
+  def self.narrow: ((FirstNamespace::Foo | SecondNamespace::Foo) value) -> (:first | :other)
+end
+
+class FirstNamespace::Foo
+  def first_only: -> :first
+end
+
+class SecondNamespace::Foo
+  def second_only: -> :second
+end
+```
+
+## Resolve nested type-test constant paths in the current namespace
+
+### update
+
+```ruby
+module NamespacePath
+  module Nested
+    class Child
+      def nested_only = :nested
+    end
+  end
+
+  def self.narrow(value)
+    if value.is_a?(Nested::Child)
+      value.nested_only
+    else
+      :other
+    end
+  end
+end
+
+module Nested
+  class Child
+    def root_only = :root
+  end
+end
+
+NamespacePath.narrow(NamespacePath::Nested::Child.new)
+NamespacePath.narrow(Nested::Child.new)
+```
+
+### result
+
+```rbs
+module NamespacePath
+  def self.narrow: ((NamespacePath::Nested::Child | Nested::Child) value) -> (:nested | :other)
+end
+
+class NamespacePath::Nested::Child
+  def nested_only: -> :nested
+end
+
+class Nested::Child
+  def root_only: -> :root
+end
+```
+
+## Keep unresolved nested type-test paths open when a top-level class collides
+
+### update
+
+```ruby
+class CollisionTarget::Child
+  def root_only = :root
+end
+
+module CollisionScope
+  module CollisionTarget
+  end
+
+  def self.narrow(value)
+    return :other unless value.is_a?(CollisionTarget::Child)
+
+    value.root_only
+  end
+end
+
+CollisionScope.narrow(eval("CollisionTarget::Child.new"))
+```
+
+### result
+
+```rbs
+module CollisionScope
+  def self.narrow: (untyped value) -> (untyped | :other)
+end
+
+class CollisionTarget::Child
+  def root_only: -> :root
+end
+```
+
+## Narrow an unknown value after a class predicate
+
+### update
+
+```ruby
+class DynamicNarrowTarget
+  def marker = :narrowed
+end
+
+def narrow_dynamic_value(value)
+  return :other unless value.is_a?(DynamicNarrowTarget)
+
+  value.marker
+end
+
+narrow_dynamic_value(eval("DynamicNarrowTarget.new"))
+```
+
+### result
+
+```rbs
+class DynamicNarrowTarget
+  def marker: -> :narrowed
+end
+
+class Object < BasicObject
+  def narrow_dynamic_value: (untyped value) -> (:narrowed | :other)
+end
+```
+
+## Keep unknown receivers open when is_a is overridden
+
+### update
+
+```ruby
+class OverriddenIsATarget
+  def is_a?(_target) = true
+  def marker = :narrowed
+end
+
+def narrow_with_overridden_is_a(value)
+  return :other unless value.is_a?(OverriddenIsATarget)
+
+  value.marker
+end
+
+narrow_with_overridden_is_a(eval("OverriddenIsATarget.new"))
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def narrow_with_overridden_is_a: (untyped value) -> (untyped | :other)
+end
+
+class OverriddenIsATarget
+  def is_a?: (untyped _target) -> true
+  def marker: -> :narrowed
+end
+```
+
+## Keep unknown receivers open under an active type-test refinement
+
+### update
+
+```ruby
+class RefinedIsATarget
+  def marker = :narrowed
+end
+
+module AlwaysMatchString
+  refine String do
+    def is_a?(_target) = true
+  end
+end
+
+using AlwaysMatchString
+
+def narrow_with_refined_is_a(value)
+  return :other unless value.is_a?(RefinedIsATarget)
+
+  value.marker
+end
+
+narrow_with_refined_is_a(eval("RefinedIsATarget.new"))
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def narrow_with_refined_is_a: (untyped value) -> (untyped | :other)
+end
+
+class RefinedIsATarget
+  def marker: -> :narrowed
+end
+```

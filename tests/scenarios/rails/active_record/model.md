@@ -27,6 +27,7 @@ class Product
   def category=: (Category category) -> Category
   def build_category: -> Category
   def create_category: -> Category
+  def create_category!: -> Category
   def reviews: -> ActiveRecord::Associations::CollectionProxy[Review]
   def review_ids: -> Array[Integer]
   def review_ids=: (Array[Integer] review_ids) -> Array[Integer]
@@ -35,6 +36,7 @@ class Product
   def detail=: (Detail detail) -> Detail
   def build_detail: -> Detail
   def create_detail: -> Detail
+  def create_detail!: -> Detail
   def self.available: -> ActiveRecord::Relation[Product]
   def self.featured: -> ActiveRecord::Relation[Product]
   def status: -> String
@@ -74,6 +76,7 @@ class Post
   def author=: (User author) -> User
   def build_author: -> User
   def create_author: -> User
+  def create_author!: -> User
   def comments: -> ActiveRecord::Associations::CollectionProxy[Comment]
   def comment_ids: -> Array[Integer]
   def comment_ids=: (Array[Integer] comment_ids) -> Array[Integer]
@@ -115,6 +118,7 @@ class Invoice
   def customer=: (Customer customer) -> Customer
   def build_customer: -> Customer
   def create_customer: -> Customer
+  def create_customer!: -> Customer
   def line_items: -> ActiveRecord::Associations::CollectionProxy[LineItem]
   def line_item_ids: -> Array[Integer]
   def line_item_ids=: (Array[Integer] line_item_ids) -> Array[Integer]
@@ -571,6 +575,7 @@ class Order
   def invoice=: (Invoice invoice) -> Invoice
   def build_invoice: -> Invoice
   def create_invoice: -> Invoice
+  def create_invoice!: -> Invoice
 end
 ```
 
@@ -601,6 +606,7 @@ class Project
   def owner=: (User owner) -> User
   def build_owner: -> User
   def create_owner: -> User
+  def create_owner!: -> User
 end
 ```
 
@@ -630,6 +636,7 @@ class Post < ApplicationRecord
   def author=: (User author) -> User
   def build_author: -> User
   def create_author: -> User
+  def create_author!: -> User
 end
 
 class PostManager
@@ -690,10 +697,12 @@ class Appeal < ApplicationRecord
   def approved_by_account=: (Account approved_by_account) -> Account
   def build_approved_by_account: -> Account
   def create_approved_by_account: -> Account
+  def create_approved_by_account!: -> Account
   def rejected_by_account: -> Account?
   def rejected_by_account=: (Account rejected_by_account) -> Account
   def build_rejected_by_account: -> Account
   def create_rejected_by_account: -> Account
+  def create_rejected_by_account!: -> Account
 end
 ```
 

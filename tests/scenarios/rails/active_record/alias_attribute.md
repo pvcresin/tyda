@@ -41,6 +41,7 @@ end
 class Project < ApplicationRecord
   def title: -> String?
   def title=: (String? title) -> String?
+  def title?: -> bool
 end
 ```
 
@@ -69,7 +70,9 @@ class Project < ApplicationRecord
   def namespace=: (Namespace namespace) -> Namespace
   def build_namespace: -> Namespace
   def create_namespace: -> Namespace
+  def create_namespace!: -> Namespace
   def parent_id: -> Integer
   def parent_id=: (Integer parent_id) -> Integer
+  def parent_id?: -> bool
 end
 ```

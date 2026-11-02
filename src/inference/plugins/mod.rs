@@ -24,8 +24,10 @@ pub(super) mod identity_cache;
 pub(super) mod kredis;
 pub(super) mod migration;
 pub(super) mod oj;
+pub(super) mod paperclip;
 pub(super) mod properties;
 pub(super) mod protobuf;
+pub(super) mod rack_attack;
 pub(super) mod rails_configure;
 pub(super) mod settingslogic;
 pub(super) mod shrine;
@@ -169,6 +171,8 @@ static PLUGINS: &[&dyn Plugin] = &[
     &identity_cache::IdentityCache,
     &kredis::Kredis,
     &oj::Oj,
+    &paperclip::Paperclip,
+    &rack_attack::RackAttack,
     &draper::Draper,
     &properties::Properties,
     &active_hash::ActiveHash,

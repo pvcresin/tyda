@@ -1,6 +1,6 @@
 use crate::prism_compat::LocationExt;
 use ruby_prism::{self as prism, Node};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -1903,6 +1903,62 @@ pub fn source_case_equality_overrides(source: &str) -> SourceCaseEqualityOverrid
     source_case_equality_overrides_in_root(&root)
 }
 
+// Conditional and method bodies are excluded because their require may never run.
+fn collect_required_stdlib_features(node: &Node<'_>, features: &mut BTreeSet<String>) {
+    if let Some(call) = node.as_call_node() {
+        if call.name().as_slice() == b"require"
+            && call.receiver().is_none()
+            && call.block().is_none()
+            && let Some(arguments) = call.arguments()
+        {
+            let mut arguments = arguments.arguments().iter();
+            if let Some(Node::StringNode { .. }) = arguments.next()
+                && arguments.next().is_none()
+                && let Some(string) = call
+                    .arguments()
+                    .and_then(|arguments| arguments.arguments().iter().next())
+                    .and_then(|argument| argument.as_string_node())
+            {
+                let feature = String::from_utf8_lossy(string.unescaped());
+                let feature = feature.strip_suffix(".rb").unwrap_or(&feature);
+                if !feature.is_empty() {
+                    features.insert(feature.to_string());
+                }
+            }
+        }
+        return;
+    }
+    if let Some(program) = node.as_program_node() {
+        for statement in program.statements().body().iter() {
+            collect_required_stdlib_features(&statement, features);
+        }
+    } else if let Some(statements) = node.as_statements_node() {
+        for statement in statements.body().iter() {
+            collect_required_stdlib_features(&statement, features);
+        }
+    } else if let Some(class_node) = node.as_class_node() {
+        if let Some(body) = class_node.body() {
+            collect_required_stdlib_features(&body, features);
+        }
+    } else if let Some(module_node) = node.as_module_node() {
+        if let Some(body) = module_node.body() {
+            collect_required_stdlib_features(&body, features);
+        }
+    } else if let Some(begin_node) = node.as_begin_node()
+        && let Some(statements) = begin_node.statements()
+    {
+        for statement in statements.body().iter() {
+            collect_required_stdlib_features(&statement, features);
+        }
+    }
+}
+
+fn statically_required_stdlib_features(root: &Node<'_>) -> BTreeSet<String> {
+    let mut features = BTreeSet::new();
+    collect_required_stdlib_features(root, &mut features);
+    features
+}
+
 fn build_engine_with_timings<'a>(
     request: AnalysisRequest<'a>,
 ) -> (InferenceEngine<'a>, AnalysisTimings) {
@@ -1979,6 +2035,11 @@ fn build_engine_with_timings<'a>(
 
     if let Some(loader) = lazy_loader {
         engine.set_lazy_loader(loader);
+        let feature_load_started = Instant::now();
+        for feature in statically_required_stdlib_features(&root) {
+            engine.merge_stdlib_feature(&feature);
+        }
+        timings.preload += feature_load_started.elapsed();
     }
 
     if let Some(loader) = lazy_rbi_loader {
@@ -2158,6 +2219,67 @@ mod tests {
             dependency_collection,
         );
         deps
+    }
+
+    #[test]
+    fn literal_top_level_requires_load_only_matching_stdlib_features() {
+        let source = concat!(
+            "require \"shellwords\"\n",
+            "require(feature)\n",
+            "def load_later\n",
+            "  require \"date\"\n",
+            "end\n",
+            "if enabled?\n",
+            "  require \"yaml\"\n",
+            "end\n",
+            "module LoadAtFileTime\n",
+            "  require \"set\"\n",
+            "end\n",
+        );
+        let parse_result = prism::parse(source.as_bytes());
+        let features = statically_required_stdlib_features(&parse_result.node());
+
+        assert_eq!(
+            features,
+            BTreeSet::from(["set".to_string(), "shellwords".to_string()])
+        );
+    }
+
+    #[test]
+    fn required_stdlib_feature_surfaces_follow_literal_require() {
+        let vendor_rbs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs");
+        let loader =
+            LazyRbsLoader::from_rbs_roots(vec![vendor_rbs.join("core"), vendor_rbs.join("stdlib")]);
+        let source = r#"
+require "shellwords"
+
+def shellwords_results(value)
+  [value.shellescape, value.shellsplit, [value].shelljoin, Shellwords.shellsplit(value)]
+end
+"#;
+        let loaded = analyze_source_with_lazy_rbs(source, None, &loader);
+        assert_eq!(
+            loaded.lookup_method_return_type("String", "shellescape"),
+            Some(Type::String)
+        );
+        assert_eq!(
+            loaded.lookup_method_return_type("String", "shellsplit"),
+            Some(Type::Array(Some(Box::new(Type::String))))
+        );
+        assert_eq!(
+            loaded.lookup_method_return_type("Array", "shelljoin"),
+            Some(Type::String)
+        );
+
+        let not_loaded = analyze_source_with_lazy_rbs(
+            "def no_shellwords(value) = value.shellescape\n",
+            None,
+            &loader,
+        );
+        assert_eq!(
+            not_loaded.lookup_method_return_type("String", "shellescape"),
+            None
+        );
     }
 
     #[test]

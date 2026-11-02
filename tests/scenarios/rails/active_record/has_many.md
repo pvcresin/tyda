@@ -133,6 +133,7 @@ class A < ApplicationRecord
   def item=: (B item) -> B
   def build_item: -> B
   def create_item: -> B
+  def create_item!: -> B
 end
 
 class B < ApplicationRecord

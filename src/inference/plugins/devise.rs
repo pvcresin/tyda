@@ -186,6 +186,39 @@ impl<'a> InferenceEngine<'a> {
         if self.is_collecting_concern_included() {
             return;
         }
+
+        let modules = Self::extract_symbol_args(call_node);
+        let generated_methods = [
+            (
+                "confirmable",
+                &[
+                    ("confirmed?", Type::Bool),
+                    ("resend_confirmation_instructions", Type::Untyped),
+                ][..],
+            ),
+            (
+                "two_factor_authenticatable",
+                &[("validate_and_consume_otp!", Type::Bool)][..],
+            ),
+            (
+                "two_factor_backupable",
+                &[("invalidate_otp_backup_code!", Type::Bool)][..],
+            ),
+        ];
+        for (module, methods) in generated_methods {
+            if modules.iter().any(|enabled| enabled == module) {
+                for (method, return_type) in methods {
+                    self.add_simple_method_if_missing(
+                        class_name,
+                        method,
+                        return_type.clone(),
+                        false,
+                        loc,
+                    );
+                }
+            }
+        }
+
         self.registry
             .register_devise_controller_helpers(class_name, loc);
     }

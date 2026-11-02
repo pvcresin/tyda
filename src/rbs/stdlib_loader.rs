@@ -25,8 +25,10 @@ fn stdlib_file_cache_cap() -> usize {
 
 pub struct LazyRbsLoader {
     class_to_files: FxHashMap<String, Vec<PathBuf>>,
+    feature_to_files: FxHashMap<String, Vec<PathBuf>>,
     file_cache: Mutex<BoundedFileCache<PathBuf, StdlibFileRegistrySlot>>,
     shared_shapes: Mutex<FxHashMap<String, SharedShapeSlot>>,
+    shared_features: Mutex<FxHashMap<String, SharedShapeSlot>>,
 }
 
 impl LazyRbsLoader {
@@ -40,6 +42,7 @@ impl LazyRbsLoader {
 
     pub fn from_rbs_roots(roots: Vec<PathBuf>) -> Self {
         let mut class_to_files = FxHashMap::default();
+        let mut feature_to_files: FxHashMap<String, Vec<PathBuf>> = FxHashMap::default();
 
         for root in roots {
             if !root.exists() {
@@ -53,8 +56,14 @@ impl LazyRbsLoader {
                     .parent()
                     .and_then(|p| p.file_name())
                     .is_some_and(|n| n == "stdlib");
-            let rbs_files = collect_rbs_files(&[root]);
+            let rbs_files = collect_rbs_files(std::slice::from_ref(&root));
             for path in rbs_files {
+                if is_stdlib_root && let Some(feature) = stdlib_feature_for_path(&root, &path) {
+                    let feature_paths = feature_to_files.entry(feature).or_default();
+                    if !feature_paths.contains(&path) {
+                        feature_paths.push(path.clone());
+                    }
+                }
                 if let Some(stem) = path.file_stem().and_then(|segment| segment.to_str()) {
                     let class_name = stem_to_class_name(stem);
                     insert_class_file(&mut class_to_files, class_name, path.clone());
@@ -139,8 +148,10 @@ impl LazyRbsLoader {
 
         Self {
             class_to_files,
+            feature_to_files,
             file_cache: Mutex::new(BoundedFileCache::with_cap(stdlib_file_cache_cap())),
             shared_shapes: Mutex::new(FxHashMap::default()),
+            shared_features: Mutex::new(FxHashMap::default()),
         }
     }
 
@@ -245,6 +256,15 @@ impl LazyRbsLoader {
         true
     }
 
+    pub fn merge_feature_into(&self, feature: &str, target: &mut TypeRegistry) -> bool {
+        let Some(shape) = self.shared_feature_shape(feature) else {
+            return false;
+        };
+        target.merge_stdlib_rbs_registry(&shape);
+        crate::rbs::import::finalize_pending_method_aliases(target);
+        true
+    }
+
     fn shared_class_shape(&self, class_name: &str) -> Option<Arc<TypeRegistry>> {
         if !self.class_to_files.contains_key(class_name) {
             return None;
@@ -266,6 +286,27 @@ impl LazyRbsLoader {
             .clone()
     }
 
+    fn shared_feature_shape(&self, feature: &str) -> Option<Arc<TypeRegistry>> {
+        if !self.feature_to_files.contains_key(feature) {
+            return None;
+        }
+        let slot: SharedShapeSlot = {
+            let mut features = self
+                .shared_features
+                .lock()
+                .expect("stdlib shared features poisoned");
+            if let Some(existing) = features.get(feature) {
+                Arc::clone(existing)
+            } else {
+                let fresh: SharedShapeSlot = Arc::new(OnceLock::new());
+                features.insert(feature.to_string(), Arc::clone(&fresh));
+                fresh
+            }
+        };
+        slot.get_or_init(|| self.build_feature_shape(feature))
+            .clone()
+    }
+
     /// Merge every declaring `.rbs` file into an empty registry once per FQN.
     /// Alias expansion is done here so the cached shape does not depend on the
     /// caller's already-merged ancestors (byte-stable across per-file engines).
@@ -283,6 +324,23 @@ impl LazyRbsLoader {
                 shape.merge_stdlib_rbs_registry(&registry);
                 merged = true;
             }
+        }
+        if !merged {
+            return None;
+        }
+        crate::rbs::import::finalize_pending_method_aliases(&mut shape);
+        shape.shrink_to_fit_after_compact();
+        Some(Arc::new(shape))
+    }
+
+    fn build_feature_shape(&self, feature: &str) -> Option<Arc<TypeRegistry>> {
+        let paths = self.feature_to_files.get(feature)?;
+        let mut shape = TypeRegistry::new();
+        let mut merged = false;
+        for path in paths {
+            let registry = self.load_file_registry(path);
+            shape.merge_stdlib_rbs_registry(&registry);
+            merged = true;
         }
         if !merged {
             return None;
@@ -361,6 +419,21 @@ impl LazyRbsLoader {
             }
         }
         {
+            let features = self
+                .shared_features
+                .lock()
+                .expect("stdlib shared features poisoned");
+            for (feature, slot) in features.iter() {
+                out.index_bytes += feature.capacity()
+                    + std::mem::size_of::<String>()
+                    + std::mem::size_of::<SharedShapeSlot>();
+                if let Some(Some(registry)) = slot.get() {
+                    out.shape_count += 1;
+                    out.shapes.accumulate(&registry.deep_breakdown(seen));
+                }
+            }
+        }
+        {
             let cache = self.file_cache.lock().expect("stdlib file cache poisoned");
             for slot in cache.values() {
                 if let Some(registry) = slot.get() {
@@ -371,6 +444,16 @@ impl LazyRbsLoader {
         }
         for (class_name, paths) in &self.class_to_files {
             out.index_bytes += class_name.capacity()
+                + std::mem::size_of::<String>()
+                + std::mem::size_of::<Vec<PathBuf>>()
+                + paths.capacity() * std::mem::size_of::<PathBuf>()
+                + paths
+                    .iter()
+                    .map(|path| path.as_os_str().len())
+                    .sum::<usize>();
+        }
+        for (feature, paths) in &self.feature_to_files {
+            out.index_bytes += feature.capacity()
                 + std::mem::size_of::<String>()
                 + std::mem::size_of::<Vec<PathBuf>>()
                 + paths.capacity() * std::mem::size_of::<PathBuf>()
@@ -636,6 +719,14 @@ fn collect_rbs_type_names(rbs_type: &rbs_sys::RbsType, names: &mut HashSet<Strin
         | rbs_sys::RbsType::ClassType
         | rbs_sys::RbsType::InstanceType => {}
     }
+}
+
+fn stdlib_feature_for_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut components = relative.components();
+    let feature = components.next()?.as_os_str().to_str()?;
+    components.next()?;
+    Some(feature.to_string())
 }
 
 fn resolve_versioned_rbs_roots(vendor_rbs_root: &Path, ruby_version: RubyVersion) -> Vec<PathBuf> {
@@ -1170,6 +1261,28 @@ mod tests {
         assert_eq!(
             registry.lookup_method_return_type("String", "size"),
             Some(crate::types::Type::Integer)
+        );
+    }
+
+    #[test]
+    fn merges_stdlib_feature_rbs_by_literal_feature_name() {
+        let dir = tempdir().expect("tempdir");
+        let stdlib = dir.path().join("stdlib");
+        let feature_dir = stdlib.join("shellwords").join("0");
+        std::fs::create_dir_all(&feature_dir).expect("mkdir feature directory");
+        std::fs::write(
+            feature_dir.join("shellwords.rbs"),
+            "module Shellwords\nend\nclass String\n  def shellescape: () -> String\nend\n",
+        )
+        .expect("write feature rbs");
+
+        let loader = LazyRbsLoader::new(stdlib);
+        let mut registry = TypeRegistry::new();
+        assert!(!loader.merge_feature_into("not_a_feature", &mut registry));
+        assert!(loader.merge_feature_into("shellwords", &mut registry));
+        assert_eq!(
+            registry.lookup_method_return_type("String", "shellescape"),
+            Some(crate::types::Type::String)
         );
     }
 

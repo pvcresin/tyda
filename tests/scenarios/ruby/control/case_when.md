@@ -1055,3 +1055,158 @@ class User
   def id: -> 1
 end
 ```
+
+## Narrow a class object by its name
+
+### update
+
+```ruby
+class Alpha
+  def self.alpha_value = :alpha
+end
+
+class Beta
+  def self.beta_value = :beta
+end
+
+def value_for_class(klass)
+  case klass.name
+  when "Alpha"
+    klass.alpha_value
+  when "Beta"
+    klass.beta_value
+  else
+    :other
+  end
+end
+
+value_for_class(Alpha)
+value_for_class(Beta)
+```
+
+### result
+
+```rbs
+class Alpha
+  def self.alpha_value: -> :alpha
+end
+
+class Beta
+  def self.beta_value: -> :beta
+end
+
+class Object < BasicObject
+  def value_for_class: ((singleton(Alpha) | singleton(Beta)) klass) -> (:alpha | :beta)
+end
+```
+
+## Stop class-name narrowing after a mixed when clause
+
+### update
+
+```ruby
+class MixedAlpha
+  def self.marker = :alpha
+end
+
+class MixedBeta
+  def self.marker = :beta
+end
+
+def value_after_mixed_class_name(klass)
+  case klass.name
+  when 42, "MixedAlpha"
+    :first
+  when "MixedAlpha"
+    klass.marker
+  else
+    :other
+  end
+end
+
+value_after_mixed_class_name(MixedAlpha)
+value_after_mixed_class_name(MixedBeta)
+```
+
+### result
+
+```rbs
+class MixedAlpha
+  def self.marker: -> :alpha
+end
+
+class MixedBeta
+  def self.marker: -> :beta
+end
+
+class Object < BasicObject
+  def value_after_mixed_class_name: ((singleton(MixedAlpha) | singleton(MixedBeta)) klass) -> (:alpha | :beta | :first | :other)
+end
+```
+
+## Keep branches unknown when class name is overridden
+
+### update
+
+```ruby
+class Renamed
+  def self.name = String.new
+  def self.alpha_value = :alpha
+end
+
+def value_for_overridden_name(klass)
+  case klass.name
+  when "Renamed"
+    klass.alpha_value
+  else
+    :other
+  end
+end
+
+value_for_overridden_name(Renamed)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def value_for_overridden_name: (singleton(Renamed) klass) -> (:alpha | :other)
+end
+
+class Renamed
+  def self.name: -> String
+  def self.alpha_value: -> :alpha
+end
+```
+
+## Record arguments through a singleton receiver chain
+
+### update
+
+```ruby
+class ChainHolder
+  include Singleton
+
+  def accept(value) = value
+end
+
+class Alpha
+end
+
+def chained_accept = ChainHolder.instance.accept(Alpha)
+```
+
+### result
+
+```rbs
+class ChainHolder
+  include Singleton
+
+  def self.instance: -> ChainHolder
+  def accept: (singleton(Alpha) value) -> singleton(Alpha)
+end
+
+class Object < BasicObject
+  def chained_accept: -> singleton(Alpha)
+end
+```

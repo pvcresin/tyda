@@ -293,14 +293,15 @@ impl<'a> InferenceEngine<'a> {
             let method_exists_on_resolved_receiver = resolved_receiver
                 .as_ref()
                 .and_then(|receiver| {
-                    self.type_to_class_name(receiver)?;
-                    let key = (receiver.clone(), snap.name.clone());
+                    let lookup_receiver = self.method_lookup_receiver_type(receiver);
+                    self.type_to_class_name(&lookup_receiver)?;
+                    let key = (lookup_receiver.clone(), snap.name.clone());
                     Some(*method_exists_cache.entry(key).or_insert_with(|| {
-                        let resolved = self.resolve_method_on_type(receiver, &snap.name);
+                        let resolved = self.resolve_method_on_type(&lookup_receiver, &snap.name);
                         !matches!(
                             resolved,
                             Type::ReceiverMethodRef(resolved_receiver, method)
-                                if resolved_receiver.as_ref() == receiver
+                                if resolved_receiver.as_ref() == &lookup_receiver
                                     && method.as_str() == snap.name
                         )
                     }))
@@ -3889,6 +3890,16 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn method_lookup_receiver_type(&self, receiver: &Type) -> Type {
+        match receiver {
+            // Inference represents string instances as String/LiteralString. A resolved
+            // deferred receiver may instead be Class("String"), so use the same shape
+            // when consulting inference's synthetic method tables.
+            Type::Class(name) if name.as_str() == "String" => Type::String,
+            _ => receiver.clone(),
+        }
+    }
+
     fn is_universal_object_method_for_diagnostics(method_name: &str) -> bool {
         matches!(
             method_name,
@@ -5475,6 +5486,48 @@ mod arg_compat_tests {
                 .map(|call| call.unresolved_method.as_str())
                 .collect::<Vec<_>>(),
             ["FollowRequest#unknown!"]
+        );
+    }
+
+    #[test]
+    fn rails_string_extension_is_present_but_unknown_string_method_is_reported() {
+        let mut e = engine();
+        e.set_rails_mode(true);
+        e.registry.mark_user_defined("String");
+        e.registry.add_method_def("String", method_def("upcase"));
+        e.registry.mark_user_defined("StringSource");
+        let mut string_value = method_def("string_value");
+        string_value.raw_return_type = Type::Class(Sym::new("String"));
+        e.registry.add_method_def("StringSource", string_value);
+
+        let receiver = Type::MethodReturnRef(Sym::new("StringSource"), Sym::new("string_value"));
+        for (start, name) in [(0, "underscore"), (20, "not_a_method")] {
+            e.var_snapshots.push(HoverSnapshot {
+                start,
+                end: start + name.len(),
+                name: name.to_string(),
+                target: HoverTarget::MethodCall {
+                    receiver_type: receiver.clone(),
+                    result_type: Type::ReceiverMethodRef(
+                        Box::new(receiver.clone()),
+                        Sym::new(name),
+                    ),
+                    has_block: false,
+                    safe_navigation: false,
+                    respond_to_guards: Vec::new(),
+                },
+                class_context: "StringSource".to_string(),
+                method_context: Some("call".to_string()),
+            });
+        }
+
+        let calls = e.unresolved_method_calls_for_snapshots();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.unresolved_method.as_str())
+                .collect::<Vec<_>>(),
+            ["String#not_a_method"]
         );
     }
 

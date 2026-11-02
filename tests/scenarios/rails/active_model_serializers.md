@@ -285,6 +285,7 @@ module ItemAssociations
   def item=: (Item item) -> Item
   def build_item: -> Item
   def create_item: -> Item
+  def create_item!: -> Item
   def items: -> ActiveRecord::Associations::CollectionProxy[Item]
   def item_ids: -> Array[Integer]
   def item_ids=: (Array[Integer] item_ids) -> Array[Integer]
