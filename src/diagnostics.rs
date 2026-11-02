@@ -1156,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn class_case_equality_keeps_a_possible_subclass_branch_open() {
+    fn class_case_equality_narrows_parent_to_a_known_subclass() {
         let source = concat!(
             "class BaseTarget; end\n",
             "class CaseTarget < BaseTarget; end\n",
@@ -1175,8 +1175,8 @@ mod tests {
             "BaseTarget can contain a CaseTarget instance: {methods:?}"
         );
         assert!(
-            methods[0].contains("BaseTarget#missing"),
-            "expected the possible BaseTarget receiver to remain: {methods:?}"
+            methods[0].contains("CaseTarget#missing"),
+            "expected the branch to narrow to CaseTarget: {methods:?}"
         );
     }
 
@@ -1202,6 +1202,53 @@ mod tests {
         assert!(
             methods.is_empty(),
             "standard type predicates exclude String: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn standard_type_predicates_narrow_parent_to_a_known_subclass() {
+        let source = concat!(
+            "class PredicateBase; end\n",
+            "class PredicateChild < PredicateBase\n",
+            "  def child_only; end\n",
+            "end\n",
+            "\n",
+            "#: (String | PredicateBase) -> void\n",
+            "def check(value)\n",
+            "  return nil unless value.is_a?(PredicateChild)\n",
+            "  value.child_only\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "is_a? should narrow the parent arm to PredicateChild: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn standard_type_predicates_narrow_parent_instance_variables_to_a_known_subclass() {
+        let source = concat!(
+            "class IvarPredicateBase; end\n",
+            "class IvarPredicateChild < IvarPredicateBase\n",
+            "  def child_only; end\n",
+            "end\n",
+            "\n",
+            "class IvarPredicateChecker\n",
+            "  #: (IvarPredicateBase) -> void\n",
+            "  def check(value)\n",
+            "    @node = value\n",
+            "    return nil unless @node.is_a?(IvarPredicateChild)\n",
+            "    @node.child_only\n",
+            "  end\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "is_a? should narrow the parent instance variable to IvarPredicateChild: {methods:?}"
         );
     }
 

@@ -228,6 +228,81 @@ class ScopedClassNarrowing::LocalRead < Base
 end
 ```
 
+## Narrow a parent type to a checked subclass
+
+### update
+
+```ruby
+class ParentTypePredicate
+  class Base; end
+  class Child < Base
+    def child_only = :child
+  end
+
+  #: (Base) -> :child?
+  def child_value(value)
+    return unless value.is_a?(Child)
+    value.child_only
+  end
+
+  #: (Base) -> :child?
+  def class_case_child_value(value)
+    return unless Child === value
+    value.child_only
+  end
+end
+```
+
+### result
+
+```rbs
+class ParentTypePredicate
+  def child_value: (Base value) -> :child?
+  def class_case_child_value: (Base value) -> :child?
+end
+
+class ParentTypePredicate::Child < Base
+  def child_only: -> :child
+end
+```
+
+## Keep a subclass check open when its parent is unknown
+
+### update
+
+```ruby
+class UnknownTargetBase
+  def base_value = :base
+end
+
+parent_class = UnknownTargetBase
+UnknownTargetChild = Class.new(parent_class)
+
+def unknown_target_value(value)
+  return unless value.is_a?(UnknownTargetChild)
+  value.base_value
+end
+
+def inferred_unknown_target_value
+  unknown_target_value(UnknownTargetBase.new)
+end
+```
+
+### result
+
+```rbs
+UnknownTargetChild: singleton(Object)
+
+class Object < BasicObject
+  def unknown_target_value: (UnknownTargetBase value) -> (nil | untyped)
+  def inferred_unknown_target_value: -> nil | untyped
+end
+
+class UnknownTargetBase
+  def base_value: -> :base
+end
+```
+
 ## Keep different branch types after instance_of?
 
 ### update

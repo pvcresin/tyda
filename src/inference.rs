@@ -51902,15 +51902,15 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn narrow_type_by_kind_of(&mut self, current: &Type, target_name: &str) -> Option<Type> {
+        let target_is_module = self.kind_of_target_is_module(target_name);
         match current {
             Type::Union(parts) => {
                 let mut filtered = Vec::new();
                 for part in parts {
-                    let matches = self.type_matches_kind_of_target(part, target_name);
-                    let may_match =
-                        self.type_may_match_kind_of_target_with_unknown_ancestry(part, target_name);
-                    if matches || may_match {
-                        filtered.push(part.clone());
+                    if let Some(narrowed) =
+                        self.narrow_kind_of_member(part, target_name, target_is_module)
+                    {
+                        filtered.push(narrowed);
                     }
                 }
                 match filtered.len() {
@@ -51919,14 +51919,32 @@ impl<'a> InferenceEngine<'a> {
                     _ => Some(Type::from_type_vec_preserve_untyped(filtered)),
                 }
             }
-            _ if self.type_matches_kind_of_target(current, target_name)
-                || self
-                    .type_may_match_kind_of_target_with_unknown_ancestry(current, target_name) =>
-            {
-                Some(current.clone())
-            }
-            _ => None,
+            _ => self.narrow_kind_of_member(current, target_name, target_is_module),
         }
+    }
+
+    fn narrow_kind_of_member(
+        &mut self,
+        current: &Type,
+        target_name: &str,
+        target_is_module: bool,
+    ) -> Option<Type> {
+        if self.type_matches_kind_of_target(current, target_name) {
+            return Some(current.clone());
+        }
+
+        if !target_is_module && let Some(current_class) = self.type_to_class_name(current) {
+            match self.class_kind_of_target_relation(target_name, &current_class) {
+                Some(true) => return Some(Self::class_name_to_type(target_name)),
+                None if self.class_superclass_chain_has_unknown(target_name) => {
+                    return Some(Type::Untyped);
+                }
+                Some(false) | None => {}
+            }
+        }
+
+        self.type_may_match_kind_of_target_with_unknown_ancestry(current, target_name)
+            .then(|| current.clone())
     }
 
     fn narrow_type_by_kind_of_filter(&mut self, current: &Type, target_name: &str) -> Option<Type> {
@@ -52021,6 +52039,7 @@ impl<'a> InferenceEngine<'a> {
             !self.class_module_ancestry_is_complete(&class_name)
         } else {
             self.class_superclass_chain_has_unknown(&class_name)
+                || self.class_superclass_chain_has_unknown(target_name)
         }
     }
 
