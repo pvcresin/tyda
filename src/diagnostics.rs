@@ -1111,6 +1111,291 @@ mod tests {
     }
 
     #[test]
+    fn standard_class_case_equality_closes_a_disjoint_receiver_branch() {
+        let source = concat!(
+            "class CaseTarget; end\n",
+            "\n",
+            "#: (String) -> void\n",
+            "def process(value)\n",
+            "  return nil unless CaseTarget === value\n",
+            "  value.missing\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "the class equality guard excludes String: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn custom_class_case_equality_does_not_close_a_receiver_branch() {
+        let source = concat!(
+            "class CaseTarget\n",
+            "  def self.===(_value) = true\n",
+            "end\n",
+            "\n",
+            "#: (String) -> void\n",
+            "def process(value)\n",
+            "  return nil unless CaseTarget === value\n",
+            "  value.missing\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert_eq!(
+            methods.len(),
+            1,
+            "a custom === can admit String values: {methods:?}"
+        );
+        assert!(
+            methods[0].contains("String#missing"),
+            "expected missing String method: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn class_case_equality_keeps_a_possible_subclass_branch_open() {
+        let source = concat!(
+            "class BaseTarget; end\n",
+            "class CaseTarget < BaseTarget; end\n",
+            "\n",
+            "#: (BaseTarget) -> void\n",
+            "def process(value)\n",
+            "  return nil unless CaseTarget === value\n",
+            "  value.missing\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert_eq!(
+            methods.len(),
+            1,
+            "BaseTarget can contain a CaseTarget instance: {methods:?}"
+        );
+        assert!(
+            methods[0].contains("BaseTarget#missing"),
+            "expected the possible BaseTarget receiver to remain: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn standard_type_predicates_close_a_disjoint_receiver_branch() {
+        let source = concat!(
+            "class CaseTarget; end\n",
+            "\n",
+            "#: (String) -> void\n",
+            "def check_is_a(value)\n",
+            "  return nil unless value.is_a?(CaseTarget)\n",
+            "  value.missing\n",
+            "end\n",
+            "\n",
+            "#: (String) -> void\n",
+            "def check_instance_of(value)\n",
+            "  return nil unless value.instance_of?(CaseTarget)\n",
+            "  value.missing\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "standard type predicates exclude String: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_superclass_keeps_a_possible_is_a_branch_open() {
+        let source = concat!(
+            "class CaseTarget; end\n",
+            "parent_class = CaseTarget\n",
+            "UnknownChild = Class.new(parent_class) do\n",
+            "end\n",
+            "\n",
+            "#: (UnknownChild) -> void\n",
+            "def process(value)\n",
+            "  return nil unless value.is_a?(CaseTarget)\n",
+            "  value.missing\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods
+                .iter()
+                .any(|method| method.contains("UnknownChild#missing")),
+            "an unknown superclass may include CaseTarget: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_target_superclass_keeps_a_possible_instance_of_branch_open() {
+        let source = concat!(
+            "class BaseTarget; end\n",
+            "parent_class = BaseTarget\n",
+            "UnknownTarget = Class.new(parent_class) do\n",
+            "end\n",
+            "\n",
+            "#: (BaseTarget) -> void\n",
+            "def process(value)\n",
+            "  return nil unless value.instance_of?(UnknownTarget)\n",
+            "  value.missing\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods
+                .iter()
+                .any(|method| method.contains("UnknownTarget#missing")),
+            "UnknownTarget may inherit BaseTarget and be the exact runtime class: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn refinement_of_is_a_keeps_a_possible_branch_open() {
+        let source = concat!(
+            "class CaseTarget; end\n",
+            "module AlwaysMatch\n",
+            "  refine String do\n",
+            "    def is_a?(_target) = true\n",
+            "  end\n",
+            "end\n",
+            "using AlwaysMatch\n",
+            "\n",
+            "#: (String) -> void\n",
+            "def process(value)\n",
+            "  return nil unless value.is_a?(CaseTarget)\n",
+            "  value.missing\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods
+                .iter()
+                .any(|method| method.contains("String#missing")),
+            "an active refinement can make String#is_a? return true: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn refinement_of_class_case_equality_keeps_a_possible_branch_open() {
+        let source = concat!(
+            "class CaseTarget; end\n",
+            "module AlwaysMatch\n",
+            "  refine Class do\n",
+            "    def ===(_value) = true\n",
+            "  end\n",
+            "end\n",
+            "using AlwaysMatch\n",
+            "\n",
+            "#: (String) -> void\n",
+            "def process(value)\n",
+            "  return nil unless CaseTarget === value\n",
+            "  value.missing\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods
+                .iter()
+                .any(|method| method.contains("String#missing")),
+            "an active refinement can make Class#=== return true: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn hash_predicate_override_keeps_a_shape_mismatch_branch_open() {
+        let source = concat!(
+            "class Hash\n",
+            "  #: (Symbol) -> bool\n",
+            "  def key?(_key) = true\n",
+            "end\n",
+            "\n",
+            "def check_hash_key\n",
+            "  values = { present: \"value\" }\n",
+            "  values[:missing].upcase if values.key?(:missing)\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods
+                .iter()
+                .any(|method| method.contains("NilClass#upcase")),
+            "the source-defined predicate may admit an absent key: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn instance_of_superclass_excludes_a_subclass_receiver_branch() {
+        let source = concat!(
+            "class BaseTarget; end\n",
+            "class ChildTarget < BaseTarget; end\n",
+            "\n",
+            "#: (ChildTarget) -> void\n",
+            "def process(value)\n",
+            "  return nil unless value.instance_of?(BaseTarget)\n",
+            "  value.missing\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "an instance of ChildTarget cannot be an exact BaseTarget: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn source_defined_is_a_does_not_narrow_a_receiver() {
+        let source = concat!(
+            "class CaseTarget; end\n",
+            "class String\n",
+            "  def is_a?(_target) = true\n",
+            "end\n",
+            "\n",
+            "#: (String) -> void\n",
+            "def process(value)\n",
+            "  return nil unless value.is_a?(CaseTarget)\n",
+            "  value.missing\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert_eq!(
+            methods.len(),
+            1,
+            "a source-defined is_a? can admit String values: {methods:?}"
+        );
+        assert!(
+            methods[0].contains("String#missing"),
+            "expected missing String method: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn active_record_model_metadata_and_readonly_are_known_methods() {
+        let source = concat!(
+            "class ActiveRecord::Base; end\n",
+            "class Model < ActiveRecord::Base; end\n",
+            "\n",
+            "def model_reflections = Model.reflections\n",
+            "def model_base_class = Model.base_class\n",
+            "def readonly_model = Model.new.readonly!\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "Active Record model methods should be available: {methods:?}"
+        );
+    }
+
+    #[test]
     fn break_if_equality_guard_excludes_the_sentinel_after_break() {
         let source = concat!(
             "class DownloadRequest\n",
@@ -1130,6 +1415,66 @@ mod tests {
         assert!(
             methods.is_empty(),
             "the :stop request exits before the method call: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn queue_symbol_sentinel_is_excluded_after_break() {
+        let source = concat!(
+            "class DownloadRequest\n",
+            "  def spec = :spec\n",
+            "  def installed? = true\n",
+            "end\n",
+            "\n",
+            "#: (Array[DownloadRequest]) -> void\n",
+            "def download(sorted_requests)\n",
+            "  download_queue = Thread::Queue.new\n",
+            "  sorted_requests.each do |req|\n",
+            "    download_queue << req\n",
+            "  end\n",
+            "  download_queue << :stop\n",
+            "  while req = download_queue.pop\n",
+            "    break if req == :stop\n",
+            "    req.spec\n",
+            "    req.installed?\n",
+            "  end\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "the queued :stop sentinel exits before request methods: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn queue_sentinel_does_not_discard_unknown_elements() {
+        let source = concat!(
+            "class DownloadRequest\n",
+            "  def spec = :spec\n",
+            "  def installed? = true\n",
+            "end\n",
+            "\n",
+            "#: (Array[untyped]) -> void\n",
+            "def download(sorted_requests)\n",
+            "  download_queue = Thread::Queue.new\n",
+            "  sorted_requests.each do |req|\n",
+            "    download_queue << req\n",
+            "  end\n",
+            "  download_queue << :stop\n",
+            "  while req = download_queue.pop\n",
+            "    break if req == :stop\n",
+            "    req.spec\n",
+            "    req.installed?\n",
+            "  end\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "unknown queue elements must not collapse to the :stop symbol: {methods:?}"
         );
     }
 

@@ -265,6 +265,7 @@ fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Typ
         | "restore_attributes"
         | "attribute_before_last_save"
         | "run_callbacks"
+        | "readonly!"
         | "connection"
         | "transaction"
         | "read_attribute"
@@ -277,6 +278,9 @@ fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Typ
 
 fn dynamic_finder_return(model_name: &str, method_name: &str) -> Option<Type> {
     let model = || Type::Class(crate::types::Sym::new(model_name));
+    if matches!(method_name, "reflections" | "base_class") {
+        return Some(Type::Untyped);
+    }
     if matches!(
         method_name,
         "connection"

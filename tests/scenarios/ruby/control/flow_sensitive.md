@@ -1915,6 +1915,97 @@ class Object < BasicObject
 end
 ```
 
+## Class equality excludes a known disjoint type
+
+### update
+
+```ruby
+class ClassEqualityTarget; end
+
+class ClassEqualityGuard
+  #: (String) -> String
+  def read(value)
+    return "other" unless ClassEqualityTarget === value
+
+    value.missing
+  end
+end
+```
+
+### result
+
+```rbs
+class ClassEqualityGuard
+  def read: (String value) -> String
+end
+```
+
+## Standard type predicates exclude a known disjoint type
+
+### update
+
+```ruby
+class TypePredicateTarget; end
+class TypePredicateBase; end
+class TypePredicateChild < TypePredicateBase; end
+
+class TypePredicateGuard
+  #: (String) -> String
+  def read_with_is_a(value)
+    return "other" unless value.is_a?(TypePredicateTarget)
+
+    value.missing
+  end
+
+  #: (String) -> String
+  def read_with_instance_of(value)
+    return "other" unless value.instance_of?(TypePredicateTarget)
+
+    value.missing
+  end
+
+  #: (TypePredicateChild) -> nil
+  def read_with_instance_of_parent(value)
+    return nil unless value.instance_of?(TypePredicateBase)
+
+    value.missing
+  end
+end
+```
+
+### result
+
+```rbs
+class TypePredicateGuard
+  def read_with_is_a: (String value) -> String
+  def read_with_instance_of: (String value) -> String
+  def read_with_instance_of_parent: (TypePredicateChild value) -> nil
+end
+```
+
+## A closed hash key check removes an impossible branch
+
+### update
+
+```ruby
+def guarded_missing_hash_key
+  settings = { available: :handler }.freeze
+  if settings.include?(:missing)
+    :unreachable
+  else
+    :present
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def guarded_missing_hash_key: -> :present
+end
+```
+
 ## A return guard narrows an optional parameter
 
 ### update
@@ -1945,5 +2036,114 @@ class Object < BasicObject
   def guarded_user_name: (GuardedUser? user) -> String?
   def read_guarded_user_name: -> String?
   def read_guarded_user_name_without_user: -> String?
+end
+```
+
+## Unknown class ancestry keeps type-test branches open
+
+### update
+
+```ruby
+class AncestryBase; end
+
+parent_class = AncestryBase
+UnknownAncestryChild = Class.new(parent_class) do
+end
+
+#: (UnknownAncestryChild) -> untyped
+def read_unknown_is_a(value)
+  return :other unless value.is_a?(AncestryBase)
+
+  value.missing
+end
+
+#: (AncestryBase) -> untyped
+def read_unknown_instance_of(value)
+  return :other unless value.instance_of?(UnknownAncestryChild)
+
+  value.missing
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def read_unknown_is_a: (UnknownAncestryChild value) -> untyped
+  def read_unknown_instance_of: (AncestryBase value) -> untyped
+end
+```
+
+## Source overrides remain authoritative for closed hash predicates
+
+### update
+
+```ruby
+class Hash
+  #: (Symbol) -> bool
+  def key?(_key) = true
+end
+
+def overridden_hash_key_predicate
+  values = { present: "value" }.freeze
+  values.key?(:missing) ? :present : :absent
+end
+```
+
+### result
+
+```rbs
+class Hash[K, V]
+  def key?: (Symbol _key) -> bool
+end
+
+class Object < BasicObject
+  def overridden_hash_key_predicate: -> :absent | :present
+end
+```
+
+## Active refinements keep type-test branches open
+
+### update
+
+```ruby
+class RefinedTarget; end
+
+module AlwaysMatchString
+  refine String do
+    def is_a?(_target) = true
+  end
+end
+
+module AlwaysMatchClass
+  refine Class do
+    def ===(_value) = true
+  end
+end
+
+using AlwaysMatchString
+using AlwaysMatchClass
+
+#: (String) -> untyped
+def read_refined_is_a(value)
+  return :other unless value.is_a?(RefinedTarget)
+
+  value.missing
+end
+
+#: (String) -> untyped
+def read_refined_case_equality(value)
+  return :other unless RefinedTarget === value
+
+  value.missing
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def read_refined_is_a: (String value) -> untyped
+  def read_refined_case_equality: (String value) -> untyped
 end
 ```

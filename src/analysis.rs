@@ -3633,6 +3633,59 @@ end
     }
 
     #[test]
+    fn playground_hash_record_lookup_is_required_only_after_key_guard() {
+        let loader = playground_loader();
+        let keys = ":configured, :missing";
+        let source = format!(
+            "class Probe\n\
+             KEYS = [{keys}].freeze\n\
+             UPLOAD_KEYS = [:missing].freeze\n\
+             SETTINGS = {{ configured: :handler }}.freeze\n\
+             NULLABLE_SETTINGS = {{ configured: nil }}.freeze\n\
+             \n\
+             #: (Symbol) -> void\n\
+             def accept(value) = nil\n\
+             def handler = true\n\
+             \n\
+             KEYS.each do |key|\n\
+               define_method(key) do\n\
+                 stored_value = if UPLOAD_KEYS.include?(key)\n\
+                                  :upload\n\
+                                elsif SETTINGS.include?(key)\n\
+                                  public_send(SETTINGS[key])\n\
+                                else\n\
+                                  nil\n\
+                                end\n\
+               end\n\
+             end\n\
+             \n\
+             def check_missing_key = accept(SETTINGS[:missing])\n\
+             \n\
+             #: (Symbol) -> void\n\
+             def check_nullable_value(key)\n\
+               accept(NULLABLE_SETTINGS[key]) if NULLABLE_SETTINGS.include?(key)\n\
+             end\n\
+             end\n"
+        );
+        let result = playground_analyze(&source, "", &loader, "hash_lookup_guard.rb");
+        let mismatches: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "argument_type_mismatch")
+            .map(|diagnostic| diagnostic.line)
+            .collect();
+
+        assert_eq!(
+            mismatches,
+            vec![23, 27],
+            "only unguarded missing keys and present nil values should mismatch: {:?}\n{}\n{:?}",
+            result.diagnostics,
+            result.rbs,
+            result.hovers
+        );
+    }
+
+    #[test]
     fn playground_suppresses_missing_method_for_active_record_without_schema() {
         let loader = playground_loader();
         let source = concat!(

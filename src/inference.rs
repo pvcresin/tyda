@@ -1316,7 +1316,7 @@ enum AliasTarget {
 enum RuntimeFact {
     Thread { value: Type },
     Fiber { first_resume: Type },
-    Queue { element: Type },
+    Queue { element: Option<Type> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5545,6 +5545,30 @@ impl<'a> InferenceEngine<'a> {
         let Some(call) = node.as_call_node() else {
             return Self::node_truthiness(inferred_type);
         };
+        let method_name = String::from_utf8_lossy(call.name().as_slice());
+        let is_static_collection_predicate = matches!(
+            method_name.as_ref(),
+            "include?" | "member?" | "key?" | "has_key?" | "value?" | "has_value?"
+        );
+        if matches!(inferred_type, Type::True | Type::False)
+            && is_static_collection_predicate
+            && call.block().is_none()
+            && call.arguments().is_some_and(|arguments| {
+                let mut arguments = arguments.arguments().iter();
+                arguments.next().is_some() && arguments.next().is_none()
+            })
+            && let Some(receiver) = call.receiver()
+            && let Some(receiver_type) =
+                self.static_dispatch_receiver_type(class_name, &receiver, parse_result, scope)
+            && Self::static_collection_predicate_matches_receiver(&receiver_type, &method_name)
+            && !self.static_collection_predicate_has_source_override(
+                &receiver_type,
+                &method_name,
+                scope,
+            )
+        {
+            return Self::node_truthiness(inferred_type);
+        }
         let is_empty_query = call.name().as_slice() == b"empty?"
             && call.block().is_none()
             && call
@@ -5563,6 +5587,50 @@ impl<'a> InferenceEngine<'a> {
             };
         }
         None
+    }
+
+    fn static_collection_predicate_matches_receiver(
+        receiver_type: &Type,
+        method_name: &str,
+    ) -> bool {
+        match receiver_type {
+            Type::Tuple(_) => matches!(method_name, "include?" | "member?"),
+            Type::Record(_) => matches!(
+                method_name,
+                "key?" | "has_key?" | "include?" | "member?" | "value?" | "has_value?"
+            ),
+            Type::Union(parts) => {
+                !parts.is_empty()
+                    && parts.iter().all(|part| {
+                        Self::static_collection_predicate_matches_receiver(part, method_name)
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn static_collection_predicate_has_source_override(
+        &self,
+        receiver_type: &Type,
+        method_name: &str,
+        scope: &Scope,
+    ) -> bool {
+        match receiver_type {
+            Type::Tuple(_) => self.type_has_source_instance_method_override(
+                &Type::Class("Array".into()),
+                method_name,
+                scope,
+            ),
+            Type::Record(_) => self.type_has_source_instance_method_override(
+                &Type::Class("Hash".into()),
+                method_name,
+                scope,
+            ),
+            Type::Union(parts) => parts.iter().any(|part| {
+                self.static_collection_predicate_has_source_override(part, method_name, scope)
+            }),
+            _ => false,
+        }
     }
 
     fn static_regexp_match_truthiness(
@@ -21899,9 +21967,7 @@ impl<'a> InferenceEngine<'a> {
                     .unwrap_or(Type::Untyped);
                 Some(RuntimeFact::Fiber { first_resume })
             }
-            "Queue" | "Thread::Queue" => Some(RuntimeFact::Queue {
-                element: Type::Untyped,
-            }),
+            "Queue" | "Thread::Queue" => Some(RuntimeFact::Queue { element: None }),
             _ => None,
         }
     }
@@ -21934,7 +22000,11 @@ impl<'a> InferenceEngine<'a> {
             (RuntimeFact::Thread { value }, "value") => Some(value.clone()),
             (RuntimeFact::Fiber { first_resume }, "resume") => Some(first_resume.clone()),
             (RuntimeFact::Queue { element }, "pop" | "deq" | "shift") => {
-                Some(Self::nilable(element.clone()))
+                let element = match element {
+                    Some(element) => element.clone(),
+                    None => Type::Untyped,
+                };
+                Some(Self::nilable(element))
             }
             _ => None,
         }
@@ -21968,12 +22038,14 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         let value = self.infer_node_type(class_name, &arg, parse_result, scope);
-        scope.set_runtime_fact(
-            &name,
-            RuntimeFact::Queue {
-                element: element.union_with(value.widen()),
-            },
-        );
+        let element = match element {
+            Some(element) => Some(Type::from_type_vec_preserve_untyped(vec![
+                element,
+                value.widen(),
+            ])),
+            None => Some(value.widen()),
+        };
+        scope.set_runtime_fact(&name, RuntimeFact::Queue { element });
     }
 
     fn assertion_type_from_node(
@@ -28421,11 +28493,15 @@ impl<'a> InferenceEngine<'a> {
                             &method_name,
                             &call_node,
                         );
-                        let has_unknown_union_member =
-                            Self::union_has_unknown_receiver(&safe_nav_receiver_type)
-                                || Self::union_has_unknown_receiver(&effective_receiver);
-                        let has_deferred_union_member =
-                            Self::union_has_deferred_receiver(&effective_receiver);
+                        let (safe_nav_unknown, safe_nav_deferred) =
+                            Self::receiver_union_flags(&safe_nav_receiver_type);
+                        let (effective_unknown, has_deferred_union_member) =
+                            if safe_nav_receiver_type == effective_receiver {
+                                (safe_nav_unknown, safe_nav_deferred)
+                            } else {
+                                Self::receiver_union_flags(&effective_receiver)
+                            };
+                        let has_unknown_union_member = safe_nav_unknown || effective_unknown;
                         let can_defer_receiver_call = has_deferred_union_member
                             && call_node.block().is_none()
                             && call_node.arguments().is_none_or(|arguments| {
@@ -48407,6 +48483,52 @@ impl<'a> InferenceEngine<'a> {
             || self.external_method_call_has_user_source_definition(class_name, method_name, false)
     }
 
+    fn type_has_source_instance_method_override(
+        &self,
+        ty: &Type,
+        method_name: &str,
+        scope: &Scope,
+    ) -> bool {
+        match ty {
+            Type::Union(parts) => parts.iter().any(|part| {
+                self.type_has_source_instance_method_override(part, method_name, scope)
+            }),
+            Type::Untyped | Type::Top | Type::Todo | Type::Singleton(_) => true,
+            _ => self.type_to_class_name(ty).is_some_and(|class_name| {
+                self.instance_method_has_source_override(&class_name, method_name)
+                    || self.active_refinement_overrides_instance_method(
+                        &class_name,
+                        method_name,
+                        scope,
+                    )
+            }),
+        }
+    }
+
+    fn active_refinement_overrides_instance_method(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        scope: &Scope,
+    ) -> bool {
+        (scope.active_refinements.contains(class_name)
+            && self
+                .refinement_methods
+                .get(class_name)
+                .is_some_and(|methods| methods.contains_key(method_name)))
+            || self
+                .registry
+                .resolve_instance_method_call_owners(class_name, method_name)
+                .iter()
+                .any(|owner| {
+                    scope.active_refinements.contains(owner)
+                        && self
+                            .refinement_methods
+                            .get(owner)
+                            .is_some_and(|methods| methods.contains_key(method_name))
+                })
+    }
+
     fn singleton_method_has_source_override(&self, class_name: &str, method_name: &str) -> bool {
         self.registry
             .lookup_method_def(class_name, method_name, true)
@@ -49447,19 +49569,25 @@ impl<'a> InferenceEngine<'a> {
         )
     }
 
-    fn union_has_unknown_receiver(ty: &Type) -> bool {
-        matches!(ty, Type::Union(parts) if parts.iter().any(|part| {
-            *part == Type::Untyped
-                || matches!(part, Type::Todo | Type::Top)
-                || Self::union_has_unknown_receiver(part)
-        }))
-    }
-
-    fn union_has_deferred_receiver(ty: &Type) -> bool {
-        matches!(ty, Type::Union(parts) if parts.iter().any(|part| {
-            (Self::is_unresolved_receiver(part) && *part != Type::Untyped)
-                || Self::union_has_deferred_receiver(part)
-        }))
+    fn receiver_union_flags(ty: &Type) -> (bool, bool) {
+        let Type::Union(parts) = ty else {
+            return (false, false);
+        };
+        let mut has_unknown = false;
+        let mut has_deferred = false;
+        for part in parts {
+            has_unknown |= *part == Type::Untyped || matches!(part, Type::Todo | Type::Top);
+            has_deferred |= Self::is_unresolved_receiver(part) && *part != Type::Untyped;
+            if matches!(part, Type::Union(_)) {
+                let (nested_unknown, nested_deferred) = Self::receiver_union_flags(part);
+                has_unknown |= nested_unknown;
+                has_deferred |= nested_deferred;
+            }
+            if has_unknown && has_deferred {
+                break;
+            }
+        }
+        (has_unknown, has_deferred)
     }
 
     fn deferred_method_call_for_receiver_union(receiver_type: &Type, method_name: &str) -> Type {
@@ -51776,21 +51904,28 @@ impl<'a> InferenceEngine<'a> {
     fn narrow_type_by_kind_of(&mut self, current: &Type, target_name: &str) -> Option<Type> {
         match current {
             Type::Union(parts) => {
-                let filtered: Vec<Type> = parts
-                    .iter()
-                    .filter(|part| self.type_matches_kind_of_target(part, target_name))
-                    .cloned()
-                    .collect();
+                let mut filtered = Vec::new();
+                for part in parts {
+                    let matches = self.type_matches_kind_of_target(part, target_name);
+                    let may_match =
+                        self.type_may_match_kind_of_target_with_unknown_ancestry(part, target_name);
+                    if matches || may_match {
+                        filtered.push(part.clone());
+                    }
+                }
                 match filtered.len() {
                     0 => None,
                     1 => filtered.into_iter().next(),
                     _ => Some(Type::from_type_vec_preserve_untyped(filtered)),
                 }
             }
-            Type::Untyped | Type::Top => Some(current.clone()),
-            _ => self
-                .type_matches_kind_of_target(current, target_name)
-                .then_some(current.clone()),
+            _ if self.type_matches_kind_of_target(current, target_name)
+                || self
+                    .type_may_match_kind_of_target_with_unknown_ancestry(current, target_name) =>
+            {
+                Some(current.clone())
+            }
+            _ => None,
         }
     }
 
@@ -51854,6 +51989,159 @@ impl<'a> InferenceEngine<'a> {
                 self.class_matches_kind_of_target(&class_name, target_name)
             }),
         }
+    }
+
+    fn type_may_match_kind_of_target_with_unknown_ancestry(
+        &mut self,
+        ty: &Type,
+        target_name: &str,
+    ) -> bool {
+        if matches!(
+            ty,
+            Type::Untyped | Type::Top | Type::Todo | Type::ParamRef(_)
+        ) || Self::type_contains_untyped(ty)
+            || Self::contains_unresolved_ref(ty)
+        {
+            return true;
+        }
+        if let Type::Union(parts) = ty {
+            return parts.iter().any(|part| {
+                self.type_may_match_kind_of_target_with_unknown_ancestry(part, target_name)
+            });
+        }
+        let Some(class_name) = self.type_to_class_name(ty) else {
+            return false;
+        };
+        self.ensure_external_class(target_name);
+        if self
+            .registry
+            .class_data_for(target_name)
+            .is_some_and(|data| data.is_module)
+        {
+            !self.class_module_ancestry_is_complete(&class_name)
+        } else {
+            self.class_superclass_chain_has_unknown(&class_name)
+        }
+    }
+
+    fn class_kind_of_target_relation(
+        &mut self,
+        class_name: &str,
+        target_name: &str,
+    ) -> Option<bool> {
+        if class_name == target_name {
+            return Some(true);
+        }
+        self.ensure_external_class(class_name);
+        self.ensure_external_class(target_name);
+        let target_data = self.registry.class_data_for(target_name)?;
+        let target_is_module = target_data.is_module;
+        if target_is_module {
+            if self.class_includes_module_target(class_name, target_name, &mut HashSet::new()) {
+                return Some(true);
+            }
+            return self
+                .class_module_ancestry_is_complete(class_name)
+                .then_some(false);
+        }
+
+        let mut current = class_name.to_string();
+        let mut seen = HashSet::new();
+        loop {
+            if current == target_name {
+                return Some(true);
+            }
+            if !seen.insert(current.clone()) {
+                return None;
+            }
+            self.ensure_external_class(&current);
+            let data = self.registry.class_data_for(&current)?;
+            if data.superclass_is_unknown {
+                return None;
+            }
+            match self.registry.get_superclass(&current).map(str::to_string) {
+                Some(superclass) => current = superclass,
+                None => return Some(false),
+            }
+        }
+    }
+
+    fn class_module_ancestry_is_complete(&mut self, class_name: &str) -> bool {
+        let mut current = class_name.to_string();
+        let mut seen = HashSet::new();
+        loop {
+            if !seen.insert(current.clone()) {
+                return false;
+            }
+            self.ensure_external_class(&current);
+            let Some(data) = self.registry.class_data_for(&current) else {
+                return false;
+            };
+            let superclass_is_unknown = data.superclass_is_unknown;
+            let mixins = data.mixins.clone();
+            if superclass_is_unknown
+                || mixins
+                    .iter()
+                    .filter(|mixin| mixin.kind != MixinKind::Extend)
+                    .any(|mixin| {
+                        !self.module_inclusion_graph_is_complete(
+                            &mixin.module_name,
+                            &mut HashSet::new(),
+                        )
+                    })
+            {
+                return false;
+            }
+            match self.registry.get_superclass(&current).map(str::to_string) {
+                Some(superclass) => current = superclass,
+                None => return true,
+            }
+        }
+    }
+
+    fn class_superclass_chain_has_unknown(&mut self, class_name: &str) -> bool {
+        let mut current = class_name.to_string();
+        let mut seen = HashSet::new();
+        loop {
+            if !seen.insert(current.clone()) {
+                return true;
+            }
+            self.ensure_external_class(&current);
+            let Some(data) = self.registry.class_data_for(&current) else {
+                return false;
+            };
+            if data.superclass_is_unknown {
+                return true;
+            }
+            match self.registry.get_superclass(&current).map(str::to_string) {
+                Some(superclass) => current = superclass,
+                None => return false,
+            }
+        }
+    }
+
+    fn module_inclusion_graph_is_complete(
+        &mut self,
+        module_name: &str,
+        seen: &mut HashSet<String>,
+    ) -> bool {
+        if !seen.insert(module_name.to_string()) {
+            return true;
+        }
+        self.ensure_external_class(module_name);
+        let Some(data) = self.registry.class_data_for(module_name) else {
+            return false;
+        };
+        let is_module = data.is_module;
+        let superclass_is_unknown = data.superclass_is_unknown;
+        let mixins = data.mixins.clone();
+        if !is_module || superclass_is_unknown {
+            return false;
+        }
+        mixins
+            .iter()
+            .filter(|mixin| mixin.kind != MixinKind::Extend)
+            .all(|mixin| self.module_inclusion_graph_is_complete(&mixin.module_name, seen))
     }
 
     fn singleton_object_matches_kind_of_target(&mut self, owner: &str, target_name: &str) -> bool {
@@ -52175,25 +52463,52 @@ impl<'a> InferenceEngine<'a> {
                         let target_name = target.to_string();
                         let current =
                             self.resolve_subject_input_type(class_name, scope, &subject)?;
+                        let has_override =
+                            self.type_has_source_instance_method_override(&current, &method, scope);
+                        if has_override {
+                            return None;
+                        }
                         self.ensure_external_class(&target_name);
                         let target_is_module = self
                             .registry
                             .class_data_for(&target_name)
                             .is_some_and(|data| data.is_module);
-                        let narrowed = if let Some(narrowed) =
-                            self.narrow_type_by_kind_of(&current, &target_name)
-                        {
-                            narrowed
-                        } else if target_is_module {
-                            return None;
-                        } else {
-                            Self::class_name_to_type(&target_name)
-                        };
-                        Some(
-                            self.narrowing_with_default_negation(
+                        let narrowed = self.narrow_type_by_kind_of(&current, &target_name);
+                        if target_is_module {
+                            let narrowed = narrowed?;
+                            if narrowed == current {
+                                return None;
+                            }
+                            return Some(self.narrowing_with_default_negation(
                                 class_name, scope, subject, narrowed,
-                            ),
-                        )
+                            ));
+                        }
+                        match narrowed {
+                            Some(narrowed) if narrowed != current => {
+                                Some(self.narrowing_with_default_negation(
+                                    class_name, scope, subject, narrowed,
+                                ))
+                            }
+                            Some(_) if matches!(current, Type::ParamRef(_)) => {
+                                let narrowed = Self::class_name_to_type(&target_name);
+                                Some(self.narrowing_with_default_negation(
+                                    class_name, scope, subject, narrowed,
+                                ))
+                            }
+                            Some(_) => None,
+                            None if self.type_definitely_disjoint_from_kind_of_target(
+                                &current,
+                                &target_name,
+                            ) =>
+                            {
+                                Some(CondNarrowing {
+                                    subject,
+                                    then_ty: Some(Type::Bot),
+                                    else_ty: Some(current),
+                                })
+                            }
+                            None => None,
+                        }
                     }
                     "===" => self.extract_class_case_equality_narrowing(class_name, &call, scope),
                     "instance_of?" => {
@@ -52221,6 +52536,22 @@ impl<'a> InferenceEngine<'a> {
                             .is_some_and(|data| data.is_module);
                         if target_is_module {
                             return None;
+                        }
+                        let current =
+                            self.resolve_subject_input_type(class_name, scope, &subject)?;
+                        if self.type_has_source_instance_method_override(
+                            &current,
+                            "instance_of?",
+                            scope,
+                        ) {
+                            return None;
+                        }
+                        if self.type_definitely_not_instance_of_target(&current, &target_class) {
+                            return Some(CondNarrowing {
+                                subject,
+                                then_ty: Some(Type::Bot),
+                                else_ty: Some(current),
+                            });
                         }
                         Some(self.narrowing_with_default_negation(
                             class_name,
@@ -52424,6 +52755,81 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn type_definitely_not_instance_of_target(&mut self, ty: &Type, target_name: &str) -> bool {
+        if matches!(ty, Type::Untyped | Type::Top | Type::Todo)
+            || Self::type_contains_untyped(ty)
+            || Self::contains_unresolved_ref(ty)
+        {
+            return false;
+        }
+        match ty {
+            Type::Union(parts) => {
+                !parts.is_empty()
+                    && parts
+                        .iter()
+                        .all(|part| self.type_definitely_not_instance_of_target(part, target_name))
+            }
+            Type::Singleton(_) => false,
+            _ => {
+                let Some(class_name) = self.type_to_class_name(ty) else {
+                    return false;
+                };
+                if self.registry.class_data_for(&class_name).is_none() {
+                    self.ensure_class_available(&class_name);
+                }
+                if self.registry.class_data_for(target_name).is_none() {
+                    self.ensure_class_available(target_name);
+                }
+                if self.registry.class_data_for(&class_name).is_none()
+                    || self.registry.class_data_for(target_name).is_none()
+                {
+                    return false;
+                }
+                self.class_kind_of_target_relation(target_name, &class_name) == Some(false)
+            }
+        }
+    }
+
+    fn type_definitely_disjoint_from_kind_of_target(
+        &mut self,
+        ty: &Type,
+        target_name: &str,
+    ) -> bool {
+        if matches!(ty, Type::Untyped | Type::Top | Type::Todo)
+            || Self::type_contains_untyped(ty)
+            || Self::contains_unresolved_ref(ty)
+        {
+            return false;
+        }
+        match ty {
+            Type::Union(parts) => {
+                !parts.is_empty()
+                    && parts.iter().all(|part| {
+                        self.type_definitely_disjoint_from_kind_of_target(part, target_name)
+                    })
+            }
+            Type::Singleton(_) => false,
+            _ => {
+                let Some(class_name) = self.type_to_class_name(ty) else {
+                    return false;
+                };
+                if self.registry.class_data_for(&class_name).is_none() {
+                    self.ensure_class_available(&class_name);
+                }
+                if self.registry.class_data_for(target_name).is_none() {
+                    self.ensure_class_available(target_name);
+                }
+                if self.registry.class_data_for(&class_name).is_none()
+                    || self.registry.class_data_for(target_name).is_none()
+                {
+                    return false;
+                }
+                self.class_kind_of_target_relation(&class_name, target_name) == Some(false)
+                    && self.class_kind_of_target_relation(target_name, &class_name) == Some(false)
+            }
+        }
+    }
+
     fn extract_class_case_equality_narrowing(
         &mut self,
         class_name: &str,
@@ -52444,9 +52850,6 @@ impl<'a> InferenceEngine<'a> {
         }
         let subject = Self::extract_narrow_subject_in_scope(&subject_node, scope)?;
         let current = self.resolve_subject_input_type(class_name, scope, &subject)?;
-        if !matches!(current, Type::Union(_)) {
-            return None;
-        }
 
         let receiver_name = String::from_utf8_lossy(receiver.location().as_slice());
         let Type::Singleton(target_name) =
@@ -52460,14 +52863,26 @@ impl<'a> InferenceEngine<'a> {
             .registry
             .class_data_for(&target_name)
             .is_none_or(|class| class.is_module)
+            || !self.uses_standard_class_case_equality_in_scope(&target_name, scope)
         {
             return None;
         }
-        let narrowed = self.narrow_type_by_kind_of(&current, &target_name)?;
-        if narrowed == current || !self.uses_standard_class_case_equality(&target_name) {
-            return None;
+
+        if let Some(narrowed) = self.narrow_type_by_kind_of(&current, &target_name) {
+            if narrowed == current {
+                return None;
+            }
+            return Some(
+                self.narrowing_with_default_negation(class_name, scope, subject, narrowed),
+            );
         }
-        Some(self.narrowing_with_default_negation(class_name, scope, subject, narrowed))
+
+        self.type_definitely_disjoint_from_kind_of_target(&current, &target_name)
+            .then_some(CondNarrowing {
+                subject,
+                then_ty: Some(Type::Bot),
+                else_ty: Some(current),
+            })
     }
 
     fn extract_if_node_narrowing(
@@ -52530,6 +52945,15 @@ impl<'a> InferenceEngine<'a> {
             .lookup_method_def("Module", "===", false)
             .is_some_and(|method| method.rbs_file_source);
         owner == "Module" && !is_singleton && method_rbs
+    }
+
+    fn uses_standard_class_case_equality_in_scope(
+        &mut self,
+        class_name: &str,
+        scope: &Scope,
+    ) -> bool {
+        !self.active_refinement_overrides_instance_method("Class", "===", scope)
+            && self.uses_standard_class_case_equality(class_name)
     }
 
     fn external_has_user_base_case_equality_override(&self) -> bool {
