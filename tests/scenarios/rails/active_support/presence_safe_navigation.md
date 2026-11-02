@@ -32,6 +32,34 @@ class B
 end
 ```
 
+## Preserve synthetic presence returns with deferred receiver members
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Probe
+  def result(flag)
+    value = flag ? "known" : fallback_value
+    value.presence
+  end
+
+  def fallback_value = :late
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def result: (untyped flag) -> ("known" | :late)?
+  def fallback_value: -> :late
+end
+```
+
 ## Safe navigation on non-nil receiver returns Integer
 
 ### update

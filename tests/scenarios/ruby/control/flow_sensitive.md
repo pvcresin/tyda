@@ -194,6 +194,40 @@ class ClassCaseEqualityChecker
 end
 ```
 
+## Resolve unqualified class constants in is_a? narrowing
+
+### update
+
+```ruby
+module ScopedClassNarrowing
+  class Base; end
+  class LocalRead < Base
+    def value = :value
+  end
+  class Other < Base; end
+
+  class Checker
+    def value(flag)
+      node = flag ? LocalRead.new : Other.new
+      return unless node.is_a?(LocalRead)
+      node.value
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class ScopedClassNarrowing::Checker
+  def value: (untyped flag) -> :value?
+end
+
+class ScopedClassNarrowing::LocalRead < Base
+  def value: -> :value
+end
+```
+
 ## Keep different branch types after instance_of?
 
 ### update

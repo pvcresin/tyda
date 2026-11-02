@@ -1089,6 +1089,51 @@ mod tests {
     }
 
     #[test]
+    fn standard_class_case_equality_guards_a_union_receiver() {
+        let source = concat!(
+            "class CaseTarget\n",
+            "  def value = 'value'\n",
+            "end\n",
+            "class OtherTarget; end\n",
+            "\n",
+            "#: (CaseTarget | OtherTarget) -> void\n",
+            "def process(value)\n",
+            "  return nil unless CaseTarget === value\n",
+            "  value.value\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "the class equality guard excludes OtherTarget: {methods:?}"
+        );
+    }
+
+    #[test]
+    fn break_if_equality_guard_excludes_the_sentinel_after_break() {
+        let source = concat!(
+            "class DownloadRequest\n",
+            "  def spec = :spec\n",
+            "end\n",
+            "\n",
+            "#: (DownloadRequest | :stop) -> void\n",
+            "def download(req)\n",
+            "  while req\n",
+            "    break if req == :stop\n",
+            "    req.spec\n",
+            "  end\n",
+            "end\n",
+        );
+
+        let methods = union_member_missing_methods(source);
+        assert!(
+            methods.is_empty(),
+            "the :stop request exits before the method call: {methods:?}"
+        );
+    }
+
+    #[test]
     fn known_method_with_untyped_return_is_not_reported_missing() {
         let source = concat!(
             "class Node\n",

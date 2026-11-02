@@ -3476,6 +3476,62 @@ end
     }
 
     #[test]
+    fn nested_rescue_keeps_pathname_read_string_return() {
+        let loader = playground_loader();
+        let source = concat!(
+            "module Rails\n",
+            "  def self.root = Pathname.new(\".\")\n",
+            "end\n",
+            "\n",
+            "class AppRevision\n",
+            "  def self.version\n",
+            "    @version ||= revision_or_fallback\n",
+            "  end\n",
+            "\n",
+            "  def self.revision_or_fallback\n",
+            "    begin\n",
+            "      revision_file.read\n",
+            "    rescue Errno::ENOENT\n",
+            "      begin\n",
+            "        git_revision\n",
+            "      rescue Errno::ENOENT\n",
+            "        \"UNKNOWN\"\n",
+            "      end\n",
+            "    end.strip\n",
+            "  end\n",
+            "\n",
+            "  def self.revision_file = Rails.root.join(\"REVISION\")\n",
+            "  def self.git_revision = `git rev-parse HEAD`\n",
+            "end\n",
+        );
+        let rbs = concat!("module Rails\n", "  def self.root: -> Pathname\n", "end\n",);
+        let mut rbs_registry = TypeRegistry::new();
+        crate::rbs::import::load_rbs_string(rbs, &mut rbs_registry);
+        let (snapshot, _) = analyze_compact_file_snapshot_timed(
+            source,
+            Some(&rbs_registry),
+            &loader,
+            None,
+            "app_revision.rb",
+            AnalysisOptions::default(),
+            true,
+        );
+        let mut builder = crate::workspace_state::BatchProjectionBuilder::new(rbs_registry);
+        builder.apply_chunk([("app_revision.rb".to_owned(), snapshot)]);
+        let registry = builder.finish(None);
+        let rendered = crate::rbs::render::render_rbs_for_file(&registry, "app_revision.rb");
+
+        assert!(
+            rendered.contains("def self.version: -> String"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("def self.revision_or_fallback: -> String"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn playground_mixin_dispatch_and_ancestors_keep_ruby_order() {
         let loader = playground_loader();
         let source = concat!(

@@ -332,3 +332,45 @@ class AlertPayloadBuilder
   def self.attrs: (AlertPayload alert) -> { title: "critical", count: 1 }
 end
 ```
+
+## Resolve forward returns through nested rescue branches
+
+```rbs
+module Rails
+  def self.root: -> Pathname
+end
+```
+
+```ruby
+class AppRevision
+  def self.version
+    @version ||= revision_or_fallback
+  end
+
+  def self.revision_or_fallback
+    begin
+      revision_file.read
+    rescue Errno::ENOENT
+      begin
+        git_revision
+      rescue Errno::ENOENT
+        "UNKNOWN"
+      end
+    end.strip
+  end
+
+  def self.revision_file = Rails.root.join("REVISION")
+  def self.git_revision = `git rev-parse HEAD`
+end
+```
+
+### result
+
+```rbs
+class AppRevision
+  def self.version: -> String
+  def self.revision_or_fallback: -> String
+  def self.revision_file: -> Pathname
+  def self.git_revision: -> String
+end
+```

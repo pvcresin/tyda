@@ -28421,18 +28421,39 @@ impl<'a> InferenceEngine<'a> {
                             &method_name,
                             &call_node,
                         );
-                        let has_unresolved_union_member =
-                            Self::union_has_unresolved_receiver(&safe_nav_receiver_type)
-                                || Self::union_has_unresolved_receiver(&effective_receiver);
+                        let has_unknown_union_member =
+                            Self::union_has_unknown_receiver(&safe_nav_receiver_type)
+                                || Self::union_has_unknown_receiver(&effective_receiver);
+                        let has_deferred_union_member =
+                            Self::union_has_deferred_receiver(&effective_receiver);
+                        let can_defer_receiver_call = has_deferred_union_member
+                            && call_node.block().is_none()
+                            && call_node.arguments().is_none_or(|arguments| {
+                                arguments.arguments().iter().next().is_none()
+                            });
                         let is_known_nil_predicate = method_name == "nil?"
                             && resolved == Type::Bool
                             && !self.source_method_name_is_defined("nil?");
-                        let has_unknown_receiver =
-                            has_unresolved_union_member && !is_known_nil_predicate;
+                        let has_unknown_deferred_result = has_deferred_union_member
+                            && ((!can_defer_receiver_call && !is_known_nil_predicate)
+                                || Self::type_contains_untyped(&resolved)
+                                || (method_name == "nil?"
+                                    && self.source_method_name_is_defined("nil?"))
+                                || (resolved == Type::Bool
+                                    && method_name.ends_with('?')
+                                    && !method_tables::RBS_CORE_BOOL_METHODS
+                                        .contains(&method_name.as_str())));
+                        let has_unknown_receiver = (has_unknown_union_member
+                            && !is_known_nil_predicate)
+                            || has_unknown_deferred_result;
+                        let has_deferred_receiver = has_deferred_union_member
+                            && can_defer_receiver_call
+                            && !is_known_nil_predicate;
                         let keep_symbolic_result =
                             matches!(method_name.as_str(), "presence" | "presence_in")
                                 && resolved != Type::Untyped;
                         let structural = if !has_unknown_receiver
+                            && !has_deferred_receiver
                             && (resolved == Type::Untyped
                                 || matches!(resolved, Type::ReceiverMethodRef(_, _)))
                         {
@@ -28449,6 +28470,11 @@ impl<'a> InferenceEngine<'a> {
                         };
                         let result = if has_unknown_receiver {
                             Type::Untyped
+                        } else if has_deferred_receiver && !keep_symbolic_result {
+                            Self::deferred_method_call_for_receiver_union(
+                                &effective_receiver,
+                                &method_name,
+                            )
                         } else if resolved != Type::Untyped
                             && (Self::is_concrete(&resolved) || keep_symbolic_result)
                         {
@@ -49421,13 +49447,31 @@ impl<'a> InferenceEngine<'a> {
         )
     }
 
-    fn union_has_unresolved_receiver(ty: &Type) -> bool {
+    fn union_has_unknown_receiver(ty: &Type) -> bool {
         matches!(ty, Type::Union(parts) if parts.iter().any(|part| {
             *part == Type::Untyped
                 || matches!(part, Type::Todo | Type::Top)
-                || Self::is_unresolved_receiver(part)
-                || Self::union_has_unresolved_receiver(part)
+                || Self::union_has_unknown_receiver(part)
         }))
+    }
+
+    fn union_has_deferred_receiver(ty: &Type) -> bool {
+        matches!(ty, Type::Union(parts) if parts.iter().any(|part| {
+            (Self::is_unresolved_receiver(part) && *part != Type::Untyped)
+                || Self::union_has_deferred_receiver(part)
+        }))
+    }
+
+    fn deferred_method_call_for_receiver_union(receiver_type: &Type, method_name: &str) -> Type {
+        match receiver_type {
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
+                parts
+                    .iter()
+                    .map(|part| Self::deferred_method_call_for_receiver_union(part, method_name))
+                    .collect(),
+            ),
+            _ => Type::ReceiverMethodRef(Box::new(receiver_type.clone()), Sym::new(method_name)),
+        }
     }
 
     fn is_deferred_ref_receiver(ty: &Type) -> bool {
@@ -52117,17 +52161,18 @@ impl<'a> InferenceEngine<'a> {
                         let subject = Self::extract_narrow_subject_in_scope(&receiver, scope)?;
                         let args = call.arguments()?;
                         let first_arg = args.arguments().iter().next()?;
-                        let target_name = match &first_arg {
-                            Node::ConstantReadNode { .. } => {
-                                let c = first_arg.as_constant_read_node()?;
-                                String::from_utf8_lossy(c.name().as_slice()).to_string()
+                        let target_path = match &first_arg {
+                            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
+                                String::from_utf8_lossy(first_arg.location().as_slice()).to_string()
                             }
-                            Node::ConstantPathNode { .. } => self
-                                .resolve_constant_path(&first_arg, parse_result)
-                                .trim_scope_prefix()
-                                .to_string(),
                             _ => return None,
                         };
+                        let Type::Singleton(target) =
+                            self.resolve_constant_type_in_scope(&target_path, class_name)
+                        else {
+                            return None;
+                        };
+                        let target_name = target.to_string();
                         let current =
                             self.resolve_subject_input_type(class_name, scope, &subject)?;
                         self.ensure_external_class(&target_name);
@@ -52150,21 +52195,23 @@ impl<'a> InferenceEngine<'a> {
                             ),
                         )
                     }
+                    "===" => self.extract_class_case_equality_narrowing(class_name, &call, scope),
                     "instance_of?" => {
                         let subject = Self::extract_narrow_subject_in_scope(&receiver, scope)?;
                         let args = call.arguments()?;
                         let first_arg = args.arguments().iter().next()?;
-                        let target_class = match &first_arg {
-                            Node::ConstantReadNode { .. } => {
-                                let c = first_arg.as_constant_read_node()?;
-                                String::from_utf8_lossy(c.name().as_slice()).to_string()
+                        let target_path = match &first_arg {
+                            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
+                                String::from_utf8_lossy(first_arg.location().as_slice()).to_string()
                             }
-                            Node::ConstantPathNode { .. } => self
-                                .resolve_constant_path(&first_arg, parse_result)
-                                .trim_scope_prefix()
-                                .to_string(),
                             _ => return None,
                         };
+                        let Type::Singleton(target) =
+                            self.resolve_constant_type_in_scope(&target_path, class_name)
+                        else {
+                            return None;
+                        };
+                        let target_class = target.to_string();
                         // instance_of? on a module (e.g. a namespace reference) can't be narrowed
                         // to a class, so we don't narrow it.
                         self.ensure_external_class(&target_class);
