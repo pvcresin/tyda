@@ -18363,14 +18363,85 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
         skip_positionals: usize,
     ) -> (Vec<Type>, HashMap<String, Type>) {
-        let (positional_types, kw_types, _) = self.collect_call_arg_types_with_kw_skip_and_shape(
-            call_node,
-            parse_result,
-            class_name,
-            scope,
-            skip_positionals,
-            false,
-        );
+        let mut positional_types = Vec::new();
+        let mut kw_types = HashMap::new();
+        if let Some(args) = call_node.arguments() {
+            for (index, arg) in args.arguments().iter().enumerate() {
+                if index < skip_positionals {
+                    continue;
+                }
+                match &arg {
+                    Node::KeywordHashNode { .. } => {
+                        let kw_hash = arg.as_keyword_hash_node().expect("must be KeywordHashNode");
+                        if let Some(positional_hash) = self.keyword_hash_as_positional_hash(
+                            class_name,
+                            &kw_hash,
+                            parse_result,
+                            scope,
+                        ) {
+                            positional_types.push(positional_hash);
+                        } else {
+                            kw_types.extend(self.collect_keyword_arg_types_from_hash(
+                                class_name,
+                                &kw_hash,
+                                parse_result,
+                                scope,
+                            ));
+                        }
+                    }
+                    Node::SplatNode { .. } => {
+                        let splat = arg.as_splat_node().expect("must be SplatNode");
+                        if let Some(expr) = splat.expression() {
+                            let inner =
+                                self.infer_node_type(class_name, &expr, parse_result, scope);
+                            match inner {
+                                Type::Tuple(ref elems) => {
+                                    positional_types.extend(elems.iter().cloned());
+                                }
+                                Type::Array(Some(ref elem)) => {
+                                    positional_types.push(*elem.clone());
+                                }
+                                _ => positional_types.push(inner),
+                            }
+                        }
+                    }
+                    Node::ForwardingArgumentsNode { .. } => {
+                        if let Some(rest) = &scope.forwarding_rest {
+                            match rest.as_ref() {
+                                Type::Tuple(elems) => {
+                                    positional_types.extend(elems.iter().cloned());
+                                }
+                                Type::Array(Some(elem)) => {
+                                    positional_types.push(elem.as_ref().clone());
+                                }
+                                other => positional_types.push(other.clone()),
+                            }
+                        }
+                        if let Some(kw) = &scope.forwarding_kw {
+                            match kw {
+                                Type::Record(fields) => {
+                                    for field in fields {
+                                        if let RecordKey::Symbol(name) = &field.key {
+                                            kw_types.insert(name.clone(), field.value.clone());
+                                        }
+                                    }
+                                }
+                                Type::Hash(_, Some(value)) => {
+                                    kw_types.insert("*".to_string(), value.as_ref().clone());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => positional_types.push(self.infer_node_type(
+                        class_name,
+                        &arg,
+                        parse_result,
+                        scope,
+                    )),
+                }
+            }
+        }
         (positional_types, kw_types)
     }
 
@@ -18982,13 +19053,23 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
     ) -> (Vec<Type>, HashMap<String, Type>, Option<Box<Type>>) {
         let call_node = node.as_call_node().expect("must be CallNode");
+        if !Self::call_has_keyword_splat(&call_node) {
+            let (positional_types, kw_types) = self.collect_call_arg_types_with_kw_skip(
+                &call_node,
+                parse_result,
+                class_name,
+                scope,
+                0,
+            );
+            return (positional_types, kw_types, None);
+        }
         self.collect_call_arg_types_with_kw_skip_and_shape(
             &call_node,
             parse_result,
             class_name,
             scope,
             0,
-            Self::call_has_keyword_splat(&call_node),
+            true,
         )
     }
 
@@ -50312,17 +50393,17 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         call_node: &ruby_prism::CallNode<'_>,
     ) -> Type {
-        if let Some(result) =
-            self.active_record_grouped_count_return(receiver_type, method_name, call_node)
+        if method_name == "count"
+            && let Some(result) =
+                self.active_record_grouped_count_return(receiver_type, method_name, call_node)
         {
             return result;
         }
         let result = self.resolve_method_on_type(receiver_type, method_name);
-        let has_arguments = call_node
-            .arguments()
-            .is_some_and(|arguments| arguments.arguments().iter().next().is_some());
         if method_name == "tag"
-            && has_arguments
+            && call_node
+                .arguments()
+                .is_some_and(|arguments| arguments.arguments().iter().next().is_some())
             && matches!(
                 &result,
                 Type::Class(class_name)
