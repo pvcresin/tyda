@@ -2394,4 +2394,78 @@ class UnknownInstanceOfTarget
   def version: -> String
 end
 ```
+
+## Do not treat a mutable instance variable as a constant
+
+### update
+
+```ruby
+class MutableInstanceVariableTruthiness
+  def initialize
+    @out_active = false
+    @out_shifter = 0
+    @out_dac = 0
+    @out_buffer = 0
+    @dma_length_counter = 0
+    @buffered = false
+  end
+
+  def do_dma
+    @buffered = true
+    @dma_length_counter -= 1
+  end
+
+  #: (Integer dac, Integer buffer) -> Integer
+  def set_output(dac, buffer)
+    @out_dac = dac
+    @out_buffer = buffer
+  end
+
+  def clock_dac
+    if @out_active
+      n = @out_dac + ((@out_buffer & 1) << 2) - 2
+      @out_buffer >>= 1
+      if 0 <= n && n <= 0x7f && n != @out_dac
+        @out_dac = n
+        return true
+      end
+    end
+    return false
+  end
+
+  def false_after_same_method_write
+    @out_active = false
+    return true if @out_active
+
+    false
+  end
+
+  def clock_dma
+    if @out_shifter == 0
+      @out_shifter = 7
+      @out_active = @buffered
+      if @out_active
+        @buffered = false
+        @out_buffer = 0
+        do_dma if @dma_length_counter != 0
+      end
+    else
+      @out_shifter -= 1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class MutableInstanceVariableTruthiness
+  def initialize: -> void
+  def do_dma: -> Integer
+  def set_output: (Integer dac, Integer buffer) -> Integer
+  def clock_dac: -> bool
+  def false_after_same_method_write: -> false
+  def clock_dma: -> Integer?
+end
+```
 ```

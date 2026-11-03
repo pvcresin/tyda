@@ -1838,8 +1838,16 @@ impl SourceOverrideCandidates {
 }
 
 fn source_override_candidates(source: &str) -> SourceOverrideCandidates {
+    let has_equality_operator = source.contains("==");
+    let has_block_given = source.contains("block_given?");
+    if !has_block_given
+        && !(has_equality_operator && (source.contains("def") || source.contains("alias")))
+    {
+        return SourceOverrideCandidates::default();
+    }
+
     let mut candidates = SourceOverrideCandidates {
-        equality: source.contains("alias") && source.contains("=="),
+        equality: source.contains("alias") && has_equality_operator,
         block_given: false,
     };
     let bytes = source.as_bytes();
@@ -2152,6 +2160,17 @@ fn build_engine_with_timings<'a>(
             let backward_propagate_started = Instant::now();
             engine.replay_deferred_block_receiver_bodies(&program, &parse_result);
             timings.backward_propagate = backward_propagate_started.elapsed();
+
+            let receiver_reference_preload_started = Instant::now();
+            let receiver_references_preloaded = engine.preload_callsite_receiver_reference_types();
+            timings.receiver_reference_preload = receiver_reference_preload_started.elapsed();
+
+            if receiver_references_preloaded {
+                let parameter_reference_resolution_started = Instant::now();
+                engine.resolve_parameter_references_from_calls();
+                timings.parameter_reference_resolution +=
+                    parameter_reference_resolution_started.elapsed();
+            }
         }
 
         if !resolution_depth.keeps_only_exported_facts() {
@@ -2162,6 +2181,17 @@ fn build_engine_with_timings<'a>(
             let backward_propagate_started = Instant::now();
             engine.backward_propagate(&program, &parse_result);
             timings.backward_propagate = backward_propagate_started.elapsed();
+
+            let receiver_reference_preload_started = Instant::now();
+            let receiver_references_preloaded = engine.preload_callsite_receiver_reference_types();
+            timings.receiver_reference_preload += receiver_reference_preload_started.elapsed();
+
+            if receiver_references_preloaded {
+                let parameter_reference_resolution_started = Instant::now();
+                engine.resolve_parameter_references_from_calls();
+                timings.parameter_reference_resolution +=
+                    parameter_reference_resolution_started.elapsed();
+            }
 
             let sync_module_function_mirrors_started = Instant::now();
             engine.sync_module_function_mirrors();
@@ -2999,6 +3029,58 @@ end
             ]))))),
             "compact scans must replay a block body after its source receiver resolves"
         );
+    }
+
+    #[test]
+    fn compact_scan_preloads_receiver_types_from_stored_lambda_callsites() {
+        let source = r#"
+class DirectoryBody < Struct.new(:files)
+  def each
+    files.call("entry")
+  end
+end
+
+class CompactDirectory
+  def filesize_format(size)
+    size.to_f
+  end
+
+  def stat(path)
+    File.stat(path)
+  rescue
+    nil
+  end
+
+  def list_directory(path)
+    DirectoryBody.new(->(basename) do
+      stat_path = File.join(path, basename)
+      entry_stat = stat(stat_path)
+      next unless entry_stat
+      filesize_format(entry_stat.size)
+    end)
+  end
+end
+"#;
+        let loader = playground_loader();
+        let snapshot = analyze_compact_file_snapshot_timed(
+            source,
+            None,
+            &loader,
+            None,
+            "directory.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+
+        let mut registry = TypeRegistry::new();
+        snapshot.apply_to_registry(&mut registry);
+        registry.apply_cli_resolution();
+        let signature = registry
+            .lookup_method_sig_exact("CompactDirectory", "filesize_format", false)
+            .expect("filesize formatter signature");
+
+        assert_eq!(signature.params[0].param_type.to_string(), "Integer");
     }
 
     #[test]

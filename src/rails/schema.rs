@@ -576,6 +576,13 @@ fn parse_column_call(
     let args = call.arguments()?;
     let first_arg = args.arguments().iter().next()?;
     let col_name = extract_string_value(&first_arg, parse_result)?;
+    let explicit_type;
+    let col_type = if col_type == "column" {
+        explicit_type = extract_string_value(&args.arguments().iter().nth(1)?, parse_result)?;
+        explicit_type.as_str()
+    } else {
+        col_type
+    };
     let nullable = column_nullable(call, parse_result);
 
     match col_type {

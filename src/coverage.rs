@@ -571,6 +571,7 @@ mod tests {
                 result_type: Type::String,
                 has_block: false,
                 safe_navigation: false,
+                singleton_dispatch: false,
                 respond_to_guards: Vec::new(),
             },
         );

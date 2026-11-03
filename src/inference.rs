@@ -206,6 +206,18 @@ enum NarrowSubject {
     SelfMethod(String),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ArrayGuardKey {
+    Local(String),
+    HashValues(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ArrayGuardCondition {
+    NonEmpty(ArrayGuardKey),
+    ElementsOf(ArrayGuardKey, Type),
+}
+
 #[derive(Debug, Clone)]
 struct CorrelatedLocalAlternative {
     name: String,
@@ -297,6 +309,49 @@ struct SelfFactInvalidatorScan<'a> {
     is_pure_reader: &'a dyn Fn(&str) -> bool,
 }
 
+#[derive(Default)]
+struct InstanceVariableWriteCollector {
+    names: HashSet<String>,
+}
+
+impl<'pr> ruby_prism::Visit<'pr> for InstanceVariableWriteCollector {
+    fn visit_instance_variable_write_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableWriteNode<'pr>,
+    ) {
+        self.names
+            .insert(String::from_utf8_lossy(node.name().as_slice()).to_string());
+        ruby_prism::visit_instance_variable_write_node(self, node);
+    }
+
+    fn visit_instance_variable_operator_write_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableOperatorWriteNode<'pr>,
+    ) {
+        self.names
+            .insert(String::from_utf8_lossy(node.name().as_slice()).to_string());
+        ruby_prism::visit_instance_variable_operator_write_node(self, node);
+    }
+
+    fn visit_instance_variable_or_write_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableOrWriteNode<'pr>,
+    ) {
+        self.names
+            .insert(String::from_utf8_lossy(node.name().as_slice()).to_string());
+        ruby_prism::visit_instance_variable_or_write_node(self, node);
+    }
+
+    fn visit_instance_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableAndWriteNode<'pr>,
+    ) {
+        self.names
+            .insert(String::from_utf8_lossy(node.name().as_slice()).to_string());
+        ruby_prism::visit_instance_variable_and_write_node(self, node);
+    }
+}
+
 impl<'a, 'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'a> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         if self.found {
@@ -308,6 +363,50 @@ impl<'a, 'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'a> {
         }
         ruby_prism::visit_call_node(self, node);
     }
+
+    fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
+        ruby_prism::Visit::visit(self, &node.predicate());
+        if let Some(Node::IfNode { .. }) = node.subsequent()
+            && let Some(subsequent) = node.subsequent().and_then(|node| node.as_if_node())
+            && !self.found
+        {
+            self.visit_if_node(&subsequent);
+        }
+    }
+
+    fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
+        ruby_prism::Visit::visit(self, &node.predicate());
+    }
+
+    fn visit_case_node(&mut self, node: &ruby_prism::CaseNode<'pr>) {
+        if let Some(predicate) = node.predicate() {
+            ruby_prism::Visit::visit(self, &predicate);
+        }
+        for condition in node.conditions().iter() {
+            if let Some(when_node) = condition.as_when_node() {
+                for condition in when_node.conditions().iter() {
+                    if self.found {
+                        return;
+                    }
+                    ruby_prism::Visit::visit(self, &condition);
+                }
+            }
+        }
+    }
+
+    fn visit_while_node(&mut self, node: &ruby_prism::WhileNode<'pr>) {
+        ruby_prism::Visit::visit(self, &node.predicate());
+    }
+
+    fn visit_until_node(&mut self, node: &ruby_prism::UntilNode<'pr>) {
+        ruby_prism::Visit::visit(self, &node.predicate());
+    }
+
+    fn visit_for_node(&mut self, node: &ruby_prism::ForNode<'pr>) {
+        ruby_prism::Visit::visit(self, &node.collection());
+    }
+
+    fn visit_begin_node(&mut self, _node: &ruby_prism::BeginNode<'pr>) {}
 
     fn visit_instance_variable_write_node(
         &mut self,
@@ -798,6 +897,7 @@ pub struct InferenceEngine<'a> {
     cvar_owner_override: Option<String>,
     global_variable_aliases: HashMap<String, String>,
     method_body_contexts: HashMap<usize, MethodBodyContext>,
+    class_instance_ivar_writes: HashMap<String, HashMap<String, HashSet<String>>>,
     top_level_scope: Scope,
 }
 
@@ -1306,6 +1406,7 @@ pub(crate) struct Scope {
     loop_depth: usize,
     self_override: Option<Type>,
     self_facts: Arc<HashMap<String, Type>>,
+    array_first_facts: Arc<HashMap<ArrayGuardKey, Type>>,
     runtime_facts: Arc<HashMap<String, RuntimeFact>>,
     respond_to_guards: Arc<HashMap<String, Vec<Vec<String>>>>,
     initialized_record_keys: Arc<HashSet<(String, String)>>,
@@ -1495,6 +1596,7 @@ impl Scope {
             loop_depth: self.loop_depth,
             self_override: self.self_override.clone(),
             self_facts: self.self_facts.clone(),
+            array_first_facts: self.array_first_facts.clone(),
             runtime_facts: self.runtime_facts.clone(),
             respond_to_guards: self.respond_to_guards.clone(),
             initialized_record_keys: self.initialized_record_keys.clone(),
@@ -1506,6 +1608,14 @@ impl Scope {
             regexp_match_captures: self.regexp_match_captures,
             exclusive_local_alts: self.exclusive_local_alts.clone(),
         }
+    }
+
+    fn fork_for_block(&self) -> Self {
+        let mut scope = self.clone();
+        scope.next_types.clear();
+        scope.break_types.clear();
+        scope.clear_array_first_facts();
+        scope
     }
 
     fn record_exception_entry(
@@ -1581,6 +1691,16 @@ impl Scope {
 
     fn set_self_fact(&mut self, name: &str, ty: Type) {
         Arc::make_mut(&mut self.self_facts).insert(name.to_string(), ty);
+    }
+
+    fn set_array_first_fact(&mut self, key: ArrayGuardKey, ty: Type) {
+        Arc::make_mut(&mut self.array_first_facts).insert(key, ty);
+    }
+
+    fn clear_array_first_facts(&mut self) {
+        if !self.array_first_facts.is_empty() {
+            Arc::make_mut(&mut self.array_first_facts).clear();
+        }
     }
 
     fn narrow_correlated_local(&mut self, name: &str, ty: Type) {
@@ -2096,6 +2216,7 @@ impl<'a> InferenceEngine<'a> {
             cvar_owner_override: None,
             global_variable_aliases: HashMap::new(),
             method_body_contexts: HashMap::new(),
+            class_instance_ivar_writes: HashMap::new(),
             top_level_scope: Scope::default(),
         }
     }
@@ -2162,6 +2283,7 @@ impl<'a> InferenceEngine<'a> {
             cvar_owner_override: None,
             global_variable_aliases: HashMap::new(),
             method_body_contexts: HashMap::new(),
+            class_instance_ivar_writes: HashMap::new(),
             top_level_scope: Scope::default(),
         }
     }
@@ -3922,6 +4044,7 @@ impl<'a> InferenceEngine<'a> {
             merged.enumerator_yielded_types = yielded_types;
             merged.self_override = Self::merge_branch_self_override(base, then_scope, else_scope);
             merged.self_facts = Self::merge_branch_self_facts(then_scope, else_scope);
+            merged.array_first_facts = Arc::default();
             merged.initialized_record_keys = Arc::new(
                 then_scope
                     .initialized_record_keys
@@ -3987,6 +4110,7 @@ impl<'a> InferenceEngine<'a> {
             loop_depth: base.loop_depth,
             self_override: Self::merge_branch_self_override(base, then_scope, else_scope),
             self_facts: Self::merge_branch_self_facts(then_scope, else_scope),
+            array_first_facts: Arc::default(),
             runtime_facts: base.runtime_facts.clone(),
             respond_to_guards: Arc::default(),
             local_singleton_methods: base.local_singleton_methods.clone(),
@@ -4250,6 +4374,7 @@ impl<'a> InferenceEngine<'a> {
             loop_depth: base.loop_depth,
             self_override: Self::merge_loop_self_override(base, loop_scope),
             self_facts: Arc::default(),
+            array_first_facts: Arc::default(),
             runtime_facts: base.runtime_facts.clone(),
             respond_to_guards: Arc::default(),
             initialized_record_keys: base.initialized_record_keys.clone(),
@@ -5664,6 +5789,14 @@ impl<'a> InferenceEngine<'a> {
         if let Some(truthiness) = self.static_regexp_match_truthiness(node, parse_result) {
             return Some(truthiness);
         }
+        if let Some(read) = node.as_instance_variable_read_node() {
+            let name = String::from_utf8_lossy(read.name().as_slice());
+            if !scope.self_facts.contains_key(name.as_ref())
+                && self.ivar_written_in_another_method(class_name, scope, name.as_ref())
+            {
+                return None;
+            }
+        }
         let Some(call) = node.as_call_node() else {
             return Self::node_truthiness(inferred_type);
         };
@@ -5743,6 +5876,23 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => false,
         }
+    }
+
+    fn ivar_written_in_another_method(
+        &self,
+        class_name: &str,
+        scope: &Scope,
+        ivar_name: &str,
+    ) -> bool {
+        self.class_instance_ivar_writes
+            .get(class_name)
+            .is_some_and(|writes_by_method| {
+                writes_by_method.iter().any(|(method, names)| {
+                    method != "initialize"
+                        && scope.method_name.as_deref() != Some(method.as_str())
+                        && names.contains(ivar_name)
+                })
+            })
     }
 
     pub(super) fn static_collection_has_source_method_override(
@@ -8522,6 +8672,7 @@ impl<'a> InferenceEngine<'a> {
                 ),
                 has_block: false,
                 safe_navigation: false,
+                singleton_dispatch: false,
                 respond_to_guards: Vec::new(),
             },
             class_context: String::new(),
@@ -8864,6 +9015,32 @@ impl<'a> InferenceEngine<'a> {
         }
 
         Some(Type::String)
+    }
+
+    fn integer_or_integer_union(ty: &Type) -> bool {
+        match ty {
+            Type::Integer | Type::LiteralInteger(_) => true,
+            Type::Union(parts) => {
+                !parts.is_empty() && parts.iter().all(Self::integer_or_integer_union)
+            }
+            _ => false,
+        }
+    }
+
+    fn array_repeat_call_result(receiver_type: &Type) -> Option<Type> {
+        match receiver_type {
+            Type::Array(element) => Some(Type::Array(element.clone())),
+            Type::Tuple(elements) => Some(Type::Array(Some(Box::new(Type::from_type_vec(
+                elements.clone(),
+            ))))),
+            Type::Union(parts) => Some(Type::from_type_vec(
+                parts
+                    .iter()
+                    .map(Self::array_repeat_call_result)
+                    .collect::<Option<Vec<_>>>()?,
+            )),
+            _ => None,
+        }
     }
 
     fn array_receiver_type(ty: &Type) -> bool {
@@ -10591,7 +10768,7 @@ impl<'a> InferenceEngine<'a> {
             positional_arg_types,
             keyword_arg_types,
         );
-        let mut block_scope = scope.clone();
+        let mut block_scope = scope.fork_for_block();
         if let Some(params) = block.parameters() {
             self.bind_block_param_types(
                 class_name,
@@ -12008,6 +12185,49 @@ impl<'a> InferenceEngine<'a> {
         statements
     }
 
+    fn collect_class_instance_ivar_writes(
+        statements: &ruby_prism::StatementsNode<'_>,
+    ) -> HashMap<String, HashSet<String>> {
+        let mut writes_by_method = HashMap::new();
+        Self::collect_class_instance_ivar_writes_in_statements(statements, &mut writes_by_method);
+        writes_by_method
+    }
+
+    fn collect_class_instance_ivar_writes_in_statements(
+        statements: &ruby_prism::StatementsNode<'_>,
+        writes_by_method: &mut HashMap<String, HashSet<String>>,
+    ) {
+        for node in statements.body().iter() {
+            let def_node = match &node {
+                Node::DefNode { .. } => node.as_def_node(),
+                Node::CallNode { .. } => node
+                    .as_call_node()
+                    .and_then(|call| Self::wrapped_method_def_argument(&call))
+                    .and_then(|def| def.as_def_node()),
+                _ => None,
+            };
+            if let Some(def_node) = def_node {
+                if def_node.receiver().is_none()
+                    && let Some(body) = def_node.body()
+                {
+                    let method_name =
+                        String::from_utf8_lossy(def_node.name().as_slice()).to_string();
+                    let mut collector = InstanceVariableWriteCollector::default();
+                    ruby_prism::Visit::visit(&mut collector, &body);
+                    writes_by_method
+                        .entry(method_name)
+                        .or_default()
+                        .extend(collector.names);
+                }
+                continue;
+            }
+
+            for branch in Self::class_body_branch_statement_nodes(&node) {
+                Self::collect_class_instance_ivar_writes_in_statements(&branch, writes_by_method);
+            }
+        }
+    }
+
     fn push_class_body_branch_statement_nodes<'b>(
         node: &Node<'b>,
         statements: &mut Vec<ruby_prism::StatementsNode<'b>>,
@@ -12804,6 +13024,17 @@ impl<'a> InferenceEngine<'a> {
         options: ClassBodyCollectionOptions,
     ) {
         self.registry.mark_user_defined(class_name);
+        let class_ivar_writes = body
+            .as_statements_node()
+            .map(|statements| Self::collect_class_instance_ivar_writes(&statements))
+            .unwrap_or_default();
+        let class_writes = self
+            .class_instance_ivar_writes
+            .entry(class_name.to_string())
+            .or_default();
+        for (method_name, writes) in class_ivar_writes {
+            class_writes.entry(method_name).or_default().extend(writes);
+        }
         if let Node::StatementsNode { .. } = body {
             let statements = body.as_statements_node().expect("must be StatementsNode");
             let mut pending_sigs: Vec<String> = Vec::new();
@@ -16562,7 +16793,7 @@ impl<'a> InferenceEngine<'a> {
                 if let Some(block) = call_node.block().and_then(|block| block.as_block_node())
                     && let Some(block_body) = block.body()
                 {
-                    let mut block_scope = scope.clone();
+                    let mut block_scope = scope.fork_for_block();
                     if let Some(params) = block.parameters() {
                         let mut names = HashSet::new();
                         Self::collect_block_param_names(&params, &mut names);
@@ -19469,7 +19700,7 @@ impl<'a> InferenceEngine<'a> {
             return true;
         }
 
-        let mut block_scope = scope.clone();
+        let mut block_scope = scope.fork_for_block();
         block_scope.rspec_context = true;
         if matches!(method_name.as_ref(), "context" | "describe" | "feature")
             && let Some(arg) = call_node
@@ -19545,7 +19776,7 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
-        let mut block_scope = scope.clone();
+        let mut block_scope = scope.fork_for_block();
         self.mark_callback_record_arguments_may_mutate(call_node, scope, &mut block_scope);
         let block_local_names = Self::block_scoped_local_names(&block, parse_result);
         let mut block_self_type = None;
@@ -21256,7 +21487,7 @@ impl<'a> InferenceEngine<'a> {
 
         for target_method in target.method_names {
             let block = if target.method_names.len() == 1 {
-                let mut block_scope = scope.clone();
+                let mut block_scope = scope.fork_for_block();
                 self.infer_user_defined_call_block(
                     target.class_name,
                     target_method,
@@ -21665,7 +21896,7 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let block = block_raw.as_block_node()?;
-        let mut block_scope = scope.clone();
+        let mut block_scope = scope.fork_for_block();
         self.mark_callback_record_arguments_may_mutate(call_node, scope, &mut block_scope);
         if let Some(block_self_type) = self.resolve_user_defined_block_self_type(
             owner_class,
@@ -22397,6 +22628,11 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) -> bool {
+        if !scope.array_first_facts.is_empty()
+            && !Self::statement_consumes_array_first_fact(node, &scope.array_first_facts)
+        {
+            scope.clear_array_first_facts();
+        }
         self.apply_sorbet_self_bind_for_statement(class_name, node, parse_result, scope);
         let invalidates_self_facts = !scope.self_facts.is_empty()
             && self.statement_invalidates_self_facts(
@@ -23353,6 +23589,7 @@ impl<'a> InferenceEngine<'a> {
                                 result_type,
                                 has_block: call_node.block().is_some(),
                                 safe_navigation: call_node.is_safe_navigation(),
+                                singleton_dispatch: scope.singleton_dispatch,
                                 respond_to_guards: if scope.respond_to_guards.is_empty() {
                                     Vec::new()
                                 } else {
@@ -23556,6 +23793,7 @@ impl<'a> InferenceEngine<'a> {
         if defer_self_fact_invalidation {
             scope.clear_self_facts();
         }
+        scope.clear_array_first_facts();
         for_exits_method
     }
 
@@ -24685,7 +24923,7 @@ impl<'a> InferenceEngine<'a> {
             })
             .unwrap_or_else(|| Type::Singleton(Sym::new("Object")));
         if let Some(block) = call_node.block().and_then(|block| block.as_block_node()) {
-            let mut block_scope = scope.clone();
+            let mut block_scope = scope.fork_for_block();
             if let Some(params_node) = block.parameters() {
                 self.bind_call_block_param_types(
                     class_name,
@@ -26358,7 +26596,7 @@ impl<'a> InferenceEngine<'a> {
                         }
 
                         let block = {
-                            let mut block_scope = scope.clone();
+                            let mut block_scope = scope.fork_for_block();
                             self.infer_user_defined_call_block(
                                 class_name,
                                 &method_name,
@@ -26618,6 +26856,7 @@ impl<'a> InferenceEngine<'a> {
                                 result_type: result.clone(),
                                 has_block: call_node.block().is_some(),
                                 safe_navigation: call_node.is_safe_navigation(),
+                                singleton_dispatch: scope.singleton_dispatch,
                                 respond_to_guards: Vec::new(),
                             }
                         };
@@ -27877,7 +28116,7 @@ impl<'a> InferenceEngine<'a> {
                             ) {
                                 None
                             } else {
-                                let mut block_scope = scope.clone();
+                                let mut block_scope = scope.fork_for_block();
                                 self.infer_user_defined_call_block(
                                     &target_class,
                                     &method_name,
@@ -28368,6 +28607,22 @@ impl<'a> InferenceEngine<'a> {
                                 )
                             {
                                 break 'recv wrap(join_result);
+                            }
+                            if method_name == "*"
+                                && call_arg_types_for_generic.len() == 1
+                                && call_arg_types_for_generic
+                                    .first()
+                                    .is_some_and(Self::integer_or_integer_union)
+                                && let Some(repeated_type) =
+                                    Self::array_repeat_call_result(&safe_nav_receiver_type)
+                                && self.rbs_return_allows_refined_result(
+                                    &safe_nav_receiver_type,
+                                    &method_name,
+                                    &call_arg_types_for_generic,
+                                    &repeated_type,
+                                )
+                            {
+                                break 'recv wrap(repeated_type);
                             }
                             if method_name == "transpose"
                                 && call_node.arguments().is_none()
@@ -28902,6 +29157,7 @@ impl<'a> InferenceEngine<'a> {
                                 result_type: result.clone(),
                                 has_block: call_node.block().is_some(),
                                 safe_navigation: call_node.is_safe_navigation(),
+                                singleton_dispatch: scope.singleton_dispatch,
                                 respond_to_guards: if scope.respond_to_guards.is_empty() {
                                     Vec::new()
                                 } else {
@@ -31291,7 +31547,7 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
     ) -> Type {
         let lambda_node = node.as_lambda_node().expect("must be LambdaNode");
-        let mut block_scope = scope.clone();
+        let mut block_scope = scope.fork_for_block();
         let mut param_count = 0;
 
         if let Some(params) = lambda_node.parameters() {
@@ -37440,6 +37696,13 @@ impl<'a> InferenceEngine<'a> {
         }
 
         if matches!(method_name, "first" | "last") && arg_nodes.is_empty() {
+            if method_name == "first"
+                && let Some(receiver) = call_node.receiver()
+                && let Some(key) = Self::array_guard_key_for_expression(&receiver)
+                && let Some(element_type) = scope.array_first_facts.get(&key)
+            {
+                return Some(element_type.clone());
+            }
             return Self::array_edge_no_arg_call_result(receiver_type, method_name);
         }
 
@@ -37778,7 +38041,7 @@ impl<'a> InferenceEngine<'a> {
     ) -> Option<Type> {
         let block = call_node.block()?.as_block_node()?;
 
-        let mut block_scope = scope.clone();
+        let mut block_scope = scope.fork_for_block();
         block_scope.self_override =
             Some(self.instance_eval_block_self_type(class_name, receiver_type));
         self.bind_instance_exec_block_params(
@@ -38151,7 +38414,7 @@ impl<'a> InferenceEngine<'a> {
             None
         };
 
-        let mut block_scope = scope.clone();
+        let mut block_scope = scope.fork_for_block();
         if let Some(self_type) =
             Self::substitute_rbs_block_self_type(rbs_block, &type_vars, receiver_type)
         {
@@ -47387,7 +47650,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> (Type, Option<Type>, Scope) {
-        let mut block_scope = scope.clone();
+        let mut block_scope = scope.fork_for_block();
         let named_requireds =
             Self::extract_block_required_param_infos_from_source(block, parse_result);
         let has_only_plain_required_params = block
@@ -47616,7 +47879,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) {
-        let mut block_scope = scope.clone();
+        let mut block_scope = scope.fork_for_block();
         let elem_type = Self::extract_element_type(receiver_type);
         let named_requireds =
             Self::extract_block_required_param_infos_from_source(block, parse_result);
@@ -50239,7 +50502,7 @@ impl<'a> InferenceEngine<'a> {
         if bool_method_fallback && !source_override {
             return Type::Bool;
         }
-        if method_tables::IDENTITY_METHODS.contains(&method_name) {
+        if method_tables::IDENTITY_METHODS.contains(&method_name) && !source_override {
             return receiver_type.clone();
         }
         if matches!(receiver_type, Type::Hash(_, _) | Type::Record(_))
@@ -53148,13 +53411,24 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::InstanceVariableReadNode { .. } => {
                 let read = predicate.as_instance_variable_read_node()?;
-                let subject = NarrowSubject::Ivar(
-                    String::from_utf8_lossy(read.name().as_slice()).to_string(),
-                );
-                let current = self
-                    .resolve_subject_input_type(class_name, scope, &subject)
+                let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
+                let current = if let Some(current) = scope
+                    .self_facts
+                    .get(&name)
                     .filter(|ty| !Self::contains_unresolved_ref(ty))
-                    .unwrap_or(Type::Untyped);
+                {
+                    current.clone()
+                } else {
+                    let subject = NarrowSubject::Ivar(name.clone());
+                    let current = self.resolve_subject_input_type(class_name, scope, &subject)?;
+                    if Self::node_truthiness(&current).is_some()
+                        && self.ivar_written_in_another_method(class_name, scope, &name)
+                    {
+                        return None;
+                    }
+                    current
+                };
+                let subject = NarrowSubject::Ivar(name);
                 Some(CondNarrowing {
                     subject,
                     then_ty: Some(Self::truthy_only(&current).unwrap_or(Type::Bot)),
@@ -54017,6 +54291,233 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn call_has_no_arguments(call: &ruby_prism::CallNode<'_>) -> bool {
+        call.arguments()
+            .is_none_or(|arguments| arguments.arguments().iter().next().is_none())
+    }
+
+    fn simple_array_guard_method_name(node: &Node<'_>) -> Option<String> {
+        if let Some(parentheses) = node.as_parentheses_node() {
+            let body = parentheses.body()?;
+            let expression = if let Some(statements) = body.as_statements_node() {
+                let mut nodes = statements.body().iter();
+                let expression = nodes.next()?;
+                if nodes.next().is_some() {
+                    return None;
+                }
+                expression
+            } else {
+                body
+            };
+            return Self::simple_array_guard_method_name(&expression);
+        }
+        let call = node.as_call_node()?;
+        let method = String::from_utf8_lossy(call.name().as_slice()).to_string();
+        matches!(method.as_str(), "any?" | "all?").then_some(method)
+    }
+
+    fn array_guard_key_for_expression(node: &Node<'_>) -> Option<ArrayGuardKey> {
+        if let Some(name) = Self::extract_local_var_name(node) {
+            return Some(ArrayGuardKey::Local(name));
+        }
+
+        let call = node.as_call_node()?;
+        if call.name().as_slice() != b"values"
+            || !Self::call_has_no_arguments(&call)
+            || call.block().is_some()
+        {
+            return None;
+        }
+        let receiver = call.receiver()?;
+        let name = Self::extract_local_var_name(&receiver)?;
+        Some(ArrayGuardKey::HashValues(name))
+    }
+
+    fn type_members_have_class_name(&self, ty: &Type, expected: &str) -> bool {
+        match ty {
+            Type::Union(parts) => {
+                !parts.is_empty()
+                    && parts
+                        .iter()
+                        .all(|part| self.type_members_have_class_name(part, expected))
+            }
+            _ => self
+                .type_to_class_name(ty)
+                .is_some_and(|name| Self::class_type_base_name(&name) == expected),
+        }
+    }
+
+    fn array_guard_key_and_type(
+        &mut self,
+        class_name: &str,
+        expression: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<(ArrayGuardKey, Type)> {
+        let key = Self::array_guard_key_for_expression(expression)?;
+        let array_type = self.infer_node_type(class_name, expression, parse_result, scope);
+        let array_type = self.resolve_receiver_method_refs(&array_type);
+        if !Self::is_array_like_type(&array_type)
+            || self.type_has_known_source_instance_method_override(&array_type, "any?", scope)
+            || self.type_has_known_source_instance_method_override(&array_type, "all?", scope)
+            || self.type_has_known_source_instance_method_override(&array_type, "first", scope)
+        {
+            return None;
+        }
+
+        if let ArrayGuardKey::HashValues(name) = &key {
+            let hash_type = self.resolve_narrowing_input_type(class_name, scope, scope.get(name)?);
+            if !self.type_members_have_class_name(&hash_type, "Hash")
+                || self.type_has_known_source_instance_method_override(&hash_type, "values", scope)
+            {
+                return None;
+            }
+        }
+
+        Some((key, array_type))
+    }
+
+    fn array_guard_condition(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<ArrayGuardCondition> {
+        if let Some(parentheses) = node.as_parentheses_node() {
+            let body = parentheses.body()?;
+            let expression = if let Some(statements) = body.as_statements_node() {
+                let mut nodes = statements.body().iter();
+                let expression = nodes.next()?;
+                if nodes.next().is_some() {
+                    return None;
+                }
+                expression
+            } else {
+                body
+            };
+            return self.array_guard_condition(class_name, &expression, parse_result, scope);
+        }
+        let call = node.as_call_node()?;
+        let receiver = call.receiver()?;
+        let (key, array_type) =
+            self.array_guard_key_and_type(class_name, &receiver, parse_result, scope)?;
+        match call.name().as_slice() {
+            b"any?" if Self::call_has_no_arguments(&call) && call.block().is_none() => {
+                Some(ArrayGuardCondition::NonEmpty(key))
+            }
+            b"all?" if call.block().is_none() => {
+                let mut args = call.arguments()?.arguments().iter();
+                let type_node = args.next()?;
+                if args.next().is_some() {
+                    return None;
+                }
+                let target_class = match &type_node {
+                    Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
+                        self.resolve_type_test_target_name(&type_node, class_name)?
+                    }
+                    _ => return None,
+                };
+                self.ensure_external_class(&target_class);
+                if self
+                    .registry
+                    .class_data_for(&target_class)
+                    .is_none_or(|data| data.is_module)
+                    || !self.uses_standard_class_case_equality_in_scope(&target_class, scope)
+                {
+                    return None;
+                }
+                let element_type = Self::enumerable_element_type(&array_type);
+                let element_type = self
+                    .narrow_type_by_kind_of(&element_type, &target_class)
+                    .unwrap_or(Type::Bot);
+                Some(ArrayGuardCondition::ElementsOf(key, element_type))
+            }
+            _ => None,
+        }
+    }
+
+    fn array_guard_fact_from_conjunction(
+        &mut self,
+        class_name: &str,
+        predicate: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<(ArrayGuardKey, Type)> {
+        if let Some(parentheses) = predicate.as_parentheses_node() {
+            let body = parentheses.body()?;
+            let expression = if let Some(statements) = body.as_statements_node() {
+                let mut nodes = statements.body().iter();
+                let expression = nodes.next()?;
+                if nodes.next().is_some() {
+                    return None;
+                }
+                expression
+            } else {
+                body
+            };
+            return self.array_guard_fact_from_conjunction(
+                class_name,
+                &expression,
+                parse_result,
+                scope,
+            );
+        }
+        let conjunction = predicate.as_and_node()?;
+        let left = conjunction.left();
+        let right = conjunction.right();
+        let left_method = Self::simple_array_guard_method_name(&left)?;
+        let right_method = Self::simple_array_guard_method_name(&right)?;
+        if left_method == right_method {
+            return None;
+        }
+        let left = self.array_guard_condition(class_name, &left, parse_result, scope)?;
+        let right = self.array_guard_condition(class_name, &right, parse_result, scope)?;
+        match (left, right) {
+            (
+                ArrayGuardCondition::NonEmpty(left_key),
+                ArrayGuardCondition::ElementsOf(right_key, ty),
+            )
+            | (
+                ArrayGuardCondition::ElementsOf(right_key, ty),
+                ArrayGuardCondition::NonEmpty(left_key),
+            ) if left_key == right_key => Some((left_key, ty)),
+            _ => None,
+        }
+    }
+
+    fn statement_consumes_array_first_fact(
+        node: &Node<'_>,
+        facts: &HashMap<ArrayGuardKey, Type>,
+    ) -> bool {
+        let expression = if let Some(write) = node.as_local_variable_write_node() {
+            write.value()
+        } else if node.as_call_node().is_some() {
+            return Self::call_consumes_array_first_fact(node, facts);
+        } else {
+            return false;
+        };
+        Self::call_consumes_array_first_fact(&expression, facts)
+    }
+
+    fn call_consumes_array_first_fact(
+        expression: &Node<'_>,
+        facts: &HashMap<ArrayGuardKey, Type>,
+    ) -> bool {
+        let Some(call) = expression.as_call_node() else {
+            return false;
+        };
+        if call.name().as_slice() != b"first"
+            || !Self::call_has_no_arguments(&call)
+            || call.block().is_some()
+        {
+            return false;
+        }
+        call.receiver()
+            .and_then(|receiver| Self::array_guard_key_for_expression(&receiver))
+            .is_some_and(|key| facts.contains_key(&key))
+    }
+
     fn apply_compound_branch_narrowings(
         &mut self,
         class_name: &str,
@@ -54026,6 +54527,16 @@ impl<'a> InferenceEngine<'a> {
         target_scope: &mut Scope,
         is_true_branch: bool,
     ) {
+        if is_true_branch
+            && let Some((key, element_type)) = self.array_guard_fact_from_conjunction(
+                class_name,
+                predicate,
+                parse_result,
+                base_scope,
+            )
+        {
+            target_scope.set_array_first_fact(key, element_type);
+        }
         match predicate {
             Node::AndNode { .. } if is_true_branch => {
                 if let Some(and_node) = predicate.as_and_node() {
@@ -55816,7 +56327,22 @@ impl<'a> InferenceEngine<'a> {
 
     fn can_track_ivar_write_locally(value: &Node<'_>, ty: &Type) -> bool {
         // Method return summaries may include branches excluded by this call's arguments.
-        !matches!(value, Node::CallNode { .. }) && !Self::type_contains_receiver_resolution_ref(ty)
+        let call_result_is_stable = match value {
+            Node::CallNode { .. } => {
+                matches!(ty, Type::Nil)
+                    || value.as_call_node().is_some_and(|call| {
+                        call.name().as_slice() == b"dup"
+                            && call.receiver().is_some()
+                            && call
+                                .arguments()
+                                .is_none_or(|arguments| arguments.arguments().is_empty())
+                            && call.block().is_none()
+                            && !matches!(ty, Type::Union(_))
+                    })
+            }
+            _ => true,
+        };
+        call_result_is_stable && !Self::type_contains_receiver_resolution_ref(ty)
     }
 
     fn current_ivar_type(&self, class_name: &str, scope: &Scope, ivar_name: &str) -> Option<Type> {
@@ -57279,8 +57805,14 @@ mod tests {
     }
 
     #[test]
-    fn method_call_results_are_not_tracked_as_exact_local_ivar_facts() {
-        let source = "@value = Factory.build\n@value = nil\n";
+    fn only_stable_call_results_are_tracked_as_local_ivar_facts() {
+        let source = concat!(
+            "@value = Factory.build\n",
+            "@value = nil\n",
+            "@copy = defaults.dup\n",
+            "@arg_copy = defaults.dup(flag)\n",
+            "@block_copy = defaults.dup { nil }\n",
+        );
         let parse_result = ruby_prism::parse(source.as_bytes());
         let program = parse_result.node().as_program_node().expect("program");
         let mut nodes = program.statements().body().iter();
@@ -57294,15 +57826,54 @@ mod tests {
             .as_instance_variable_write_node()
             .expect("instance variable write")
             .value();
+        let dup_assignment = nodes.next().expect("dup assignment");
+        let dup_value = dup_assignment
+            .as_instance_variable_write_node()
+            .expect("instance variable write")
+            .value();
+        let arg_dup_assignment = nodes.next().expect("argument dup assignment");
+        let arg_dup_value = arg_dup_assignment
+            .as_instance_variable_write_node()
+            .expect("instance variable write")
+            .value();
+        let block_dup_assignment = nodes.next().expect("block dup assignment");
+        let block_dup_value = block_dup_assignment
+            .as_instance_variable_write_node()
+            .expect("instance variable write")
+            .value();
 
         assert!(matches!(call_value, Node::CallNode { .. }));
         assert!(!InferenceEngine::can_track_ivar_write_locally(
             &call_value,
             &Type::Class(Sym::new("Factory")),
         ));
+        assert!(!InferenceEngine::can_track_ivar_write_locally(
+            &call_value,
+            &Type::MethodReturnRef(Sym::new("Factory"), Sym::new("build")),
+        ));
         assert!(InferenceEngine::can_track_ivar_write_locally(
             &literal_value,
             &Type::Nil,
+        ));
+        assert!(InferenceEngine::can_track_ivar_write_locally(
+            &call_value,
+            &Type::Nil,
+        ));
+        assert!(InferenceEngine::can_track_ivar_write_locally(
+            &dup_value,
+            &Type::Class(Sym::new("Hash")),
+        ));
+        assert!(!InferenceEngine::can_track_ivar_write_locally(
+            &dup_value,
+            &Type::Union(vec![Type::Class(Sym::new("Hash")), Type::Nil]),
+        ));
+        assert!(!InferenceEngine::can_track_ivar_write_locally(
+            &arg_dup_value,
+            &Type::Class(Sym::new("Hash")),
+        ));
+        assert!(!InferenceEngine::can_track_ivar_write_locally(
+            &block_dup_value,
+            &Type::Class(Sym::new("Hash")),
         ));
     }
 

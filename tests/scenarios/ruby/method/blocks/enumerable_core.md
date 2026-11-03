@@ -16,6 +16,22 @@ class Object < BasicObject
 end
 ```
 
+## Integer array repetition remains an array
+
+### update
+
+```ruby
+def join_repeated_values = (["entry"] * [1, 2].size).join(" ")
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def join_repeated_values: -> String
+end
+```
+
 ## Re-infer a block call after its receiver's source return is resolved
 
 ### update
@@ -866,6 +882,30 @@ end
 ```rbs
 class Object < BasicObject
   def build_table: -> Hash["a" | "bb", 1 | 2]
+end
+```
+
+## Keep nested block control flow out of a Hash accumulator
+
+### update
+
+```ruby
+def map_hashes_after_next
+  [1, 2].map do |value|
+    next if value.zero?
+    [value].inject({}) do |hash, item|
+      hash[item.to_s] = item.to_s
+      hash
+    end.merge("value" => value.to_s)
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def map_hashes_after_next: -> Array[Hash[String, String]?]
 end
 ```
 

@@ -9443,7 +9443,28 @@ impl TypeRegistry {
                 {
                     Type::ReceiverMethodRef(receiver_type.clone(), *method_name)
                 } else {
-                    Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+                    let resolved_return = Self::type_to_class_name(&resolved_receiver)
+                        .and_then(|receiver_class| {
+                            let key = (receiver_class.clone(), method_name.to_string(), false);
+                            if !visiting.insert(key.clone()) {
+                                return None;
+                            }
+                            let resolved = self
+                                .lookup_method_return_type(&receiver_class, method_name)
+                                .map(|return_type| {
+                                    self.resolve_call_site_type_from_caller_context(
+                                        call_site,
+                                        &return_type,
+                                        visiting,
+                                    )
+                                });
+                            visiting.remove(&key);
+                            resolved
+                        })
+                        .filter(Self::is_concrete_for_global_resolve);
+                    resolved_return.unwrap_or_else(|| {
+                        Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+                    })
                 }
             }
             Type::DeferredSafeNavigation(receiver_type, result_type) => {
