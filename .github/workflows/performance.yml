@@ -6,6 +6,17 @@ on:
       - main
       - master
   workflow_dispatch:
+    inputs:
+      profile_rubygems:
+        description: Collect one-off RubyGems base/head LSP profiles after the timing comparison.
+        required: false
+        type: boolean
+        default: false
+      profile_base_sha:
+        description: Exact base commit SHA to compare with the selected dispatch branch.
+        required: false
+        type: string
+        default: ""
   workflow_call:
     inputs:
       phase:
@@ -26,6 +37,16 @@ on:
         required: false
         type: boolean
         default: false
+      profile_rubygems:
+        description: Collect one-off RubyGems base/head LSP profiles after the timing comparison.
+        required: false
+        type: boolean
+        default: false
+      profile_base_sha:
+        description: Exact base commit SHA to compare with the selected dispatch branch.
+        required: false
+        type: string
+        default: ""
     outputs:
       run_full_ci:
         description: Whether the changed files require full CI.
@@ -86,6 +107,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate profiling inputs
+        if: github.event_name == 'workflow_dispatch' && inputs.profile_rubygems == true
+        env:
+          PROFILE_BASE_SHA: ${{ inputs.profile_base_sha }}
+        run: |
+          if ! [[ "$PROFILE_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "profile_base_sha must be a full 40-character commit SHA." >&2
+            exit 1
+          fi
+
       - name: Install system dependencies
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
         with:
@@ -127,7 +158,7 @@ jobs:
 
       - name: Build base and head binaries
         env:
-          TYDA_PERF_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          TYDA_PERF_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && inputs.profile_rubygems == true && inputs.profile_base_sha) || github.event.before }}
         run: ./scripts/build_performance_binaries.sh target/performance-runtime
 
       - name: Export comparison revisions
@@ -165,7 +196,7 @@ jobs:
       )
     name: performance (${{ matrix.subject }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile_rubygems == true && 20 || 10 }}
     strategy:
       fail-fast: false
       max-parallel: 7
@@ -216,6 +247,7 @@ jobs:
             allow_base_timeout: "0"
     steps:
       - name: Checkout
+        if: github.event_name != 'workflow_dispatch' || inputs.profile_rubygems != true || matrix.subject == 'rubygems'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The build job resolves the exact base/head commits; the matrix only
@@ -223,26 +255,31 @@ jobs:
           fetch-depth: 1
 
       - name: Set up Ruby
+        if: github.event_name != 'workflow_dispatch' || inputs.profile_rubygems != true || matrix.subject == 'rubygems'
         uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1
         with:
           ruby-version: "3.4"
 
       - name: Download performance runtime
+        if: github.event_name != 'workflow_dispatch' || inputs.profile_rubygems != true || matrix.subject == 'rubygems'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: performance-runtime
           path: target/performance-runtime
 
       - name: Cache performance subject
+        if: github.event_name != 'workflow_dispatch' || inputs.profile_rubygems != true || matrix.subject == 'rubygems'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: subject/${{ matrix.subject }}
           key: ${{ runner.os }}-subject-${{ matrix.subject }}-${{ hashFiles('scripts/setup_subjects.sh') }}
 
       - name: Prepare pinned performance subject
+        if: github.event_name != 'workflow_dispatch' || inputs.profile_rubygems != true || matrix.subject == 'rubygems'
         run: ./scripts/setup_subjects.sh "${{ matrix.subject }}"
 
       - name: Compare base and head performance (${{ matrix.subject }})
+        if: github.event_name != 'workflow_dispatch' || inputs.profile_rubygems != true || matrix.subject == 'rubygems'
         env:
           TYDA_PERF_BASE_SHA: ${{ inputs.phase == 'subjects' && inputs.base_sha || needs.build.outputs.base_sha }}
           TYDA_PERF_HEAD_SHA: ${{ inputs.phase == 'subjects' && inputs.head_sha || needs.build.outputs.head_sha }}
@@ -256,8 +293,101 @@ jobs:
           TYDA_RBS_DIR: ${{ github.workspace }}/target/performance-runtime/vendor/rbs
         run: ./scripts/benchmark_ci.sh
 
+      - name: Profile RubyGems LSP base and head
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.profile_rubygems == true && matrix.subject == 'rubygems'
+        env:
+          TYDA_PROFILE_OUTPUT: ${{ github.workspace }}/target/performance/${{ matrix.subject }}/profile
+          TYDA_PROFILE_SUBJECT: ${{ github.workspace }}/${{ matrix.subject_path }}
+          TYDA_PROFILE_BINARY_DIR: ${{ github.workspace }}/target/performance-runtime/bin
+          TYDA_PROFILE_RBS_DIR: ${{ github.workspace }}/target/performance-runtime/vendor/rbs
+        run: |
+          set -uo pipefail
+          mkdir -p "$TYDA_PROFILE_OUTPUT"
+          probe_log="$TYDA_PROFILE_OUTPUT/probe.txt"
+
+          {
+            uname -a
+            id
+            printf 'perf_event_paranoid='
+            cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || true
+          } >"$probe_log" 2>&1
+
+          perf_path="$(command -v perf || true)"
+          if [[ -z "$perf_path" ]]; then
+            if ! timeout 120s sudo apt-get update 2>&1 | tee -a "$probe_log" ||
+              ! timeout 120s sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" 2>&1 | tee -a "$probe_log"; then
+              echo "Skipped: could not install perf for the runner kernel; see probe.txt." | tee -a "$probe_log"
+              echo "RubyGems profiling skipped: perf is unavailable. See the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            perf_path="$(command -v perf || true)"
+          fi
+
+          if [[ -z "$perf_path" ]]; then
+            echo "Skipped: perf executable is unavailable; see probe.txt." | tee -a "$probe_log"
+            echo "RubyGems profiling skipped: perf is unavailable. See the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if ! "$perf_path" record -F 49 -e cpu-clock:u --call-graph dwarf \
+            --output "$TYDA_PROFILE_OUTPUT/probe.data" -- /bin/sleep 0.2 >>"$probe_log" 2>&1; then
+            rm -f "$TYDA_PROFILE_OUTPUT/probe.data"
+            echo "Skipped: perf record capability probe failed; see probe.txt." | tee -a "$probe_log"
+            echo "RubyGems profiling skipped: perf record is blocked or unsupported on this runner. See probe.txt in the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          rm -f "$TYDA_PROFILE_OUTPUT/probe.data"
+          echo "perf record probe succeeded: $perf_path" | tee -a "$probe_log"
+
+          cat >"$RUNNER_TEMP/tyda-profiled-server" <<'PROFILE_WRAPPER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec "$TYDA_PROFILE_PERF" record -F 49 -e cpu-clock:u --call-graph dwarf \
+            --output "$TYDA_PROFILE_OUTPUT/$TYDA_PROFILE_VARIANT.perf.data" \
+            -- "$TYDA_PROFILE_BINARY" "$@"
+          PROFILE_WRAPPER
+          chmod +x "$RUNNER_TEMP/tyda-profiled-server"
+
+          for variant in base head; do
+            binary="$TYDA_PROFILE_BINARY_DIR/$variant/tyda"
+            if TYDA_PROFILE_PERF="$perf_path" \
+              TYDA_PROFILE_OUTPUT="$TYDA_PROFILE_OUTPUT" \
+              TYDA_PROFILE_VARIANT="$variant" \
+              TYDA_PROFILE_BINARY="$binary" \
+              TYDA_LSP_BENCH_ROOT="$TYDA_PROFILE_SUBJECT" \
+              TYDA_LSP_ANALYSIS_THREADS=2 \
+              TYDA_RBS_DIR="$TYDA_PROFILE_RBS_DIR" \
+              nice -n 19 ruby scripts/benchmark_lsp_client.rb \
+                "$RUNNER_TEMP/tyda-profiled-server" "$TYDA_PROFILE_SUBJECT" \
+                >>"$probe_log" 2>&1; then
+              echo "Profiled $variant LSP server." | tee -a "$probe_log"
+            else
+              echo "Profile for $variant failed; see probe.txt." | tee -a "$probe_log"
+            fi
+          done
+
+          for variant in base head; do
+            if [[ -f "$TYDA_PROFILE_OUTPUT/$variant.perf.data" ]]; then
+              "$perf_path" report --stdio \
+                --input "$TYDA_PROFILE_OUTPUT/$variant.perf.data" \
+                --sort symbol --percent-limit 1 \
+                >"$TYDA_PROFILE_OUTPUT/$variant-report.txt" 2>>"$probe_log" || true
+            fi
+          done
+          echo "RubyGems LSP profile attempt complete. See the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload RubyGems LSP profile
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.profile_rubygems == true && matrix.subject == 'rubygems'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rubygems-lsp-profile
+          path: target/performance/rubygems/profile
+          if-no-files-found: ignore
+
       - name: Compare base and head coverage (${{ matrix.subject }})
-        if: always()
+        if: >-
+          always() &&
+          (github.event_name != 'workflow_dispatch' || inputs.profile_rubygems != true || matrix.subject == 'rubygems')
         env:
           TYDA_COVERAGE_BASE_SHA: ${{ inputs.phase == 'subjects' && inputs.base_sha || needs.build.outputs.base_sha }}
           TYDA_COVERAGE_HEAD_SHA: ${{ inputs.phase == 'subjects' && inputs.head_sha || needs.build.outputs.head_sha }}
@@ -272,7 +402,9 @@ jobs:
         run: ./scripts/coverage_ci.sh
 
       - name: Upload performance result (${{ matrix.subject }})
-        if: always()
+        if: >-
+          always() &&
+          (github.event_name != 'workflow_dispatch' || inputs.profile_rubygems != true || matrix.subject == 'rubygems')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: performance-result-${{ matrix.subject }}
@@ -280,7 +412,9 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload coverage result (${{ matrix.subject }})
-        if: always()
+        if: >-
+          always() &&
+          (github.event_name != 'workflow_dispatch' || inputs.profile_rubygems != true || matrix.subject == 'rubygems')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-result-${{ matrix.subject }}
