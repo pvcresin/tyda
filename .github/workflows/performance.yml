@@ -313,40 +313,62 @@ jobs:
           } >"$probe_log" 2>&1
 
           perf_path="$(command -v perf || true)"
+          perf_available=0
           if [[ -z "$perf_path" ]]; then
             if ! timeout 120s sudo apt-get update 2>&1 | tee -a "$probe_log" ||
               ! timeout 120s sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" 2>&1 | tee -a "$probe_log"; then
-              echo "Skipped: could not install perf for the runner kernel; see probe.txt." | tee -a "$probe_log"
-              echo "RubyGems profiling skipped: perf is unavailable. See the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
-              exit 0
+              echo "perf installation failed; trying Callgrind fallback." | tee -a "$probe_log"
+            else
+              perf_path="$(command -v perf || true)"
             fi
-            perf_path="$(command -v perf || true)"
           fi
 
-          if [[ -z "$perf_path" ]]; then
-            echo "Skipped: perf executable is unavailable; see probe.txt." | tee -a "$probe_log"
-            echo "RubyGems profiling skipped: perf is unavailable. See the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
-            exit 0
+          if [[ -n "$perf_path" ]]; then
+            if "$perf_path" record -F 49 -e cpu-clock:u --call-graph dwarf \
+              --output "$TYDA_PROFILE_OUTPUT/probe.data" -- /bin/sleep 0.2 >>"$probe_log" 2>&1; then
+              perf_available=1
+              rm -f "$TYDA_PROFILE_OUTPUT/probe.data"
+              echo "perf record probe succeeded: $perf_path" | tee -a "$probe_log"
+            else
+              rm -f "$TYDA_PROFILE_OUTPUT/probe.data"
+              echo "perf record capability probe failed; trying Callgrind fallback." | tee -a "$probe_log"
+            fi
           fi
 
-          if ! "$perf_path" record -F 49 -e cpu-clock:u --call-graph dwarf \
-            --output "$TYDA_PROFILE_OUTPUT/probe.data" -- /bin/sleep 0.2 >>"$probe_log" 2>&1; then
-            rm -f "$TYDA_PROFILE_OUTPUT/probe.data"
-            echo "Skipped: perf record capability probe failed; see probe.txt." | tee -a "$probe_log"
-            echo "RubyGems profiling skipped: perf record is blocked or unsupported on this runner. See probe.txt in the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          rm -f "$TYDA_PROFILE_OUTPUT/probe.data"
-          echo "perf record probe succeeded: $perf_path" | tee -a "$probe_log"
-
-          cat >"$RUNNER_TEMP/tyda-profiled-server" <<'PROFILE_WRAPPER'
+          profile_mode=callgrind
+          if [[ "$perf_available" == 1 ]]; then
+            profile_mode=perf
+            cat >"$RUNNER_TEMP/tyda-profiled-server" <<'PROFILE_WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
           exec "$TYDA_PROFILE_PERF" record -F 49 -e cpu-clock:u --call-graph dwarf \
             --output "$TYDA_PROFILE_OUTPUT/$TYDA_PROFILE_VARIANT.perf.data" \
             -- "$TYDA_PROFILE_BINARY" "$@"
           PROFILE_WRAPPER
+          else
+            if ! timeout 120s sudo apt-get update 2>&1 | tee -a "$probe_log" ||
+              ! timeout 120s sudo apt-get install -y valgrind 2>&1 | tee -a "$probe_log"; then
+              echo "Skipped: could not install Valgrind; see probe.txt." | tee -a "$probe_log"
+              echo "RubyGems profiling skipped: perf was unavailable and Valgrind could not be installed. See the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            if ! command -v valgrind >/dev/null || ! command -v callgrind_annotate >/dev/null; then
+              echo "Skipped: Valgrind or callgrind_annotate is unavailable; see probe.txt." | tee -a "$probe_log"
+              echo "RubyGems profiling skipped: Callgrind tools are unavailable. See the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            valgrind --version | tee -a "$probe_log"
+            cat >"$RUNNER_TEMP/tyda-profiled-server" <<'PROFILE_WRAPPER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec valgrind --tool=callgrind --cache-sim=no --branch-sim=no \
+            --callgrind-out-file="$TYDA_PROFILE_OUTPUT/$TYDA_PROFILE_VARIANT.callgrind.out" \
+            --log-file="$TYDA_PROFILE_OUTPUT/$TYDA_PROFILE_VARIANT.callgrind.log" \
+            "$TYDA_PROFILE_BINARY" "$@"
+          PROFILE_WRAPPER
+          fi
           chmod +x "$RUNNER_TEMP/tyda-profiled-server"
+          echo "Profiler selected: $profile_mode" | tee -a "$probe_log"
 
           for variant in base head; do
             binary="$TYDA_PROFILE_BINARY_DIR/$variant/tyda"
@@ -356,25 +378,45 @@ jobs:
               TYDA_PROFILE_BINARY="$binary" \
               TYDA_LSP_BENCH_ROOT="$TYDA_PROFILE_SUBJECT" \
               TYDA_LSP_ANALYSIS_THREADS=2 \
+              TYDA_LSP_STARTUP_TIMEOUT_SECONDS=120 \
+              TYDA_LSP_MESSAGE_TIMEOUT_SECONDS=360 \
               TYDA_RBS_DIR="$TYDA_PROFILE_RBS_DIR" \
               nice -n 19 ruby scripts/benchmark_lsp_client.rb \
                 "$RUNNER_TEMP/tyda-profiled-server" "$TYDA_PROFILE_SUBJECT" \
                 >>"$probe_log" 2>&1; then
-              echo "Profiled $variant LSP server." | tee -a "$probe_log"
+              echo "LSP client completed for $variant." | tee -a "$probe_log"
             else
-              echo "Profile for $variant failed; see probe.txt." | tee -a "$probe_log"
+              echo "LSP client failed for $variant; profile may be incomplete. See probe.txt and profiler log." | tee -a "$probe_log"
             fi
           done
 
-          for variant in base head; do
-            if [[ -f "$TYDA_PROFILE_OUTPUT/$variant.perf.data" ]]; then
-              "$perf_path" report --stdio \
-                --input "$TYDA_PROFILE_OUTPUT/$variant.perf.data" \
-                --sort symbol --percent-limit 1 \
-                >"$TYDA_PROFILE_OUTPUT/$variant-report.txt" 2>>"$probe_log" || true
-            fi
-          done
-          echo "RubyGems LSP profile attempt complete. See the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
+          if [[ "$profile_mode" == perf ]]; then
+            for variant in base head; do
+              if [[ -f "$TYDA_PROFILE_OUTPUT/$variant.perf.data" ]]; then
+                "$perf_path" report --stdio \
+                  --input "$TYDA_PROFILE_OUTPUT/$variant.perf.data" \
+                  --sort symbol --percent-limit 1 \
+                  >"$TYDA_PROFILE_OUTPUT/$variant-report.txt" 2>>"$probe_log" || true
+              else
+                echo "No perf data for $variant; see probe.txt." | tee -a "$probe_log"
+              fi
+            done
+          else
+            shopt -s nullglob
+            for variant in base head; do
+              profiles=("$TYDA_PROFILE_OUTPUT/$variant.callgrind.out"*)
+              if [[ ${#profiles[@]} -eq 0 ]]; then
+                echo "No Callgrind data for $variant; see probe.txt and $variant.callgrind.log." | tee -a "$probe_log"
+                continue
+              fi
+              for profile in "${profiles[@]}"; do
+                report="$TYDA_PROFILE_OUTPUT/$variant-callgrind-report.txt"
+                callgrind_annotate --inclusive=yes --tree=both "$profile" \
+                  >"$report" 2>>"$probe_log" || echo "Callgrind annotation failed for $profile." | tee -a "$probe_log"
+              done
+            done
+          fi
+          echo "RubyGems LSP $profile_mode profile attempt complete. See the rubygems-lsp-profile artifact." >>"$GITHUB_STEP_SUMMARY"
 
       - name: Upload RubyGems LSP profile
         if: always() && github.event_name == 'workflow_dispatch' && inputs.profile_rubygems == true && matrix.subject == 'rubygems'

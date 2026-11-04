@@ -6,8 +6,8 @@ require "socket"
 require "timeout"
 require "uri"
 
-STARTUP_TIMEOUT_SECONDS = 30
-MESSAGE_TIMEOUT_SECONDS = 180
+STARTUP_TIMEOUT_SECONDS = Integer(ENV.fetch("TYDA_LSP_STARTUP_TIMEOUT_SECONDS", "30"), 10)
+MESSAGE_TIMEOUT_SECONDS = Integer(ENV.fetch("TYDA_LSP_MESSAGE_TIMEOUT_SECONDS", "180"), 10)
 
 def monotonic_seconds
   Process.clock_gettime(Process::CLOCK_MONOTONIC)
