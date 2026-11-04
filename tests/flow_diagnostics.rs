@@ -426,3 +426,22 @@ fn only_nonempty_all_class_guards_narrow_the_first_array_element() {
         );
     }
 }
+
+#[test]
+fn shellwords_extension_resolves_after_method_local_require() {
+    let source = concat!(
+        "def escaped\n",
+        "  require \"shellwords\"\n",
+        "  \"tool name\".shellescape\n",
+        "end\n",
+        "escaped\n",
+    );
+    let actual = diagnostics(source, false);
+    assert!(
+        !actual.iter().any(|diagnostic| {
+            diagnostic.code == "missing_method"
+                && diagnostic.unresolved_method == "String#shellescape"
+        }),
+        "method-local require should load Shellwords before the call: {actual:?}"
+    );
+}

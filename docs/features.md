@@ -48,7 +48,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 ### RBS
 
-- `.rbs` の自動発見、stdlib の lazy load、静的に実行される文字列リテラル `require` に対応する stdlib feature RBS の読み込み（`io/console` など slash 区切りfeature名も対応）、generic、overload、interface、alias。条件分岐・メソッド内・動的な `require` と、トップレベルで `require` を再定義するファイルは feature RBS の読み込み対象外
+- `.rbs` の自動発見、stdlib の lazy load、直接実行される文字列リテラル `require` のsource orderに応じた stdlib feature RBS の読み込み（`io/console` など slash 区切りfeature名も対応）、generic、overload、interface、alias。`shellwords` の `String#shellescape` / `String#shellsplit` は、feature の `require` 後に推論し、RBS stdlibを使えない場合も補う。メソッド本体内のリテラル `require` は同じメソッド内の後続呼び出しにだけ適用する。class / module / singleton class body内の `require` は、singleton `require` の再定義や動的な `send` / `eval` がある場合はロード済みと推定しない。メソッド内の条件分岐の本体・block / lambda・rescue 内の `require` と動的な `require` もロード済みと推定しない。トップレベルの `require` 再定義ではfeatureを読み込まず、`require` のsource定義やaliasがある場合はメソッド本体内のrequireも推定しない
 - inline RBS（`#:` / `# @rbs`）の単一・複数行宣言、block signature、type alias
 - `self` / `instance` を call site の受け手へ解決する factory 型
 

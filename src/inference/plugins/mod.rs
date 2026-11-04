@@ -31,6 +31,7 @@ pub(super) mod rack_attack;
 pub(super) mod rails_configure;
 pub(super) mod rake;
 pub(super) mod settingslogic;
+pub(super) mod shellwords;
 pub(super) mod shrine;
 pub(super) mod sidekiq;
 pub(super) mod state_machines;
@@ -174,6 +175,7 @@ static PLUGINS: &[&dyn Plugin] = &[
     &oj::Oj,
     &paperclip::Paperclip,
     &rake::Rake,
+    &shellwords::Shellwords,
     &rack_attack::RackAttack,
     &draper::Draper,
     &properties::Properties,
@@ -285,6 +287,10 @@ impl<'e, 'src> PluginCx<'e, 'src> {
 
     pub(in crate::inference) fn any_dsl_enabled(&self, libraries: &[DslLibrary]) -> bool {
         self.engine.any_dsl_enabled(libraries)
+    }
+
+    pub(in crate::inference) fn stdlib_feature_loaded(&self, feature: &str) -> bool {
+        self.engine.stdlib_feature_loaded(feature)
     }
 
     pub(in crate::inference) fn rails_feature_enabled(&self) -> bool {

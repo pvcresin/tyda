@@ -1002,3 +1002,40 @@ class Object < BasicObject
   def zlib_data: -> String
 end
 ```
+
+## Resolve shellwords String extensions
+
+### update
+
+```ruby
+require "shellwords"
+
+def shell_escape = "tool name".shellescape
+def shell_split = "one two".shellsplit
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def shell_escape: -> String
+  def shell_split: -> Array[String]
+end
+```
+
+## Resolve shellwords after a method-local require
+
+```ruby
+def shell_escape_after_local_require
+  require "shellwords"
+  "tool name".shellescape
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def shell_escape_after_local_require: -> String
+end
+```

@@ -829,6 +829,12 @@ struct ActiveMethodBody {
     has_case_class_dispatch: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SourceCallContext {
+    start_offset: usize,
+    in_method_body: bool,
+}
+
 pub struct InferenceEngine<'a> {
     registry: TypeRegistry,
     constants: HashMap<String, Type>,
@@ -837,6 +843,9 @@ pub struct InferenceEngine<'a> {
     lazy_rbi_loader: Option<&'a LazyRbiLoader>,
     merged_stdlib_classes: FxHashSet<String>,
     required_stdlib_features: Vec<String>,
+    required_stdlib_feature_loads: Vec<(String, usize)>,
+    method_required_stdlib_feature_loads: Vec<(usize, usize, String, usize)>,
+    active_source_call: Option<SourceCallContext>,
     external_rbs: Option<&'a TypeRegistry>,
     merged_external_classes: FxHashSet<String>,
     file_path: Option<SharedPath>,
@@ -1040,6 +1049,8 @@ struct DiagnosticReplayMeta {
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
     required_stdlib_features: Vec<String>,
+    required_stdlib_feature_loads: Vec<(String, usize)>,
+    method_required_stdlib_feature_loads: Vec<(usize, usize, String, usize)>,
     rails_mode: bool,
     dsl_activation: DslActivation,
     ruby_version: Option<RubyVersion>,
@@ -1055,6 +1066,8 @@ pub struct FileAnalysisSnapshot {
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
     required_stdlib_features: Vec<String>,
+    required_stdlib_feature_loads: Vec<(String, usize)>,
+    method_required_stdlib_feature_loads: Vec<(usize, usize, String, usize)>,
     rails_mode: bool,
     dsl_activation: DslActivation,
     ruby_version: Option<RubyVersion>,
@@ -1071,6 +1084,8 @@ impl FileAnalysisSnapshot {
             file_path: None,
             project_root: None,
             required_stdlib_features: Vec::new(),
+            required_stdlib_feature_loads: Vec::new(),
+            method_required_stdlib_feature_loads: Vec::new(),
             rails_mode: false,
             dsl_activation: DslActivation::default(),
             ruby_version: None,
@@ -1087,6 +1102,8 @@ impl FileAnalysisSnapshot {
             file_path: None,
             project_root: None,
             required_stdlib_features: Vec::new(),
+            required_stdlib_feature_loads: Vec::new(),
+            method_required_stdlib_feature_loads: Vec::new(),
             rails_mode: false,
             dsl_activation: DslActivation::default(),
             ruby_version: None,
@@ -1109,6 +1126,8 @@ impl FileAnalysisSnapshot {
             file_path: self.file_path.clone(),
             project_root: self.project_root.clone(),
             required_stdlib_features: self.required_stdlib_features.clone(),
+            required_stdlib_feature_loads: self.required_stdlib_feature_loads.clone(),
+            method_required_stdlib_feature_loads: self.method_required_stdlib_feature_loads.clone(),
             rails_mode: self.rails_mode,
             dsl_activation: self.dsl_activation.clone(),
             ruby_version: self.ruby_version,
@@ -1140,6 +1159,8 @@ impl FileAnalysisSnapshot {
                 file_path: self.file_path,
                 project_root: self.project_root,
                 required_stdlib_features: self.required_stdlib_features,
+                required_stdlib_feature_loads: self.required_stdlib_feature_loads,
+                method_required_stdlib_feature_loads: self.method_required_stdlib_feature_loads,
                 rails_mode: self.rails_mode,
                 dsl_activation: self.dsl_activation,
                 ruby_version: self.ruby_version,
@@ -2128,6 +2149,10 @@ impl<'a> InferenceEngine<'a> {
                 file_path: cached.file_path.clone(),
                 project_root: cached.project_root.clone(),
                 required_stdlib_features: cached.required_stdlib_features.clone(),
+                required_stdlib_feature_loads: cached.required_stdlib_feature_loads.clone(),
+                method_required_stdlib_feature_loads: cached
+                    .method_required_stdlib_feature_loads
+                    .clone(),
                 rails_mode: cached.rails_mode,
                 dsl_activation: cached.dsl_activation.clone(),
                 ruby_version: cached.ruby_version,
@@ -2152,6 +2177,8 @@ impl<'a> InferenceEngine<'a> {
         lazy_loader: &'a LazyRbsLoader,
     ) -> Self {
         let required_stdlib_features = meta.required_stdlib_features;
+        let required_stdlib_feature_loads = meta.required_stdlib_feature_loads;
+        let method_required_stdlib_feature_loads = meta.method_required_stdlib_feature_loads;
         for feature in &required_stdlib_features {
             lazy_loader.merge_feature_into(feature, &mut registry);
         }
@@ -2163,6 +2190,9 @@ impl<'a> InferenceEngine<'a> {
             lazy_rbi_loader: None,
             merged_stdlib_classes: FxHashSet::default(),
             required_stdlib_features,
+            required_stdlib_feature_loads,
+            method_required_stdlib_feature_loads,
+            active_source_call: None,
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             file_path: meta.file_path,
@@ -2230,6 +2260,9 @@ impl<'a> InferenceEngine<'a> {
             lazy_rbi_loader: None,
             merged_stdlib_classes: FxHashSet::default(),
             required_stdlib_features: Vec::new(),
+            required_stdlib_feature_loads: Vec::new(),
+            method_required_stdlib_feature_loads: Vec::new(),
+            active_source_call: None,
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             file_path: None,
@@ -2303,11 +2336,66 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         features: impl IntoIterator<Item = String>,
     ) {
-        for feature in features {
-            if self.merge_stdlib_feature(&feature) {
-                self.required_stdlib_features.push(feature);
+        let features: Vec<String> = features.into_iter().collect();
+        for feature in &features {
+            if !self.required_stdlib_features.contains(feature) {
+                self.required_stdlib_features.push(feature.clone());
             }
         }
+        if let Some(loader) = self.lazy_loader {
+            for feature in features {
+                loader.merge_feature_into(&feature, &mut self.registry);
+            }
+        }
+    }
+
+    pub(crate) fn set_required_stdlib_feature_loads(&mut self, loads: Vec<(String, usize)>) {
+        self.required_stdlib_feature_loads = loads;
+    }
+
+    pub(crate) fn set_method_required_stdlib_feature_loads(
+        &mut self,
+        loads: Vec<(usize, usize, String, usize)>,
+    ) {
+        self.method_required_stdlib_feature_loads = loads;
+    }
+
+    pub(crate) fn stdlib_feature_loaded(&self, feature: &str) -> bool {
+        if !self
+            .required_stdlib_features
+            .iter()
+            .any(|loaded| loaded == feature)
+        {
+            return false;
+        }
+        match self.active_source_call {
+            Some(context) if context.in_method_body => {
+                self.required_stdlib_feature_loads
+                    .iter()
+                    .any(|(loaded, _)| loaded == feature)
+                    || self.method_stdlib_feature_loaded_at(feature, context.start_offset)
+            }
+            Some(context) => self
+                .required_stdlib_feature_loads
+                .iter()
+                .any(|(loaded, offset)| loaded == feature && *offset < context.start_offset),
+            None => false,
+        }
+    }
+
+    pub(crate) fn method_stdlib_feature_loaded_at(
+        &self,
+        feature: &str,
+        call_offset: usize,
+    ) -> bool {
+        self.method_required_stdlib_feature_loads.iter().any(
+            |(body_start, body_end, loaded, load_offset)| {
+                loaded == feature
+                    && *body_start < call_offset
+                    && call_offset < *body_end
+                    && *load_offset < call_offset
+            },
+        )
     }
 
     pub fn set_record_hover_snapshots(&mut self, enabled: bool) {
@@ -2402,11 +2490,6 @@ impl<'a> InferenceEngine<'a> {
 
     pub fn set_lazy_loader(&mut self, loader: &'a LazyRbsLoader) {
         self.lazy_loader = Some(loader);
-    }
-
-    pub(crate) fn merge_stdlib_feature(&mut self, feature: &str) -> bool {
-        self.lazy_loader
-            .is_some_and(|loader| loader.merge_feature_into(feature, &mut self.registry))
     }
 
     pub fn set_lazy_rbi_loader(&mut self, loader: &'a LazyRbiLoader) {
@@ -11281,6 +11364,8 @@ impl<'a> InferenceEngine<'a> {
             file_path: self.file_path,
             project_root: self.project_root,
             required_stdlib_features: self.required_stdlib_features,
+            required_stdlib_feature_loads: self.required_stdlib_feature_loads,
+            method_required_stdlib_feature_loads: self.method_required_stdlib_feature_loads,
             rails_mode: self.rails_mode,
             dsl_activation: self.dsl_activation,
             ruby_version: self.ruby_version,
@@ -11362,6 +11447,8 @@ impl<'a> InferenceEngine<'a> {
             file_path: self.file_path,
             project_root: self.project_root,
             required_stdlib_features: self.required_stdlib_features,
+            required_stdlib_feature_loads: self.required_stdlib_feature_loads,
+            method_required_stdlib_feature_loads: self.method_required_stdlib_feature_loads,
             rails_mode: self.rails_mode,
             dsl_activation: self.dsl_activation,
             ruby_version: self.ruby_version,
@@ -25545,6 +25632,35 @@ impl<'a> InferenceEngine<'a> {
     }
 
     pub(crate) fn infer_node_type(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Type {
+        if let Some(call_node) = node.as_call_node()
+            && self
+                .required_stdlib_features
+                .iter()
+                .any(|feature| feature == "shellwords")
+            && std::str::from_utf8(call_node.name().as_slice())
+                .ok()
+                .is_some_and(|method_name| matches!(method_name, "shellescape" | "shellsplit"))
+        {
+            let previous = self.active_source_call;
+            self.active_source_call = Some(SourceCallContext {
+                start_offset: call_node.location().start_offset(),
+                in_method_body: scope.method_name.is_some(),
+            });
+            let inferred = self.infer_node_type_inner(class_name, node, parse_result, scope);
+            self.active_source_call = previous;
+            inferred
+        } else {
+            self.infer_node_type_inner(class_name, node, parse_result, scope)
+        }
+    }
+
+    fn infer_node_type_inner(
         &mut self,
         class_name: &str,
         node: &Node<'_>,
