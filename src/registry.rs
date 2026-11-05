@@ -6006,6 +6006,28 @@ impl TypeRegistry {
         self.lookup_method_sig_in_class_kind(class_name, method_name, is_singleton)
     }
 
+    pub fn lookup_method_sig_for_dispatch(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<MethodSig> {
+        let (owner, owner_is_singleton) =
+            self.resolve_first_method_call_owner_ref(class_name, method_name, is_singleton)?;
+        self.lookup_method_sig_in_class_kind(owner, method_name, owner_is_singleton)
+    }
+
+    pub fn lookup_method_def_for_dispatch(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<&MethodDef> {
+        let (owner, owner_is_singleton) =
+            self.resolve_first_method_call_owner_ref(class_name, method_name, is_singleton)?;
+        self.lookup_method_def(owner, method_name, owner_is_singleton)
+    }
+
     pub fn has_method_named(&self, class_name: &str, method_name: &str) -> bool {
         self.class_data
             .get(class_name)

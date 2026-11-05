@@ -71,6 +71,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 | `unresolved_constant` | information | receiver 文脈で未定義と証明できるときだけ |
 
 Unknown、`untyped`、動的な record key、開いた `method_missing` 面、未解決の祖先は誤検知を避けて沈黙する。Union の候補型を名前付き class に解決できない場合、引数型チェックはその呼び出し全体を Unknown として扱う。戻り値の判定では `return` / 末尾式 / 分岐 / loop の到達可能な返却型を使い、到達不能な末尾や `bot` は不一致に含めない。
+同名の instance / singleton method がある場合、parameter 参照は定義元の dispatch 種別に一致する署名だけで再解決し、反対種別の署名は流用しない。定義元の種別を証明できない局所 singleton method の parameter は Unknown として扱う。
 `respond_to?(:method)` の静的な true 分岐は通常の `if` と modifier `if` の両方で診断時にも反映する。独自の responder や `untyped` は Unknown のまま型を絞らない。
 詳細は [incomplete-code-policy.md](incomplete-code-policy.md) を参照する。
 

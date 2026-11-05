@@ -517,6 +517,7 @@ mod tests {
             target,
             class_context: "Object".to_string(),
             method_context: Some("main".to_string()),
+            method_context_singleton_dispatch: None,
         }
     }
 

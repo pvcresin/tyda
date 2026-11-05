@@ -6,8 +6,17 @@ use tyda::analysis::{
 };
 use tyda::project::{DslActivation, ProjectVersions};
 use tyda::rbs::stdlib_loader::LazyRbsLoader;
+use tyda::registry::TypeRegistry;
 
 fn diagnostics(source: &str, compact: bool) -> Vec<tyda::diagnostics::TypeDiagnostic> {
+    diagnostics_with_registry(source, None, compact)
+}
+
+fn diagnostics_with_registry(
+    source: &str,
+    workspace_registry: Option<&TypeRegistry>,
+    compact: bool,
+) -> Vec<tyda::diagnostics::TypeDiagnostic> {
     let vendor_rbs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs");
     let lazy_loader =
         LazyRbsLoader::from_rbs_roots(vec![vendor_rbs.join("core"), vendor_rbs.join("stdlib")]);
@@ -21,7 +30,7 @@ fn diagnostics(source: &str, compact: bool) -> Vec<tyda::diagnostics::TypeDiagno
     let snapshot = if compact {
         analyze_cli_diagnostic_target_snapshot_timed(
             source,
-            None,
+            workspace_registry,
             &lazy_loader,
             None,
             file_path,
@@ -32,7 +41,7 @@ fn diagnostics(source: &str, compact: bool) -> Vec<tyda::diagnostics::TypeDiagno
     } else {
         analyze_source_for_display(
             source,
-            None,
+            workspace_registry,
             Some(&lazy_loader),
             None,
             Some(file_path),
@@ -40,7 +49,14 @@ fn diagnostics(source: &str, compact: bool) -> Vec<tyda::diagnostics::TypeDiagno
         )
         .0
     };
-    cli_diagnostics_from_snapshot(&snapshot, source, file_path, &lazy_loader, None, None)
+    cli_diagnostics_from_snapshot(
+        &snapshot,
+        source,
+        file_path,
+        &lazy_loader,
+        None,
+        workspace_registry,
+    )
 }
 
 #[test]
@@ -176,6 +192,508 @@ fn singleton_method_discoverability_uses_singleton_dispatch() {
         missing_methods.contains(&(4, "SingletonMethodMissing#value")),
         "an instance method must not make a missing singleton call discoverable: {missing_methods:?}"
     );
+}
+
+#[test]
+fn singleton_param_refs_use_enclosing_dispatch_for_same_named_methods() {
+    let source = concat!(
+        "class LoadParamConfig\n",
+        "end\n",
+        "class LoadParamCollision\n",
+        "  def load(path)\n",
+        "    LoadParamCollision.consume(path)\n",
+        "    path\n",
+        "  end\n",
+        "  def self.load(conf)\n",
+        "    [1].each do\n",
+        "      conf.singleton_only_missing\n",
+        "    end\n",
+        "    LoadParamCollision.consume(conf)\n",
+        "    conf\n",
+        "  end\n",
+        "end\n",
+        "class OppositeInstanceSignature\n",
+        "  def self.load(value)\n",
+        "    value.singleton_only_missing\n",
+        "  end\n",
+        "end\n",
+        "class OppositeSingletonSignature\n",
+        "  def load(value)\n",
+        "    value.instance_only_missing\n",
+        "  end\n",
+        "end\n",
+        "LoadParamCollision.new.load(\"cart.nes\")\n",
+        "LoadParamCollision.load(LoadParamConfig.new)\n",
+    );
+    let rbs_source = concat!(
+        "class LoadParamConfig\n",
+        "end\n",
+        "class LoadParamCollision\n",
+        "  def load: (String) -> Integer\n",
+        "  def self.load: (LoadParamConfig) -> Integer\n",
+        "  def self.consume: (LoadParamConfig) -> void\n",
+        "end\n",
+        "class OppositeInstanceSignature\n",
+        "  def load: (String) -> String\n",
+        "end\n",
+        "class OppositeSingletonSignature\n",
+        "  def self.load: (LoadParamConfig) -> String\n",
+        "end\n",
+    );
+    let mut workspace_registry = TypeRegistry::new();
+    tyda::rbs::import::load_rbs_string(rbs_source, &mut workspace_registry);
+
+    for compact in [false, true] {
+        let actual = diagnostics_with_registry(source, Some(&workspace_registry), compact);
+        let missing_methods: Vec<_> = actual
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| (diagnostic.line, diagnostic.unresolved_method.as_str()))
+            .collect();
+
+        assert!(
+            missing_methods.contains(&(10, "LoadParamConfig#singleton_only_missing")),
+            "compact={compact}: singleton param should use the singleton RBS signature: {missing_methods:?}"
+        );
+        assert!(
+            !missing_methods.contains(&(10, "String#singleton_only_missing")),
+            "compact={compact}: Kernel#load's String signature must not leak into the singleton method: {missing_methods:?}"
+        );
+        assert!(
+            !missing_methods
+                .iter()
+                .any(|(line, _)| matches!(line, 18 | 23)),
+            "compact={compact}: a signature from the opposite dispatch kind must not leak: {missing_methods:?}"
+        );
+
+        let argument_mismatches: Vec<_> = actual
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "argument_type_mismatch")
+            .map(|diagnostic| (diagnostic.line, diagnostic.message.as_str()))
+            .collect();
+        assert!(
+            argument_mismatches.iter().any(|(line, message)| {
+                *line == 5 && message.contains("String") && message.contains("LoadParamConfig")
+            }),
+            "compact={compact}: instance parameter should resolve to String: {argument_mismatches:?}"
+        );
+        assert!(
+            !argument_mismatches.iter().any(|(line, _)| *line == 12),
+            "compact={compact}: singleton parameter should resolve to LoadParamConfig: {argument_mismatches:?}"
+        );
+
+        let return_mismatches: Vec<_> = actual
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "return_type_mismatch")
+            .map(|diagnostic| (diagnostic.line, diagnostic.message.as_str()))
+            .collect();
+        assert!(
+            return_mismatches
+                .iter()
+                .any(|(_, message)| message.contains("String")),
+            "compact={compact}: instance return should resolve to String: {return_mismatches:?}"
+        );
+        assert!(
+            return_mismatches
+                .iter()
+                .any(|(_, message)| message.contains("LoadParamConfig")),
+            "compact={compact}: singleton return should resolve to LoadParamConfig: {return_mismatches:?}"
+        );
+    }
+
+    let singleton_hover_offset = source.find("conf.singleton_only_missing").unwrap();
+    let instance_hover_offset = source.find("LoadParamCollision.consume(path)").unwrap()
+        + "LoadParamCollision.consume(".len();
+    let vendor_rbs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs");
+    let lazy_loader =
+        LazyRbsLoader::from_rbs_roots(vec![vendor_rbs.join("core"), vendor_rbs.join("stdlib")]);
+    for compact in [false, true] {
+        let options = AnalysisOptions {
+            rails_mode: false,
+            dsl_activation: DslActivation::default(),
+            project_versions: ProjectVersions::default(),
+            project_root: None,
+        };
+        let snapshot = if compact {
+            analyze_cli_diagnostic_target_snapshot_timed(
+                source,
+                Some(&workspace_registry),
+                &lazy_loader,
+                None,
+                "optional_nil_guard.rb",
+                options,
+                true,
+            )
+            .0
+        } else {
+            analyze_source_for_display(
+                source,
+                Some(&workspace_registry),
+                Some(&lazy_loader),
+                None,
+                Some("optional_nil_guard.rb"),
+                options,
+            )
+            .0
+        };
+        let instance_hover = snapshot
+            .hover_at(
+                source,
+                instance_hover_offset,
+                &lazy_loader,
+                Some(&workspace_registry),
+            )
+            .unwrap();
+        assert_eq!(
+            instance_hover.ty.to_string(),
+            "String",
+            "compact={compact}: hover should resolve the instance method parameter"
+        );
+        let singleton_hover = snapshot
+            .hover_at(
+                source,
+                singleton_hover_offset,
+                &lazy_loader,
+                Some(&workspace_registry),
+            )
+            .unwrap();
+        assert_eq!(
+            singleton_hover.ty.to_string(),
+            "LoadParamConfig",
+            "compact={compact}: hover should resolve the singleton method parameter"
+        );
+    }
+}
+
+#[test]
+fn keyword_param_refs_use_enclosing_dispatch_for_same_named_methods() {
+    let source = concat!(
+        "class KeywordParamConfig\n",
+        "end\n",
+        "class KeywordParamCollision\n",
+        "  def load(value:)\n",
+        "    if value\n",
+        "      value.instance_keyword_missing\n",
+        "    end\n",
+        "  end\n",
+        "  def self.load(value:)\n",
+        "    if value\n",
+        "      value.singleton_keyword_missing\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+    );
+    let rbs_source = concat!(
+        "class KeywordParamConfig\n",
+        "end\n",
+        "class KeywordParamCollision\n",
+        "  def load: (value: String) -> void\n",
+        "  def self.load: (value: KeywordParamConfig) -> void\n",
+        "end\n",
+    );
+    let mut workspace_registry = TypeRegistry::new();
+    tyda::rbs::import::load_rbs_string(rbs_source, &mut workspace_registry);
+
+    for compact in [false, true] {
+        let actual = diagnostics_with_registry(source, Some(&workspace_registry), compact);
+        let missing_methods: Vec<_> = actual
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| (diagnostic.line, diagnostic.unresolved_method.as_str()))
+            .collect();
+        assert!(
+            missing_methods.contains(&(6, "String#instance_keyword_missing")),
+            "compact={compact}: instance keyword parameter should use its instance signature: {missing_methods:?}"
+        );
+        assert!(
+            missing_methods.contains(&(11, "KeywordParamConfig#singleton_keyword_missing")),
+            "compact={compact}: singleton keyword parameter should use its singleton signature: {missing_methods:?}"
+        );
+        assert!(
+            !missing_methods.iter().any(|(line, method)| {
+                (*line == 6 && method.starts_with("KeywordParamConfig#"))
+                    || (*line == 11 && method.starts_with("String#"))
+            }),
+            "compact={compact}: same-named opposite-dispatch signature must not leak: {missing_methods:?}"
+        );
+    }
+}
+
+#[test]
+fn local_singleton_param_refs_require_a_proven_signature_owner() {
+    let source = concat!(
+        "class LocalSingletonSelfReceiver\n",
+        "  def self.define\n",
+        "    receiver = self\n",
+        "    def receiver.load(value)\n",
+        "      if value\n",
+        "        value.singleton_only_missing\n",
+        "      end\n",
+        "    end\n",
+        "    receiver.load(\"text\")\n",
+        "  end\n",
+        "end\n",
+        "class LocalSingletonExternalOwner\n",
+        "end\n",
+        "class LocalSingletonOwnerMismatch\n",
+        "  def self.define\n",
+        "    receiver = LocalSingletonExternalOwner\n",
+        "    def receiver.load(value)\n",
+        "      if value\n",
+        "        value.singleton_only_missing\n",
+        "      end\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+        "class LocalSingletonObjectReceiver\n",
+        "  def self.define\n",
+        "    receiver = new\n",
+        "    def receiver.load(value)\n",
+        "      if value\n",
+        "        value.singleton_only_missing\n",
+        "      end\n",
+        "    end\n",
+        "    receiver.load(new)\n",
+        "  end\n",
+        "end\n",
+        "class LocalSingletonUnknownReceiver\n",
+        "  def self.define\n",
+        "    receiver = unknown_receiver\n",
+        "    def receiver.load(value)\n",
+        "      if value\n",
+        "        value.singleton_only_missing\n",
+        "      end\n",
+        "    end\n",
+        "    receiver.load(\"text\")\n",
+        "  end\n",
+        "end\n",
+    );
+    let rbs_source = concat!(
+        "class LocalSingletonSelfReceiver\n",
+        "  def load: (Integer) -> void\n",
+        "  def self.load: (String) -> void\n",
+        "end\n",
+        "class LocalSingletonExternalOwner\n",
+        "  def self.load: (Symbol) -> void\n",
+        "end\n",
+        "class LocalSingletonOwnerMismatch\n",
+        "  def load: (Integer) -> void\n",
+        "  def self.load: (String) -> void\n",
+        "end\n",
+        "class LocalSingletonObjectReceiver\n",
+        "  def load: (Integer) -> void\n",
+        "  def self.load: (String) -> void\n",
+        "end\n",
+        "class LocalSingletonUnknownReceiver\n",
+        "  def load: (Integer) -> void\n",
+        "  def self.load: (String) -> void\n",
+        "end\n",
+    );
+    let mut workspace_registry = TypeRegistry::new();
+    tyda::rbs::import::load_rbs_string(rbs_source, &mut workspace_registry);
+
+    for compact in [false, true] {
+        let actual = diagnostics_with_registry(source, Some(&workspace_registry), compact);
+        let missing_methods: Vec<_> = actual
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| (diagnostic.line, diagnostic.unresolved_method.as_str()))
+            .collect();
+        assert!(
+            missing_methods.contains(&(6, "String#singleton_only_missing")),
+            "compact={compact}: singleton-method `self` must use its class singleton signature: {missing_methods:?}"
+        );
+        assert!(
+            !missing_methods.contains(&(6, "Integer#singleton_only_missing")),
+            "compact={compact}: singleton-method `self` must not bind the instance signature: {missing_methods:?}"
+        );
+        assert!(
+            !missing_methods
+                .iter()
+                .any(|(line, _)| matches!(line, 19 | 29 | 40)),
+            "compact={compact}: object, unknown, or mismatched-owner receivers must not borrow a same-named class signature: {missing_methods:?}"
+        );
+    }
+}
+
+#[test]
+fn param_ref_dispatch_follows_same_kind_ancestors_and_rejects_opposite_kind() {
+    let source = concat!(
+        "class ParamRefSingletonBase\n",
+        "  def self.define\n",
+        "    receiver = self\n",
+        "    def receiver.call(value)\n",
+        "      if value\n",
+        "        value.singleton_ancestor_missing\n",
+        "      end\n",
+        "    end\n",
+        "    receiver.call(\"text\")\n",
+        "  end\n",
+        "end\n",
+        "class ParamRefSingletonChild < ParamRefSingletonBase\n",
+        "end\n",
+        "class ParamRefOppositeBase\n",
+        "  def call(value)\n",
+        "    if value\n",
+        "      value.singleton_opposite_missing\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+        "class ParamRefOppositeChild < ParamRefOppositeBase\n",
+        "  def self.define\n",
+        "    receiver = self\n",
+        "    def receiver.call(value)\n",
+        "      if value\n",
+        "        value.singleton_opposite_missing\n",
+        "      end\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+    );
+    let rbs_source = concat!(
+        "class ParamRefSingletonBase\n",
+        "  def call: (Integer) -> void\n",
+        "  def self.call: (String) -> void\n",
+        "end\n",
+        "class ParamRefSingletonChild < ParamRefSingletonBase\n",
+        "end\n",
+        "class ParamRefOppositeBase\n",
+        "  def call: (Integer) -> void\n",
+        "end\n",
+        "class ParamRefOppositeChild < ParamRefOppositeBase\n",
+        "end\n",
+    );
+    let mut workspace_registry = TypeRegistry::new();
+    tyda::rbs::import::load_rbs_string(rbs_source, &mut workspace_registry);
+
+    for compact in [false, true] {
+        let actual = diagnostics_with_registry(source, Some(&workspace_registry), compact);
+        let missing_methods: Vec<_> = actual
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| (diagnostic.line, diagnostic.unresolved_method.as_str()))
+            .collect();
+        assert!(
+            missing_methods.contains(&(6, "String#singleton_ancestor_missing")),
+            "compact={compact}: singleton dispatch should inherit the parent singleton signature: {missing_methods:?}"
+        );
+        assert!(
+            !missing_methods.contains(&(6, "Integer#singleton_ancestor_missing")),
+            "compact={compact}: inherited instance signature must not cross dispatch kinds: {missing_methods:?}"
+        );
+        assert!(
+            !missing_methods.contains(&(26, "Integer#singleton_opposite_missing")),
+            "compact={compact}: an instance-only ancestor signature must not bind to a singleton method: {missing_methods:?}"
+        );
+    }
+}
+
+#[test]
+fn param_ref_dispatch_preserves_extend_and_prepend_owner_order() {
+    let source = concat!(
+        "module ParamRefExtendedMethods\n",
+        "end\n",
+        "class ParamRefExtendedReceiver\n",
+        "  extend ParamRefExtendedMethods\n",
+        "  def self.define\n",
+        "    receiver = self\n",
+        "    def receiver.call(value)\n",
+        "      if value\n",
+        "        value.singleton_extend_missing\n",
+        "      end\n",
+        "    end\n",
+        "    receiver.call(\"text\")\n",
+        "  end\n",
+        "end\n",
+        "module ParamRefPrependedMethods\n",
+        "end\n",
+        "class ParamRefPrependedReceiver\n",
+        "  prepend ParamRefPrependedMethods\n",
+        "  def run(value)\n",
+        "    if value\n",
+        "      value.instance_prepend_missing\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+    );
+    let rbs_source = concat!(
+        "module ParamRefExtendedMethods\n",
+        "  def call: (String) -> void\n",
+        "end\n",
+        "class ParamRefExtendedReceiver\n",
+        "  extend ParamRefExtendedMethods\n",
+        "  def call: (Integer) -> void\n",
+        "end\n",
+        "module ParamRefPrependedMethods\n",
+        "  def run: (String) -> void\n",
+        "end\n",
+        "class ParamRefPrependedReceiver\n",
+        "  prepend ParamRefPrependedMethods\n",
+        "  def run: (Integer) -> void\n",
+        "end\n",
+    );
+    let mut workspace_registry = TypeRegistry::new();
+    tyda::rbs::import::load_rbs_string(rbs_source, &mut workspace_registry);
+
+    for compact in [false, true] {
+        let actual = diagnostics_with_registry(source, Some(&workspace_registry), compact);
+        let missing_methods: Vec<_> = actual
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| (diagnostic.line, diagnostic.unresolved_method.as_str()))
+            .collect();
+        assert!(
+            missing_methods.contains(&(9, "String#singleton_extend_missing")),
+            "compact={compact}: class-object dispatch should follow `extend` owner order: {missing_methods:?}"
+        );
+        assert!(
+            !missing_methods.contains(&(9, "Integer#singleton_extend_missing")),
+            "compact={compact}: the class instance method must not override an extended method: {missing_methods:?}"
+        );
+        assert!(
+            missing_methods.contains(&(21, "String#instance_prepend_missing")),
+            "compact={compact}: instance dispatch should preserve Ruby prepend precedence: {missing_methods:?}"
+        );
+        assert!(
+            !missing_methods.contains(&(21, "Integer#instance_prepend_missing")),
+            "compact={compact}: the prepended method owner must precede the class method: {missing_methods:?}"
+        );
+    }
+}
+
+#[test]
+fn local_singleton_param_context_keeps_explicit_self_call_dispatch() {
+    let source = concat!(
+        "class LocalExplicitSelfDispatch\n",
+        "  def self.define\n",
+        "    receiver = self\n",
+        "    def receiver.load(value)\n",
+        "      self.load(value)\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+    );
+    let rbs_source = concat!(
+        "class LocalExplicitSelfDispatch\n",
+        "  def load: (Integer) -> void\n",
+        "  def self.load: (String) -> void\n",
+        "end\n",
+    );
+    let mut workspace_registry = TypeRegistry::new();
+    tyda::rbs::import::load_rbs_string(rbs_source, &mut workspace_registry);
+
+    for compact in [false, true] {
+        let actual = diagnostics_with_registry(source, Some(&workspace_registry), compact);
+        let mismatches: Vec<_> = actual
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "argument_type_mismatch")
+            .map(|diagnostic| (diagnostic.line, diagnostic.message.as_str()))
+            .collect();
+        assert!(
+            !mismatches.iter().any(|(line, _)| *line == 5),
+            "compact={compact}: explicit self inside a class-object singleton method should use the singleton signature: {mismatches:?}"
+        );
+    }
 }
 
 #[test]

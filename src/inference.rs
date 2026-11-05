@@ -1405,6 +1405,13 @@ struct ExceptionEntry {
     has_unknown_exception: bool,
 }
 
+#[derive(Clone, Copy)]
+struct MethodParamHoverContext<'a> {
+    class_name: &'a str,
+    method_name: &'a str,
+    is_singleton: bool,
+}
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Scope {
     locals: Arc<HashMap<String, Type>>,
@@ -1415,6 +1422,7 @@ pub(crate) struct Scope {
     break_types: Vec<Type>,
     method_name: Option<String>,
     singleton_dispatch: bool,
+    method_context_singleton_dispatch: Option<bool>,
     yield_param_types: Vec<Vec<Type>>,
     current_block_param_name: Option<String>,
     forwarded_block: Option<(String, bool)>,
@@ -1606,6 +1614,7 @@ impl Scope {
             break_types: Vec::new(),
             method_name: self.method_name.clone(),
             singleton_dispatch: self.singleton_dispatch,
+            method_context_singleton_dispatch: self.method_context_singleton_dispatch,
             yield_param_types: self.yield_param_types.clone(),
             current_block_param_name: self.current_block_param_name.clone(),
             forwarded_block: self.forwarded_block.clone(),
@@ -3635,6 +3644,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(ty.clone()),
                     class_context: class_context.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
             }
             Node::ConstantPathNode { .. } => {
@@ -3680,6 +3690,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(ty.clone()),
                     class_context: class_context.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
             }
             _ => {}
@@ -4174,6 +4185,7 @@ impl<'a> InferenceEngine<'a> {
             ),
             method_name: base.method_name.clone(),
             singleton_dispatch: base.singleton_dispatch,
+            method_context_singleton_dispatch: base.method_context_singleton_dispatch,
             yield_param_types: base.yield_param_types.clone(),
             current_block_param_name: base.current_block_param_name.clone(),
             forwarded_block: base.forwarded_block.clone(),
@@ -4442,6 +4454,7 @@ impl<'a> InferenceEngine<'a> {
             break_types: base.break_types.clone(),
             method_name: base.method_name.clone(),
             singleton_dispatch: base.singleton_dispatch,
+            method_context_singleton_dispatch: base.method_context_singleton_dispatch,
             yield_param_types: base.yield_param_types.clone(),
             current_block_param_name: base.current_block_param_name.clone(),
             forwarded_block: base.forwarded_block.clone(),
@@ -8582,6 +8595,7 @@ impl<'a> InferenceEngine<'a> {
             target: HoverTarget::Value(ty.clone()),
             class_context: class_name.to_string(),
             method_context: scope.method_name.clone(),
+            method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
         });
     }
 
@@ -8634,6 +8648,7 @@ impl<'a> InferenceEngine<'a> {
             target: HoverTarget::Value(Type::Singleton(Sym::new(qualified_name))),
             class_context: qualified_name.to_string(),
             method_context: None,
+            method_context_singleton_dispatch: None,
         });
         self.push_definition_snapshot(DefinitionSnapshot {
             start,
@@ -8687,6 +8702,7 @@ impl<'a> InferenceEngine<'a> {
             },
             class_context: class_name.to_string(),
             method_context: None,
+            method_context_singleton_dispatch: None,
         });
         self.push_definition_snapshot(DefinitionSnapshot {
             start,
@@ -8760,6 +8776,7 @@ impl<'a> InferenceEngine<'a> {
             },
             class_context: String::new(),
             method_context: None,
+            method_context_singleton_dispatch: None,
         });
         self.push_definition_snapshot(DefinitionSnapshot {
             start: definition_start,
@@ -11521,6 +11538,7 @@ impl<'a> InferenceEngine<'a> {
                         self.collect_param_info(&def_node, module_name, parse_result);
                     let mut method_scope = Scope {
                         method_name: Some(method_name.clone()),
+                        method_context_singleton_dispatch: Some(false),
                         self_override: Some(Type::Class(Sym::new(&target))),
                         ..Default::default()
                     };
@@ -12443,6 +12461,7 @@ impl<'a> InferenceEngine<'a> {
             target: HoverTarget::Value(value_type),
             class_context: owner,
             method_context: None,
+            method_context_singleton_dispatch: None,
         });
 
         true
@@ -14240,6 +14259,7 @@ impl<'a> InferenceEngine<'a> {
                                 target: HoverTarget::Value(value_type),
                                 class_context: class_name.to_string(),
                                 method_context: None,
+                                method_context_singleton_dispatch: None,
                             });
                         }
                     }
@@ -14327,6 +14347,7 @@ impl<'a> InferenceEngine<'a> {
                             target: HoverTarget::Value(value_type),
                             class_context: class_name.to_string(),
                             method_context: None,
+                            method_context_singleton_dispatch: None,
                         });
                         self.push_source_definition_snapshot(
                             write_node.location().start_offset(),
@@ -14828,6 +14849,7 @@ impl<'a> InferenceEngine<'a> {
         let mut scope = Scope {
             method_name: Some(method_name.clone()),
             singleton_dispatch: is_singleton,
+            method_context_singleton_dispatch: Some(is_singleton),
             ..Default::default()
         };
         scope.active_refinements =
@@ -16012,6 +16034,7 @@ impl<'a> InferenceEngine<'a> {
         let mut scope = Scope {
             method_name: Some(method_name.clone()),
             singleton_dispatch: is_singleton,
+            method_context_singleton_dispatch: Some(is_singleton),
             ..Default::default()
         };
         scope.active_refinements = self.active_refinement_set_at(def_start_offset);
@@ -16084,7 +16107,13 @@ impl<'a> InferenceEngine<'a> {
                 scope.set_definition(&name, loc);
             }
         }
-        self.record_method_param_hover_snapshots(class_name, &method_name, &def_node, parse_result);
+        self.record_method_param_hover_snapshots(
+            class_name,
+            &method_name,
+            &def_node,
+            parse_result,
+            is_singleton,
+        );
         self.record_method_default_value_hover_snapshots(
             class_name,
             &method_name,
@@ -17297,6 +17326,7 @@ impl<'a> InferenceEngine<'a> {
         let mut scope = Scope {
             method_name: Some("initialize".to_string()),
             singleton_dispatch: false,
+            method_context_singleton_dispatch: Some(false),
             ..Default::default()
         };
         scope.active_refinements =
@@ -17382,6 +17412,7 @@ impl<'a> InferenceEngine<'a> {
             },
             class_context: class_name.to_string(),
             method_context: None,
+            method_context_singleton_dispatch: None,
         });
     }
 
@@ -17402,6 +17433,7 @@ impl<'a> InferenceEngine<'a> {
         let mut scope = Scope {
             method_name: Some(method_name.to_string()),
             singleton_dispatch: is_singleton,
+            method_context_singleton_dispatch: Some(is_singleton),
             ..Default::default()
         };
         scope.active_refinements = Arc::new(self.active_refinements.clone());
@@ -17527,12 +17559,14 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         def_node: &ruby_prism::DefNode<'_>,
         parse_result: &ParseResult<'_>,
+        is_singleton: bool,
     ) {
         self.record_method_param_hover_snapshots_with_signature(
             class_name,
             method_name,
             def_node,
             parse_result,
+            is_singleton,
             None,
         );
     }
@@ -17556,6 +17590,7 @@ impl<'a> InferenceEngine<'a> {
             method_name,
             def_node,
             parse_result,
+            is_singleton,
             signature.as_ref(),
         );
     }
@@ -17566,6 +17601,7 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         def_node: &ruby_prism::DefNode<'_>,
         parse_result: &ParseResult<'_>,
+        is_singleton: bool,
         signature: Option<&MethodSig>,
     ) {
         if !self.record_hover_snapshots {
@@ -17579,6 +17615,11 @@ impl<'a> InferenceEngine<'a> {
         let def_start = def_node.location().start_offset();
         let method_loc = offset_to_location(source, def_start);
         let mut positional_index = 0usize;
+        let hover_context = MethodParamHoverContext {
+            class_name,
+            method_name,
+            is_singleton,
+        };
 
         for param in params.requireds().iter() {
             if let Some((name, ty, start, end)) =
@@ -17586,8 +17627,7 @@ impl<'a> InferenceEngine<'a> {
             {
                 let ty = self.method_param_hover_type(class_name, signature, &name, false, ty);
                 self.push_method_param_hover_snapshot(
-                    class_name,
-                    method_name,
+                    &hover_context,
                     start..end,
                     &name,
                     ty,
@@ -17602,8 +17642,7 @@ impl<'a> InferenceEngine<'a> {
             {
                 let ty = self.method_param_hover_type(class_name, signature, &name, false, ty);
                 self.push_method_param_hover_snapshot(
-                    class_name,
-                    method_name,
+                    &hover_context,
                     start..end,
                     &name,
                     ty,
@@ -17618,8 +17657,7 @@ impl<'a> InferenceEngine<'a> {
         {
             let ty = self.method_param_hover_type(class_name, signature, &name, true, ty);
             self.push_method_param_hover_snapshot(
-                class_name,
-                method_name,
+                &hover_context,
                 start..end,
                 &name,
                 ty,
@@ -17631,8 +17669,7 @@ impl<'a> InferenceEngine<'a> {
             {
                 let ty = self.method_param_hover_type(class_name, signature, &name, false, ty);
                 self.push_method_param_hover_snapshot(
-                    class_name,
-                    method_name,
+                    &hover_context,
                     start..end,
                     &name,
                     ty,
@@ -17646,8 +17683,7 @@ impl<'a> InferenceEngine<'a> {
         {
             let ty = self.method_param_hover_type(class_name, signature, &name, false, ty);
             self.push_method_param_hover_snapshot(
-                class_name,
-                method_name,
+                &hover_context,
                 start..end,
                 &name,
                 ty,
@@ -17664,8 +17700,7 @@ impl<'a> InferenceEngine<'a> {
             let ty =
                 self.method_param_hover_type(class_name, signature, &name, false, Type::Untyped);
             self.push_method_param_hover_snapshot(
-                class_name,
-                method_name,
+                &hover_context,
                 start..(start + name.len()),
                 &name,
                 ty,
@@ -17852,6 +17887,7 @@ impl<'a> InferenceEngine<'a> {
             target: HoverTarget::Value(ty),
             class_context: class_name.to_string(),
             method_context: Some(method_name.to_string()),
+            method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
         });
     }
 
@@ -17953,8 +17989,7 @@ impl<'a> InferenceEngine<'a> {
 
     fn push_method_param_hover_snapshot(
         &mut self,
-        class_name: &str,
-        method_name: &str,
+        context: &MethodParamHoverContext<'_>,
         span: std::ops::Range<usize>,
         name: &str,
         ty: Type,
@@ -17968,8 +18003,9 @@ impl<'a> InferenceEngine<'a> {
             end: span.end,
             name: name.to_string(),
             target: HoverTarget::Value(ty),
-            class_context: class_name.to_string(),
-            method_context: Some(method_name.to_string()),
+            class_context: context.class_name.to_string(),
+            method_context: Some(context.method_name.to_string()),
+            method_context_singleton_dispatch: Some(context.is_singleton),
         });
         self.push_source_definition_snapshot(span.start, span.end, definition_loc);
     }
@@ -17994,6 +18030,7 @@ impl<'a> InferenceEngine<'a> {
             target: HoverTarget::Value(ty),
             class_context: class_name.to_string(),
             method_context: scope.method_name.clone(),
+            method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
         });
     }
 
@@ -19239,6 +19276,7 @@ impl<'a> InferenceEngine<'a> {
         is_singleton: bool,
         class_name: &str,
         method_context: Option<&str>,
+        method_context_singleton_dispatch: Option<bool>,
         positional_types: &[Type],
         kw_types: &HashMap<String, Type>,
     ) {
@@ -19354,6 +19392,7 @@ impl<'a> InferenceEngine<'a> {
             safe_navigation: call_node.is_safe_navigation(),
             class_context: class_name.to_string(),
             method_context: method_context.map(str::to_string),
+            method_context_singleton_dispatch,
             args,
             positional_count: if pos_splat_or_fwd {
                 positional_spans.len()
@@ -22194,6 +22233,10 @@ impl<'a> InferenceEngine<'a> {
         let (_, param_infos) = self.collect_param_info(def_node, class_name, parse_result);
         let mut method_scope = Scope {
             method_name: Some(method_name.clone()),
+            method_context_singleton_dispatch: match scope.get(&receiver_name) {
+                Some(Type::Singleton(owner)) if owner.as_str() == class_name => Some(true),
+                _ => None,
+            },
             self_override: scope.get(&receiver_name).cloned(),
             active_refinements: scope.active_refinements.clone(),
             ..Default::default()
@@ -23669,6 +23712,7 @@ impl<'a> InferenceEngine<'a> {
                         scope.singleton_dispatch,
                         class_name,
                         scope.method_name.as_deref(),
+                        scope.method_context_singleton_dispatch,
                         &arg_types,
                         &kw_types,
                     );
@@ -23773,6 +23817,8 @@ impl<'a> InferenceEngine<'a> {
                             },
                             class_context: class_name.to_string(),
                             method_context: scope.method_name.clone(),
+                            method_context_singleton_dispatch: scope
+                                .method_context_singleton_dispatch,
                         });
                     }
                 } else {
@@ -25846,6 +25892,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(ty.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 ty
             }
@@ -25916,6 +25963,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(ty.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 if let Some(loc) = scope.definition_location(&var_name) {
                     self.push_source_definition_snapshot(
@@ -25940,6 +25988,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(ty.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 if let Some(loc) = scope.definition_location("it") {
                     self.push_source_definition_snapshot(
@@ -25967,6 +26016,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(value_type.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 value_type
             }
@@ -25997,6 +26047,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(result.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 result
             }
@@ -26017,6 +26068,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(value_type.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 value_type
             }
@@ -26107,6 +26159,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(result.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 result
             }
@@ -26131,6 +26184,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(resolved.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 resolved
             }
@@ -26155,6 +26209,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(resolved.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 resolved
             }
@@ -26400,6 +26455,8 @@ impl<'a> InferenceEngine<'a> {
                                                 target: HoverTarget::Value(inferred.clone()),
                                                 class_context: class_name.to_string(),
                                                 method_context: scope.method_name.clone(),
+                                                method_context_singleton_dispatch: scope
+                                                    .method_context_singleton_dispatch,
                                             });
                                         }
                                         param_count += 1;
@@ -26773,6 +26830,7 @@ impl<'a> InferenceEngine<'a> {
                             scope.singleton_dispatch,
                             class_name,
                             scope.method_name.as_deref(),
+                            scope.method_context_singleton_dispatch,
                             &arg_types,
                             &kw_types,
                         );
@@ -27064,6 +27122,8 @@ impl<'a> InferenceEngine<'a> {
                             target: snapshot_target,
                             class_context: class_name.to_string(),
                             method_context: scope.method_name.clone(),
+                            method_context_singleton_dispatch: scope
+                                .method_context_singleton_dispatch,
                         });
                         if is_assignment_write && method_name != "[]=" {
                             self.push_definition_snapshot(DefinitionSnapshot {
@@ -27571,6 +27631,7 @@ impl<'a> InferenceEngine<'a> {
                                     true,
                                     class_name,
                                     scope.method_name.as_deref(),
+                                    scope.method_context_singleton_dispatch,
                                     &arg_types,
                                     &kw_types,
                                 );
@@ -28234,6 +28295,7 @@ impl<'a> InferenceEngine<'a> {
                                 ),
                                 class_name,
                                 scope.method_name.as_deref(),
+                                scope.method_context_singleton_dispatch,
                                 &collected.0,
                                 &collected.1,
                             );
@@ -28294,6 +28356,7 @@ impl<'a> InferenceEngine<'a> {
                                 method_is_singleton,
                                 class_name,
                                 scope.method_name.as_deref(),
+                                scope.method_context_singleton_dispatch,
                                 &arg_types,
                                 &kw_types,
                             );
@@ -29376,6 +29439,8 @@ impl<'a> InferenceEngine<'a> {
                             target: snapshot_target,
                             class_context: class_name.to_string(),
                             method_context: scope.method_name.clone(),
+                            method_context_singleton_dispatch: scope
+                                .method_context_singleton_dispatch,
                         });
                         self.record_unresolved_constant_receiver(
                             &call_node,
@@ -29981,6 +30046,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(ty.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 self.push_constant_definition_snapshot(
                     node.location().start_offset(),
@@ -30015,6 +30081,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(value_type.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 self.push_source_definition_snapshot(
                     write_node.location().start_offset(),
@@ -30389,6 +30456,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(ty.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 ty
             }
@@ -30551,6 +30619,7 @@ impl<'a> InferenceEngine<'a> {
                     target: HoverTarget::Value(ty.clone()),
                     class_context: class_name.to_string(),
                     method_context: scope.method_name.clone(),
+                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
                 });
                 ty
             }
@@ -47757,6 +47826,7 @@ impl<'a> InferenceEngine<'a> {
                 target: HoverTarget::Value(ty),
                 class_context: class_name.to_string(),
                 method_context: scope.method_name.clone(),
+                method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
             });
             self.push_source_definition_snapshot(*start, *end, offset_to_location(source, *start));
         }
@@ -56135,16 +56205,19 @@ impl<'a> InferenceEngine<'a> {
                 let Some(method_name) = scope.method_name.as_deref() else {
                     return ty.clone();
                 };
+                let Some(is_singleton) = scope.method_context_singleton_dispatch else {
+                    return ty.clone();
+                };
                 let Some(param) = self
                     .registry
-                    .lookup_method_sig_with_hint(class_name, method_name, scope.singleton_dispatch)
+                    .lookup_method_sig_for_dispatch(class_name, method_name, is_singleton)
                     .and_then(|sig| sig.params.get(*idx).cloned())
                 else {
                     return ty.clone();
                 };
                 let default_only = self
                     .registry
-                    .lookup_method_def(class_name, method_name, scope.singleton_dispatch)
+                    .lookup_method_def_for_dispatch(class_name, method_name, is_singleton)
                     .and_then(|method| method.param_infos.get(*idx))
                     .is_some_and(|info| {
                         info.kind == ParamKind::Optional
@@ -56162,16 +56235,19 @@ impl<'a> InferenceEngine<'a> {
                 let Some(method_name) = scope.method_name.as_deref() else {
                     return ty.clone();
                 };
+                let Some(is_singleton) = scope.method_context_singleton_dispatch else {
+                    return ty.clone();
+                };
                 let Some(param) = self
                     .registry
-                    .lookup_method_sig_with_hint(class_name, method_name, scope.singleton_dispatch)
+                    .lookup_method_sig_for_dispatch(class_name, method_name, is_singleton)
                     .and_then(|sig| sig.params.into_iter().find(|param| param.name == *name))
                 else {
                     return ty.clone();
                 };
                 let default_only = self
                     .registry
-                    .lookup_method_def(class_name, method_name, scope.singleton_dispatch)
+                    .lookup_method_def_for_dispatch(class_name, method_name, is_singleton)
                     .and_then(|method| method.param_infos.iter().find(|info| info.name == *name))
                     .is_some_and(|info| {
                         info.kind == ParamKind::KeywordOptional
@@ -57406,6 +57482,7 @@ impl<'a> InferenceEngine<'a> {
         let mut scope = Scope {
             method_name: Some(method_name.clone()),
             singleton_dispatch: is_singleton,
+            method_context_singleton_dispatch: Some(is_singleton),
             ..Default::default()
         };
         scope.active_refinements =

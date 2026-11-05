@@ -129,6 +129,7 @@ pub(crate) struct HoverSnapshot {
     pub(crate) target: HoverTarget,
     pub(crate) class_context: String,
     pub(crate) method_context: Option<String>,
+    pub(crate) method_context_singleton_dispatch: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -148,6 +149,7 @@ pub(crate) struct ArgCheckSite {
     pub(crate) safe_navigation: bool,
     pub(crate) class_context: String,
     pub(crate) method_context: Option<String>,
+    pub(crate) method_context_singleton_dispatch: Option<bool>,
     pub(crate) args: Vec<ArgCheckArg>,
     pub(crate) positional_count: usize,
     pub(crate) has_pos_splat: bool,
@@ -273,12 +275,7 @@ impl<'a> InferenceEngine<'a> {
                 if method.as_str() != snap.name {
                     return None;
                 }
-                let receiver = self.resolve_type_for_hover_with_dispatch(
-                    receiver,
-                    &snap.class_context,
-                    snap.method_context.as_deref(),
-                    singleton_dispatch,
-                );
+                let receiver = self.resolve_type_for_snapshot(receiver, &snap, singleton_dispatch);
                 let receiver = if Self::contains_nil(&receiver) {
                     Self::remove_nil(&receiver)
                 } else {
@@ -322,24 +319,15 @@ impl<'a> InferenceEngine<'a> {
             {
                 continue;
             }
-            let resolved_result = self.resolve_type_for_hover_with_dispatch(
-                result_type,
-                &snap.class_context,
-                snap.method_context.as_deref(),
-                singleton_dispatch,
-            );
+            let resolved_result =
+                self.resolve_type_for_snapshot(result_type, &snap, singleton_dispatch);
             if !matches!(resolved_result, Type::Untyped | Type::Todo)
                 || self.method_call_is_discoverable(result_type, singleton_dispatch)
             {
                 continue;
             }
             let resolved_receiver = resolved_receiver.unwrap_or_else(|| {
-                self.resolve_type_for_hover_with_dispatch(
-                    receiver_type,
-                    &snap.class_context,
-                    snap.method_context.as_deref(),
-                    singleton_dispatch,
-                )
+                self.resolve_type_for_snapshot(receiver_type, &snap, singleton_dispatch)
             });
             if self
                 .dsl_plugin_method_return(&resolved_receiver, &snap.name)
@@ -627,6 +615,7 @@ impl<'a> InferenceEngine<'a> {
                 site.method_context.clone(),
                 site.method_name.clone(),
                 site.is_singleton,
+                site.method_context_singleton_dispatch,
                 site.call_start,
                 site.call_end,
             );
@@ -659,10 +648,12 @@ impl<'a> InferenceEngine<'a> {
         let mut seen: BTreeSet<(usize, usize, Option<String>)> = BTreeSet::new();
         let mut out = Vec::new();
         for site in sites {
-            let receiver = self.resolve_type_for_hover(
+            let receiver = self.resolve_type_for_hover_with_context(
                 &site.receiver_type,
                 &site.class_context,
                 site.method_context.as_deref(),
+                false,
+                site.method_context_singleton_dispatch,
             );
             let lookup_receiver = if Self::contains_nil(&receiver) {
                 Self::remove_nil(&receiver)
@@ -868,10 +859,12 @@ impl<'a> InferenceEngine<'a> {
             {
                 continue;
             }
-            let actual = self.resolve_type_for_hover(
+            let actual = self.resolve_type_for_hover_with_context(
                 &arg.ty,
                 &site.class_context,
                 site.method_context.as_deref(),
+                false,
+                site.method_context_singleton_dispatch,
             );
             let compat = match structural_rbs {
                 Some(rbs_ty) => self.rbs_param_compat(&actual, rbs_ty),
@@ -916,10 +909,12 @@ impl<'a> InferenceEngine<'a> {
             .args
             .iter()
             .map(|arg| {
-                self.resolve_type_for_hover(
+                self.resolve_type_for_hover_with_context(
                     &arg.ty,
                     &site.class_context,
                     site.method_context.as_deref(),
+                    false,
+                    site.method_context_singleton_dispatch,
                 )
             })
             .collect();
@@ -1247,10 +1242,12 @@ impl<'a> InferenceEngine<'a> {
             if site.method_name != "new" || site.has_pos_splat {
                 continue;
             }
-            let receiver = self.resolve_type_for_hover(
+            let receiver = self.resolve_type_for_hover_with_context(
                 &site.receiver_type,
                 &site.class_context,
                 site.method_context.as_deref(),
+                false,
+                site.method_context_singleton_dispatch,
             );
             let Type::Singleton(class_name) = receiver else {
                 continue;
@@ -1456,12 +1453,7 @@ impl<'a> InferenceEngine<'a> {
         {
             return None;
         }
-        let receiver = self.resolve_type_for_hover_with_dispatch(
-            receiver_type,
-            &snap.class_context,
-            snap.method_context.as_deref(),
-            *singleton_dispatch,
-        );
+        let receiver = self.resolve_type_for_snapshot(receiver_type, snap, *singleton_dispatch);
         let receiver = self.narrow_receiver_by_respond_to_guards(receiver, respond_to_guards);
         let Type::Union(parts) = &receiver else {
             return None;
@@ -1585,10 +1577,12 @@ impl<'a> InferenceEngine<'a> {
             if site.has_pos_splat {
                 continue;
             }
-            let receiver = self.resolve_type_for_hover(
+            let receiver = self.resolve_type_for_hover_with_context(
                 &site.receiver_type,
                 &site.class_context,
                 site.method_context.as_deref(),
+                false,
+                site.method_context_singleton_dispatch,
             );
             let lookup_receiver = if Self::contains_nil(&receiver) {
                 Self::remove_nil(&receiver)
@@ -1630,10 +1624,12 @@ impl<'a> InferenceEngine<'a> {
             {
                 continue;
             }
-            let receiver = self.resolve_type_for_hover(
+            let receiver = self.resolve_type_for_hover_with_context(
                 &site.receiver_type,
                 &site.class_context,
                 site.method_context.as_deref(),
+                false,
+                site.method_context_singleton_dispatch,
             );
             let lookup_receiver = if Self::contains_nil(&receiver) {
                 Self::remove_nil(&receiver)
@@ -1844,8 +1840,13 @@ impl<'a> InferenceEngine<'a> {
                 .map(|sig| Self::substitute_method_return_params(&site.actual, sig))
                 .unwrap_or_else(|| site.actual.clone());
             let actual = actual.replace_self_type(&receiver);
-            let actual =
-                self.resolve_type_for_hover(&actual, &site.class_name, Some(&site.method_name));
+            let actual = self.resolve_type_for_hover_with_context(
+                &actual,
+                &site.class_name,
+                Some(&site.method_name),
+                false,
+                Some(site.is_singleton),
+            );
 
             if Self::type_is_unconstrained_for_check(&actual)
                 || self.return_type_compat(&actual, &declared_union) != ArgCompat::No
@@ -2635,13 +2636,9 @@ impl<'a> InferenceEngine<'a> {
         let snap = self
             .find_best_snapshot_for_definition_lookup(byte_offset)?
             .clone();
-        match snap.target {
+        match snap.target.clone() {
             HoverTarget::Value(ty) => {
-                let resolved = self.resolve_type_for_hover(
-                    &ty,
-                    &snap.class_context,
-                    snap.method_context.as_deref(),
-                );
+                let resolved = self.resolve_type_for_snapshot(&ty, &snap, false);
                 if matches!(resolved, Type::Singleton(_))
                     && Self::definition_looks_like_constant_reference(&snap.name)
                 {
@@ -2650,12 +2647,13 @@ impl<'a> InferenceEngine<'a> {
                     None
                 }
             }
-            HoverTarget::MethodCall { receiver_type, .. } => {
-                let resolved_receiver = self.resolve_type_for_hover(
-                    &receiver_type,
-                    &snap.class_context,
-                    snap.method_context.as_deref(),
-                );
+            HoverTarget::MethodCall {
+                receiver_type,
+                singleton_dispatch,
+                ..
+            } => {
+                let resolved_receiver =
+                    self.resolve_type_for_snapshot(&receiver_type, &snap, singleton_dispatch);
                 Some(DefinitionLookupTarget::MethodCall {
                     receiver_type: resolved_receiver,
                     method_name: snap.name,
@@ -2711,8 +2709,7 @@ impl<'a> InferenceEngine<'a> {
         let (resolved, display_rbs, type_params, unresolved_method) = match target {
             HoverTarget::Value(ref ty) => {
                 let unresolved = Self::describe_unresolved_ref(ty);
-                let resolved =
-                    self.resolve_type_for_hover(ty, &class_context, method_context.as_deref());
+                let resolved = self.resolve_type_for_snapshot(ty, &snap, false);
                 let type_params = self.resolve_hover_type_params(&resolved);
                 let unresolved = if matches!(resolved, Type::Untyped | Type::Todo) {
                     if self.method_call_is_discoverable(ty, false) {
@@ -2733,18 +2730,10 @@ impl<'a> InferenceEngine<'a> {
                 ..
             } => {
                 let unresolved = Self::describe_unresolved_ref(result_type);
-                let resolved_receiver = self.resolve_type_for_hover_with_dispatch(
-                    &receiver_type,
-                    &class_context,
-                    method_context.as_deref(),
-                    singleton_dispatch,
-                );
-                let resolved_result = self.resolve_type_for_hover_with_dispatch(
-                    result_type,
-                    &class_context,
-                    method_context.as_deref(),
-                    singleton_dispatch,
-                );
+                let resolved_receiver =
+                    self.resolve_type_for_snapshot(&receiver_type, &snap, singleton_dispatch);
+                let resolved_result =
+                    self.resolve_type_for_snapshot(result_type, &snap, singleton_dispatch);
                 let call_arguments = self.hover_call_arguments(snap.start, snap.end, &name);
                 let display_rbs =
                     if name == "ancestors" && matches!(&resolved_result, Type::Tuple(_)) {
@@ -2866,10 +2855,16 @@ impl<'a> InferenceEngine<'a> {
                 } else if let HoverTarget::MethodCall { receiver_type, .. } =
                     root_snapshot.target.clone()
                 {
-                    let resolved_receiver = self.resolve_type_for_hover(
+                    let singleton_dispatch = match &root_snapshot.target {
+                        HoverTarget::MethodCall {
+                            singleton_dispatch, ..
+                        } => *singleton_dispatch,
+                        _ => false,
+                    };
+                    let resolved_receiver = self.resolve_type_for_snapshot(
                         &receiver_type,
-                        &root_snapshot.class_context,
-                        root_snapshot.method_context.as_deref(),
+                        &root_snapshot,
+                        singleton_dispatch,
                     );
                     let prefer_singleton = matches!(&resolved_receiver, Type::Singleton(_));
                     let resolved = self.method_explanation_from_receiver(
@@ -3032,10 +3027,12 @@ impl<'a> InferenceEngine<'a> {
         site: &ArgCheckSite,
         signature: Option<String>,
     ) -> Option<ResolvedTypeExplanationMethod> {
-        let receiver_type = self.resolve_type_for_hover(
+        let receiver_type = self.resolve_type_for_hover_with_context(
             &site.receiver_type,
             &site.class_context,
             site.method_context.as_deref(),
+            false,
+            site.method_context_singleton_dispatch,
         );
         self.method_explanation_from_receiver(
             &site.method_name,
@@ -3221,10 +3218,12 @@ impl<'a> InferenceEngine<'a> {
         site: &ArgCheckSite,
         hover: Option<&crate::parser::HoverResult>,
     ) -> TypeExplanationCallSite {
-        let receiver_type = self.resolve_type_for_hover(
+        let receiver_type = self.resolve_type_for_hover_with_context(
             &site.receiver_type,
             &site.class_context,
             site.method_context.as_deref(),
+            false,
+            site.method_context_singleton_dispatch,
         );
         let arguments = site
             .args
@@ -3234,10 +3233,12 @@ impl<'a> InferenceEngine<'a> {
                 end: arg.end,
                 keyword: arg.keyword.clone(),
                 positional_index: arg.positional_index,
-                inferred_type: self.resolve_type_for_hover(
+                inferred_type: self.resolve_type_for_hover_with_context(
                     &arg.ty,
                     &site.class_context,
                     site.method_context.as_deref(),
+                    false,
+                    site.method_context_singleton_dispatch,
                 ),
             })
             .collect();
@@ -3661,9 +3662,10 @@ impl<'a> InferenceEngine<'a> {
         class_context: &str,
         method_context: Option<&str>,
     ) -> Type {
-        self.resolve_type_for_hover_with_dispatch(ty, class_context, method_context, false)
+        self.resolve_type_for_hover_with_context(ty, class_context, method_context, false, None)
     }
 
+    #[cfg(test)]
     fn resolve_type_for_hover_with_dispatch(
         &mut self,
         ty: &Type,
@@ -3671,13 +3673,51 @@ impl<'a> InferenceEngine<'a> {
         method_context: Option<&str>,
         singleton_dispatch: bool,
     ) -> Type {
+        self.resolve_type_for_hover_with_context(
+            ty,
+            class_context,
+            method_context,
+            singleton_dispatch,
+            Some(false),
+        )
+    }
+
+    fn resolve_type_for_snapshot(
+        &mut self,
+        ty: &Type,
+        snapshot: &HoverSnapshot,
+        singleton_dispatch: bool,
+    ) -> Type {
+        self.resolve_type_for_hover_with_context(
+            ty,
+            &snapshot.class_context,
+            snapshot.method_context.as_deref(),
+            singleton_dispatch,
+            snapshot.method_context_singleton_dispatch,
+        )
+    }
+
+    fn resolve_type_for_hover_with_context(
+        &mut self,
+        ty: &Type,
+        class_context: &str,
+        method_context: Option<&str>,
+        singleton_dispatch: bool,
+        method_context_singleton_dispatch: Option<bool>,
+    ) -> Type {
         match ty {
-            Type::ParamRef(idx) => {
-                self.resolve_param_ref_for_hover(class_context, method_context, *idx)
-            }
-            Type::KeywordParamRef(name) => {
-                self.resolve_keyword_param_ref_for_hover(class_context, method_context, name)
-            }
+            Type::ParamRef(idx) => self.resolve_param_ref_for_hover(
+                class_context,
+                method_context,
+                *idx,
+                method_context_singleton_dispatch,
+            ),
+            Type::KeywordParamRef(name) => self.resolve_keyword_param_ref_for_hover(
+                class_context,
+                method_context,
+                name,
+                method_context_singleton_dispatch,
+            ),
             Type::IvarRef(ivar_name) => self.registry.resolve_deferred_refs_for_context(
                 class_context,
                 singleton_dispatch,
@@ -3692,11 +3732,12 @@ impl<'a> InferenceEngine<'a> {
                 self.resolve_hover_method_return(ref_class, method_name, singleton_dispatch)
             }
             Type::ReceiverMethodRef(receiver_type, method_name) => {
-                let resolved_receiver = self.resolve_type_for_hover_with_dispatch(
+                let resolved_receiver = self.resolve_type_for_hover_with_context(
                     receiver_type,
                     class_context,
                     method_context,
                     singleton_dispatch,
+                    method_context_singleton_dispatch,
                 );
                 if method_name == "each" {
                     return resolved_receiver;
@@ -3715,17 +3756,19 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             Type::DeferredSafeNavigation(receiver_type, result_type) => {
-                let resolved_receiver = self.resolve_type_for_hover_with_dispatch(
+                let resolved_receiver = self.resolve_type_for_hover_with_context(
                     receiver_type,
                     class_context,
                     method_context,
                     singleton_dispatch,
+                    method_context_singleton_dispatch,
                 );
-                let resolved_result = self.resolve_type_for_hover_with_dispatch(
+                let resolved_result = self.resolve_type_for_hover_with_context(
                     result_type,
                     class_context,
                     method_context,
                     singleton_dispatch,
+                    method_context_singleton_dispatch,
                 );
                 Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
@@ -3733,32 +3776,35 @@ impl<'a> InferenceEngine<'a> {
                 let resolved: Vec<Type> = parts
                     .iter()
                     .map(|t| {
-                        self.resolve_type_for_hover_with_dispatch(
+                        self.resolve_type_for_hover_with_context(
                             t,
                             class_context,
                             method_context,
                             singleton_dispatch,
+                            method_context_singleton_dispatch,
                         )
                     })
                     .collect();
                 Type::from_type_vec_preserve_untyped(resolved)
             }
             Type::Array(Some(inner)) => {
-                Type::Array(Some(Box::new(self.resolve_type_for_hover_with_dispatch(
+                Type::Array(Some(Box::new(self.resolve_type_for_hover_with_context(
                     inner,
                     class_context,
                     method_context,
                     singleton_dispatch,
+                    method_context_singleton_dispatch,
                 ))))
             }
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner) => {
-                let resolved_inner = self.resolve_type_for_hover_with_dispatch(
+                let resolved_inner = self.resolve_type_for_hover_with_context(
                     inner,
                     class_context,
                     method_context,
                     singleton_dispatch,
+                    method_context_singleton_dispatch,
                 );
                 let projected = match ty {
                     Type::TruthyProjection(_) => Type::project_truthy(&resolved_inner),
@@ -3777,22 +3823,25 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         method_name: Option<&str>,
         idx: usize,
+        method_context_singleton_dispatch: Option<bool>,
     ) -> Type {
         self.ensure_class_available(class_name);
-        let method_name = match method_name {
-            Some(n) => n,
-            None => return Type::Todo,
+        let Some(method_name) = method_name else {
+            return Type::Todo;
+        };
+        let Some(is_singleton) = method_context_singleton_dispatch else {
+            return Type::Todo;
         };
         let current = self
             .registry
-            .lookup_method_sig(class_name, method_name)
+            .lookup_method_sig_for_dispatch(class_name, method_name, is_singleton)
             .and_then(|sig| sig.params.get(idx).map(|param| param.param_type.widen()))
             .unwrap_or(Type::Todo);
         let Some(external) = self.external_rbs else {
             return current;
         };
         let candidate = external
-            .lookup_method_sig(class_name, method_name)
+            .lookup_method_sig_for_dispatch(class_name, method_name, is_singleton)
             .and_then(|sig| sig.params.get(idx).map(|param| param.param_type.widen()))
             .unwrap_or(Type::Todo);
         Self::choose_richer_hover_type(current, candidate)
@@ -3803,15 +3852,18 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         method_name: Option<&str>,
         kw_name: &str,
+        method_context_singleton_dispatch: Option<bool>,
     ) -> Type {
         self.ensure_class_available(class_name);
-        let method_name = match method_name {
-            Some(n) => n,
-            None => return Type::Todo,
+        let Some(method_name) = method_name else {
+            return Type::Todo;
+        };
+        let Some(is_singleton) = method_context_singleton_dispatch else {
+            return Type::Todo;
         };
         let current = self
             .registry
-            .lookup_method_sig(class_name, method_name)
+            .lookup_method_sig_for_dispatch(class_name, method_name, is_singleton)
             .and_then(|sig| {
                 sig.params
                     .iter()
@@ -3823,7 +3875,7 @@ impl<'a> InferenceEngine<'a> {
             return current;
         };
         let candidate = external
-            .lookup_method_sig(class_name, method_name)
+            .lookup_method_sig_for_dispatch(class_name, method_name, is_singleton)
             .and_then(|sig| {
                 sig.params
                     .iter()
@@ -4043,27 +4095,18 @@ impl<'a> InferenceEngine<'a> {
             .unwrap_or(0);
         let receiver_offset = line_start + receiver_start;
 
-        let receiver_snap = self.find_best_snapshot(receiver_offset)?;
+        let receiver_snap = self.find_best_snapshot(receiver_offset)?.clone();
         let receiver_target = receiver_snap.target.clone();
-        let receiver_class_context = receiver_snap.class_context.clone();
-        let receiver_method_context = receiver_snap.method_context.clone();
         let receiver_ty = match receiver_target {
-            HoverTarget::Value(ty) => self.resolve_type_for_hover(
-                &ty,
-                &receiver_class_context,
-                receiver_method_context.as_deref(),
-            ),
+            HoverTarget::Value(ty) => self.resolve_type_for_snapshot(&ty, &receiver_snap, false),
             HoverTarget::MethodCall {
                 receiver_type,
                 result_type,
+                singleton_dispatch,
                 ..
             } => {
                 let _ = receiver_type;
-                self.resolve_type_for_hover(
-                    &result_type,
-                    &receiver_class_context,
-                    receiver_method_context.as_deref(),
-                )
+                self.resolve_type_for_snapshot(&result_type, &receiver_snap, singleton_dispatch)
             }
             HoverTarget::MethodDefinition { .. } => return None,
         };
@@ -4139,16 +4182,12 @@ impl<'a> InferenceEngine<'a> {
                 (distance, byte_offset.abs_diff(snap.start))
             })?
             .clone();
-        let raw_target = match snap.target {
-            HoverTarget::Value(ty) => ty,
+        let raw_target = match &snap.target {
+            HoverTarget::Value(ty) => ty.clone(),
             _ => return None,
         };
         let can_enrich_from_workspace = Self::hover_value_may_gain_from_workspace(&raw_target);
-        let resolved = self.resolve_type_for_hover(
-            &raw_target,
-            &snap.class_context,
-            snap.method_context.as_deref(),
-        );
+        let resolved = self.resolve_type_for_snapshot(&raw_target, &snap, false);
         let type_params = self.resolve_hover_type_params(&resolved);
         let unresolved = if matches!(resolved, Type::Untyped | Type::Todo) {
             Self::describe_unresolved_ref(&raw_target)
@@ -4485,10 +4524,12 @@ impl<'a> InferenceEngine<'a> {
                 continue;
             };
             if let Some(slot) = positional_slots.get_mut(index) {
-                *slot = Some(self.resolve_type_for_hover(
+                *slot = Some(self.resolve_type_for_hover_with_context(
                     &arg.ty,
                     &site.class_context,
                     site.method_context.as_deref(),
+                    false,
+                    site.method_context_singleton_dispatch,
                 ));
             }
         }
@@ -4508,10 +4549,12 @@ impl<'a> InferenceEngine<'a> {
                 arg.keyword.as_ref().map(|name| {
                     (
                         name.clone(),
-                        self.resolve_type_for_hover(
+                        self.resolve_type_for_hover_with_context(
                             &arg.ty,
                             &site.class_context,
                             site.method_context.as_deref(),
+                            false,
+                            site.method_context_singleton_dispatch,
                         ),
                     )
                 })
@@ -5561,6 +5604,7 @@ mod arg_compat_tests {
                 },
                 class_context: "FollowRequest".to_string(),
                 method_context: Some("process".to_string()),
+                method_context_singleton_dispatch: None,
             });
         }
 
@@ -5604,6 +5648,7 @@ mod arg_compat_tests {
                 },
                 class_context: "StringSource".to_string(),
                 method_context: Some("call".to_string()),
+                method_context_singleton_dispatch: None,
             });
         }
 
@@ -5649,6 +5694,7 @@ mod arg_compat_tests {
                 },
                 class_context: "UnderscoreProvider".to_string(),
                 method_context: Some("call".to_string()),
+                method_context_singleton_dispatch: None,
             });
 
             let calls = e.unresolved_method_calls_for_snapshots();
