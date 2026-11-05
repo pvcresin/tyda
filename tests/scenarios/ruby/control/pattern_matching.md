@@ -863,7 +863,7 @@ class MatchPredicateFailurePaths
 end
 ```
 
-## Bind captures in pattern predicate expressions
+## Bind captures in short-circuit pattern predicate expressions
 
 ```yaml
 known_issue: true
@@ -873,16 +873,6 @@ known_issue: true
 
 ```ruby
 class PatternMatchExpressionBindings
-  def assigned(value)
-    matched = (value in Integer => number)
-    number
-  end
-
-  def assigned_hash(value)
-    matched = (value in { payload: Integer => payload })
-    payload
-  end
-
   def short_circuit_and(value)
     (value in Integer => number) && number
   end
@@ -901,11 +891,6 @@ class PatternMatchExpressionBindings
     else
       nil
     end
-  end
-
-  def parenthesized_assignment_sequence(value)
-    matched = (value in Integer => number; true)
-    number
   end
 
   def short_circuit_and_after(value)
@@ -951,12 +936,6 @@ class PatternMatchExpressionBindings
     number
   end
 
-  def assignment_preserves_existing(value)
-    number = :before
-    matched = (value in Integer => number)
-    number
-  end
-
   def assignment_keeps_statically_matched_literal
     value = [1, "x"]
     matched = (value in [first, second])
@@ -969,12 +948,9 @@ end
 
 ```rbs
 class PatternMatchExpressionBindings
-  def assigned: (untyped value) -> Integer?
-  def assigned_hash: (untyped value) -> Integer?
   def short_circuit_and: (untyped value) -> (Integer | false)
   def negated_else: (untyped value) -> Integer?
   def and_condition: (untyped value, untyped flag) -> Integer?
-  def parenthesized_assignment_sequence: (untyped value) -> Integer?
   def short_circuit_and_after: (untyped value) -> Integer?
   def short_circuit_and_rhs: (untyped value, untyped flag) -> Integer?
   def short_circuit_or: (untyped value) -> Integer?
@@ -982,7 +958,6 @@ class PatternMatchExpressionBindings
   def capture_in_or_condition: (untyped value, untyped flag) -> Integer?
   def capture_in_statically_matched_guard_else: -> -1
   def parenthesized_local_assignment: -> 1
-  def assignment_preserves_existing: (untyped value) -> (Integer | :before)
   def assignment_keeps_statically_matched_literal: -> "x"
 end
 ```
@@ -1143,5 +1118,98 @@ end
 ```rbs
 class Object < BasicObject
   def case_match_all_paths_return: (untyped value) -> (:number | :text)
+end
+```
+
+## Bind captures from an assigned pattern predicate
+
+### update
+
+```ruby
+class PatternMatchAssignmentBindings
+  def assigned(value)
+    matched = (value in Integer => number)
+    number
+  end
+
+  def assigned_hash(value)
+    matched = (value in { payload: Integer => payload })
+    payload
+  end
+
+  def assigned_sequence(value)
+    matched = ((value in Integer => number); true)
+    number
+  end
+
+  def assigned_sequence_after_prefix(value)
+    matched = (true; (value in Integer => number); true)
+    number
+  end
+
+  def assigned_sequence_after_overwrite(value)
+    matched = ((value in Integer => number); number = :after; true)
+    number
+  end
+
+  def preserve_existing_on_failure(value)
+    number = :before
+    matched = (value in Integer => number)
+    number
+  end
+
+  def assignment_target_overwrites_capture(value)
+    number = (value in Integer => number)
+    number
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchAssignmentBindings
+  def assigned: (untyped value) -> Integer?
+  def assigned_hash: (untyped value) -> Integer?
+  def assigned_sequence: (untyped value) -> Integer?
+  def assigned_sequence_after_prefix: (untyped value) -> Integer?
+  def assigned_sequence_after_overwrite: (untyped value) -> :after
+  def preserve_existing_on_failure: (untyped value) -> (Integer | :before)
+  def assignment_target_overwrites_capture: (untyped value) -> bool
+end
+```
+
+## Do not bind captures from expressions that may not run
+
+### update
+
+```ruby
+class PatternMatchAssignmentEvaluation
+  def skipped_short_circuit(value)
+    number = :before
+    false && (value in Integer => number)
+    number
+  end
+
+  def skipped_assignment_short_circuit(value)
+    matched = (false && (value in Integer => number))
+    number
+  end
+
+  def deferred_block(value)
+    number = :before
+    callback = -> { value in Integer => number }
+    number
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchAssignmentEvaluation
+  def skipped_short_circuit: (untyped value) -> :before
+  def skipped_assignment_short_circuit: (untyped value) -> nil
+  def deferred_block: (untyped value) -> :before
 end
 ```

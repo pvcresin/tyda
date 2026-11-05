@@ -22913,6 +22913,17 @@ impl<'a> InferenceEngine<'a> {
                 let runtime_fact =
                     self.runtime_fact_from_value(class_name, &value_node, parse_result, scope);
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
+                if matches!(
+                    value_node,
+                    Node::ParenthesesNode { .. } | Node::MatchPredicateNode { .. }
+                ) {
+                    self.bind_pattern_captures_from_assignment_value(
+                        class_name,
+                        &value_node,
+                        parse_result,
+                        scope,
+                    );
+                }
                 if let Some(call_node) = value_node.as_call_node() {
                     self.apply_receiver_mutating_call_side_effect(
                         class_name,
@@ -23345,28 +23356,7 @@ impl<'a> InferenceEngine<'a> {
                 let match_node = node
                     .as_match_predicate_node()
                     .expect("must be MatchPredicateNode");
-                let subject_type =
-                    self.infer_node_type(class_name, &match_node.value(), parse_result, scope);
-                let narrowed = self.extract_pattern_narrowing(
-                    class_name,
-                    &match_node.pattern(),
-                    parse_result,
-                    Some(&subject_type),
-                    scope,
-                );
-                let binding_type =
-                    Self::pattern_binding_type(Some(&subject_type), narrowed.as_ref());
-                let possible_failure = !self.pattern_definitely_matches_subject(
-                    class_name,
-                    &match_node.pattern(),
-                    &subject_type,
-                );
-                self.bind_pattern_locals_with_failure(
-                    &match_node.pattern(),
-                    &binding_type,
-                    possible_failure,
-                    scope,
-                );
+                self.bind_match_predicate_captures(class_name, &match_node, parse_result, scope);
             }
             Node::MatchRequiredNode { .. } => {
                 let match_node = node
@@ -55865,6 +55855,176 @@ impl<'a> InferenceEngine<'a> {
             };
             scope.set(&name, output_type);
         }
+    }
+
+    fn bind_pattern_captures_from_assignment_value(
+        &mut self,
+        class_name: &str,
+        value: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        match value {
+            Node::ParenthesesNode { .. } => {
+                let Some(parentheses) = value.as_parentheses_node() else {
+                    return;
+                };
+                let Some(body) = parentheses.body() else {
+                    return;
+                };
+                let contains_pattern =
+                    Self::pattern_assignment_sequence_contains_match_predicate(&body);
+                if !contains_pattern {
+                    return;
+                }
+                if let Some(statements) = body.as_statements_node() {
+                    if !statements
+                        .body()
+                        .iter()
+                        .all(|statement| Self::pattern_assignment_sequence_statement(&statement))
+                    {
+                        return;
+                    }
+                    for statement in statements.body().iter() {
+                        self.bind_pattern_captures_from_assignment_value(
+                            class_name,
+                            &statement,
+                            parse_result,
+                            scope,
+                        );
+                    }
+                } else {
+                    self.bind_pattern_captures_from_assignment_value(
+                        class_name,
+                        &body,
+                        parse_result,
+                        scope,
+                    )
+                }
+            }
+            Node::MatchPredicateNode { .. } => {
+                if let Some(match_node) = value.as_match_predicate_node() {
+                    self.bind_match_predicate_captures(
+                        class_name,
+                        &match_node,
+                        parse_result,
+                        scope,
+                    );
+                }
+            }
+            Node::LocalVariableWriteNode { .. } => {
+                let Some(write) = value.as_local_variable_write_node() else {
+                    return;
+                };
+                let assigned = write.value();
+                if !Self::pattern_assignment_sequence_literal(&assigned) {
+                    return;
+                }
+                let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+                let ty = self.infer_node_type(class_name, &assigned, parse_result, scope);
+                let loc =
+                    offset_to_location(parse_result.source(), write.location().start_offset());
+                scope.set_with_definition(&name, ty, loc);
+            }
+            _ => {}
+        }
+    }
+
+    fn pattern_assignment_sequence_statement(node: &Node<'_>) -> bool {
+        match node {
+            Node::ParenthesesNode { .. } => {
+                let Some(parentheses) = node.as_parentheses_node() else {
+                    return false;
+                };
+                let Some(body) = parentheses.body() else {
+                    return false;
+                };
+                if let Some(statements) = body.as_statements_node() {
+                    statements
+                        .body()
+                        .iter()
+                        .all(|statement| Self::pattern_assignment_sequence_statement(&statement))
+                } else {
+                    Self::pattern_assignment_sequence_statement(&body)
+                }
+            }
+            Node::MatchPredicateNode { .. } => true,
+            Node::LocalVariableWriteNode { .. } => node
+                .as_local_variable_write_node()
+                .is_some_and(|write| Self::pattern_assignment_sequence_literal(&write.value())),
+            _ => Self::pattern_assignment_sequence_literal(node),
+        }
+    }
+
+    fn pattern_assignment_sequence_contains_match_predicate(node: &Node<'_>) -> bool {
+        match node {
+            Node::MatchPredicateNode { .. } => true,
+            Node::StatementsNode { .. } => node.as_statements_node().is_some_and(|statements| {
+                statements.body().iter().any(|statement| {
+                    Self::pattern_assignment_sequence_contains_match_predicate(&statement)
+                })
+            }),
+            Node::ParenthesesNode { .. } => {
+                let Some(parentheses) = node.as_parentheses_node() else {
+                    return false;
+                };
+                let Some(body) = parentheses.body() else {
+                    return false;
+                };
+                if let Some(statements) = body.as_statements_node() {
+                    statements.body().iter().any(|statement| {
+                        Self::pattern_assignment_sequence_contains_match_predicate(&statement)
+                    })
+                } else {
+                    Self::pattern_assignment_sequence_contains_match_predicate(&body)
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn pattern_assignment_sequence_literal(node: &Node<'_>) -> bool {
+        matches!(
+            node,
+            Node::SymbolNode { .. }
+                | Node::StringNode { .. }
+                | Node::IntegerNode { .. }
+                | Node::FloatNode { .. }
+                | Node::TrueNode { .. }
+                | Node::FalseNode { .. }
+                | Node::NilNode { .. }
+                | Node::LocalVariableReadNode { .. }
+        )
+    }
+
+    fn bind_match_predicate_captures(
+        &mut self,
+        class_name: &str,
+        match_node: &ruby_prism::MatchPredicateNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        let subject_type =
+            self.infer_node_type(class_name, &match_node.value(), parse_result, scope);
+        let narrowed = self.extract_pattern_narrowing(
+            class_name,
+            &match_node.pattern(),
+            parse_result,
+            Some(&subject_type),
+            scope,
+        );
+        let binding_type = Self::pattern_binding_type(Some(&subject_type), narrowed.as_ref());
+        let possible_failure = !self.pattern_definitely_matches_subject(
+            class_name,
+            &match_node.pattern(),
+            &subject_type,
+        );
+        self.bind_pattern_locals_with_failure(
+            &match_node.pattern(),
+            &binding_type,
+            possible_failure,
+            scope,
+        );
     }
 
     fn pattern_definitely_matches_subject(
