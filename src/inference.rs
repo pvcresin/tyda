@@ -50844,12 +50844,6 @@ impl<'a> InferenceEngine<'a> {
         {
             return Type::Bool;
         }
-        if self.rails_feature_enabled()
-            && matches!(receiver_type, Type::String | Type::LiteralString(_))
-            && method_tables::RAILS_STRING_RETURNING_METHODS.contains(&method_name)
-        {
-            return Type::String;
-        }
         let effective_method_name = if self.rails_at_least(6, 0) {
             match method_name {
                 "update_attributes" => "update",
@@ -50993,6 +50987,13 @@ impl<'a> InferenceEngine<'a> {
                     self.dsl_plugin_method_return(receiver_type, effective_method_name)
                 {
                     return result;
+                }
+                if self.rails_feature_enabled()
+                    && !is_singleton
+                    && class_name == "String"
+                    && method_tables::RAILS_STRING_RETURNING_METHODS.contains(&method_name)
+                {
+                    return Type::String;
                 }
                 return Type::ReceiverMethodRef(
                     Box::new(receiver_type.clone()),

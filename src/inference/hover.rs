@@ -1487,6 +1487,7 @@ impl<'a> InferenceEngine<'a> {
                 .lookup_method_return_type_with_hint(&class, &snap.name, prefer_singleton)
                 .is_some()
                 || (self.rails_feature_enabled()
+                    && !prefer_singleton
                     && class == "String"
                     && super::method_tables::RAILS_STRING_RETURNING_METHODS
                         .contains(&snap.name.as_str()))
@@ -3966,6 +3967,13 @@ impl<'a> InferenceEngine<'a> {
                 external.lookup_method_return_type_via_including_classes(class_name, method_name)
         {
             return Some(ty);
+        }
+        if !prefer_singleton
+            && self.rails_feature_enabled()
+            && class_name == "String"
+            && super::method_tables::RAILS_STRING_RETURNING_METHODS.contains(&method_name)
+        {
+            return Some(Type::String);
         }
         None
     }

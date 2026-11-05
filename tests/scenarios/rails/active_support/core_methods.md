@@ -37,6 +37,35 @@ class RailsStringUnionProvider
 end
 ```
 
+## Infer a String return from Active Support inflections in a case branch
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+def normalize(value)
+  case value
+  when String
+    value.underscore.camelize(:lower)
+  else
+    "other"
+  end
+end
+
+normalize("value")
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def normalize: (String value) -> String
+end
+```
+
 ## Narrow nilable local in present? then branch
 
 ### update

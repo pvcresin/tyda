@@ -11813,6 +11813,72 @@ end
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn lsp_hover_resolves_rails_string_chain_from_workspace_callsite() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let app = root.join("app/lib");
+        std::fs::create_dir_all(&app).expect("create app dir");
+        std::fs::write(
+            root.join("Gemfile"),
+            "source 'https://rubygems.org'\ngem 'rails'\n",
+        )
+        .expect("write Gemfile");
+        std::fs::write(
+            root.join("typeprof.conf.jsonc"),
+            "{\n  \"analysis_unit_dirs\": [\"app\"]\n}\n",
+        )
+        .expect("write config");
+
+        let source = concat!(
+            "class CaseTransform\n",
+            "  def self.normalize(value)\n",
+            "    case value\n",
+            "    when String\n",
+            "      value.underscore.camelize(:lower)\n",
+            "    else\n",
+            "      value\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        );
+        std::fs::write(app.join("case_transform.rb"), source).expect("write source");
+        std::fs::write(
+            app.join("caller.rb"),
+            concat!(
+                "class Caller\n",
+                "  def run\n",
+                "    CaseTransform.normalize(\"value\")\n",
+                "  end\n",
+                "end\n",
+            ),
+        )
+        .expect("write caller");
+
+        let root_uri = Url::from_directory_path(root).expect("root uri");
+        let source_uri = Url::from_file_path(app.join("case_transform.rb")).expect("source uri");
+        let (mut service, mut socket) = initialize_lsp(Some(root_uri)).await;
+        let _ = open_document(&mut service, &mut socket, &source_uri, source).await;
+
+        for (id, method) in [(71, "underscore"), (72, "camelize")] {
+            let position = position_of(source, method);
+            let hover = request_hover(
+                &mut service,
+                &source_uri,
+                position.line,
+                position.character,
+                id,
+            )
+            .await;
+            match hover.contents {
+                HoverContents::Scalar(MarkedString::LanguageString(language_string)) => {
+                    assert_eq!(language_string.value, "[Tyda] String", "{method}");
+                }
+                other => panic!("unexpected hover contents for {method}: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn lsp_codelens_prefers_workspace_fallback_for_definition_signature() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
