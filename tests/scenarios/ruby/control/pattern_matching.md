@@ -1213,3 +1213,148 @@ class PatternMatchAssignmentEvaluation
   def deferred_block: (untyped value) -> :before
 end
 ```
+
+## Check the class before narrowing a hash pattern
+
+### update
+
+```ruby
+class PatternHashBase < Hash
+end
+
+class PatternHashChild < PatternHashBase
+  def deconstruct_keys(_keys) = {}
+end
+
+class PatternHashUnrelated
+end
+
+class PatternHashAlwaysMiss
+  def self.===(_value) = false
+end
+
+class PatternHashClassPatterns
+  def self.hash_base
+    case { a: 42 }
+    in Hash[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.unrelated_class
+    case { a: 42 }
+    in PatternHashUnrelated[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.hash_subclass
+    case { a: 42 }
+    in PatternHashChild[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.nested_unrelated_class
+    case { outer: { a: 42 } }
+    in { outer: PatternHashUnrelated[a: Integer] }
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.class_equality_override
+    case { a: 42 }
+    in PatternHashAlwaysMiss[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.unresolved_constant
+    case { a: 42 }
+    in MissingHashPattern[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.hash_subclass_deconstruction
+    value = PatternHashChild.new
+    value[:a] = 42
+    case value
+    in { a: Integer }
+      :matched
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternHashAlwaysMiss
+  def self.===: (untyped _value) -> false
+end
+
+class PatternHashChild < PatternHashBase
+  def deconstruct_keys: (untyped _keys) -> Hash[untyped, untyped]
+end
+
+class PatternHashClassPatterns
+  def self.hash_base: -> :matched
+  def self.unrelated_class: -> :other
+  def self.hash_subclass: -> :matched | :other
+  def self.nested_unrelated_class: -> :other
+  def self.class_equality_override: -> :matched | :other
+  def self.unresolved_constant: -> :matched | :other
+  def self.hash_subclass_deconstruction: -> :matched | :other
+end
+```
+
+## Keep class pattern branches open under an active equality refinement
+
+### update
+
+```ruby
+class RefinedHashPatternTarget
+end
+
+module AlwaysMatchModuleCase
+  refine Module do
+    def ===(_value) = true
+  end
+end
+
+class RefinedHashPatternProbe
+  using AlwaysMatchModuleCase
+
+  def self.classify
+    case { a: 42 }
+    in RefinedHashPatternTarget[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class RefinedHashPatternProbe
+  def self.classify: -> :matched | :other
+end
+```

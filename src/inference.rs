@@ -23412,6 +23412,7 @@ impl<'a> InferenceEngine<'a> {
                         class_name,
                         &match_node.pattern(),
                         Some(&subject_type),
+                        scope,
                     )
                 {
                     scope.set(&name, matched_type);
@@ -24737,6 +24738,7 @@ impl<'a> InferenceEngine<'a> {
                                         class_name,
                                         &in_node.pattern(),
                                         remaining_subject_type.as_ref(),
+                                        scope,
                                     )
                                 {
                                     remaining_subject_type = unmatched_type;
@@ -29891,6 +29893,7 @@ impl<'a> InferenceEngine<'a> {
                                             class_name,
                                             &in_node.pattern(),
                                             remaining_subject_type.as_ref(),
+                                            scope,
                                         )
                                     {
                                         remaining_subject_type = unmatched_type;
@@ -53791,6 +53794,7 @@ impl<'a> InferenceEngine<'a> {
                         class_name,
                         &match_node.pattern(),
                         subject_type,
+                        scope,
                     )
                 });
                 let mut narrowing = self.narrowing_with_default_negation(
@@ -54006,6 +54010,8 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         scope: &Scope,
     ) -> bool {
+        self.ensure_class_available("Class");
+        self.ensure_class_available("Module");
         !self.active_refinement_overrides_instance_method("Class", "===", scope)
             && self.uses_standard_class_case_equality(class_name)
     }
@@ -55022,25 +55028,26 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         pattern: &Node<'_>,
         subject_type: Option<&Type>,
+        scope: &Scope,
     ) -> Option<(Option<Type>, Option<Type>)> {
         match pattern {
             Node::CapturePatternNode { .. } => {
                 let capture = pattern.as_capture_pattern_node()?;
-                self.partition_case_pattern(class_name, &capture.value(), subject_type)
+                self.partition_case_pattern(class_name, &capture.value(), subject_type, scope)
             }
             Node::ArrayPatternNode { .. } => {
-                self.partition_array_pattern(class_name, pattern, subject_type)
+                self.partition_array_pattern(class_name, pattern, subject_type, scope)
             }
             Node::FindPatternNode { .. } => {
-                self.partition_find_pattern(class_name, pattern, subject_type)
+                self.partition_find_pattern(class_name, pattern, subject_type, scope)
             }
             Node::HashPatternNode { .. } => {
-                self.partition_hash_pattern(class_name, pattern, subject_type)
+                self.partition_hash_pattern(class_name, pattern, subject_type, scope)
             }
             _ => self
                 .partition_literal_value_pattern(pattern, subject_type)
                 .or_else(|| {
-                    self.partition_class_constant_pattern(class_name, pattern, subject_type)
+                    self.partition_class_constant_pattern(class_name, pattern, subject_type, scope)
                 }),
         }
     }
@@ -55050,6 +55057,7 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         pattern: &Node<'_>,
         subject_type: Option<&Type>,
+        scope: &Scope,
     ) -> Option<(Option<Type>, Option<Type>)> {
         let array = pattern.as_array_pattern_node()?;
         let subject_type = subject_type?;
@@ -55057,8 +55065,12 @@ impl<'a> InferenceEngine<'a> {
         let mut unmatched_types = Vec::new();
 
         let mut pending = if let Some(constant) = array.constant() {
-            let (matched, unmatched) =
-                self.partition_class_constant_pattern(class_name, &constant, Some(subject_type))?;
+            let (matched, unmatched) = self.partition_class_constant_pattern(
+                class_name,
+                &constant,
+                Some(subject_type),
+                scope,
+            )?;
             if let Some(unmatched) = unmatched {
                 unmatched_types.push(unmatched);
             }
@@ -55106,6 +55118,7 @@ impl<'a> InferenceEngine<'a> {
                             class_name,
                             element_pattern,
                             Some(&elements[index]),
+                            scope,
                         ) else {
                             continue;
                         };
@@ -55134,6 +55147,7 @@ impl<'a> InferenceEngine<'a> {
                                     class_name,
                                     element_pattern,
                                     Some(element_type),
+                                    scope,
                                 )
                                 .is_some_and(|(matched, _)| matched.is_none())
                             {
@@ -55165,13 +55179,18 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         pattern: &Node<'_>,
         subject_type: Option<&Type>,
+        scope: &Scope,
     ) -> Option<(Option<Type>, Option<Type>)> {
         let find = pattern.as_find_pattern_node()?;
         let subject_type = subject_type?;
         let mut unmatched_types = Vec::new();
         let mut pending = if let Some(constant) = find.constant() {
-            let (matched, unmatched) =
-                self.partition_class_constant_pattern(class_name, &constant, Some(subject_type))?;
+            let (matched, unmatched) = self.partition_class_constant_pattern(
+                class_name,
+                &constant,
+                Some(subject_type),
+                scope,
+            )?;
             if let Some(unmatched) = unmatched {
                 unmatched_types.push(unmatched);
             }
@@ -55194,7 +55213,7 @@ impl<'a> InferenceEngine<'a> {
         while let Some(subject) = pending.pop() {
             let possible = match &subject {
                 Type::Array(Some(element_type)) => requireds.iter().all(|required| {
-                    self.partition_case_pattern(class_name, required, Some(element_type))
+                    self.partition_case_pattern(class_name, required, Some(element_type), scope)
                         .is_none_or(|(matched, _)| matched.is_some())
                 }),
                 Type::Array(None) => true,
@@ -55205,6 +55224,7 @@ impl<'a> InferenceEngine<'a> {
                                 class_name,
                                 required,
                                 Some(&elements[start + index]),
+                                scope,
                             )
                             .is_none_or(|(matched, _)| matched.is_some())
                         })
@@ -55232,6 +55252,7 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         pattern: &Node<'_>,
         subject_type: Option<&Type>,
+        scope: &Scope,
     ) -> Option<(Option<Type>, Option<Type>)> {
         let hash = pattern.as_hash_pattern_node()?;
         if hash.rest().is_some() {
@@ -55252,19 +55273,38 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let subject_type = subject_type?;
-        let branches = match subject_type {
-            record @ Type::Record(_) => vec![record.clone()],
-            Type::Union(parts) if parts.iter().all(|part| matches!(part, Type::Record(_))) => {
-                parts.clone()
+        let mut unmatched_records = Vec::new();
+        let branches = if let Some(constant) = hash.constant() {
+            let (matched, unmatched) = self.partition_class_constant_pattern(
+                class_name,
+                &constant,
+                Some(subject_type),
+                scope,
+            )?;
+            if let Some(unmatched) = unmatched {
+                unmatched_records.push(unmatched);
             }
-            _ => return None,
+            let Some(matched) = matched else {
+                return Some((None, Some(Type::from_type_vec(unmatched_records))));
+            };
+            match matched {
+                Type::Union(parts) => parts,
+                other => vec![other],
+            }
+        } else {
+            match subject_type {
+                record @ Type::Record(_) => vec![record.clone()],
+                Type::Union(parts) if parts.iter().all(|part| matches!(part, Type::Record(_))) => {
+                    parts.clone()
+                }
+                _ => return None,
+            }
         };
         if branches.is_empty() {
             return None;
         }
 
         let mut matched_records = Vec::new();
-        let mut unmatched_records = Vec::new();
         for branch in branches {
             let Type::Record(mut matched_fields) = branch else {
                 return None;
@@ -55282,8 +55322,12 @@ impl<'a> InferenceEngine<'a> {
                 }
 
                 let field_type = matched_fields[field_index].value.clone();
-                let (matched_value, unmatched_value) =
-                    self.partition_case_pattern(class_name, value_pattern, Some(&field_type))?;
+                let (matched_value, unmatched_value) = self.partition_case_pattern(
+                    class_name,
+                    value_pattern,
+                    Some(&field_type),
+                    scope,
+                )?;
                 if let Some(unmatched_value) = unmatched_value {
                     let mut unmatched_fields = matched_fields.clone();
                     unmatched_fields[field_index].value = unmatched_value;
@@ -55311,6 +55355,7 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         class_context: &str,
         target_path: &str,
+        scope: &Scope,
     ) -> Option<String> {
         let Type::Singleton(target_class) =
             self.resolve_constant_type_in_scope(target_path, class_context)
@@ -55322,7 +55367,7 @@ impl<'a> InferenceEngine<'a> {
         let target_data = self.registry.class_data_for(&target_class)?;
         if target_data.is_module
             || !target_data.has_type_substance()
-            || !self.uses_standard_class_case_equality(&target_class)
+            || !self.uses_standard_class_case_equality_in_scope(&target_class, scope)
         {
             return None;
         }
@@ -55334,6 +55379,7 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         pattern: &Node<'_>,
         subject_type: Option<&Type>,
+        scope: &Scope,
     ) -> Option<(Option<Type>, Option<Type>)> {
         let subject_type = subject_type?;
         if !Self::is_closed_case_subject_type(subject_type) {
@@ -55345,7 +55391,7 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => return None,
         };
-        let target_class = self.pattern_class_target_name(class_name, &target_path)?;
+        let target_class = self.pattern_class_target_name(class_name, &target_path, scope)?;
 
         let mut pending = match subject_type {
             Type::Union(parts) => parts.clone(),
@@ -55639,13 +55685,15 @@ impl<'a> InferenceEngine<'a> {
             Node::ConstantReadNode { .. } => {
                 let c = pattern.as_constant_read_node()?;
                 let target_path = String::from_utf8_lossy(c.name().as_slice()).to_string();
-                let target_class = self.pattern_class_target_name(class_name, &target_path)?;
+                let target_class =
+                    self.pattern_class_target_name(class_name, &target_path, scope)?;
                 Some(Self::class_name_to_type(&target_class))
             }
             Node::ConstantPathNode { .. } => {
                 let target_path =
                     String::from_utf8_lossy(pattern.location().as_slice()).to_string();
-                let target_class = self.pattern_class_target_name(class_name, &target_path)?;
+                let target_class =
+                    self.pattern_class_target_name(class_name, &target_path, scope)?;
                 Some(Self::class_name_to_type(&target_class))
             }
             Node::ArrayPatternNode { .. } | Node::FindPatternNode { .. } => {
@@ -56047,6 +56095,7 @@ impl<'a> InferenceEngine<'a> {
             class_name,
             &match_node.pattern(),
             &subject_type,
+            scope,
         );
         self.bind_pattern_locals_with_failure(
             &match_node.pattern(),
@@ -56061,9 +56110,10 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         pattern: &Node<'_>,
         subject_type: &Type,
+        scope: &Scope,
     ) -> bool {
         if self
-            .partition_case_pattern(class_name, pattern, Some(subject_type))
+            .partition_case_pattern(class_name, pattern, Some(subject_type), scope)
             .is_some_and(|(matched, unmatched)| matched.is_some() && unmatched.is_none())
         {
             return true;
