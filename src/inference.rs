@@ -467,6 +467,13 @@ struct CondNarrowing {
     else_ty: Option<Type>,
 }
 
+struct AndAssignmentProjection {
+    local_name: String,
+    then_ty: Type,
+    else_ty: Type,
+    truthiness: Option<bool>,
+}
+
 enum CaseClassRelation {
     Always,
     Possible(Type),
@@ -24190,6 +24197,12 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                let assignment_projection = self.extract_and_assignment_projection(
+                    class_name,
+                    &if_node.predicate(),
+                    parse_result,
+                    scope,
+                );
                 let narrowing = self.extract_if_node_narrowing(
                     class_name,
                     &if_node,
@@ -24203,17 +24216,21 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
-                let truthiness = truthiness.or_else(|| {
-                    let narrowing = narrowing.as_ref()?;
-                    match (
-                        narrowing.then_ty.as_ref() == Some(&Type::Bot),
-                        narrowing.else_ty.as_ref() == Some(&Type::Bot),
-                    ) {
-                        (true, false) => Some(false),
-                        (false, true) => Some(true),
-                        _ => None,
-                    }
-                });
+                let truthiness = if let Some(projection) = &assignment_projection {
+                    projection.truthiness
+                } else {
+                    truthiness.or_else(|| {
+                        let narrowing = narrowing.as_ref()?;
+                        match (
+                            narrowing.then_ty.as_ref() == Some(&Type::Bot),
+                            narrowing.else_ty.as_ref() == Some(&Type::Bot),
+                        ) {
+                            (true, false) => Some(false),
+                            (false, true) => Some(true),
+                            _ => None,
+                        }
+                    })
+                };
                 let mut then_scope = scope.fork_for_branch();
                 if let Some(n) = &narrowing
                     && let Some(ty) = &n.then_ty
@@ -24235,6 +24252,9 @@ impl<'a> InferenceEngine<'a> {
                     &mut then_scope,
                 );
                 self.bind_match_write_captures(class_name, &if_node.predicate(), &mut then_scope);
+                if let Some(projection) = &assignment_projection {
+                    then_scope.set(&projection.local_name, projection.then_ty.clone());
+                }
                 if let Some((name, methods)) = &respond_to_guard {
                     then_scope.add_respond_to_guard(name, methods.clone());
                 }
@@ -24264,6 +24284,9 @@ impl<'a> InferenceEngine<'a> {
                     &mut else_scope,
                     false,
                 );
+                if let Some(projection) = &assignment_projection {
+                    else_scope.set(&projection.local_name, projection.else_ty.clone());
+                }
                 let else_type = if truthiness == Some(true) {
                     Type::Bot
                 } else if let Some(else_clause) = if_node.subsequent() {
@@ -29541,6 +29564,15 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                let assignment_projection = self.extract_and_assignment_projection(
+                    class_name,
+                    &if_node.predicate(),
+                    parse_result,
+                    scope,
+                );
+                let truthiness = assignment_projection
+                    .as_ref()
+                    .map_or(truthiness, |projection| projection.truthiness);
 
                 let narrowing = self.extract_if_node_narrowing(
                     class_name,
@@ -29584,6 +29616,9 @@ impl<'a> InferenceEngine<'a> {
                         &if_node.predicate(),
                         &mut then_scope,
                     );
+                    if let Some(projection) = &assignment_projection {
+                        then_scope.set(&projection.local_name, projection.then_ty.clone());
+                    }
                     if let Some((name, methods)) = &respond_to_guard {
                         then_scope.add_respond_to_guard(name, methods.clone());
                     }
@@ -29614,6 +29649,9 @@ impl<'a> InferenceEngine<'a> {
                         &mut else_scope,
                         false,
                     );
+                    if let Some(projection) = &assignment_projection {
+                        else_scope.set(&projection.local_name, projection.else_ty.clone());
+                    }
                     self.infer_node_type(class_name, &else_clause, parse_result, &else_scope)
                 } else {
                     Type::Nil
@@ -55803,6 +55841,80 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => {}
         }
+    }
+
+    fn extract_and_assignment_projection(
+        &mut self,
+        class_name: &str,
+        predicate: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<AndAssignmentProjection> {
+        let and_node = predicate.as_and_node()?;
+        let guard = and_node.left().as_local_variable_read_node()?;
+        let assignment = and_node.right().as_local_variable_write_node()?;
+        let guard_name = String::from_utf8_lossy(guard.name().as_slice()).to_string();
+        let local_name = String::from_utf8_lossy(assignment.name().as_slice()).to_string();
+        let guard_type = scope.get(&guard_name).cloned().unwrap_or(Type::Nil);
+        let guard_truthy = Self::truthy_only(&guard_type);
+        let guard_falsy = Self::falsy_only(&guard_type);
+        if guard_truthy.is_none() && guard_falsy.is_none() {
+            return None;
+        }
+
+        let (assigned_truthy, assigned_falsy) = if guard_truthy.is_some() {
+            let mut value_scope = scope.fork_for_branch();
+            self.apply_compound_branch_leaf(
+                class_name,
+                &and_node.left(),
+                parse_result,
+                scope,
+                &mut value_scope,
+                true,
+            );
+            let value_type =
+                self.infer_node_type(class_name, &assignment.value(), parse_result, &value_scope);
+            if matches!(value_type, Type::Bot) {
+                return None;
+            }
+            let assigned_truthy = Self::truthy_only(&value_type);
+            let assigned_falsy = Self::falsy_only(&value_type);
+            if assigned_truthy.is_none() && assigned_falsy.is_none() {
+                return None;
+            }
+            (assigned_truthy, assigned_falsy)
+        } else {
+            (None, None)
+        };
+
+        let then_ty = assigned_truthy.unwrap_or(Type::Bot);
+        let mut else_types = Vec::new();
+        if let Some(guard_falsy) = guard_falsy {
+            let previous_type = if guard_name == local_name {
+                guard_falsy
+            } else {
+                scope.get(&local_name).cloned().unwrap_or(Type::Nil)
+            };
+            else_types.push(previous_type);
+        }
+        if guard_truthy.is_some()
+            && let Some(assigned_falsy) = assigned_falsy
+        {
+            else_types.push(assigned_falsy);
+        }
+        let else_ty = Self::merge_reachable_types(else_types);
+        let truthiness = match (!matches!(then_ty, Type::Bot), !matches!(else_ty, Type::Bot)) {
+            (true, false) => Some(true),
+            (false, true) => Some(false),
+            _ => None,
+        };
+
+        Some(AndAssignmentProjection {
+            local_name,
+            then_ty,
+            else_ty,
+            truthiness,
+        })
     }
 
     fn bind_match_write_captures(
