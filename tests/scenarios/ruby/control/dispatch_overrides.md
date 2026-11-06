@@ -39,6 +39,61 @@ end
 
 ## Module case equality overrides do not narrow as Class#===
 
+### update
+
+```ruby
+class Module
+  def ===(other)
+    other.is_a?(Integer)
+  end
+end
+
+def module_case_equality_override(flag)
+  value = if flag
+    1
+  else
+    "value"
+  end
+  if String === value
+    value
+  else
+    :other
+  end
+end
+
+def module_case_when_override(flag)
+  value = flag ? 1 : "value"
+  case value
+  when String then value
+  else :other
+  end
+end
+
+def module_case_in_override(flag)
+  value = flag ? 1 : "value"
+  case value
+  in String then value
+  else :other
+  end
+end
+```
+
+### result
+
+```rbs
+class Module
+  def ===: ((Integer | String) other) -> bool
+end
+
+class Object < BasicObject
+  def module_case_equality_override: (untyped flag) -> (1 | "value" | :other)
+  def module_case_when_override: (untyped flag) -> (1 | "value" | :other)
+  def module_case_in_override: (untyped flag) -> (1 | "value" | :other)
+end
+```
+
+## Source case equality bodies select the branch per argument
+
 ```yaml
 known_issue: true
 ```
@@ -70,7 +125,7 @@ end
 
 ```rbs
 class Module
-  def ===: (untyped other) -> bool
+  def ===: ((Integer | String) other) -> bool
 end
 
 class Object < BasicObject
