@@ -476,7 +476,9 @@ impl<'a> InferenceEngine<'a> {
                     visiting.remove(&(class_name.to_string(), *method_name));
                     return resolved;
                 }
-                ty.clone()
+                registry
+                    .resolve_attr_reader_return_type(class_name, method_name, false)
+                    .unwrap_or_else(|| ty.clone())
             }
             Type::ReceiverMethodRef(receiver_type, method_name) => {
                 let resolved_receiver = Self::resolve_deferred_receiver_type(

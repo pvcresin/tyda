@@ -6844,7 +6844,7 @@ impl TypeRegistry {
         }
     }
 
-    fn type_contains_param_ref_static(ty: &Type) -> bool {
+    pub(crate) fn type_contains_param_ref_static(ty: &Type) -> bool {
         match ty {
             Type::ParamRef(_) | Type::KeywordParamRef(_) => true,
             Type::Union(parts) | Type::Intersection(parts) => {

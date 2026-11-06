@@ -552,3 +552,73 @@ class BotArgumentFactory
   def self.build: (untyped value, untyped decoration) -> :built
 end
 ```
+
+## Calls with arguments on ivar receivers resolve after the ivar settles
+
+### update
+
+```ruby
+class SettledIvarLines
+  attr_reader :ranges
+
+  def initialize(ranges)
+    @lines = ["a", "b"]
+    @ranges = ranges
+  end
+
+  def line_width = @lines[0].size
+  def indent
+    line = @lines[0]
+    line.size - line.lstrip.size
+  end
+  def multiple_via_ivar? = @ranges.size > 1
+  def multiple_via_reader? = ranges.size > 1
+  def first_range = ranges[0]
+end
+
+SettledIvarLines.new([0..1])
+```
+
+### result
+
+```rbs
+class SettledIvarLines
+  def ranges: -> Array[Range[Integer]]
+  def initialize: (Array[Range[Integer]] ranges) -> void
+  def line_width: -> Integer
+  def indent: -> Integer
+  def multiple_via_ivar?: -> bool
+  def multiple_via_reader?: -> bool
+  def first_range: -> Range[Integer]?
+end
+```
+
+## A block call does not return the block-less Enumerator overload
+
+### update
+
+```ruby
+class BlockOverloadReturn
+  def unresolved_block
+    ["a"].flat_map { |item| unknown(item) }
+  end
+
+  def yielded_block
+    ["a"].flat_map { |item| yield item }
+  end
+
+  def without_block
+    ["a"].flat_map
+  end
+end
+```
+
+### result
+
+```rbs
+class BlockOverloadReturn
+  def unresolved_block: -> Array[untyped]
+  def yielded_block: { (untyped) -> untyped } -> Array[untyped]
+  def without_block: -> Enumerator["a", Array[untyped]]
+end
+```

@@ -932,6 +932,7 @@ pub struct InferenceEngine<'a> {
     /// Compact/CLI snapshots have no re-infer and must keep those sites.
     defer_unresolved_body_call_sites: bool,
     track_deferred_block_receiver_bodies: bool,
+    read_settled_ivars: bool,
     suppress_body_call_sites: bool,
     /// Enclosing `class`/`module` names that are not part of the current FQN
     /// (`class ::Bar` inside `module Foo`).
@@ -2285,6 +2286,7 @@ impl<'a> InferenceEngine<'a> {
             source_base_case_equality_override: false,
             defer_unresolved_body_call_sites: false,
             track_deferred_block_receiver_bodies: false,
+            read_settled_ivars: false,
             suppress_body_call_sites: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
@@ -2355,6 +2357,7 @@ impl<'a> InferenceEngine<'a> {
             source_base_case_equality_override: false,
             defer_unresolved_body_call_sites: false,
             track_deferred_block_receiver_bodies: false,
+            read_settled_ivars: false,
             suppress_body_call_sites: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
@@ -16313,7 +16316,8 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let has_deferred_block_receiver_return = !unresolved_block_receivers.is_empty()
-            && Self::type_contains_receiver_resolution_ref(&return_type);
+            && (Self::type_contains_receiver_resolution_ref(&return_type)
+                || Self::type_contains_untyped(&return_type));
 
         let _ = positional_count;
 
@@ -26101,8 +26105,16 @@ impl<'a> InferenceEngine<'a> {
                     .as_instance_variable_read_node()
                     .expect("must be InstanceVariableReadNode");
                 let ivar_name = String::from_utf8_lossy(read_node.name().as_slice()).to_string();
+                let settled_ivar = self
+                    .read_settled_ivars
+                    .then(|| self.registry.lookup_ivar_type(class_name, &ivar_name))
+                    .flatten()
+                    .filter(|ty| !scope.singleton_dispatch && Self::is_concrete(ty))
+                    .map(Type::widen_tuple_to_array);
                 let result = if let Some(fact) = scope.self_facts.get(&ivar_name) {
                     fact.clone()
+                } else if let Some(settled_ivar) = settled_ivar {
+                    settled_ivar
                 } else if scope.singleton_dispatch {
                     self.singleton_ivars
                         .get(&(class_name.to_string(), ivar_name.clone()))
@@ -27255,15 +27267,19 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         receiver_type
                     };
-                    let track_deferred_block_receiver = call_node.block().is_some()
+                    let track_deferred_block_receiver = (call_node.block().is_some()
+                        || call_node.arguments().is_some())
                         && (self.defer_unresolved_body_call_sites
                             || self.track_deferred_block_receiver_bodies)
                         && self.active_method_body.is_some();
                     let (receiver_type, has_deferred_receiver_candidate) =
                         if track_deferred_block_receiver {
-                            self.resolve_receiver_method_refs_with_deferred_candidate(
-                                &receiver_type,
-                            )
+                            let (resolved, has_deferred_method_ref) = self
+                                .resolve_receiver_method_refs_with_deferred_candidate(
+                                    &receiver_type,
+                                );
+                            let has_deferred_ivar = Self::type_contains_method_ref(&resolved);
+                            (resolved, has_deferred_method_ref || has_deferred_ivar)
                         } else {
                             (self.resolve_receiver_method_refs(&receiver_type), false)
                         };
@@ -29349,6 +29365,15 @@ impl<'a> InferenceEngine<'a> {
                             &method_name,
                             &call_node,
                         );
+                        let resolved = if call_node.block().is_some() {
+                            self.block_overload_return_for_enumerator(
+                                &effective_receiver,
+                                &method_name,
+                                resolved,
+                            )
+                        } else {
+                            resolved
+                        };
                         let (safe_nav_unknown, safe_nav_deferred) =
                             Self::receiver_union_flags(&safe_nav_receiver_type);
                         let (effective_unknown, has_deferred_union_member) =
@@ -40015,6 +40040,43 @@ impl<'a> InferenceEngine<'a> {
         }
 
         Some((overload, type_vars))
+    }
+
+    /// A call with a block never returns the `Enumerator` of a block-less overload.
+    fn block_overload_return_for_enumerator(
+        &mut self,
+        receiver_type: &Type,
+        method_name: &str,
+        resolved: Type,
+    ) -> Type {
+        if Self::enumerator_yield_and_return_types(&resolved).is_none() {
+            return resolved;
+        }
+        let Some(receiver_class) = self.type_to_class_name(receiver_type) else {
+            return resolved;
+        };
+        let overloads = self.collect_owned_rbs_overloads(
+            &receiver_class,
+            method_name,
+            matches!(receiver_type, Type::Singleton(_)),
+            true,
+        );
+        let Some(overload) = overloads
+            .iter()
+            .find(|overload| overload.method_type.block.is_some())
+        else {
+            return resolved;
+        };
+        let type_vars = self.class_type_vars_for_method_owner(
+            &receiver_class,
+            receiver_type,
+            &overload.owner_class,
+        );
+        Self::substitute_rbs_return_type_vars(
+            &overload.method_type.function_type.return_type,
+            &type_vars,
+            receiver_type,
+        )
     }
 
     fn enumerator_yield_and_return_types(ty: &Type) -> Option<(Type, Type)> {
@@ -51379,8 +51441,12 @@ impl<'a> InferenceEngine<'a> {
                     .registry
                     .lookup_method_return_type(class_name, method_name)
                     .unwrap_or(Type::Untyped);
-                if resolved == Type::Untyped {
-                    Type::MethodReturnRef(*class_name, *method_name)
+                if resolved == Type::Untyped
+                    || TypeRegistry::type_contains_param_ref_static(&resolved)
+                {
+                    self.registry
+                        .resolve_attr_reader_return_type(class_name, method_name, false)
+                        .unwrap_or(Type::MethodReturnRef(*class_name, *method_name))
                 } else {
                     self.resolve_receiver_method_refs_depth(
                         &resolved,
@@ -57372,6 +57438,10 @@ impl<'a> InferenceEngine<'a> {
                             .map(|method| method.raw_return_type.clone());
                         let method_name =
                             String::from_utf8_lossy(def_node.name().as_slice()).to_string();
+                        let previous_read_settled_ivars = std::mem::replace(
+                            &mut self.read_settled_ivars,
+                            replay.receiver_dependency_resolved,
+                        );
                         self.reinfer_method_body(
                             &method_owner,
                             &def_node,
@@ -57381,6 +57451,7 @@ impl<'a> InferenceEngine<'a> {
                                 ..replay
                             },
                         );
+                        self.read_settled_ivars = previous_read_settled_ivars;
                         self.case_when_narrowing_enabled = previous_case_when_narrowing;
                         let updated_return_type = self
                             .registry
