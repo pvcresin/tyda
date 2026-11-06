@@ -46571,6 +46571,11 @@ impl<'a> InferenceEngine<'a> {
         let mut relation_cache = HashMap::new();
         let call_has_block = call_node.block().is_some();
         let mut skipped_required_block_match = false;
+        let args_are_unknown = arg_types
+            .iter()
+            .chain(kw_arg_types.values())
+            .any(|ty| !Self::is_concrete(ty) || Self::type_contains_untyped(ty));
+        let mut unknown_arg_return: Option<(String, Type)> = None;
         for overload in &overloads {
             let mt = &overload.method_type;
             if !call_has_block && !Self::rbs_method_type_callable_without_block(mt) {
@@ -46620,14 +46625,32 @@ impl<'a> InferenceEngine<'a> {
                 receiver_type,
             );
             if ret != Type::Untyped && Self::is_concrete(&ret) {
-                return Some(ret);
+                // A plugin's overload order is its declared answer for an unknown argument.
+                let is_singleton = matches!(receiver_type, Type::Singleton(_));
+                if !args_are_unknown
+                    || self
+                        .registry
+                        .lookup_method_def(&overload.owner_class, method_name, is_singleton)
+                        .is_some_and(|method| method.synthetic_dsl_source)
+                {
+                    return Some(ret);
+                }
+                // Unknown arguments can select any overload the nearest owner accepts, so only an
+                // agreed return is known.
+                match &unknown_arg_return {
+                    None => unknown_arg_return = Some((overload.owner_class.clone(), ret)),
+                    Some((owner, seen)) if *owner == overload.owner_class && *seen != ret => {
+                        return Some(Type::Untyped);
+                    }
+                    Some(_) => {}
+                }
             }
         }
 
         if skipped_required_block_match {
             Some(Type::Untyped)
         } else {
-            None
+            unknown_arg_return.map(|(_, ret)| ret)
         }
     }
 
@@ -46935,6 +46958,9 @@ impl<'a> InferenceEngine<'a> {
         receiver_type: &Type,
         cache: &mut RbsRelationCache,
     ) -> bool {
+        if Self::is_unresolved_call_arg_type(actual_type) {
+            return true;
+        }
         if let Type::Union(parts) = actual_type {
             return parts.iter().all(|part| {
                 self.rbs_type_matches_registry_relations_cached(
