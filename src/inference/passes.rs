@@ -488,6 +488,26 @@ impl<'a> InferenceEngine<'a> {
                     visiting,
                     depth + 1,
                 );
+                if let Type::Union(parts) = &resolved_receiver
+                    && parts.contains(&Type::Untyped)
+                {
+                    let arms = parts
+                        .iter()
+                        .map(|part| {
+                            if *part == Type::Untyped {
+                                return Type::Untyped;
+                            }
+                            Self::resolve_general_method_refs_depth(
+                                registry,
+                                context_class,
+                                &Type::ReceiverMethodRef(Box::new(part.clone()), *method_name),
+                                visiting,
+                                depth + 1,
+                            )
+                        })
+                        .collect();
+                    return Type::from_type_vec_preserve_untyped(arms);
+                }
                 if let Some(receiver_class) = Self::static_type_to_class_name(&resolved_receiver) {
                     let ret = registry
                         .lookup_method_return_type_direct(&receiver_class, method_name)
@@ -538,7 +558,7 @@ impl<'a> InferenceEngine<'a> {
                 );
                 Self::resolve_method_ref_projection(ty, resolved_inner)
             }
-            Type::Union(parts) => Type::from_type_vec(
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
                 parts
                     .iter()
                     .map(|part| match part {
@@ -594,7 +614,7 @@ impl<'a> InferenceEngine<'a> {
         depth: usize,
     ) -> Type {
         match ty {
-            Type::Union(parts) => Type::from_type_vec(
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
                 parts
                     .iter()
                     .map(|part| {
@@ -884,7 +904,7 @@ impl<'a> InferenceEngine<'a> {
                 }
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
             }
-            Type::Union(parts) => Type::from_type_vec(
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
                 parts
                     .iter()
                     .map(|t| Self::resolve_subclass_refs_in_type(registry, t))

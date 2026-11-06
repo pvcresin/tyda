@@ -1045,6 +1045,8 @@ pub struct InferenceEngine<'a> {
     bare_super_target_returns: FxHashMap<(String, String, bool), Type>,
     replayed_callee_names: FxHashSet<String>,
     suppress_body_call_sites: bool,
+    receiver_type_override: Option<(usize, usize, Type)>,
+    dispatching_typed_receiver_arm: bool,
     /// Enclosing `class`/`module` names that are not part of the current FQN
     /// (`class ::Bar` inside `module Foo`).
     lexical_parent_stack: Vec<String>,
@@ -2448,6 +2450,8 @@ impl<'a> InferenceEngine<'a> {
             bare_super_target_returns: FxHashMap::default(),
             replayed_callee_names: FxHashSet::default(),
             suppress_body_call_sites: false,
+            receiver_type_override: None,
+            dispatching_typed_receiver_arm: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
             singleton_constants: HashMap::new(),
@@ -2521,6 +2525,8 @@ impl<'a> InferenceEngine<'a> {
             bare_super_target_returns: FxHashMap::default(),
             replayed_callee_names: FxHashSet::default(),
             suppress_body_call_sites: false,
+            receiver_type_override: None,
+            dispatching_typed_receiver_arm: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
             singleton_constants: HashMap::new(),
@@ -4220,7 +4226,9 @@ impl<'a> InferenceEngine<'a> {
             // The syntax walk cannot resolve method-local ParamRefs; body replay records them with caller context.
             call_site.keyword_rest_shape = None;
         }
-        if self.suppress_body_call_sites && Self::call_site_contains_param_ref(&call_site) {
+        if self.dispatching_typed_receiver_arm
+            || (self.suppress_body_call_sites && Self::call_site_contains_param_ref(&call_site))
+        {
             return;
         }
         if self.suppress_external_merge {
@@ -27703,6 +27711,12 @@ impl<'a> InferenceEngine<'a> {
         let Some(_infer_guard) = InferNodeGuard::enter() else {
             return Type::Untyped;
         };
+        if let Some((start, end, ty)) = &self.receiver_type_override
+            && node.location().start_offset() == *start
+            && node.location().end_offset() == *end
+        {
+            return ty.clone();
+        }
         if let Some(inferred) = self.context_free_node_type_cached(node) {
             return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
         }
@@ -29185,6 +29199,30 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         receiver_type
                     };
+                    if let Some(result) = self.dispatch_receiver_union_with_unknown_arm(
+                        class_name,
+                        node,
+                        &receiver,
+                        &receiver_type,
+                        parse_result,
+                        scope,
+                    ) {
+                        return result;
+                    }
+                    if Self::type_contains_receiver_resolution_ref(&receiver_type) {
+                        let resolved_arms =
+                            self.resolve_receiver_method_refs_keeping_untyped(&receiver_type);
+                        if let Some(result) = self.dispatch_receiver_union_with_unknown_arm(
+                            class_name,
+                            node,
+                            &receiver,
+                            &resolved_arms,
+                            parse_result,
+                            scope,
+                        ) {
+                            return result;
+                        }
+                    }
                     let track_deferred_block_receiver = (call_node.block().is_some()
                         || call_node.arguments().is_some())
                         && (self.defer_unresolved_body_call_sites
@@ -31278,6 +31316,18 @@ impl<'a> InferenceEngine<'a> {
 
                         let effective_receiver =
                             self.try_resolve_receiver_inline(class_name, &safe_nav_receiver_type);
+                        if effective_receiver != safe_nav_receiver_type
+                            && let Some(result) = self.dispatch_receiver_union_with_unknown_arm(
+                                class_name,
+                                node,
+                                &receiver,
+                                &effective_receiver,
+                                parse_result,
+                                scope,
+                            )
+                        {
+                            break 'recv wrap(result);
+                        }
                         let resolved = self.resolve_method_on_call(
                             &effective_receiver,
                             &method_name,
@@ -52712,6 +52762,78 @@ impl<'a> InferenceEngine<'a> {
         )
     }
 
+    /// A call on a union dispatches per arm. A typed arm resolves as usual, an `untyped` arm yields
+    /// `untyped`, and an arm known only later keeps a deferred call when nothing else depends on
+    /// the call's arguments or block. A `nil` arm has no method to dispatch to.
+    fn dispatch_receiver_union_with_unknown_arm(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        receiver: &Node<'_>,
+        receiver_type: &Type,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<Type> {
+        let Type::Union(parts) = receiver_type else {
+            return None;
+        };
+        let call = node.as_call_node()?;
+        let method_name = String::from_utf8_lossy(call.name().as_slice());
+        if !parts.iter().any(Self::is_unresolved_receiver)
+            || matches!(method_name.as_ref(), "presence" | "presence_in")
+        {
+            return None;
+        }
+        let location = receiver.location();
+        let (start, end) = (location.start_offset(), location.end_offset());
+        if self
+            .receiver_type_override
+            .as_ref()
+            .is_some_and(|(active_start, active_end, _)| {
+                *active_start == start && *active_end == end
+            })
+        {
+            return None;
+        }
+        let typed_arms: Vec<Type> = parts
+            .iter()
+            .filter(|part| !Self::is_unresolved_receiver(part) && **part != Type::Nil)
+            .cloned()
+            .collect();
+        if typed_arms.is_empty() {
+            return None;
+        }
+        let saved_override =
+            self.receiver_type_override
+                .replace((start, end, receiver_type.clone()));
+        // Hover, diagnostics, and call sites keep seeing the whole union.
+        self.infer_node_type_inner(class_name, node, parse_result, scope);
+        self.receiver_type_override = Some((start, end, Type::from_type_vec(typed_arms)));
+        let saved_snapshots = std::mem::replace(&mut self.record_hover_snapshots, false);
+        let saved_dispatching = std::mem::replace(&mut self.dispatching_typed_receiver_arm, true);
+        let typed_result = self.infer_node_type_inner(class_name, node, parse_result, scope);
+        self.dispatching_typed_receiver_arm = saved_dispatching;
+        self.record_hover_snapshots = saved_snapshots;
+        self.receiver_type_override = saved_override;
+
+        let can_defer = call.block().is_none()
+            && call
+                .arguments()
+                .is_none_or(|arguments| arguments.arguments().iter().next().is_none());
+        let mut results = vec![typed_result];
+        for part in parts
+            .iter()
+            .filter(|part| Self::is_unresolved_receiver(part))
+        {
+            results.push(if *part == Type::Untyped || !can_defer {
+                Type::Untyped
+            } else {
+                Type::ReceiverMethodRef(Box::new(part.clone()), Sym::new(&method_name))
+            });
+        }
+        Some(Type::from_type_vec_preserve_untyped(results))
+    }
+
     fn receiver_union_flags(ty: &Type) -> (bool, bool) {
         let Type::Union(parts) = ty else {
             return (false, false);
@@ -53447,6 +53569,20 @@ impl<'a> InferenceEngine<'a> {
         self.resolve_receiver_method_refs_after_preflight(ty)
     }
 
+    fn resolve_receiver_method_refs_keeping_untyped(&mut self, ty: &Type) -> Type {
+        let mut memo = std::mem::take(&mut self.receiver_ref_memo_scratch);
+        let mut visiting = std::mem::take(&mut self.receiver_ref_visiting_scratch);
+        memo.clear();
+        visiting.clear();
+        let resolved =
+            self.resolve_receiver_method_refs_depth(ty, 0, &mut memo, &mut visiting, true);
+        memo.clear();
+        visiting.clear();
+        self.receiver_ref_memo_scratch = memo;
+        self.receiver_ref_visiting_scratch = visiting;
+        resolved
+    }
+
     fn resolve_receiver_method_refs_with_deferred_candidate(&mut self, ty: &Type) -> (Type, bool) {
         if !Self::type_contains_receiver_resolution_ref(ty) {
             return (ty.clone(), false);
@@ -53577,6 +53713,26 @@ impl<'a> InferenceEngine<'a> {
                     visiting,
                     preserve_untyped,
                 );
+                if let Type::Union(parts) = &resolved_receiver
+                    && parts.contains(&Type::Untyped)
+                {
+                    let arms = parts
+                        .iter()
+                        .map(|part| {
+                            if *part == Type::Untyped {
+                                return Type::Untyped;
+                            }
+                            self.resolve_receiver_method_refs_depth(
+                                &Type::ReceiverMethodRef(Box::new(part.clone()), *method_name),
+                                depth + 1,
+                                memo,
+                                visiting,
+                                preserve_untyped,
+                            )
+                        })
+                        .collect();
+                    return Type::from_type_vec_preserve_untyped(arms);
+                }
                 if let Some(result) =
                     self.resolve_receiver_ref_overloaded_return(&resolved_receiver, method_name)
                 {

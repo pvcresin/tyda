@@ -1216,7 +1216,8 @@ impl Type {
                 Type::Intersection(types.into_iter().map(|t| t.widen_arg_for_param()).collect())
             }
             Type::Union(parts) => {
-                Self::from_type_vec(parts.into_iter().map(Type::widen_arg_for_param).collect())
+                let widened = parts.into_iter().map(Type::widen_arg_for_param).collect();
+                Self::from_type_vec_preserve_untyped(widened)
             }
             Type::Generic { base, args } => Type::Generic {
                 base,

@@ -689,8 +689,8 @@ end
 
 ```rbs
 class AttributeRecordHolder
-  def options: -> Hash[untyped, untyped] | { fixed: bool, dynamic: untyped }
-  def initialize: (?options: (Hash[untyped, untyped] | { fixed: bool, dynamic: untyped })) -> void
+  def options: -> Hash[untyped, untyped] | { fixed: bool, dynamic: bool | untyped }
+  def initialize: (?options: (Hash[untyped, untyped] | { fixed: bool, dynamic: bool })) -> void
 end
 
 class Object < BasicObject

@@ -7934,6 +7934,10 @@ impl TypeRegistry {
                     let mut resolved_members: Vec<Type> = Vec::with_capacity(members.len());
                     let mut all_concrete = true;
                     for member in members.iter() {
+                        if *member == Type::Untyped {
+                            resolved_members.push(Type::Untyped);
+                            continue;
+                        }
                         let member_ref =
                             Type::ReceiverMethodRef(Box::new(member.clone()), *method_name);
                         let resolved_member = self.resolve_global_refs(
@@ -7955,7 +7959,7 @@ impl TypeRegistry {
                         }
                     }
                     if all_concrete {
-                        Type::from_type_vec(resolved_members)
+                        Type::from_type_vec_preserve_untyped(resolved_members)
                     } else {
                         Self::deferred_receiver_method_ref(
                             receiver_type,
@@ -8074,7 +8078,7 @@ impl TypeRegistry {
                     // a member resolved to untyped counts as no-progress (`from_type_vec` drops untyped, which would incorrectly narrow `untyped|nil`->`nil`).
                     ty.clone()
                 } else {
-                    Type::from_type_vec(resolved)
+                    Type::from_type_vec_preserve_untyped(resolved)
                 }
             }
             Type::Intersection(parts) => {
@@ -8370,7 +8374,9 @@ impl TypeRegistry {
                 } else if let Type::Union(parts) = &resolved_receiver {
                     let mut resolved_parts: Vec<Type> = Vec::new();
                     for part in parts {
-                        if let Some(cls) = Self::type_to_class_name(part) {
+                        if *part == Type::Untyped {
+                            resolved_parts.push(Type::Untyped);
+                        } else if let Some(cls) = Self::type_to_class_name(part) {
                             let prefer_singleton = matches!(part, Type::Singleton(_));
                             let ret = self
                                 .lookup_method_return_type_with_hint(
@@ -9109,7 +9115,9 @@ impl TypeRegistry {
         if let Type::Union(parts) = resolved_receiver {
             let mut resolved_parts: Vec<Type> = Vec::new();
             for part in parts {
-                if let Some(cls) = Self::type_to_class_name(part) {
+                if *part == Type::Untyped {
+                    resolved_parts.push(Type::Untyped);
+                } else if let Some(cls) = Self::type_to_class_name(part) {
                     let prefer_singleton = matches!(part, Type::Singleton(_));
                     let ret = self
                         .lookup_method_return_type_with_hint(&cls, method_name, prefer_singleton)

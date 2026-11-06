@@ -141,6 +141,78 @@ class UntypedUnionPredicate
 end
 ```
 
+## Dispatch a call per arm when the receiver union has an untyped arm
+
+### update
+
+```ruby
+class UntypedArmTarget
+  def label = :label
+  def with_block = yield
+end
+
+class UntypedArmCaller
+  #: () -> untyped
+  def dynamic_value; end
+
+  def receiver
+    @receiver ||= (dynamic_value ? dynamic_value : UntypedArmTarget.new)
+  end
+
+  def method_receiver = receiver.label
+
+  def ivar_receiver
+    @receiver.label
+  end
+
+  def local_receiver(flag)
+    value = flag ? dynamic_value : UntypedArmTarget.new
+    value.label
+  end
+
+  def block_call(flag)
+    value = flag ? dynamic_value : UntypedArmTarget.new
+    value.with_block { :from_block }
+  end
+
+  def safe_navigation(flag)
+    value = flag ? dynamic_value : UntypedArmTarget.new
+    value&.label
+  end
+
+  def nil_arm_stays_unknown(flag)
+    value = flag ? dynamic_value : nil
+    value.label
+  end
+
+  def typed_arms_only(flag)
+    value = flag ? UntypedArmTarget.new : :symbol
+    value.to_s
+  end
+end
+```
+
+### result
+
+```rbs
+class UntypedArmCaller
+  def dynamic_value: -> untyped
+  def receiver: -> untyped | UntypedArmTarget
+  def method_receiver: -> untyped | :label
+  def ivar_receiver: -> untyped | :label
+  def local_receiver: (untyped flag) -> (untyped | :label)
+  def block_call: (untyped flag) -> (untyped | :from_block)
+  def safe_navigation: (untyped flag) -> (untyped | :label)
+  def nil_arm_stays_unknown: (untyped flag) -> untyped
+  def typed_arms_only: (untyped flag) -> String
+end
+
+class UntypedArmTarget
+  def label: -> :label
+  def with_block: { () -> :from_block } -> :from_block
+end
+```
+
 ## Keep source-defined nil predicates unknown on an untyped union
 
 ### update
@@ -170,7 +242,7 @@ end
 
 class UntypedUnionOverride
   def dynamic_value: -> untyped
-  def nil_predicate: (untyped flag) -> untyped
+  def nil_predicate: (untyped flag) -> (untyped | :sentinel)
 end
 ```
 

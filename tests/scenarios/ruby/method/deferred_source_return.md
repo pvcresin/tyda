@@ -286,7 +286,7 @@ end
 
 ```rbs
 class MixedHashReceiver
-  def kept_settings: -> untyped
+  def kept_settings: -> untyped | Hash[untyped, untyped]
 end
 ```
 
