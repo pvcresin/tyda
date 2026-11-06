@@ -302,8 +302,8 @@ end
 class PredicateWithAlias
   def maybe_string: -> String?
   def present?: (String? value) -> bool
-  alias aliased_present? present?
   def checked: -> (String | :none)?
+  alias aliased_present? present?
 end
 ```
 
