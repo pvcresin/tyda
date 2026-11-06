@@ -7734,7 +7734,8 @@ impl<'a> InferenceEngine<'a> {
         loop_scope.clear_self_facts();
         loop_scope.break_types.clear();
         loop_scope.next_types.clear();
-        if !is_begin_modifier {
+        // Local writes in a loop predicate keep their dedicated handling below.
+        if !is_begin_modifier && Self::condition_has_pattern_capture(predicate) {
             let body_outcome = if is_until {
                 ConditionOutcome::Falsy
             } else {
@@ -58321,6 +58322,33 @@ impl<'a> InferenceEngine<'a> {
             }),
             Node::CallNode { .. } => Self::negated_operand(node)
                 .is_some_and(|operand| Self::condition_has_flow_effects(&operand)),
+            _ => false,
+        }
+    }
+
+    fn condition_has_pattern_capture(node: &Node<'_>) -> bool {
+        match node {
+            Node::MatchPredicateNode { .. } => true,
+            Node::ParenthesesNode { .. } => node
+                .as_parentheses_node()
+                .and_then(|paren| paren.body())
+                .is_some_and(|body| Self::condition_has_pattern_capture(&body)),
+            Node::StatementsNode { .. } => node.as_statements_node().is_some_and(|statements| {
+                statements
+                    .body()
+                    .iter()
+                    .any(|statement| Self::condition_has_pattern_capture(&statement))
+            }),
+            Node::AndNode { .. } => node.as_and_node().is_some_and(|and_node| {
+                Self::condition_has_pattern_capture(&and_node.left())
+                    || Self::condition_has_pattern_capture(&and_node.right())
+            }),
+            Node::OrNode { .. } => node.as_or_node().is_some_and(|or_node| {
+                Self::condition_has_pattern_capture(&or_node.left())
+                    || Self::condition_has_pattern_capture(&or_node.right())
+            }),
+            Node::CallNode { .. } => Self::negated_operand(node)
+                .is_some_and(|operand| Self::condition_has_pattern_capture(&operand)),
             _ => false,
         }
     }

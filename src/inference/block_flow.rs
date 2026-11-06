@@ -58,7 +58,12 @@ struct BlockFlowWalker {
     returned_unforwarded: bool,
     forward_target: Option<SharedName>,
     loop_exits: Vec<FlowState>,
+    depth: usize,
+    too_deep: bool,
 }
+
+/// Guards pathological nesting; past it, the block counts as possibly invoked.
+const MAX_FLOW_DEPTH: usize = 256;
 
 pub(super) fn summarize_block_flow(
     body: &Node<'_>,
@@ -72,6 +77,13 @@ pub(super) fn summarize_block_flow(
         walker.ever_held.insert(name);
     }
     walker.visit(body);
+    if walker.too_deep {
+        return BlockFlowSummary {
+            may_invoke: true,
+            must_invoke: false,
+            forward: None,
+        };
+    }
     let state = &walker.state;
     let forward = walker.forward_target.take().map(|name| BlockForward {
         name,
@@ -169,6 +181,11 @@ fn read_name(node: &Node<'_>) -> Option<Vec<u8>> {
 }
 
 impl BlockFlowWalker {
+    fn exceeded_depth(&mut self) -> bool {
+        self.too_deep |= self.depth > MAX_FLOW_DEPTH;
+        self.too_deep
+    }
+
     /// A condition answered by the block being present.
     fn known_truthiness(&self, node: &Node<'_>) -> Option<bool> {
         if let Some(call) = node.as_call_node() {
@@ -351,6 +368,14 @@ impl BlockFlowWalker {
 }
 
 impl<'pr> Visit<'pr> for BlockFlowWalker {
+    fn visit_branch_node_enter(&mut self, _node: Node<'pr>) {
+        self.depth += 1;
+    }
+
+    fn visit_branch_node_leave(&mut self) {
+        self.depth -= 1;
+    }
+
     fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
     fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
     fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
@@ -371,6 +396,9 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
     }
 
     fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         let value = strip_parentheses(node.value());
         let source = read_name(&value);
         if source.is_none() {
@@ -411,6 +439,9 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
     }
 
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         let name = node.name();
         let name = name.as_slice();
         let receiver = node.receiver();
@@ -457,14 +488,23 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
     }
 
     fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         self.visit_closure(node.parameters(), node.body());
     }
 
     fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         self.visit_closure(node.parameters(), node.body());
     }
 
     fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         let known = self.known_truthiness(&strip_parentheses(node.predicate()));
         if known.is_none() {
             self.visit(&node.predicate());
@@ -485,6 +525,9 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
     }
 
     fn visit_unless_node(&mut self, node: &ruby_prism::UnlessNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         let known = self.known_truthiness(&strip_parentheses(node.predicate()));
         if known.is_none() {
             self.visit(&node.predicate());
@@ -505,6 +548,9 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
     }
 
     fn visit_and_node(&mut self, node: &ruby_prism::AndNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         let left = strip_parentheses(node.left());
         match self.known_truthiness(&left) {
             Some(true) => self.visit(&node.right()),
@@ -517,6 +563,9 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
     }
 
     fn visit_or_node(&mut self, node: &ruby_prism::OrNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         let left = strip_parentheses(node.left());
         match self.known_truthiness(&left) {
             Some(false) => self.visit(&node.right()),
@@ -529,6 +578,9 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
     }
 
     fn visit_case_node(&mut self, node: &ruby_prism::CaseNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         if let Some(predicate) = node.predicate() {
             self.visit(&predicate);
         }
@@ -543,6 +595,9 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
     }
 
     fn visit_case_match_node(&mut self, node: &ruby_prism::CaseMatchNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         if let Some(predicate) = node.predicate() {
             self.visit(&predicate);
         }
@@ -555,20 +610,32 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
     }
 
     fn visit_while_node(&mut self, node: &ruby_prism::WhileNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         self.visit_loop(Some(node.predicate()), node.statements());
     }
 
     fn visit_until_node(&mut self, node: &ruby_prism::UntilNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         self.visit_loop(Some(node.predicate()), node.statements());
     }
 
     fn visit_for_node(&mut self, node: &ruby_prism::ForNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         self.visit(&node.collection());
         self.visit(&node.index());
         self.visit_loop(None, node.statements());
     }
 
     fn visit_begin_node(&mut self, node: &ruby_prism::BeginNode<'pr>) {
+        if self.exceeded_depth() {
+            return;
+        }
         let entry = self.state.clone();
         if let Some(statements) = node.statements() {
             self.visit_statements_node(&statements);
