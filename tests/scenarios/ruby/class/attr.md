@@ -541,15 +541,20 @@ end
 
 ## Local receiver setter refines a later getter
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
 class DirectStore
   attr_accessor :value
+  attr_accessor :other
+
+  def touch; end
+
+  def custom=(value)
+    @custom = value.to_s
+  end
+
+  attr_reader :custom
 end
 
 def store_direct
@@ -557,18 +562,97 @@ def store_direct
   store.value = 1
   store.value
 end
+
+def store_last_write_wins
+  store = DirectStore.new
+  store.value = 1
+  store.value = :two
+  store.value
+end
+
+def store_branch_joins_writes(flag)
+  store = DirectStore.new
+  if flag
+    store.value = 1
+  else
+    store.value = :two
+  end
+  store.value
+end
+
+def store_loop_write_ends_fact(flag)
+  store = DirectStore.new
+  store.value = 1
+  while flag
+    store.value = :two
+  end
+  store.value
+end
+
+def store_string_keeps_class
+  store = DirectStore.new
+  store.value = "text"
+  store.value
+end
+
+def store_call_ends_fact
+  store = DirectStore.new
+  store.value = 1
+  store.touch
+  store.value
+end
+
+def store_alias_ends_fact
+  store = DirectStore.new
+  other = store
+  store.value = 1
+  other.value = :two
+  store.value
+end
+
+def store_parameter_keeps_no_fact(store)
+  store.value = 1
+  store.value
+end
+
+def store_custom_writer_keeps_no_fact
+  store = DirectStore.new
+  store.custom = 1
+  store.custom
+end
+
+def store_array_keeps_no_fact
+  store = DirectStore.new
+  store.other = []
+  store.other << 1
+  store.other
+end
 ```
 
 ### result
 
 ```rbs
 class DirectStore
-  def value: -> Integer
-  def value=: (Integer value) -> 1
+  def value: -> Integer | String | Symbol
+  def value=: ((Integer | String | Symbol) value) -> (Integer | String | Symbol)
+  def other: -> [ ]
+  def other=: ([ ] other) -> [ ]
+  def touch: -> nil
+  def custom=: (Integer value) -> String
+  def custom: -> String | untyped
 end
 
 class Object < BasicObject
   def store_direct: -> 1
+  def store_last_write_wins: -> :two
+  def store_branch_joins_writes: (untyped flag) -> (1 | :two)
+  def store_loop_write_ends_fact: (untyped flag) -> untyped
+  def store_string_keeps_class: -> String
+  def store_call_ends_fact: -> untyped
+  def store_alias_ends_fact: -> untyped
+  def store_parameter_keeps_no_fact: (untyped store) -> untyped
+  def store_custom_writer_keeps_no_fact: -> String | untyped
+  def store_array_keeps_no_fact: -> untyped
 end
 ```
 

@@ -44,6 +44,7 @@ pub(crate) mod hover;
 mod method_tables;
 mod passes;
 mod plugins;
+mod receiver_attr_flow;
 pub(crate) use plugins::builtin_plugin_manifests;
 mod rails_dsl;
 mod rbs;
@@ -1586,6 +1587,7 @@ pub(crate) struct Scope {
     self_facts: Arc<HashMap<String, Type>>,
     array_first_facts: Arc<HashMap<ArrayGuardKey, Type>>,
     hash_key_facts: Arc<hash_key_flow::HashKeyFacts>,
+    exclusive_receiver_facts: Arc<receiver_attr_flow::ExclusiveReceiverFacts>,
     runtime_facts: Arc<HashMap<String, RuntimeFact>>,
     respond_to_guards: Arc<HashMap<String, Vec<Vec<String>>>>,
     initialized_record_keys: Arc<HashSet<(String, String)>>,
@@ -1785,6 +1787,7 @@ impl Scope {
             self_facts: self.self_facts.clone(),
             array_first_facts: self.array_first_facts.clone(),
             hash_key_facts: self.hash_key_facts.clone(),
+            exclusive_receiver_facts: self.exclusive_receiver_facts.clone(),
             runtime_facts: self.runtime_facts.clone(),
             respond_to_guards: self.respond_to_guards.clone(),
             initialized_record_keys: self.initialized_record_keys.clone(),
@@ -1804,6 +1807,7 @@ impl Scope {
         scope.break_types.clear();
         scope.clear_array_first_facts();
         scope.hash_key_facts = Arc::default();
+        scope.exclusive_receiver_facts = Arc::default();
         scope
     }
 
@@ -4343,6 +4347,7 @@ impl<'a> InferenceEngine<'a> {
             merged.self_facts = Self::merge_branch_self_facts(then_scope, else_scope);
             merged.array_first_facts = Arc::default();
             merged.hash_key_facts = Arc::default();
+            merged.exclusive_receiver_facts = Arc::default();
             merged.initialized_record_keys = Arc::new(
                 then_scope
                     .initialized_record_keys
@@ -4413,6 +4418,10 @@ impl<'a> InferenceEngine<'a> {
             hash_key_facts: Arc::new(hash_key_flow::merge_hash_key_facts(
                 &then_scope.hash_key_facts,
                 &else_scope.hash_key_facts,
+            )),
+            exclusive_receiver_facts: Arc::new(receiver_attr_flow::merge_exclusive_receiver_facts(
+                &then_scope.exclusive_receiver_facts,
+                &else_scope.exclusive_receiver_facts,
             )),
             runtime_facts: base.runtime_facts.clone(),
             respond_to_guards: Arc::default(),
@@ -4776,6 +4785,7 @@ impl<'a> InferenceEngine<'a> {
             self_facts: Arc::default(),
             array_first_facts: Arc::default(),
             hash_key_facts: base.hash_key_facts.clone(),
+            exclusive_receiver_facts: base.exclusive_receiver_facts.clone(),
             runtime_facts: base.runtime_facts.clone(),
             respond_to_guards: Arc::default(),
             initialized_record_keys: base.initialized_record_keys.clone(),
@@ -24594,6 +24604,7 @@ impl<'a> InferenceEngine<'a> {
             );
         }
         self.record_hash_index_assignment(class_name, node, parse_result, scope);
+        self.update_exclusive_receiver_facts_for_statement(class_name, node, parse_result, scope);
         self.apply_sorbet_self_bind_for_statement(class_name, node, parse_result, scope);
         let invalidates_self_facts = !scope.self_facts.is_empty()
             && self.statement_invalidates_self_facts(
@@ -24643,6 +24654,7 @@ impl<'a> InferenceEngine<'a> {
                 let runtime_fact =
                     self.runtime_fact_from_value(class_name, &value_node, parse_result, scope);
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
+                let value_type_for_facts = value_type.clone();
                 self.apply_condition_effects(
                     class_name,
                     &value_node,
@@ -24710,6 +24722,12 @@ impl<'a> InferenceEngine<'a> {
                     scope.set_runtime_fact(&var_name, runtime_fact);
                 }
                 Self::record_empty_hash_assignment(&var_name, &value_node, scope);
+                self.record_exclusive_receiver_assignment(
+                    &var_name,
+                    &value_node,
+                    &value_type_for_facts,
+                    scope,
+                );
             }
             Node::InstanceVariableWriteNode { .. } => {
                 let write_node = node
@@ -27690,6 +27708,11 @@ impl<'a> InferenceEngine<'a> {
         }
         if !scope.hash_key_facts.is_empty()
             && let Some(inferred) = self.hash_key_fact_read(class_name, node, parse_result, scope)
+        {
+            return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
+        }
+        if !scope.exclusive_receiver_facts.is_empty()
+            && let Some(inferred) = Self::exclusive_receiver_attribute_read(node, scope)
         {
             return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
         }
