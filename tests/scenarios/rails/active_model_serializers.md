@@ -202,7 +202,7 @@ class ASerializer < ActiveModel::Serializer
 end
 ```
 
-## Infer CamelCase classes from attributes DSL ivars
+## Attributes DSL ivars do not take a class from their name
 
 ### update
 
@@ -230,11 +230,11 @@ class Account
 end
 
 class Presenter < ActiveModelSerializers::Model
-  def account: -> Account
-  def account=: (Account account) -> Account
+  def account: -> untyped
+  def account=: (untyped account) -> untyped
   def label: -> String
   def label=: (String label) -> "default"
-  def initialize: (Account account) -> void
+  def initialize: (untyped account) -> void
 end
 ```
 

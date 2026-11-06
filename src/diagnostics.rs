@@ -1534,6 +1534,7 @@ mod tests {
             "end\n",
             "\n",
             "class Owner\n",
+            "  #: (Node node) -> void\n",
             "  def initialize(node)\n",
             "    @node = node\n",
             "  end\n",

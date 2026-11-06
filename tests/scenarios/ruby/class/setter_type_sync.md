@@ -32,7 +32,7 @@ class Config
 end
 ```
 
-## attr_writer setter param follows CamelCase inference
+## attr_writer setter param does not take a class from its name
 
 ```ruby
 class Account
@@ -56,8 +56,8 @@ class Account
 end
 
 class Service
-  def account=: (Account account) -> Account
-  def initialize: (Account account) -> void
+  def account=: (untyped account) -> untyped
+  def initialize: (untyped account) -> void
 end
 ```
 

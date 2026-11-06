@@ -6535,7 +6535,7 @@ impl TypeRegistry {
         None
     }
 
-    /// untyped ivar: uses the call-site type of the same-named `initialize` param, falling back to a param-name->class heuristic.
+    /// untyped ivar: uses the call-site type of the same-named `initialize` param.
     pub(crate) fn infer_attr_type_from_initialize(
         &self,
         class_name: &str,
@@ -6657,38 +6657,7 @@ impl TypeRegistry {
             }
         }
 
-        self.infer_attr_type_from_initialize_camel_for_class(class_name, ivar_name)
-    }
-
-    fn infer_attr_type_from_initialize_camel(&self, ivar_name: &str) -> Option<Type> {
-        let param_name = ivar_name.strip_prefix('@').unwrap_or(ivar_name);
-        let camel = to_camel_case(param_name);
-        if self.class_data.contains_key(camel.as_str()) {
-            return Some(Type::Class(Sym::new(camel)));
-        }
         None
-    }
-
-    /// camel-case ivar heuristic: only adopt the class type when `initialize` has a same-named param (prevents misinferring `@key`->`Key`).
-    fn infer_attr_type_from_initialize_camel_for_class(
-        &self,
-        class_name: &str,
-        ivar_name: &str,
-    ) -> Option<Type> {
-        let param_name = ivar_name.strip_prefix('@').unwrap_or(ivar_name);
-        let data = self.class_data.get(class_name)?;
-        let init_method = data
-            .methods
-            .iter()
-            .find(|m| m.name == "initialize" && !m.is_singleton)?;
-        if !init_method
-            .param_infos
-            .iter()
-            .any(|pi| pi.name == param_name)
-        {
-            return None;
-        }
-        self.infer_attr_type_from_initialize_camel(ivar_name)
     }
 
     fn resolve_initialize_param_passthrough_type(
@@ -7865,36 +7834,20 @@ impl TypeRegistry {
                                 self.infer_attr_type_from_initialize(context_class, ivar_name);
                             match from_init {
                                 Some(ref t) if Self::is_concrete_for_global_resolve(t) => t.clone(),
-                                _ => self
-                                    .infer_attr_type_from_initialize_camel_for_class(
-                                        context_class,
-                                        ivar_name,
-                                    )
-                                    .unwrap_or_else(|| ty.clone()),
+                                _ => ty.clone(),
                             }
                         }
                         Some(ref resolved) if Self::is_concrete_for_global_resolve(resolved) => {
                             resolved.clone()
                         }
-                        Some(resolved) => {
-                            let deep = self.resolve_global_refs(
-                                context_class,
-                                &resolved,
-                                visiting,
-                                memo,
-                                depth + 1,
-                                budget,
-                            );
-                            if Self::is_concrete_for_global_resolve(&deep) {
-                                deep
-                            } else {
-                                self.infer_attr_type_from_initialize_camel_for_class(
-                                    context_class,
-                                    ivar_name,
-                                )
-                                .unwrap_or(deep)
-                            }
-                        }
+                        Some(resolved) => self.resolve_global_refs(
+                            context_class,
+                            &resolved,
+                            visiting,
+                            memo,
+                            depth + 1,
+                            budget,
+                        ),
                     };
                     visiting.remove(&key);
                     result
@@ -11884,19 +11837,6 @@ impl TypeRegistry {
             _ => false,
         }
     }
-}
-
-fn to_camel_case(snake: &str) -> String {
-    snake
-        .split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
