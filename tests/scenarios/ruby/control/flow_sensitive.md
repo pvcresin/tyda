@@ -2598,3 +2598,167 @@ class ConditionAssignmentResource
   def value: -> "value"
 end
 ```
+
+## Apply Array refinements to tuple unions
+
+### update
+
+```ruby
+module AlwaysEmptyArray
+  refine Array do
+    def empty? = true
+  end
+end
+using AlwaysEmptyArray
+
+def refined_array_empty(flag)
+  values = flag ? [] : ["item"]
+  if values.empty?
+    :reachable
+  else
+    :unreachable
+  end
+end
+refined_array_empty(true)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def refined_array_empty: (bool flag) -> :reachable
+end
+```
+
+## Apply inherited Array refinements to subclasses
+
+### update
+
+```ruby
+module AlwaysEmptyArray
+  refine Array do
+    def empty? = true
+  end
+end
+using AlwaysEmptyArray
+
+class MyArray < Array; end
+
+def refined_array_subclass_empty
+  if MyArray.new.empty?
+    :reachable
+  else
+    :unreachable
+  end
+end
+refined_array_subclass_empty
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def refined_array_subclass_empty: -> :reachable
+end
+```
+
+## Let an ancestor refinement precede an Object fallback
+
+### update
+
+```ruby
+class Object
+  def refined_addition = :object
+end
+
+module ArrayAdditionRefinement
+  refine Array do
+    def refined_addition = :array
+  end
+end
+using ArrayAdditionRefinement
+
+class MyArray < Array; end
+
+def refined_array_addition
+  MyArray.new.refined_addition
+end
+refined_array_addition
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def refined_addition: -> :object
+  def refined_array_addition: -> :array
+end
+```
+
+## A subclass method wins over an ancestor refinement
+
+### update
+
+```ruby
+module AlwaysEmptyArray
+  refine Array do
+    def empty? = true
+  end
+end
+using AlwaysEmptyArray
+
+class NeverEmptyArray < Array
+  def empty? = false
+end
+
+def subclass_method_wins
+  if NeverEmptyArray.new.empty?
+    :refined
+  else
+    :subclass
+  end
+end
+subclass_method_wins
+```
+
+### result
+
+```rbs
+class NeverEmptyArray < Array
+  def empty?: -> false
+end
+
+class Object < BasicObject
+  def subclass_method_wins: -> :subclass
+end
+```
+
+## An active String#=~ refinement replaces literal regexp folding
+
+### update
+
+```ruby
+module NeverMatchStringRegexp
+  refine String do
+    def =~(_regexp) = false
+  end
+end
+using NeverMatchStringRegexp
+
+def refined_regexp
+  if "haystack" =~ /hay/
+    :matched
+  else
+    :unmatched
+  end
+end
+refined_regexp
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def refined_regexp: -> :unmatched
+end
+```

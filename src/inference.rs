@@ -6603,7 +6603,9 @@ impl<'a> InferenceEngine<'a> {
         if let Some(truthiness) = Self::syntactic_node_truthiness(node) {
             return Some(truthiness);
         }
-        if let Some(truthiness) = self.static_regexp_match_truthiness(node, parse_result) {
+        if let Some(truthiness) =
+            self.static_regexp_match_truthiness(node, inferred_type, parse_result)
+        {
             return Some(truthiness);
         }
         if let Some(read) = node.as_instance_variable_read_node() {
@@ -6742,6 +6744,7 @@ impl<'a> InferenceEngine<'a> {
     fn static_regexp_match_truthiness(
         &mut self,
         node: &Node<'_>,
+        inferred_type: &Type,
         parse_result: &ParseResult<'_>,
     ) -> Option<bool> {
         let call = if let Some(match_node) = node.as_match_write_node() {
@@ -6792,6 +6795,16 @@ impl<'a> InferenceEngine<'a> {
         } else {
             return None;
         };
+        if self
+            .refinement_methods
+            .get(receiver_class)
+            .is_some_and(|methods| methods.contains_key("=~"))
+            && self
+                .active_refinement_set_at(call.location().start_offset())
+                .contains(receiver_class)
+        {
+            return Self::node_truthiness(inferred_type);
+        }
         let standard = self.uses_standard_regexp_match_operator(receiver_class);
         standard.then(|| string.contains(pattern))
     }
@@ -24335,14 +24348,13 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<Type> {
-        let target = match receiver_type {
-            Type::String | Type::LiteralString(_) => "String".to_string(),
-            Type::Class(name) | Type::Generic { base: name, .. } => name.to_string(),
-            _ => return None,
-        };
-        if !scope.active_refinements.contains(&target) {
+        if scope.active_refinements.is_empty() || matches!(receiver_type, Type::Singleton(_)) {
             return None;
         }
+        let receiver_class = self.type_to_class_name(receiver_type)?;
+        self.ensure_class_available(&receiver_class);
+        self.ensure_class_available("Object");
+        let target = self.active_refinement_owner(&receiver_class, method_name, scope)?;
         let method = self
             .refinement_methods
             .get(&target)
@@ -51861,17 +51873,54 @@ impl<'a> InferenceEngine<'a> {
             })
     }
 
+    /// An ancestor's active refinement applies unless a class earlier in the method resolution
+    /// order defines the method.
+    fn active_refinement_owner(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        scope: &Scope,
+    ) -> Option<String> {
+        let is_refined = |owner: &str| {
+            scope.active_refinements.contains(owner)
+                && self
+                    .refinement_methods
+                    .get(owner)
+                    .is_some_and(|methods| methods.contains_key(method_name))
+        };
+        if is_refined(class_name) {
+            return Some(class_name.to_string());
+        }
+        if !scope
+            .active_refinements
+            .iter()
+            .any(|owner| is_refined(owner))
+        {
+            return None;
+        }
+        for ancestor in self.registry.ordered_ancestor_names(class_name)? {
+            if is_refined(&ancestor) {
+                return Some(ancestor.to_string());
+            }
+            if self
+                .registry
+                .lookup_method_def(&ancestor, method_name, false)
+                .is_some()
+            {
+                return None;
+            }
+        }
+        None
+    }
+
     fn active_refinement_overrides_instance_method(
         &self,
         class_name: &str,
         method_name: &str,
         scope: &Scope,
     ) -> bool {
-        (scope.active_refinements.contains(class_name)
-            && self
-                .refinement_methods
-                .get(class_name)
-                .is_some_and(|methods| methods.contains_key(method_name)))
+        self.active_refinement_owner(class_name, method_name, scope)
+            .is_some()
             || self
                 .registry
                 .resolve_instance_method_call_owners(class_name, method_name)

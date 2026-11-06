@@ -20,7 +20,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 - class / module / method / mixin / constant / local / instance variable（LSP / Playground の定義・参照 hover を含む。宣言済み引数の定義位置も対象）
 - method dispatch、visibility、`super`、singleton method、refinement（`include` / `prepend` /
-  `extend` の適用順を反映。静的に完全な `Module#ancestors` は順序付き `Tuple`。トップレベルの
+  `extend` の適用順を反映。`class << self` 内の `include` は `extend` として出力。有効な refinement は Array / Hash の literal shape や subclass にも祖先順で適用する。静的に完全な `Module#ancestors` は順序付き `Tuple`。トップレベルの
   local receiver も呼び出し時点の型で解決し、型は解決済み receiver の宣言（RBS / source）か plugin からだけ決まり、untyped receiver の呼び出しは `to_s` や `==` を含め常に untyped。メソッド名から戻り値を推測しない。`super(...)` の引数転送と method call の keyword splat から optional keyword 型を広げ、明示的な `super` に渡す `&block` には親 method の既知の block contract を反映する。名前付き `**rest` は個別の keyword 引数を除いた caller record から推論し、動的な keyword hash でも標準 Hash API の key 型（`keys` は `Symbol`）を保つ。`obj[key] = value` は RHS を返し、`obj.[]=(...)` はメソッドの戻り値を保つ。`alias_method` は alias 元の keyword signature と戻り値参照を保持し、source method return refを含む union receiver の引数なし call も後段でarmごとに解決する）
   `untyped` の腕を持つ union receiver への呼び出しは腕ごとに解決し（`untyped | Pathname` の `join` は `untyped | Pathname`）、`nil` の腕は dispatch しない。
 - block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（同じdispatchのsource overrideがない `block_given?` / 安定した `&block` のガードとcall block内のyieldからrequirednessを推論し、明示RBSのblock契約を優先。`Enumerator::Lazy.new` は既知 enumerable source の要素型を block に渡し、yielder への送信型から出力要素型を推論。遅延解決された source method return を
