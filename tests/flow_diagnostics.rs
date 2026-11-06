@@ -1117,3 +1117,24 @@ fn is_a_guard_refines_instance_variable_call_receiver() {
     );
     assert_eq!(child_method_diagnostics[0].line, 11);
 }
+
+#[test]
+fn lambdas_see_locals_of_the_enclosing_class_body_and_top_level() {
+    let source = r#"
+class CapturedByLambda
+  class << self
+    attr_accessor :filter
+  end
+
+  pattern = /a/
+  self.filter = lambda { |value| pattern.match?(value) }
+end
+
+top_level_pattern = /a/
+TOP_LEVEL_FILTER = lambda { |value| top_level_pattern.match?(value) }
+"#;
+    for compact in [true, false] {
+        let found = diagnostics(source, compact);
+        assert!(found.is_empty(), "compact={compact}: {found:?}");
+    }
+}

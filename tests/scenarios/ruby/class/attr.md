@@ -749,3 +749,35 @@ class ClusterServiceParams
   def clusterable_id: -> nil | untyped
 end
 ```
+
+## Class body locals stay visible to lambdas passed to writers
+
+### update
+
+```ruby
+class ClassBodyLambdaCapture
+  class << self
+    attr_accessor :filter
+  end
+
+  pattern = /a/
+  self.filter = lambda { |value| pattern.match?(value) }
+  FILTER = lambda { |value| pattern.match?(value) }
+end
+
+top_level_pattern = /a/
+TOP_LEVEL_SOURCES = [1].map { |_| top_level_pattern.source }
+```
+
+### result
+
+```rbs
+TOP_LEVEL_SOURCES: Array[String]
+
+class ClassBodyLambdaCapture
+  FILTER: Proc
+
+  def self.filter: -> untyped
+  def self.filter=: (Proc filter) -> Proc
+end
+```

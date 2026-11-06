@@ -13328,7 +13328,7 @@ impl<'a> InferenceEngine<'a> {
                     &write_node.value(),
                     parse_result,
                     comments,
-                    Scope::default(),
+                    self.top_level_scope.clone(),
                 ) {
                 } else if let Some(alias_type) =
                     self.try_extract_type_alias(&write_node.value(), parse_result)
@@ -13336,7 +13336,7 @@ impl<'a> InferenceEngine<'a> {
                     self.constants
                         .insert(const_name.clone(), alias_type.clone());
                 } else {
-                    let scope = Scope::default();
+                    let scope = self.top_level_scope.clone();
                     let value_type =
                         self.infer_node_type("Object", &write_node.value(), parse_result, &scope);
                     let value_type = self.forward_namespace_alias_type(
@@ -15122,11 +15122,12 @@ impl<'a> InferenceEngine<'a> {
                                         );
                                     }
                                 } else {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15158,11 +15159,12 @@ impl<'a> InferenceEngine<'a> {
                                         );
                                     }
                                 } else {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15195,11 +15197,12 @@ impl<'a> InferenceEngine<'a> {
                                         );
                                     }
                                 } else {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15219,11 +15222,12 @@ impl<'a> InferenceEngine<'a> {
                                     0,
                                     &class_body_scope,
                                 ) {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15243,11 +15247,12 @@ impl<'a> InferenceEngine<'a> {
                                     0,
                                     &class_body_scope,
                                 ) {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15261,11 +15266,12 @@ impl<'a> InferenceEngine<'a> {
                                     0,
                                     &class_body_scope,
                                 ) {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15359,11 +15365,12 @@ impl<'a> InferenceEngine<'a> {
                                     comments,
                                     &class_body_scope,
                                 ) {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15380,11 +15387,12 @@ impl<'a> InferenceEngine<'a> {
                                         allow_implicit_receiver: true,
                                     },
                                 ) {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15415,11 +15423,12 @@ impl<'a> InferenceEngine<'a> {
                                         &class_body_scope,
                                     );
                                 } else {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15441,11 +15450,12 @@ impl<'a> InferenceEngine<'a> {
                                         &class_body_scope,
                                     );
                                 } else {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15465,11 +15475,12 @@ impl<'a> InferenceEngine<'a> {
                                         parse_result,
                                         &mut class_body_scope,
                                     );
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                 }
                             }
@@ -15527,11 +15538,12 @@ impl<'a> InferenceEngine<'a> {
                                         &mut current_visibility,
                                     );
                                 if !static_mixin_collected && !iterator_collected {
-                                    self.collect_top_level_calls(
+                                    self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
                                         parse_result,
                                         true,
+                                        &class_body_scope,
                                     );
                                     if call_node.block().is_some() {
                                         self.collect_yielded_block_method_definitions(
