@@ -3908,6 +3908,42 @@ impl TypeRegistry {
         }
     }
 
+    /// A body replay knows more about a block than the first pass that recorded it as unknown.
+    pub(crate) fn drop_superseded_block_call_sites(&mut self, class_name: &str, site: &CallSite) {
+        let Some(block) = site.block.as_deref() else {
+            return;
+        };
+        if block.return_type.is_unknown_call_result() {
+            return;
+        }
+        let Some(data) = self.class_data.get_mut(class_name) else {
+            return;
+        };
+        let superseded = |existing: &CallSite| {
+            existing.method_name == site.method_name
+                && existing.method_is_singleton == site.method_is_singleton
+                && existing.arg_types == site.arg_types
+                && existing.keyword_arg_types == site.keyword_arg_types
+                && existing
+                    .block
+                    .as_deref()
+                    .is_some_and(|existing| existing.return_type.is_unknown_call_result())
+        };
+        if !data.call_sites.iter().any(superseded) {
+            return;
+        }
+        let kept: Vec<CallSite> = data
+            .call_sites
+            .take_all()
+            .into_iter()
+            .filter(|existing| !superseded(existing))
+            .collect();
+        for site in kept {
+            data.call_sites.push(site);
+        }
+        data.call_sites_revision = data.call_sites_revision.wrapping_add(1);
+    }
+
     pub fn add_call_site(&mut self, class_name: &str, call_site: CallSite) {
         let mut call_site = call_site;
         self.intern_call_site(&mut call_site);

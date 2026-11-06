@@ -1026,6 +1026,7 @@ pub struct InferenceEngine<'a> {
     track_deferred_block_receiver_bodies: bool,
     read_settled_ivars: bool,
     bare_super_target_returns: FxHashMap<(String, String, bool), Type>,
+    replayed_callee_names: FxHashSet<String>,
     suppress_body_call_sites: bool,
     /// Enclosing `class`/`module` names that are not part of the current FQN
     /// (`class ::Bar` inside `module Foo`).
@@ -2388,6 +2389,7 @@ impl<'a> InferenceEngine<'a> {
             track_deferred_block_receiver_bodies: false,
             read_settled_ivars: false,
             bare_super_target_returns: FxHashMap::default(),
+            replayed_callee_names: FxHashSet::default(),
             suppress_body_call_sites: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
@@ -2460,6 +2462,7 @@ impl<'a> InferenceEngine<'a> {
             track_deferred_block_receiver_bodies: false,
             read_settled_ivars: false,
             bare_super_target_returns: FxHashMap::default(),
+            replayed_callee_names: FxHashSet::default(),
             suppress_body_call_sites: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
@@ -4162,6 +4165,10 @@ impl<'a> InferenceEngine<'a> {
         }
         if self.suppress_body_call_sites && Self::call_site_contains_param_ref(&call_site) {
             return;
+        }
+        if self.suppress_external_merge {
+            self.registry
+                .drop_superseded_block_call_sites(class_name, &call_site);
         }
         self.registry.add_call_site(class_name, call_site);
     }
@@ -11827,7 +11834,9 @@ impl<'a> InferenceEngine<'a> {
             .chain(&includer_sites)
             .filter_map(|site| site.block.as_ref())
             .map(|block| block.return_type.clone())
-            .filter(|return_type| *return_type != Type::BlockReturnRef)
+            .filter(|return_type| {
+                *return_type != Type::BlockReturnRef && !return_type.is_unknown_call_result()
+            })
             .collect();
         if returns.is_empty() {
             Type::BlockReturnRef
@@ -11851,11 +11860,41 @@ impl<'a> InferenceEngine<'a> {
             else {
                 continue;
             };
-            let param_types = Self::substitute_user_defined_block_param_types(
+            let bound_args = self
+                .registry
+                .lookup_method_def(owner, method_name, *is_singleton)
+                .map(|method| {
+                    let params: Vec<&ParamInfo> = method
+                        .param_infos
+                        .iter()
+                        .filter(|param| {
+                            matches!(
+                                param.kind,
+                                ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                            )
+                        })
+                        .collect();
+                    TypeRegistry::bind_positional_arguments(&params, positional_arg_types)
+                        .into_iter()
+                        .zip(&params)
+                        .map(|(bound, param)| {
+                            if bound.is_empty() {
+                                param.default_type.clone().unwrap_or(Type::Untyped)
+                            } else {
+                                Type::from_type_vec_preserve_untyped(bound)
+                            }
+                        })
+                        .collect::<Vec<Type>>()
+                })
+                .unwrap_or_else(|| positional_arg_types.to_vec());
+            let param_types: Vec<Type> = Self::substitute_user_defined_block_param_types(
                 param_types,
-                positional_arg_types,
+                &bound_args,
                 keyword_arg_types,
-            );
+            )
+            .iter()
+            .map(|ty| self.resolve_receiver_method_refs(ty))
+            .collect();
             let joined = joined.get_or_insert_with(Vec::new);
             if joined.len() < param_types.len() {
                 joined.resize_with(param_types.len(), Vec::new);
@@ -11965,7 +12004,11 @@ impl<'a> InferenceEngine<'a> {
             meta.yield_param_types
                 .resize_with(block.params.len(), || Type::Bot);
             for (ty, param) in meta.yield_param_types.iter_mut().zip(&block.params) {
-                *ty = ty.clone().union_with(param.param_type.clone());
+                *ty = if *ty == Type::Bot {
+                    param.param_type.clone()
+                } else {
+                    ty.clone().union_with(param.param_type.clone())
+                };
             }
             meta.yields = true;
             self.registry.set_method_block_meta(
@@ -22128,6 +22171,26 @@ impl<'a> InferenceEngine<'a> {
         false
     }
 
+    /// The definition that a block call dispatches to, when it carries block facts.
+    fn block_dispatch_owner(
+        &self,
+        owner_class: &str,
+        method_name: &str,
+        method_is_singleton: bool,
+    ) -> (String, bool) {
+        self.registry
+            .resolve_method_call_owners(owner_class, method_name, method_is_singleton)
+            .into_iter()
+            .next()
+            .filter(|(owner, is_singleton)| {
+                self.registry
+                    .lookup_method_block_meta(owner, method_name, *is_singleton)
+                    .is_some()
+            })
+            .map(|(owner, is_singleton)| (owner.to_string(), is_singleton))
+            .unwrap_or_else(|| (owner_class.to_string(), method_is_singleton))
+    }
+
     fn resolve_user_defined_block_param_types(
         &self,
         owner_class: &str,
@@ -22138,6 +22201,9 @@ impl<'a> InferenceEngine<'a> {
         if depth > 8 {
             return None;
         }
+        let (dispatch_owner, method_is_singleton) =
+            self.block_dispatch_owner(owner_class, method_name, method_is_singleton);
+        let owner_class = dispatch_owner.as_str();
         let method =
             self.registry
                 .lookup_method_def(owner_class, method_name, method_is_singleton)?;
@@ -22436,6 +22502,9 @@ impl<'a> InferenceEngine<'a> {
         keyword_arg_types: &HashMap<String, Type>,
         block: &HoverBlockSig,
     ) -> Option<Type> {
+        let (dispatch_owner, method_is_singleton) =
+            self.block_dispatch_owner(owner_class, method_name, method_is_singleton);
+        let owner_class = dispatch_owner.as_str();
         let method =
             self.registry
                 .lookup_method_def(owner_class, method_name, method_is_singleton)?;
@@ -23395,6 +23464,9 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
     ) -> Option<HoverBlockSig> {
         call_node.block()?;
+        let (dispatch_owner, method_is_singleton) =
+            self.block_dispatch_owner(owner_class, method_name, method_is_singleton);
+        let owner_class = dispatch_owner.as_str();
         let needs_block_return = self
             .registry
             .lookup_method_def(owner_class, method_name, method_is_singleton)
@@ -23453,6 +23525,9 @@ impl<'a> InferenceEngine<'a> {
         if Self::call_is_sorbet_sig_dsl(call_node) {
             return None;
         }
+        let (dispatch_owner, method_is_singleton) =
+            self.block_dispatch_owner(owner_class, method_name, method_is_singleton);
+        let owner_class = dispatch_owner.as_str();
         let method_returns_block_result = self
             .registry
             .lookup_method_def(owner_class, method_name, method_is_singleton)
@@ -58901,7 +58976,11 @@ impl<'a> InferenceEngine<'a> {
                 let stable_changed_methods =
                     self.stable_direct_source_callees(&changed_method_returns);
                 let mut caller_offsets = HashMap::new();
-                if !stable_changed_methods.is_empty() {
+                self.replayed_callee_names = changed_method_returns
+                    .iter()
+                    .map(|(_, name, _)| name.clone())
+                    .collect();
+                {
                     self.collect_direct_source_callers_in_statements(
                         "Object",
                         &statements,
@@ -59046,7 +59125,7 @@ impl<'a> InferenceEngine<'a> {
                             )
                             .map(|method| method.raw_return_type.clone());
                         if (previous_return_type != updated_return_type
-                            || Self::def_has_bare_super_default(&def_node))
+                            || replay.receiver_dependency_resolved)
                             && updated_return_type.is_some()
                         {
                             changed_method_returns.insert((
@@ -59103,11 +59182,10 @@ impl<'a> InferenceEngine<'a> {
                 .as_deref()
                 .is_some_and(Self::type_needs_backward_propagation)
             && !site.block.as_deref().is_some_and(|block| {
-                block
-                    .params
-                    .iter()
-                    .any(|param| Self::type_needs_backward_propagation(&param.param_type))
-                    || Self::type_needs_backward_propagation(&block.return_type)
+                let pending =
+                    |ty: &Type| *ty != Type::Untyped && Self::type_needs_backward_propagation(ty);
+                block.params.iter().any(|param| pending(&param.param_type))
+                    || pending(&block.return_type)
             })
     }
 
@@ -59243,7 +59321,7 @@ impl<'a> InferenceEngine<'a> {
                         .lookup_method_def(&caller_owner, &caller_name, method_is_singleton)
                         .is_some_and(|method| Self::type_contains_untyped(&method.raw_return_type));
                     if caller_return_is_unknown
-                        && changed_callees.iter().any(|(_, name, _)| {
+                        && self.replayed_callee_names.iter().any(|name| {
                             Self::source_slice_may_contain(
                                 parse_result.source(),
                                 body.location().start_offset(),
@@ -59484,7 +59562,7 @@ impl<'a> InferenceEngine<'a> {
                 let mut site = site.clone();
                 site.method_is_singleton = is_singleton;
                 if !self.registry.get_call_sites(class_name).contains(&site) {
-                    self.registry.add_call_site(class_name, site);
+                    self.record_inferred_call_site(class_name, site);
                 }
             }
         }

@@ -1106,6 +1106,15 @@ impl Type {
         has_empty_tuple && nonempty_length.is_some() && has_literal_element
     }
 
+    /// A call result that stays unknown no matter when it is resolved.
+    pub fn is_unknown_call_result(&self) -> bool {
+        match self {
+            Type::Untyped => true,
+            Type::ReceiverMethodRef(receiver, _) => receiver.is_unknown_call_result(),
+            _ => false,
+        }
+    }
+
     pub fn widen_tuple_to_array(self) -> Type {
         match self {
             Type::Tuple(elems) => {
