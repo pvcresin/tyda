@@ -215,7 +215,16 @@ impl<'a> InferenceEngine<'a> {
                     .get(&(method.name.as_str(), method.is_singleton))
                     .map(Vec::as_slice)
                     .unwrap_or(&empty);
-                if method_call_sites
+                let forwarded_call_sites: Vec<Option<CallSite>> = method_call_sites
+                    .iter()
+                    .map(|site| self.registry.call_site_with_forwarded_args(site))
+                    .collect();
+                let method_call_sites: Vec<&CallSite> = method_call_sites
+                    .iter()
+                    .zip(&forwarded_call_sites)
+                    .map(|(site, forwarded)| forwarded.as_ref().unwrap_or(site))
+                    .collect();
+                let param_types = if method_call_sites
                     .iter()
                     .any(|site| Self::call_site_contains_method_ref(site))
                 {
@@ -225,16 +234,25 @@ impl<'a> InferenceEngine<'a> {
                         .collect();
                     let resolved_call_site_refs: Vec<&CallSite> =
                         resolved_call_sites.iter().collect();
-                    all_param_types.push(Self::resolve_param_types_from_grouped_call_sites(
+                    Self::resolve_param_types_from_grouped_call_sites(
                         &method.param_infos,
                         &resolved_call_site_refs,
-                    ));
+                    )
                 } else {
-                    all_param_types.push(Self::resolve_param_types_from_grouped_call_sites(
+                    Self::resolve_param_types_from_grouped_call_sites(
                         &method.param_infos,
-                        method_call_sites,
-                    ));
-                }
+                        &method_call_sites,
+                    )
+                };
+                all_param_types.push(
+                    param_types
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, ty)| {
+                            TypeRegistry::replace_forwarded_markers(ty, &Type::ParamRef(index))
+                        })
+                        .collect(),
+                );
             }
 
             let init_updates = data
@@ -1315,6 +1333,10 @@ impl<'a> InferenceEngine<'a> {
                     self.collect_receiver_reference_classes(&method.raw_return_type, &mut pending);
                 }
             }
+            let mut ivar_classes = std::collections::BTreeSet::new();
+            self.registry
+                .collect_ivar_receiver_classes(data, &mut ivar_classes);
+            pending.extend(ivar_classes);
         }
 
         while let Some(class_name) = pending.pop() {
@@ -1378,7 +1400,12 @@ impl<'a> InferenceEngine<'a> {
         } else {
             self.registry.user_defined_class_names_unsorted()
         };
+        let mut ivar_classes = std::collections::BTreeSet::new();
         for class_name in class_names {
+            if let Some(data) = self.registry.class_data_for(class_name.as_ref()) {
+                self.registry
+                    .collect_ivar_receiver_classes(data, &mut ivar_classes);
+            }
             for call_site in self.registry.get_call_sites(class_name.as_ref()).iter() {
                 for arg_type in &call_site.arg_types {
                     if let Type::ReceiverMethodRef(receiver_type, _) = arg_type
@@ -1390,7 +1417,7 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
-        let mut pending = Vec::new();
+        let mut pending: Vec<String> = ivar_classes.into_iter().collect();
         let found_receiver_types = !receiver_types.is_empty();
         for receiver_type in receiver_types {
             let resolved = self.resolve_receiver_method_refs(&receiver_type);

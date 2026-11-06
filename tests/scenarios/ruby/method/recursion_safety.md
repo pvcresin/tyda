@@ -20,8 +20,8 @@ def f = fact(5)
 
 ```rbs
 class Object < BasicObject
-  def fact: (Integer n) -> (Float | 1)
-  def f: -> Float | 1
+  def fact: (Integer n) -> Integer
+  def f: -> Integer
 end
 ```
 

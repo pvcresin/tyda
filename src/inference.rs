@@ -9942,6 +9942,38 @@ impl<'a> InferenceEngine<'a> {
         self.ensure_class_available_with_ancestors(class_name, 0);
     }
 
+    /// An attr reader of a class from another file keeps its ivar writers in the external registry; its deferred value resolves against the declarations loaded here.
+    pub(crate) fn resolve_attr_reader_with_external(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<Type> {
+        if let Some(ty) =
+            self.registry
+                .resolve_attr_reader_return_type(class_name, method_name, is_singleton)
+        {
+            return Some(ty);
+        }
+        let external = self.external_rbs?;
+        if let Some(ty) =
+            external.resolve_attr_reader_return_type(class_name, method_name, is_singleton)
+        {
+            return Some(ty);
+        }
+        let ivar_ty = external.attr_reader_ivar_type(class_name, method_name, is_singleton)?;
+        let mut classes = std::collections::BTreeSet::new();
+        external.collect_deferred_receiver_classes(&ivar_ty, &mut classes);
+        for class in classes {
+            self.ensure_class_available(&class);
+        }
+        let resolved =
+            self.registry
+                .resolve_deferred_refs_for_context(class_name, is_singleton, &ivar_ty);
+        (resolved != Type::Untyped && !TypeRegistry::type_contains_param_ref_static(&resolved))
+            .then_some(resolved)
+    }
+
     pub(crate) fn class_declared_in_any_source(&self, class_name: &str) -> bool {
         self.registry.class_data_for(class_name).is_some()
             || self
@@ -53597,17 +53629,13 @@ impl<'a> InferenceEngine<'a> {
                 self.registry
                     .resolve_deferred_refs_for_context(class_name, is_singleton, &ty)
             }
-            Some(_) => {
-                if let Some(ivar_ty) = self.registry.resolve_attr_reader_return_type(
+            Some(_) => self
+                .resolve_attr_reader_with_external(
                     class_name,
                     &method_name_for_lookup,
                     is_singleton,
-                ) {
-                    ivar_ty
-                } else {
-                    Type::Untyped
-                }
-            }
+                )
+                .unwrap_or(Type::Untyped),
             None => {
                 if let Some(return_type) = self.resolve_rbs_no_arg_method_return_on_type(
                     receiver_type,

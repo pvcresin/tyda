@@ -4561,6 +4561,16 @@ impl TypeRegistry {
             ) {
                 return Some(ivar_ty);
             }
+            if matches!(
+                ivar_ty,
+                Type::IvarRef(_) | Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..)
+            ) {
+                let resolved =
+                    self.resolve_deferred_refs_for_context(class_name, is_singleton, &ivar_ty);
+                if resolved != Type::Untyped && Self::is_resolved_attr_return_type(&resolved) {
+                    return Some(resolved);
+                }
+            }
         }
         if !is_singleton
             && let Some(ty) = self.infer_attr_type_from_initialize(class_name, &ivar)
@@ -4570,6 +4580,20 @@ impl TypeRegistry {
             return Some(ty);
         }
         None
+    }
+
+    pub(crate) fn attr_reader_ivar_type(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<Type> {
+        let ivar = self.attr_ivar_name_through_ancestors(class_name, method_name, is_singleton)?;
+        if is_singleton {
+            self.lookup_singleton_ivar_type(class_name, &ivar)
+        } else {
+            self.lookup_ivar_type(class_name, &ivar)
+        }
     }
 
     fn attr_ivar_name_through_ancestors(
@@ -5229,18 +5253,33 @@ impl TypeRegistry {
         method_name: &str,
         prefer_singleton: bool,
     ) -> Option<Type> {
+        let entry = self.owner_list_entry(class_name, method_name, prefer_singleton);
+        self.fetch_owner_list_type(method_name, &entry)
+    }
+
+    fn owner_list_entry(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        prefer_singleton: bool,
+    ) -> OwnerListEntry {
+        if !self
+            .owner_lookup_cache_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return self.compute_owner_list(class_name, method_name, prefer_singleton);
+        }
         let key = (
             self.shared_name(class_name),
             self.shared_name(method_name),
             prefer_singleton,
         );
         if let Some(entry) = self.owner_lookup_cache.get(&key) {
-            return self.fetch_owner_list_type(method_name, &entry);
+            return entry;
         }
         let entry = self.compute_owner_list(class_name, method_name, prefer_singleton);
-        let result = self.fetch_owner_list_type(method_name, &entry);
-        self.owner_lookup_cache.insert(key, entry);
-        result
+        self.owner_lookup_cache.insert(key, entry.clone());
+        entry
     }
 
     fn compute_owner_list(
@@ -6800,6 +6839,7 @@ impl TypeRegistry {
 
     fn resolve_method_param_refs_from_call_sites_for_classes(&mut self, class_names: &[Sym]) {
         for class_name in class_names {
+            let _caller_ctx_memo_scope = CallerCtxMemoScope::enter();
             let Some(data) = self.class_data.get(class_name) else {
                 continue;
             };
@@ -6830,9 +6870,10 @@ impl TypeRegistry {
                     let positional_count = Self::positional_param_count(&method.param_infos);
                     let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
                     for site in sites {
+                        let forwarded = self.call_site_with_forwarded_args(site);
                         Self::merge_call_site_positional_types(
                             &mut param_types,
-                            site,
+                            forwarded.as_ref().unwrap_or(site),
                             &method.param_infos,
                         );
                     }
@@ -6850,7 +6891,10 @@ impl TypeRegistry {
                             if types.is_empty() {
                                 Type::Untyped
                             } else {
-                                finalize(Type::from_type_vec(types).widen_arg_for_param())
+                                finalize(Self::replace_forwarded_markers(
+                                    Type::from_type_vec(types).widen_arg_for_param(),
+                                    &Type::Untyped,
+                                ))
                             }
                         })
                         .collect();
@@ -6895,6 +6939,262 @@ impl TypeRegistry {
         }
     }
 
+    /// Stdlib class declarations lose the receiver's type arguments here (`Array[Elem]#sort` reads as `Array[untyped]`).
+    fn keep_receiver_type_arguments(resolved: Type, receiver: &Type, method_name: &str) -> Type {
+        if Self::type_contains_untyped_member(&resolved)
+            && let Some(known) =
+                stdlib_returns::stdlib_receiver_method_return(receiver, method_name)
+        {
+            return known;
+        }
+        resolved
+    }
+
+    /// A deferred receiver call keeps no arguments, so RBS overloads only give a return they agree on.
+    fn lookup_argless_receiver_return(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        prefer_singleton: bool,
+    ) -> Option<Type> {
+        if self.argless_overloads_disagree(class_name, method_name, prefer_singleton) {
+            return None;
+        }
+        self.lookup_method_return_type_with_hint(class_name, method_name, prefer_singleton)
+    }
+
+    fn argless_overloads_disagree(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        prefer_singleton: bool,
+    ) -> bool {
+        let Some((_, owners)) = self.owner_list_entry(class_name, method_name, prefer_singleton)
+        else {
+            return false;
+        };
+        owners.iter().any(|&(owner, is_singleton)| {
+            self.class_data
+                .get(&owner)
+                .and_then(|data| {
+                    Self::method_for_lookup_kind(data, method_name, Some(is_singleton))
+                })
+                .is_some_and(|method| Self::rbs_overload_returns_disagree(&method.rbs_method_types))
+        })
+    }
+
+    fn rbs_overload_returns_disagree(overloads: &[rbs_ir::MethodType]) -> bool {
+        let Some((first, rest)) = overloads.split_first() else {
+            return false;
+        };
+        let first_return = Self::rbs_return_without_nil(&first.function_type.return_type);
+        rest.iter().any(|overload| {
+            Self::rbs_return_without_nil(&overload.function_type.return_type) != first_return
+        })
+    }
+
+    fn rbs_return_without_nil(ty: &rbs_ir::RbsType) -> &rbs_ir::RbsType {
+        match ty {
+            rbs_ir::RbsType::Optional(inner) => inner,
+            _ => ty,
+        }
+    }
+
+    /// A forwarded argument (`new(v)` in `def self.create(v)`) names the caller's parameter,
+    /// so it is read through the caller's own call sites. An unknown one keeps its marker.
+    pub(crate) fn call_site_with_forwarded_args(&self, site: &CallSite) -> Option<CallSite> {
+        site.caller_context.as_ref()?;
+        if !site
+            .arg_types
+            .iter()
+            .any(Self::type_contains_param_ref_static)
+        {
+            return None;
+        }
+        let mut forwarded = site.clone();
+        for arg in &mut forwarded.arg_types {
+            if !Self::type_contains_param_ref_static(arg) {
+                continue;
+            }
+            let resolved = self.resolve_call_site_type_from_caller_context(
+                site,
+                arg,
+                &mut FxHashSet::default(),
+            );
+            if !Self::forwarded_arg_is_unknown(&resolved) {
+                *arg = resolved;
+            }
+        }
+        Some(forwarded)
+    }
+
+    fn forwarded_arg_is_unknown(ty: &Type) -> bool {
+        match ty {
+            // A caller parameter seen only as nil is a sign of under-approximation.
+            Type::Nil => true,
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+                parts.iter().any(Self::forwarded_arg_is_unknown)
+            }
+            _ => Self::is_projection_of_unknown(ty) || Self::type_contains_untyped_member(ty),
+        }
+    }
+
+    fn is_projection_of_unknown(ty: &Type) -> bool {
+        match ty {
+            Type::ReceiverMethodRef(subject, _)
+            | Type::PatternIndexRef(subject, _)
+            | Type::PatternRestRef(subject)
+            | Type::PatternTrailingRef(subject, _)
+            | Type::PatternKeyRef(subject, _)
+            | Type::PatternKeyRestRef(subject, _)
+            | Type::TruthyProjection(subject)
+            | Type::FalsyProjection(subject)
+            | Type::NonNilProjection(subject) => {
+                *subject.as_ref() == Type::Untyped || Self::is_projection_of_unknown(subject)
+            }
+            _ => false,
+        }
+    }
+
+    /// A forwarded argument still unknown holds the caller's marker, which names the wrong parameter here.
+    pub(crate) fn replace_forwarded_markers(ty: Type, unknown: &Type) -> Type {
+        match ty {
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
+                parts
+                    .into_iter()
+                    .map(|part| Self::replace_forwarded_markers(part, unknown))
+                    .collect(),
+            ),
+            ty if Self::type_contains_param_ref_static(&ty) => unknown.clone(),
+            ty if Self::is_projection_of_unknown(&ty) => Type::Untyped,
+            ty => ty,
+        }
+    }
+
+    /// Classes whose declarations the still-deferred ivars and method returns of user classes need.
+    pub(crate) fn deferred_receiver_classes(&self) -> Vec<String> {
+        let mut classes = std::collections::BTreeSet::new();
+        for class_name in self.user_defined_class_names_unsorted() {
+            let Some(data) = self.class_data.get(&class_name) else {
+                continue;
+            };
+            self.collect_ivar_receiver_classes(data, &mut classes);
+            for method in &data.methods {
+                self.collect_deferred_receiver_classes(&method.raw_return_type, &mut classes);
+            }
+        }
+        classes.into_iter().collect()
+    }
+
+    pub(crate) fn collect_ivar_receiver_classes(
+        &self,
+        data: &ClassData,
+        classes: &mut std::collections::BTreeSet<String>,
+    ) {
+        for types in data
+            .ivars
+            .values()
+            .chain(data.cold().singleton_ivars.values())
+        {
+            for ty in types {
+                self.collect_deferred_receiver_classes(ty, classes);
+            }
+        }
+    }
+
+    pub(crate) fn collect_deferred_receiver_classes(
+        &self,
+        ty: &Type,
+        classes: &mut std::collections::BTreeSet<String>,
+    ) {
+        match ty {
+            Type::ReceiverMethodRef(receiver, method_name) => {
+                self.collect_receiver_owner_classes(receiver, method_name, classes);
+                self.collect_deferred_receiver_classes(receiver, classes);
+            }
+            Type::MethodReturnRef(class_name, method_name) => {
+                if self
+                    .lookup_method_return_type(class_name, method_name)
+                    .is_none()
+                {
+                    classes.insert(class_name.to_string());
+                }
+            }
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+                for part in parts {
+                    self.collect_deferred_receiver_classes(part, classes);
+                }
+            }
+            Type::Array(Some(inner)) => self.collect_deferred_receiver_classes(inner, classes),
+            Type::Hash(key, value) => {
+                for part in [key, value].into_iter().flatten() {
+                    self.collect_deferred_receiver_classes(part, classes);
+                }
+            }
+            Type::Record(fields) => {
+                for field in fields {
+                    self.collect_deferred_receiver_classes(&field.value, classes);
+                }
+            }
+            Type::Proc { return_type, .. } => {
+                self.collect_deferred_receiver_classes(return_type, classes);
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                self.collect_deferred_receiver_classes(receiver, classes);
+                self.collect_deferred_receiver_classes(result, classes);
+            }
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
+                self.collect_deferred_receiver_classes(inner, classes);
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_receiver_owner_classes(
+        &self,
+        receiver: &Type,
+        method_name: &str,
+        classes: &mut std::collections::BTreeSet<String>,
+    ) {
+        if let Type::Union(parts) = receiver {
+            for part in parts {
+                self.collect_receiver_owner_classes(part, method_name, classes);
+            }
+            return;
+        }
+        let Some(class_name) = Self::type_to_class_name(receiver) else {
+            return;
+        };
+        // A nil receiver is a sign of under-approximation, not a declaration to read.
+        if class_name == "NilClass" {
+            return;
+        }
+        let prefer_singleton = matches!(receiver, Type::Singleton(_));
+        if self
+            .lookup_method_return_type_with_hint(&class_name, method_name, prefer_singleton)
+            .is_some()
+        {
+            return;
+        }
+        if prefer_singleton {
+            classes.insert("Class".to_string());
+        }
+        classes.insert(class_name);
+    }
+
+    /// Re-runs the call-site passes after stdlib declarations joined the registry.
+    pub(crate) fn resolve_with_new_declarations(&mut self) {
+        self.build_subclass_index();
+        self.finalize_pending_scoped_type_refs();
+        self.enable_owner_lookup_cache();
+        self.invalidate_resolve_cache();
+        self.resolve_method_param_refs_from_call_sites();
+        self.resolve_param_refs_global();
+        self.resolve_method_return_refs_global();
+    }
+
     /// Resolve ParamRef in ivar types and method return types using CallSite
     /// data. Only resolves from `initialize` call sites for ivars.
     pub fn resolve_param_refs_global(&mut self) {
@@ -6904,6 +7204,7 @@ impl TypeRegistry {
 
     fn resolve_param_refs_for_classes(&mut self, class_names: &[Sym]) {
         for class_name in class_names {
+            let _caller_ctx_memo_scope = CallerCtxMemoScope::enter();
             let Some(data) = self.class_data.get(class_name) else {
                 continue;
             };
@@ -6919,9 +7220,10 @@ impl TypeRegistry {
             let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
             for site in &data.call_sites {
                 if site.method_name.as_ref() == "initialize" && !site.method_is_singleton {
+                    let forwarded = self.call_site_with_forwarded_args(site);
                     Self::merge_call_site_positional_types(
                         &mut param_types,
-                        site,
+                        forwarded.as_ref().unwrap_or(site),
                         &init_method.param_infos,
                     );
                 }
@@ -6939,7 +7241,13 @@ impl TypeRegistry {
             let widened_params: Vec<Type> = resolved_params
                 .iter()
                 .cloned()
-                .map(Type::widen_arg_for_param)
+                .enumerate()
+                .map(|(index, ty)| {
+                    Self::replace_forwarded_markers(
+                        ty.widen_arg_for_param(),
+                        &Type::ParamRef(index),
+                    )
+                })
                 .collect();
 
             if !resolved_params
@@ -7360,8 +7668,11 @@ impl TypeRegistry {
                 let resolved_receiver = self.resolve_subclass_refs_in_type(receiver_type);
                 if let Some(receiver_class) = Self::type_to_class_name(&resolved_receiver) {
                     let prefer_singleton = matches!(resolved_receiver, Type::Singleton(_));
-                    if let Some(ret) = self.lookup_method_return_type(&receiver_class, method_name)
-                        && ret != Type::Untyped
+                    if let Some(ret) = self.lookup_argless_receiver_return(
+                        &receiver_class,
+                        method_name,
+                        prefer_singleton,
+                    ) && ret != Type::Untyped
                         && !matches!(ret, Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..))
                         && !Self::type_contains_param_ref_static(&ret)
                     {
@@ -7862,7 +8173,9 @@ impl TypeRegistry {
                 } else {
                     let ret = self
                         .lookup_method_return_type_direct_sym(*class_name, *method_name)
-                        .or_else(|| self.lookup_method_return_type(class_name, method_name));
+                        .or_else(|| {
+                            self.lookup_argless_receiver_return(class_name, method_name, false)
+                        });
                     if let Some(ret) = ret {
                         visiting.insert((*class_name, *method_name));
                         let resolved = self.resolve_global_refs(
@@ -7936,9 +8249,22 @@ impl TypeRegistry {
                     }
                 } else if let Some(receiver_class) = Self::type_to_class_name(&resolved_receiver) {
                     let prefer_singleton = matches!(resolved_receiver, Type::Singleton(_));
-                    let ret = self
-                        .lookup_method_return_type_direct(&receiver_class, method_name)
-                        .or_else(|| self.lookup_method_return_type(&receiver_class, method_name));
+                    let ret = if self.argless_overloads_disagree(
+                        &receiver_class,
+                        method_name,
+                        prefer_singleton,
+                    ) {
+                        None
+                    } else {
+                        self.lookup_method_return_type_direct(&receiver_class, method_name)
+                            .or_else(|| {
+                                self.lookup_method_return_type_with_hint(
+                                    &receiver_class,
+                                    method_name,
+                                    prefer_singleton,
+                                )
+                            })
+                    };
                     if let Some(ret) = ret {
                         let resolved = self.resolve_global_refs(
                             &receiver_class,
@@ -7952,8 +8278,11 @@ impl TypeRegistry {
                             return Type::Untyped;
                         }
                         // even on the deferred path, resolve `instance` to the receiver's instance type (prevents collapsing to the owner).
-                        let resolved = resolved.replace_instance_type(
-                            &Self::instance_type_for_receiver(&resolved_receiver),
+                        let resolved = Self::substitute_self_type(&resolved, &resolved_receiver);
+                        let resolved = Self::keep_receiver_type_arguments(
+                            resolved,
+                            &resolved_receiver,
+                            method_name,
                         );
                         if Self::is_concrete_for_global_resolve(&resolved) {
                             resolved
@@ -8334,7 +8663,7 @@ impl TypeRegistry {
                 if let Some(cls) = Self::type_to_class_name(&resolved_receiver) {
                     let prefer_singleton = matches!(resolved_receiver, Type::Singleton(_));
                     let ret = self
-                        .lookup_method_return_type_with_hint(&cls, method_name, prefer_singleton)
+                        .lookup_argless_receiver_return(&cls, method_name, prefer_singleton)
                         .unwrap_or(Type::Untyped);
                     let ret = Self::substitute_self_type(&ret, &resolved_receiver);
                     self.resolve_deferred_refs(&cls, &ret)
@@ -8346,11 +8675,7 @@ impl TypeRegistry {
                         } else if let Some(cls) = Self::type_to_class_name(part) {
                             let prefer_singleton = matches!(part, Type::Singleton(_));
                             let ret = self
-                                .lookup_method_return_type_with_hint(
-                                    &cls,
-                                    method_name,
-                                    prefer_singleton,
-                                )
+                                .lookup_argless_receiver_return(&cls, method_name, prefer_singleton)
                                 .unwrap_or(Type::Untyped);
                             let ret = Self::substitute_self_type(&ret, part);
                             let resolved = self.resolve_deferred_refs(&cls, &ret);
@@ -8690,6 +9015,9 @@ impl TypeRegistry {
                         else {
                             continue;
                         };
+                        if Self::rbs_overload_returns_disagree(&method.rbs_method_types) {
+                            return Type::Untyped;
+                        }
                         let raw_with_block = self.resolve_block_return_refs(
                             owner.as_ref(),
                             method,
@@ -8722,6 +9050,10 @@ impl TypeRegistry {
                             is_singleton,
                         ) {
                             return ivar_ty;
+                        }
+                        // An instance method that stays unknown is not answered by a same-named class-object method.
+                        if !singleton && !is_singleton {
+                            break;
                         }
                     }
                 }
@@ -9058,7 +9390,7 @@ impl TypeRegistry {
         if let Some(cls) = Self::type_to_class_name(resolved_receiver) {
             let prefer_singleton = matches!(resolved_receiver, Type::Singleton(_));
             let ret = self
-                .lookup_method_return_type_with_hint(&cls, method_name, prefer_singleton)
+                .lookup_argless_receiver_return(&cls, method_name, prefer_singleton)
                 .unwrap_or(Type::Untyped);
             let ret = Self::substitute_self_type(&ret, resolved_receiver);
             let resolved = self.resolve_deferred_refs_depth(
@@ -9070,7 +9402,11 @@ impl TypeRegistry {
                 visiting,
             );
             if resolved != Type::Untyped {
-                return resolved;
+                return Self::keep_receiver_type_arguments(
+                    resolved,
+                    resolved_receiver,
+                    method_name,
+                );
             }
             if let Some(ivar_ty) =
                 self.resolve_attr_reader_return_type(&cls, method_name, prefer_singleton)
@@ -9087,7 +9423,7 @@ impl TypeRegistry {
                 } else if let Some(cls) = Self::type_to_class_name(part) {
                     let prefer_singleton = matches!(part, Type::Singleton(_));
                     let ret = self
-                        .lookup_method_return_type_with_hint(&cls, method_name, prefer_singleton)
+                        .lookup_argless_receiver_return(&cls, method_name, prefer_singleton)
                         .unwrap_or(Type::Untyped);
                     let ret = Self::substitute_self_type(&ret, part);
                     let resolved = self.resolve_deferred_refs_depth(
@@ -9626,7 +9962,7 @@ impl TypeRegistry {
                                 return None;
                             }
                             let resolved = self
-                                .lookup_method_return_type(&receiver_class, method_name)
+                                .lookup_argless_receiver_return(&receiver_class, method_name, false)
                                 .map(|return_type| {
                                     self.resolve_call_site_type_from_caller_context(
                                         call_site,
@@ -11528,6 +11864,24 @@ impl TypeRegistry {
             .iter()
             .filter_map(|(name, data)| data.user_defined.then_some(*name))
             .collect()
+    }
+
+    /// Superclass and mixins of a class. A class without a superclass inherits `Object`.
+    pub(crate) fn declared_ancestor_names(&self, class_name: &str) -> Vec<String> {
+        let Some(data) = self.class_data.get(class_name) else {
+            return vec!["Object".to_string()];
+        };
+        let mut names: Vec<String> = data
+            .mixins
+            .iter()
+            .map(|mixin| mixin.module_name.to_string())
+            .collect();
+        match &data.superclass {
+            Some(superclass) => names.push(superclass.to_string()),
+            None if class_name != "BasicObject" => names.push("Object".to_string()),
+            None => {}
+        }
+        names
     }
 
     pub fn is_user_defined_class(&self, class_name: &str) -> bool {

@@ -3681,7 +3681,7 @@ end
             "case_when_external_override.rb".to_owned(),
             override_snapshot,
         )]);
-        let external_registry = builder.finish(None);
+        let external_registry = builder.finish(None, None);
         assert!(external_registry.has_source_base_case_equality_override());
         assert!(
             external_registry
@@ -3780,7 +3780,7 @@ end
             "case_when_integer_override.rb".to_owned(),
             override_snapshot,
         )]);
-        let external_registry = builder.finish(None);
+        let external_registry = builder.finish(None, None);
 
         assert!(external_registry.has_source_numeric_case_equality_override());
         assert!(
@@ -4649,7 +4649,7 @@ end
         );
         let mut builder = crate::workspace_state::BatchProjectionBuilder::new(rbs_registry);
         builder.apply_chunk([("app_revision.rb".to_owned(), snapshot)]);
-        let registry = builder.finish(None);
+        let registry = builder.finish(None, None);
         let rendered = crate::rbs::render::render_rbs_for_file(&registry, "app_revision.rb");
 
         assert!(

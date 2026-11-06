@@ -117,6 +117,12 @@ stdlib RBS と project の RBS / RBI は必要な file / class を lazy に読�
 共有可能な形に変換し、file 固有の推論状態と混ぜない。外部定義の変更は LSP の reload で
 関連 cache を無効化する。
 
+call site の代入で初めて判明する receiver（`@v = x.to_s` の `x` が別ファイルの呼び出しから
+`String` になる場合など）は file 単位の解析では読み込めない。batch 解決は未解決の参照が
+必要とする class の宣言を読み込み、増えなくなるまで解決し直す。引数を持たない遅延参照では
+overload を選べないので、戻り型が一致する RBS overload だけを採用し、一致しなければ `untyped`
+のままにする。
+
 ## CLI batch
 
 通常の RBS 出力は指定された Ruby ファイルを解析する。`--diagnostics` では診断対象と

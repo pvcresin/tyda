@@ -778,7 +778,7 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
         }
 
         let resolve_start = Instant::now();
-        let skeleton = skeleton_builder.finish(Some(&pool));
+        let skeleton = skeleton_builder.finish(Some(&stdlib_loader), Some(&pool));
         tyda::reclaim_freed_memory(Some(&pool));
         merge_elapsed += resolve_start.elapsed();
 
@@ -831,6 +831,7 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
         let workspace_rbs = tyda::workspace_state::WorkspaceState::project_borrowed_snapshots(
             skeleton,
             diagnostic_replays.iter(),
+            Some(&stdlib_loader),
             Some(&pool),
         );
         tyda::reclaim_freed_memory(Some(&pool));
@@ -918,7 +919,7 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
         }
 
         let resolve_start = Instant::now();
-        let workspace_rbs = batch_builder.finish(Some(&pool));
+        let workspace_rbs = batch_builder.finish(Some(&stdlib_loader), Some(&pool));
         tyda::reclaim_freed_memory(Some(&pool));
         merge_elapsed += resolve_start.elapsed();
         workspace_rbs

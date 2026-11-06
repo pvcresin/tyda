@@ -3960,6 +3960,15 @@ impl<'a> InferenceEngine<'a> {
             method_name,
             prefer_singleton,
         ) {
+            if ty == Type::Untyped
+                && let Some(reader_ty) = self.resolve_attr_reader_with_external(
+                    class_name,
+                    method_name,
+                    prefer_singleton,
+                )
+            {
+                return Some(reader_ty);
+            }
             return Some(ty);
         }
         if let Some(external) = self.external_rbs
