@@ -169,6 +169,112 @@ class Object < BasicObject
 end
 ```
 
+## Correlated locals keep paths up to the world limit
+
+Each independent branch doubles the paths: five branches make 32 worlds and keep the
+correlation, and six make 64 and join the values. The joined result stays sound, so this pins
+the boundary rather than a goal. Raising `MAX_CORRELATED_WORLDS` should update this case.
+
+### update
+
+```ruby
+class CorrelatedWorldLimit
+  def branches_5(c)
+    if c[0]
+      a0 = 1
+      b0 = 'x'
+    else
+      a0 = 'y'
+      b0 = 2
+    end
+    if c[1]
+      a1 = 1
+      b1 = 'x'
+    else
+      a1 = 'y'
+      b1 = 2
+    end
+    if c[2]
+      a2 = 1
+      b2 = 'x'
+    else
+      a2 = 'y'
+      b2 = 2
+    end
+    if c[3]
+      a3 = 1
+      b3 = 'x'
+    else
+      a3 = 'y'
+      b3 = 2
+    end
+    if c[4]
+      a4 = 1
+      b4 = 'x'
+    else
+      a4 = 'y'
+      b4 = 2
+    end
+    a0.is_a?(Integer) ? b0 : :other
+  end
+
+  def branches_6(c)
+    if c[0]
+      a0 = 1
+      b0 = 'x'
+    else
+      a0 = 'y'
+      b0 = 2
+    end
+    if c[1]
+      a1 = 1
+      b1 = 'x'
+    else
+      a1 = 'y'
+      b1 = 2
+    end
+    if c[2]
+      a2 = 1
+      b2 = 'x'
+    else
+      a2 = 'y'
+      b2 = 2
+    end
+    if c[3]
+      a3 = 1
+      b3 = 'x'
+    else
+      a3 = 'y'
+      b3 = 2
+    end
+    if c[4]
+      a4 = 1
+      b4 = 'x'
+    else
+      a4 = 'y'
+      b4 = 2
+    end
+    if c[5]
+      a5 = 1
+      b5 = 'x'
+    else
+      a5 = 'y'
+      b5 = 2
+    end
+    a0.is_a?(Integer) ? b0 : :other
+  end
+end
+```
+
+### result
+
+```rbs
+class CorrelatedWorldLimit
+  def branches_5: (untyped c) -> ("x" | :other)
+  def branches_6: (untyped c) -> (2 | "x" | :other)
+end
+```
+
 ## Narrow type with class case equality
 
 ### update
