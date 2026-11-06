@@ -792,6 +792,7 @@ struct DeferredMethodBody {
     start_offset: usize,
     has_existing_defer_reason: bool,
     has_case_class_dispatch: bool,
+    has_super_call: bool,
     unresolved_block_receivers: Option<DeferredBlockReceiverCandidates>,
 }
 
@@ -834,6 +835,7 @@ impl DeferredBlockReceiverCandidates {
 struct ActiveMethodBody {
     unresolved_block_receivers: DeferredBlockReceiverCandidates,
     has_case_class_dispatch: bool,
+    has_super_call: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -933,6 +935,7 @@ pub struct InferenceEngine<'a> {
     defer_unresolved_body_call_sites: bool,
     track_deferred_block_receiver_bodies: bool,
     read_settled_ivars: bool,
+    bare_super_target_returns: FxHashMap<(String, String, bool), Type>,
     suppress_body_call_sites: bool,
     /// Enclosing `class`/`module` names that are not part of the current FQN
     /// (`class ::Bar` inside `module Foo`).
@@ -1500,10 +1503,17 @@ struct AttrWriterCallSite<'a> {
     block: &'a Option<HoverBlockSig>,
 }
 
+enum SuperCallArguments {
+    SameAsCaller,
+    Bound {
+        positional: Vec<Type>,
+        keywords: HashMap<String, Type>,
+    },
+}
+
 struct SuperCallBlockInput<'scope, 'src> {
-    owner_class: &'scope str,
+    targets: &'scope [(String, bool)],
     method_name: &'scope str,
-    method_is_singleton: bool,
     block_node: Option<ruby_prism::BlockNode<'src>>,
     class_name: &'scope str,
     parse_result: &'scope ParseResult<'src>,
@@ -2287,6 +2297,7 @@ impl<'a> InferenceEngine<'a> {
             defer_unresolved_body_call_sites: false,
             track_deferred_block_receiver_bodies: false,
             read_settled_ivars: false,
+            bare_super_target_returns: FxHashMap::default(),
             suppress_body_call_sites: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
@@ -2358,6 +2369,7 @@ impl<'a> InferenceEngine<'a> {
             defer_unresolved_body_call_sites: false,
             track_deferred_block_receiver_bodies: false,
             read_settled_ivars: false,
+            bare_super_target_returns: FxHashMap::default(),
             suppress_body_call_sites: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
@@ -4967,7 +4979,7 @@ impl<'a> InferenceEngine<'a> {
                     let opt = optional
                         .as_optional_parameter_node()
                         .expect("must be OptionalParameterNode");
-                    self.infer_node_type(class_name, &opt.value(), parse_result, scope)
+                    self.infer_param_default_type(class_name, &opt.value(), parse_result, scope)
                 } else {
                     Type::Untyped
                 };
@@ -5045,7 +5057,12 @@ impl<'a> InferenceEngine<'a> {
                             let kw = param
                                 .as_optional_keyword_parameter_node()
                                 .expect("must be OptionalKeywordParameterNode");
-                            self.infer_node_type(class_name, &kw.value(), parse_result, scope)
+                            self.infer_param_default_type(
+                                class_name,
+                                &kw.value(),
+                                parse_result,
+                                scope,
+                            )
                         } else {
                             Type::Untyped
                         }
@@ -10916,9 +10933,8 @@ impl<'a> InferenceEngine<'a> {
         input: SuperCallBlockInput<'_, '_>,
     ) -> Option<HoverBlockSig> {
         let SuperCallBlockInput {
-            owner_class,
+            targets,
             method_name,
-            method_is_singleton,
             block_node,
             class_name,
             parse_result,
@@ -10927,17 +10943,12 @@ impl<'a> InferenceEngine<'a> {
             keyword_arg_types,
         } = input;
         let block = block_node?;
-        let param_types = self.resolve_user_defined_block_param_types(
-            owner_class,
+        let param_types = self.super_block_param_types(
+            targets,
             method_name,
-            method_is_singleton,
-            0,
-        )?;
-        let param_types = Self::substitute_user_defined_block_param_types(
-            param_types,
             positional_arg_types,
             keyword_arg_types,
-        );
+        )?;
         let mut block_scope = scope.fork_for_block();
         if let Some(params) = block.parameters() {
             self.bind_block_param_types(
@@ -10953,7 +10964,11 @@ impl<'a> InferenceEngine<'a> {
         } else {
             Type::Nil
         };
-        Some(HoverBlockSig {
+        Some(Self::super_block_signature(param_types, return_type))
+    }
+
+    fn super_block_signature(param_types: Vec<Type>, return_type: Type) -> HoverBlockSig {
+        HoverBlockSig {
             params: param_types
                 .into_iter()
                 .enumerate()
@@ -10965,6 +10980,111 @@ impl<'a> InferenceEngine<'a> {
                 .collect(),
             return_type,
             required: true,
+        }
+    }
+
+    /// Keywords that a `**rest` parameter of the `super` target collects.
+    fn super_keyword_rest_shape(
+        &self,
+        owner: &str,
+        method_name: &str,
+        is_singleton: bool,
+        keywords: &KeywordArgTypes,
+    ) -> Option<Box<Type>> {
+        let method = self
+            .registry
+            .lookup_method_def(owner, method_name, is_singleton)?;
+        if !method
+            .param_infos
+            .iter()
+            .any(|param| param.kind == ParamKind::DoubleRest)
+        {
+            return None;
+        }
+        let mut fields: Vec<RecordField> = keywords
+            .iter()
+            .filter(|(name, _)| {
+                !method.param_infos.iter().any(|param| {
+                    matches!(
+                        param.kind,
+                        ParamKind::KeywordRequired | ParamKind::KeywordOptional
+                    ) && param.name == name.as_ref()
+                })
+            })
+            .map(|(name, ty)| RecordField {
+                key: RecordKey::Symbol(name.to_string()),
+                value: ty.clone(),
+                optional: false,
+            })
+            .collect();
+        if fields.is_empty() {
+            return None;
+        }
+        fields.sort_by_key(|field| field.to_string());
+        Some(Box::new(Type::Record(fields)))
+    }
+
+    /// Return of the blocks that callers pass to the current method, once its call sites are known.
+    fn current_call_site_block_return(&self, class_name: &str, scope: &Scope) -> Type {
+        let Some(method_name) = scope.method_name.as_deref() else {
+            return Type::BlockReturnRef;
+        };
+        let includer_sites = self
+            .registry
+            .module_call_sites_from_includers(class_name, method_name);
+        let returns: Vec<Type> = self
+            .registry
+            .get_call_sites(class_name)
+            .iter()
+            .filter(|site| {
+                site.method_name.as_ref() == method_name
+                    && site.method_is_singleton == scope.singleton_dispatch
+            })
+            .chain(&includer_sites)
+            .filter_map(|site| site.block.as_ref())
+            .map(|block| block.return_type.clone())
+            .filter(|return_type| *return_type != Type::BlockReturnRef)
+            .collect();
+        if returns.is_empty() {
+            Type::BlockReturnRef
+        } else {
+            Type::from_type_vec_preserve_untyped(returns)
+        }
+    }
+
+    /// Block parameter types accepted by every `super` target, joined per position.
+    fn super_block_param_types(
+        &mut self,
+        targets: &[(String, bool)],
+        method_name: &str,
+        positional_arg_types: &[Type],
+        keyword_arg_types: &HashMap<String, Type>,
+    ) -> Option<Vec<Type>> {
+        let mut joined: Option<Vec<Vec<Type>>> = None;
+        for (owner, is_singleton) in targets {
+            let Some(param_types) =
+                self.resolve_user_defined_block_param_types(owner, method_name, *is_singleton, 0)
+            else {
+                continue;
+            };
+            let param_types = Self::substitute_user_defined_block_param_types(
+                param_types,
+                positional_arg_types,
+                keyword_arg_types,
+            );
+            let joined = joined.get_or_insert_with(Vec::new);
+            if joined.len() < param_types.len() {
+                joined.resize_with(param_types.len(), Vec::new);
+            }
+            for (slot, ty) in joined.iter_mut().zip(param_types) {
+                Type::append_union_parts(slot, ty);
+            }
+        }
+        joined.map(|joined| {
+            joined
+                .into_iter()
+                .map(Type::from_type_vec_preserve_untyped)
+                .collect()
         })
     }
 
@@ -10975,59 +11095,9 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<HoverBlockSig> {
-        let method_name = scope.method_name.clone()?;
         let super_node = node.as_super_node()?;
-        let explicit_empty = super_node.arguments().is_none()
-            && Self::source_slice_contains_explicit_empty_super(
-                parse_result.source(),
-                super_node.location().start_offset(),
-                super_node.location().end_offset(),
-            );
-        let args = super_node.arguments();
-        if args.as_ref().is_some_and(|args| {
-            args.arguments().len() == 1
-                && args
-                    .arguments()
-                    .iter()
-                    .next()
-                    .is_some_and(|arg| matches!(arg, Node::ForwardingArgumentsNode { .. }))
-        }) {
-            return self.register_forwarding_super_call_site(
-                class_name,
-                scope,
-                super_node.block().and_then(|block| block.as_block_node()),
-                Some(parse_result),
-            );
-        }
-        if args.is_none() && !explicit_empty && super_node.block().is_none() {
-            return None;
-        }
-        self.ensure_class_available(class_name);
-        let superclass = self
-            .registry
-            .get_superclass(class_name)
-            .map(str::to_string)?;
-        self.ensure_class_available(&superclass);
-        let mut arg_types: Vec<Type> = Vec::new();
-        let mut kw_types: HashMap<String, Type> = HashMap::new();
-        if let Some(args) = args {
-            for arg in args.arguments().iter() {
-                if let Node::KeywordHashNode { .. } = &arg {
-                    let hash = arg.as_keyword_hash_node().expect("must be KeywordHashNode");
-                    kw_types.extend(self.collect_keyword_arg_types_from_hash(
-                        class_name,
-                        &hash,
-                        parse_result,
-                        scope,
-                    ));
-                } else {
-                    let ty = self.infer_node_type(class_name, &arg, parse_result, scope);
-                    arg_types.push(ty);
-                }
-            }
-        }
-        let explicit_block = super_node.block();
-        let forwards_current_block = explicit_block
+        let forwards_current_block = super_node
+            .block()
             .as_ref()
             .and_then(|block| block.as_block_argument_node())
             .and_then(|block| block.expression())
@@ -11036,53 +11106,72 @@ impl<'a> InferenceEngine<'a> {
                 let name = String::from_utf8_lossy(read.name().as_slice());
                 scope.current_block_param_name.as_deref() == Some(name.as_ref())
             });
-        let block = explicit_block
-            .as_ref()
-            .and_then(|block| block.as_block_node())
-            .and_then(|block_node| {
-                self.infer_super_call_block(SuperCallBlockInput {
-                    owner_class: &superclass,
-                    method_name: &method_name,
-                    method_is_singleton: scope.singleton_dispatch,
-                    block_node: Some(block_node),
-                    class_name,
-                    parse_result,
-                    scope,
-                    positional_arg_types: &arg_types,
-                    keyword_arg_types: &kw_types,
-                })
+        self.record_super_call_sites(
+            class_name,
+            scope,
+            Some(node),
+            super_node.block().and_then(|block| block.as_block_node()),
+            forwards_current_block,
+            parse_result,
+        )
+    }
+
+    fn register_forwarding_super_call_site(
+        &mut self,
+        class_name: &str,
+        scope: &Scope,
+        block_node: Option<ruby_prism::BlockNode<'_>>,
+        parse_result: &ParseResult<'_>,
+    ) -> Option<HoverBlockSig> {
+        let forwards_current_block =
+            block_node.is_none() && scope.current_block_param_name.is_some();
+        self.record_super_call_sites(
+            class_name,
+            scope,
+            None,
+            block_node,
+            forwards_current_block,
+            parse_result,
+        )
+    }
+
+    fn record_super_call_sites(
+        &mut self,
+        class_name: &str,
+        scope: &Scope,
+        super_node: Option<&Node<'_>>,
+        block_node: Option<ruby_prism::BlockNode<'_>>,
+        forwards_current_block: bool,
+        parse_result: &ParseResult<'_>,
+    ) -> Option<HoverBlockSig> {
+        let method_name = scope.method_name.clone()?;
+        let targets =
+            self.super_call_targets(class_name, &method_name, scope.singleton_dispatch)?;
+        let SuperCallArguments::Bound {
+            positional: arg_types,
+            keywords: kw_types,
+        } = self.super_call_arguments(class_name, scope, super_node, Some(parse_result))
+        else {
+            return None;
+        };
+        let block = if block_node.is_some() {
+            self.infer_super_call_block(SuperCallBlockInput {
+                targets: &targets,
+                method_name: &method_name,
+                block_node,
+                class_name,
+                parse_result,
+                scope,
+                positional_arg_types: &arg_types,
+                keyword_arg_types: &kw_types,
             })
-            .or_else(|| {
-                if !forwards_current_block {
-                    return None;
-                }
-                self.resolve_user_defined_block_param_types(
-                    &superclass,
-                    &method_name,
-                    scope.singleton_dispatch,
-                    0,
-                )
-                .map(|param_types| {
-                    let param_types = Self::substitute_user_defined_block_param_types(
-                        param_types,
-                        &arg_types,
-                        &kw_types,
-                    );
-                    HoverBlockSig {
-                        params: param_types
-                            .into_iter()
-                            .enumerate()
-                            .map(|(idx, ty)| Param {
-                                name: format!("arg{idx}"),
-                                param_type: ty,
-                                kind: ParamKind::Required,
-                            })
-                            .collect(),
-                        return_type: Type::BlockReturnRef,
-                        required: true,
-                    }
-                })
-            });
+        } else if forwards_current_block {
+            let return_type = self.current_call_site_block_return(class_name, scope);
+            self.super_block_param_types(&targets, &method_name, &arg_types, &kw_types)
+                .map(|param_types| Self::super_block_signature(param_types, return_type))
+        } else {
+            None
+        };
         if forwards_current_block && let Some(block) = &block {
             let mut meta = self
                 .registry
@@ -11102,109 +11191,55 @@ impl<'a> InferenceEngine<'a> {
                 meta,
             );
         }
-        let parent_returns_block_value = forwards_current_block
-            && self
-                .registry
-                .lookup_method_def(&superclass, &method_name, scope.singleton_dispatch)
-                .is_some_and(|method| method.raw_return_type == Type::BlockReturnRef);
-        let call_site_block = block.as_ref().map(|block| {
-            let mut block = block.clone();
-            if parent_returns_block_value {
-                block.return_type =
-                    Type::MethodReturnRef(class_name.into(), method_name.clone().into());
-            }
-            Box::new(block)
-        });
         let caller_context =
             Self::call_site_caller_context(class_name, scope, &arg_types, &kw_types, None, &None);
         let keyword_arg_types: KeywordArgTypes = kw_types
             .into_iter()
             .map(|(name, ty)| (name.into(), ty))
             .collect();
-        self.record_inferred_call_site(
-            &superclass,
-            CallSite {
-                method_name: method_name.clone().into(),
-                method_is_singleton: scope.singleton_dispatch,
-                arg_types,
-                keyword_arg_types,
-                keyword_rest_shape: None,
-                block: call_site_block,
-                caller_context,
-            },
-        );
-        block
-    }
-
-    fn register_forwarding_super_call_site(
-        &mut self,
-        class_name: &str,
-        scope: &Scope,
-        block_node: Option<ruby_prism::BlockNode<'_>>,
-        parse_result: Option<&ParseResult<'_>>,
-    ) -> Option<HoverBlockSig> {
-        let method_name = scope.method_name.clone()?;
-        self.ensure_class_available(class_name);
-        let superclass = self
-            .registry
-            .get_superclass(class_name)
-            .map(str::to_string)?;
-        self.ensure_class_available(&superclass);
-        let sig = self.registry.lookup_method_sig(class_name, &method_name)?;
-        let mut arg_types = Vec::new();
-        let mut kw_types: HashMap<String, Type> = HashMap::new();
-        for param in &sig.params {
-            match param.kind {
-                ParamKind::Required | ParamKind::Optional | ParamKind::Rest => {
-                    let ty = scope
-                        .get(&param.name)
-                        .cloned()
-                        .unwrap_or_else(|| param.param_type.clone());
-                    arg_types.push(ty);
-                }
-                ParamKind::KeywordRequired | ParamKind::KeywordOptional => {
-                    let ty = scope
-                        .get(&param.name)
-                        .cloned()
-                        .unwrap_or_else(|| param.param_type.clone());
-                    kw_types.insert(param.name.clone(), ty);
-                }
-                ParamKind::DoubleRest | ParamKind::Block => {}
-            }
-        }
-        let block = block_node
-            .zip(parse_result)
-            .and_then(|(super_node, parse_result)| {
-                self.infer_super_call_block(SuperCallBlockInput {
-                    owner_class: &superclass,
-                    method_name: &method_name,
-                    method_is_singleton: scope.singleton_dispatch,
-                    block_node: Some(super_node),
-                    class_name,
-                    parse_result,
-                    scope,
-                    positional_arg_types: &arg_types,
-                    keyword_arg_types: &kw_types,
+        for (owner, is_singleton) in &targets {
+            let parent_returns_block_value = forwards_current_block
+                && block
+                    .as_ref()
+                    .is_some_and(|block| block.return_type == Type::BlockReturnRef)
+                && self
+                    .registry
+                    .lookup_method_def(owner, &method_name, *is_singleton)
+                    .is_some_and(|method| method.raw_return_type == Type::BlockReturnRef);
+            let call_site_block = block
+                .as_ref()
+                .filter(|block| {
+                    parent_returns_block_value
+                        || !forwards_current_block
+                        || block.return_type != Type::BlockReturnRef
                 })
-            });
-        let caller_context =
-            Self::call_site_caller_context(class_name, scope, &arg_types, &kw_types, None, &None);
-        let keyword_arg_types: KeywordArgTypes = kw_types
-            .into_iter()
-            .map(|(name, ty)| (name.into(), ty))
-            .collect();
-        self.record_inferred_call_site(
-            &superclass,
-            CallSite {
-                method_name: method_name.clone().into(),
-                method_is_singleton: scope.singleton_dispatch,
-                arg_types,
-                keyword_arg_types,
-                keyword_rest_shape: None,
-                block: block.clone().map(Box::new),
-                caller_context,
-            },
-        );
+                .map(|block| {
+                    let mut block = block.clone();
+                    if parent_returns_block_value {
+                        block.return_type =
+                            Type::MethodReturnRef(class_name.into(), method_name.clone().into());
+                    }
+                    Box::new(block)
+                });
+            let keyword_rest_shape = self.super_keyword_rest_shape(
+                owner,
+                &method_name,
+                *is_singleton,
+                &keyword_arg_types,
+            );
+            self.record_inferred_call_site(
+                owner,
+                CallSite {
+                    method_name: method_name.clone().into(),
+                    method_is_singleton: *is_singleton,
+                    arg_types: arg_types.clone(),
+                    keyword_arg_types: keyword_arg_types.clone(),
+                    keyword_rest_shape,
+                    block: call_site_block,
+                    caller_context: caller_context.clone(),
+                },
+            );
+        }
         block
     }
 
@@ -11226,100 +11261,99 @@ impl<'a> InferenceEngine<'a> {
         if scope.singleton_dispatch && method_name == "new" {
             return Some(Type::Class(Sym::new(class_name)));
         }
+        let targets =
+            self.super_call_targets(class_name, &method_name, scope.singleton_dispatch)?;
+        let arguments = self.super_call_arguments(class_name, scope, super_node, parse_result);
+        let returns: Vec<Type> = targets
+            .iter()
+            .filter_map(|(owner, is_singleton)| {
+                self.super_target_return(owner, &method_name, *is_singleton, &arguments)
+            })
+            .collect();
+        if returns.is_empty() {
+            return None;
+        }
+        let return_type = Type::from_type_vec_preserve_untyped(returns);
+        Some(if let Some(block) = block {
+            Self::substitute_block_return_ref(return_type, &block.return_type)
+        } else {
+            return_type
+        })
+    }
+
+    fn super_call_targets(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<Vec<(String, bool)>> {
         self.ensure_class_available(class_name);
-        let superclass = self.registry.get_superclass(class_name)?.to_string();
-        self.ensure_class_available(&superclass);
+        let superclass = self.registry.get_superclass(class_name).map(str::to_string);
+        if let Some(superclass) = &superclass {
+            self.ensure_class_available(superclass);
+        }
+        let targets = self
+            .registry
+            .super_method_targets(class_name, method_name, is_singleton);
+        if !targets.is_empty() {
+            return Some(targets);
+        }
+        superclass.map(|superclass| vec![(superclass, is_singleton)])
+    }
+
+    fn super_target_return(
+        &mut self,
+        owner: &str,
+        method_name: &str,
+        is_singleton: bool,
+        arguments: &SuperCallArguments,
+    ) -> Option<Type> {
+        self.super_target_return_with_raw(owner, method_name, is_singleton, arguments, None)
+    }
+
+    fn super_target_return_with_raw(
+        &mut self,
+        owner: &str,
+        method_name: &str,
+        is_singleton: bool,
+        arguments: &SuperCallArguments,
+        raw_return: Option<Type>,
+    ) -> Option<Type> {
         let method_def = self
             .registry
-            .lookup_method_def(&superclass, &method_name, scope.singleton_dispatch)
+            .lookup_method_def(owner, method_name, is_singleton)
             .or_else(|| {
                 self.registry
-                    .resolve_method_call_owners(&superclass, &method_name, scope.singleton_dispatch)
+                    .resolve_method_call_owners(owner, method_name, is_singleton)
                     .into_iter()
                     .find_map(|(owner, is_singleton)| {
                         self.registry
-                            .lookup_method_def(&owner, &method_name, is_singleton)
+                            .lookup_method_def(&owner, method_name, is_singleton)
                     })
             })
             .cloned();
         let Some(method_def) = method_def else {
             return self.registry.lookup_method_return_type_with_hint(
-                &superclass,
-                &method_name,
-                scope.singleton_dispatch,
+                owner,
+                method_name,
+                is_singleton,
             );
         };
-
-        let Some(super_node) = super_node else {
-            // A forwarding `super` passes the current method's arguments through unchanged.
-            let return_type = method_def.raw_return_type.clone();
-            return Some(if let Some(block) = block {
-                Self::substitute_block_return_ref(return_type, &block.return_type)
-            } else {
-                return_type
-            });
-        };
-        let Some(parse_result) = parse_result else {
-            return Some(method_def.raw_return_type.clone());
-        };
-        let Some(super_node) = super_node.as_super_node() else {
-            return Some(method_def.raw_return_type.clone());
-        };
-        let explicit_empty = super_node.arguments().is_none()
-            && Self::source_slice_contains_explicit_empty_super(
-                parse_result.source(),
-                super_node.location().start_offset(),
-                super_node.location().end_offset(),
-            );
-        let args = if explicit_empty {
-            None
-        } else if let Some(args) = super_node.arguments() {
-            Some(args)
-        } else {
-            let return_type = method_def.raw_return_type.clone();
-            return Some(if let Some(block) = block {
-                Self::substitute_block_return_ref(return_type, &block.return_type)
-            } else {
-                return_type
-            });
-        };
-        if args.as_ref().is_some_and(|args| {
-            args.arguments().len() == 1
-                && args
-                    .arguments()
-                    .iter()
-                    .next()
-                    .is_some_and(|arg| matches!(arg, Node::ForwardingArgumentsNode { .. }))
-        }) {
-            return Some(method_def.raw_return_type.clone());
+        let raw_return = raw_return.unwrap_or_else(|| method_def.raw_return_type.clone());
+        if raw_return == Type::Untyped && !is_singleton && !method_def.rbs_file_source {
+            return Some(Type::MethodReturnRef(
+                Sym::new(owner),
+                Sym::new(method_name),
+            ));
         }
-
-        let mut positional_types = Vec::new();
-        let mut keyword_types = HashMap::new();
-        if let Some(args) = args {
-            for arg in args.arguments().iter() {
-                if let Node::KeywordHashNode { .. } = &arg {
-                    let Some(hash) = arg.as_keyword_hash_node() else {
-                        continue;
-                    };
-                    keyword_types.extend(self.collect_keyword_arg_types_from_hash(
-                        class_name,
-                        &hash,
-                        parse_result,
-                        scope,
-                    ));
-                } else {
-                    positional_types.push(self.infer_node_type(
-                        class_name,
-                        &arg,
-                        parse_result,
-                        scope,
-                    ));
-                }
-            }
-        }
-
-        let parent_positional_params: Vec<&ParamInfo> = method_def
+        let SuperCallArguments::Bound {
+            positional,
+            keywords,
+        } = arguments
+        else {
+            return Some(raw_return);
+        };
+        let positional_params: Vec<&ParamInfo> = method_def
             .param_infos
             .iter()
             .filter(|param| {
@@ -11329,19 +11363,20 @@ impl<'a> InferenceEngine<'a> {
                 )
             })
             .collect();
-        let resolved_positional_types: Vec<Type> = parent_positional_params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                positional_types
-                    .get(index)
-                    .cloned()
-                    .or_else(|| param.default_type.clone())
-                    .unwrap_or(Type::Untyped)
+        let positional_types: Vec<Type> =
+            TypeRegistry::bind_positional_arguments(&positional_params, positional)
+                .into_iter()
+                .zip(&positional_params)
+                .map(|(bound, param)| {
+                    if bound.is_empty() {
+                        param.default_type.clone().unwrap_or(Type::Untyped)
+                    } else {
+                        Type::from_type_vec_preserve_untyped(bound)
+                    }
                     .widen_arg_for_param()
-            })
-            .collect();
-        let resolved_keyword_types: HashMap<String, Type> = method_def
+                })
+                .collect();
+        let mut keyword_types: HashMap<String, Type> = method_def
             .param_infos
             .iter()
             .filter(|param| {
@@ -11351,7 +11386,7 @@ impl<'a> InferenceEngine<'a> {
                 )
             })
             .map(|param| {
-                let ty = keyword_types
+                let ty = keywords
                     .get(&param.name)
                     .cloned()
                     .or_else(|| param.default_type.clone())
@@ -11360,16 +11395,264 @@ impl<'a> InferenceEngine<'a> {
                 (param.name.clone(), ty)
             })
             .collect();
-        let return_type = Self::substitute_param_refs_with_keywords(
-            &method_def.raw_return_type,
-            &resolved_positional_types,
-            &resolved_keyword_types,
-        );
-        Some(if let Some(block) = block {
-            Self::substitute_block_return_ref(return_type, &block.return_type)
-        } else {
-            return_type
+        if let Some(rest) = method_def
+            .param_infos
+            .iter()
+            .find(|param| param.kind == ParamKind::DoubleRest)
+        {
+            let collected: Vec<Type> = keywords
+                .iter()
+                .filter(|(name, _)| !keyword_types.contains_key(*name))
+                .map(|(_, ty)| ty.clone().widen_arg_for_param())
+                .collect();
+            if !collected.is_empty() {
+                keyword_types.insert(
+                    rest.name.clone(),
+                    Type::Hash(
+                        Some(Box::new(Type::Symbol)),
+                        Some(Box::new(Type::from_type_vec_preserve_untyped(collected))),
+                    ),
+                );
+            }
+        }
+        Some(Self::substitute_param_refs_with_keywords(
+            &raw_return,
+            &positional_types,
+            &keyword_types,
+        ))
+    }
+
+    /// Arguments that `super` passes, with rest parameters expanded back to call-site positions.
+    fn super_call_arguments(
+        &mut self,
+        class_name: &str,
+        scope: &Scope,
+        super_node: Option<&Node<'_>>,
+        parse_result: Option<&ParseResult<'_>>,
+    ) -> SuperCallArguments {
+        let args = match (super_node.and_then(Node::as_super_node), parse_result) {
+            (Some(super_node), Some(parse_result)) => {
+                let explicit_empty = super_node.arguments().is_none()
+                    && Self::source_slice_contains_explicit_empty_super(
+                        parse_result.source(),
+                        super_node.location().start_offset(),
+                        super_node.location().end_offset(),
+                    );
+                if explicit_empty {
+                    return SuperCallArguments::Bound {
+                        positional: Vec::new(),
+                        keywords: HashMap::new(),
+                    };
+                }
+                super_node.arguments()
+            }
+            _ => None,
+        };
+        let Some(args) = args.filter(|args| {
+            !(args.arguments().len() == 1
+                && args
+                    .arguments()
+                    .iter()
+                    .next()
+                    .is_some_and(|arg| matches!(arg, Node::ForwardingArgumentsNode { .. })))
+        }) else {
+            return self
+                .forwarded_super_arguments(class_name, scope)
+                .unwrap_or(SuperCallArguments::SameAsCaller);
+        };
+        let Some(parse_result) = parse_result else {
+            return SuperCallArguments::SameAsCaller;
+        };
+        let mut positional = Vec::new();
+        let mut keywords = HashMap::new();
+        for arg in args.arguments().iter() {
+            if let Some(hash) = arg.as_keyword_hash_node() {
+                keywords.extend(self.collect_keyword_arg_types_from_hash(
+                    class_name,
+                    &hash,
+                    parse_result,
+                    scope,
+                ));
+                for element in hash.elements().iter() {
+                    let Some(read) = element
+                        .as_assoc_splat_node()
+                        .and_then(|splat| splat.value())
+                        .and_then(|value| value.as_local_variable_read_node())
+                    else {
+                        continue;
+                    };
+                    let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
+                    keywords.extend(
+                        self.current_keyword_rest_call_site_types(class_name, scope, &name),
+                    );
+                }
+            } else if let Some(read) = arg
+                .as_splat_node()
+                .and_then(|splat| splat.expression())
+                .and_then(|expression| expression.as_local_variable_read_node())
+            {
+                let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
+                let Some(expanded) = self.current_rest_call_site_types(class_name, scope, &name)
+                else {
+                    return SuperCallArguments::SameAsCaller;
+                };
+                positional.extend(expanded);
+            } else {
+                positional.push(self.infer_node_type(class_name, &arg, parse_result, scope));
+            }
+        }
+        SuperCallArguments::Bound {
+            positional,
+            keywords,
+        }
+    }
+
+    /// Implicit `super` passes the current parameter values, so it re-expands `*rest`.
+    fn forwarded_super_arguments(
+        &mut self,
+        class_name: &str,
+        scope: &Scope,
+    ) -> Option<SuperCallArguments> {
+        let method_name = scope.method_name.clone()?;
+        let sig = self.registry.lookup_method_sig(class_name, &method_name)?;
+        let mut positional = Vec::with_capacity(sig.params.len());
+        let mut keywords = HashMap::new();
+        for param in &sig.params {
+            match param.kind {
+                ParamKind::Required | ParamKind::Optional => positional.push(
+                    scope
+                        .get(&param.name)
+                        .cloned()
+                        .unwrap_or_else(|| param.param_type.clone()),
+                ),
+                ParamKind::Rest => {
+                    positional.extend(self.current_rest_call_site_types(
+                        class_name,
+                        scope,
+                        &param.name,
+                    )?);
+                }
+                ParamKind::KeywordRequired | ParamKind::KeywordOptional => {
+                    keywords.insert(
+                        param.name.clone(),
+                        scope
+                            .get(&param.name)
+                            .cloned()
+                            .unwrap_or_else(|| param.param_type.clone()),
+                    );
+                }
+                ParamKind::DoubleRest | ParamKind::Block => {}
+            }
+        }
+        Some(SuperCallArguments::Bound {
+            positional,
+            keywords,
         })
+    }
+
+    /// Call-site keywords collected by the current method's `**rest` parameter.
+    fn current_keyword_rest_call_site_types(
+        &self,
+        class_name: &str,
+        scope: &Scope,
+        rest_name: &str,
+    ) -> HashMap<String, Type> {
+        let mut joined: HashMap<String, Type> = HashMap::new();
+        let Some(method_name) = scope.method_name.as_deref() else {
+            return joined;
+        };
+        let Some(method) =
+            self.registry
+                .lookup_method_def(class_name, method_name, scope.singleton_dispatch)
+        else {
+            return joined;
+        };
+        if !method
+            .param_infos
+            .iter()
+            .any(|param| param.kind == ParamKind::DoubleRest && param.name == rest_name)
+        {
+            return joined;
+        }
+        let includer_sites = self
+            .registry
+            .module_call_sites_from_includers(class_name, method_name);
+        for site in self
+            .registry
+            .get_call_sites(class_name)
+            .iter()
+            .filter(|site| {
+                site.method_name.as_ref() == method_name
+                    && site.method_is_singleton == scope.singleton_dispatch
+            })
+            .chain(&includer_sites)
+        {
+            for (name, ty) in site.keyword_arg_types.iter() {
+                if method.param_infos.iter().any(|param| {
+                    matches!(
+                        param.kind,
+                        ParamKind::KeywordRequired | ParamKind::KeywordOptional
+                    ) && param.name == name.as_ref()
+                }) {
+                    continue;
+                }
+                joined
+                    .entry(name.to_string())
+                    .and_modify(|current| *current = current.clone().union_with(ty.clone()))
+                    .or_insert_with(|| ty.clone());
+            }
+        }
+        joined
+    }
+
+    /// Per-position call-site types of the current method's rest parameter.
+    fn current_rest_call_site_types(
+        &self,
+        class_name: &str,
+        scope: &Scope,
+        rest_name: &str,
+    ) -> Option<Vec<Type>> {
+        let method_name = scope.method_name.as_deref()?;
+        let method =
+            self.registry
+                .lookup_method_def(class_name, method_name, scope.singleton_dispatch)?;
+        let positional: Vec<&ParamInfo> = method
+            .param_infos
+            .iter()
+            .filter(|param| {
+                matches!(
+                    param.kind,
+                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                )
+            })
+            .collect();
+        let rest_index = positional
+            .iter()
+            .position(|param| param.kind == ParamKind::Rest && param.name == rest_name)?;
+        let trailing = positional.len() - rest_index - 1;
+        let includer_sites = self
+            .registry
+            .module_call_sites_from_includers(class_name, method_name);
+        let mut joined: Vec<Vec<Type>> = Vec::new();
+        for site in self
+            .registry
+            .get_call_sites(class_name)
+            .iter()
+            .filter(|site| {
+                site.method_name.as_ref() == method_name
+                    && site.method_is_singleton == scope.singleton_dispatch
+            })
+            .chain(&includer_sites)
+        {
+            let end = site.arg_types.len().saturating_sub(trailing);
+            for (offset, ty) in site.arg_types.iter().take(end).skip(rest_index).enumerate() {
+                if joined.len() <= offset {
+                    joined.resize_with(offset + 1, Vec::new);
+                }
+                Type::append_union_parts(&mut joined[offset], ty.clone());
+            }
+        }
+        Some(joined.into_iter().map(Type::merge_param_arg_vec).collect())
     }
 
     pub fn build_subclass_index(&mut self) {
@@ -14945,16 +15228,13 @@ impl<'a> InferenceEngine<'a> {
                         .as_optional_parameter_node()
                         .expect("must be OptionalParameterNode");
                     let name = String::from_utf8_lossy(opt.name().as_slice()).to_string();
-                    let default_type = if param_info_idx == 0 {
-                        self.infer_bare_super_default_type(
+                    let default_type = if opt.value().as_forwarding_super_node().is_some() {
+                        self.stash_bare_super_target_returns(
                             class_name,
                             &method_name,
                             is_singleton,
-                            &opt.value(),
-                        )
-                        .unwrap_or_else(|| {
-                            self.infer_node_type(class_name, &opt.value(), parse_result, &scope)
-                        })
+                        );
+                        Type::Untyped
                     } else {
                         self.infer_node_type(class_name, &opt.value(), parse_result, &scope)
                     };
@@ -15013,8 +15293,16 @@ impl<'a> InferenceEngine<'a> {
                             .as_optional_keyword_parameter_node()
                             .expect("must be OptionalKeywordParameterNode");
                         let name = String::from_utf8_lossy(kw.name().as_slice()).to_string();
-                        let default_type =
-                            self.infer_node_type(class_name, &kw.value(), parse_result, &scope);
+                        let default_type = if kw.value().as_forwarding_super_node().is_some() {
+                            self.stash_bare_super_target_returns(
+                                class_name,
+                                &method_name,
+                                is_singleton,
+                            );
+                            Type::Untyped
+                        } else {
+                            self.infer_node_type(class_name, &kw.value(), parse_result, &scope)
+                        };
                         if default_type != Type::Untyped {
                             self.registry.update_method_param_default_type_variant(
                                 class_name,
@@ -15044,38 +15332,54 @@ impl<'a> InferenceEngine<'a> {
         );
     }
 
-    fn infer_bare_super_default_type(
+    /// A bare `super` default sees parameters bound so far: earlier values, `nil` for itself and
+    /// later optionals, and only caller-supplied later keywords.
+    fn refresh_bare_super_defaults(
         &mut self,
         class_name: &str,
         method_name: &str,
-        method_is_singleton: bool,
-        default_node: &Node<'_>,
-    ) -> Option<Type> {
-        let super_node = default_node.as_forwarding_super_node()?;
-        if super_node.block().is_some() {
-            return None;
-        }
-
-        self.ensure_class_available(class_name);
-        let superclass = self.registry.get_superclass(class_name)?.to_string();
-        self.ensure_class_available(&superclass);
-        let parent_method = self
+        is_singleton: bool,
+        def_node: &ruby_prism::DefNode<'_>,
+    ) {
+        let Some(params) = def_node.parameters() else {
+            return;
+        };
+        let Some(method) = self
             .registry
-            .lookup_method_def(&superclass, method_name, method_is_singleton)?
-            .clone();
-        let parent_may_invoke_block = self
+            .lookup_method_def(class_name, method_name, is_singleton)
+            .cloned()
+        else {
+            return;
+        };
+        let call_sites: Vec<CallSite> = self
             .registry
-            .lookup_method_block_meta(&superclass, method_name, method_is_singleton)
-            .is_some_and(|meta| {
-                meta.yields || !meta.yield_param_types.is_empty() || meta.forwarded_block.is_some()
-            });
-        if Self::type_contains_block_return_ref(&parent_method.raw_return_type)
-            || parent_may_invoke_block
-        {
-            return None;
-        }
-
-        let positional_params: Vec<_> = parent_method
+            .get_call_sites(class_name)
+            .iter()
+            .filter(|site| {
+                site.method_name.as_ref() == method_name && site.method_is_singleton == is_singleton
+            })
+            .cloned()
+            .chain(
+                self.registry
+                    .module_call_sites_from_includers(class_name, method_name),
+            )
+            .collect();
+        let site_refs: Vec<&CallSite> = call_sites.iter().collect();
+        let supplied =
+            Self::resolve_param_types_from_grouped_call_sites(&method.param_infos, &site_refs);
+        let supplied_keyword = |name: &str| -> Option<Type> {
+            let types: Vec<Type> = call_sites
+                .iter()
+                .filter_map(|site| {
+                    site.keyword_arg_types
+                        .iter()
+                        .find(|(keyword, _)| keyword.as_ref() == name)
+                        .map(|(_, ty)| ty.clone())
+                })
+                .collect();
+            (!types.is_empty()).then(|| Type::merge_param_arg_vec(types))
+        };
+        let positional_infos: Vec<&ParamInfo> = method
             .param_infos
             .iter()
             .filter(|param| {
@@ -15085,32 +15389,278 @@ impl<'a> InferenceEngine<'a> {
                 )
             })
             .collect();
-        if !matches!(
-            positional_params.as_slice(),
-            [param] if matches!(param.kind, ParamKind::Required | ParamKind::Optional)
-        ) {
-            return None;
+        let value_of = |param: &ParamInfo, index: usize| -> Type {
+            let bound = supplied.get(index).cloned().unwrap_or(Type::Untyped);
+            match &param.default_type {
+                Some(default) if bound == Type::Untyped => default.clone(),
+                Some(default) => bound.union_with(default.clone()),
+                None => bound,
+            }
+        };
+        let optional_nodes: Vec<(String, Node<'_>)> = params
+            .optionals()
+            .iter()
+            .filter_map(|param| {
+                let node = param.as_optional_parameter_node()?;
+                Some((
+                    String::from_utf8_lossy(node.name().as_slice()).to_string(),
+                    node.value(),
+                ))
+            })
+            .collect();
+        for (name, value) in &optional_nodes {
+            if value
+                .as_forwarding_super_node()
+                .is_none_or(|node| node.block().is_some())
+            {
+                continue;
+            }
+            let Some(current) = positional_infos
+                .iter()
+                .position(|param| param.name == *name)
+            else {
+                continue;
+            };
+            let positional = positional_infos
+                .iter()
+                .enumerate()
+                .filter_map(|(index, param)| match param.kind {
+                    ParamKind::Rest => None,
+                    ParamKind::Optional if index >= current => Some(Type::Nil),
+                    _ => Some(value_of(param, index)),
+                })
+                .collect();
+            let keywords = method
+                .param_infos
+                .iter()
+                .filter_map(|param| {
+                    matches!(
+                        param.kind,
+                        ParamKind::KeywordRequired | ParamKind::KeywordOptional
+                    )
+                    .then(|| {
+                        supplied_keyword(&param.name).map(|supplied| (param.name.clone(), supplied))
+                    })
+                    .flatten()
+                })
+                .collect();
+            self.update_bare_super_default(
+                class_name,
+                method_name,
+                is_singleton,
+                name,
+                SuperCallArguments::Bound {
+                    positional,
+                    keywords,
+                },
+            );
         }
+        let mut keyword_seen_current = false;
+        for keyword in params.keywords().iter() {
+            let Some(node) = keyword.as_optional_keyword_parameter_node() else {
+                continue;
+            };
+            let name = String::from_utf8_lossy(node.name().as_slice())
+                .trim_end_matches(':')
+                .to_string();
+            let is_bare_super = node
+                .value()
+                .as_forwarding_super_node()
+                .is_some_and(|super_node| super_node.block().is_none());
+            if !is_bare_super {
+                continue;
+            }
+            let rest_scope = Scope {
+                method_name: Some(method_name.to_string()),
+                singleton_dispatch: is_singleton,
+                ..Default::default()
+            };
+            let mut positional = Vec::with_capacity(positional_infos.len());
+            for (index, param) in positional_infos.iter().enumerate() {
+                if param.kind == ParamKind::Rest {
+                    positional.extend(
+                        self.current_rest_call_site_types(class_name, &rest_scope, &param.name)
+                            .unwrap_or_default(),
+                    );
+                } else {
+                    positional.push(value_of(param, index));
+                }
+            }
+            let mut keywords = HashMap::new();
+            for param in &method.param_infos {
+                if !matches!(
+                    param.kind,
+                    ParamKind::KeywordRequired | ParamKind::KeywordOptional
+                ) {
+                    continue;
+                }
+                if param.name == name {
+                    keyword_seen_current = true;
+                    keywords.insert(param.name.clone(), Type::Nil);
+                } else if keyword_seen_current {
+                    if let Some(supplied) = supplied_keyword(&param.name) {
+                        keywords.insert(param.name.clone(), supplied);
+                    }
+                } else if let Some(default) =
+                    supplied_keyword(&param.name).or_else(|| param.default_type.clone())
+                {
+                    keywords.insert(param.name.clone(), default);
+                }
+            }
+            keyword_seen_current = false;
+            for param in &method.param_infos {
+                if param.kind == ParamKind::DoubleRest {
+                    keywords.extend(self.current_keyword_rest_call_site_types(
+                        class_name,
+                        &rest_scope,
+                        &param.name,
+                    ));
+                }
+            }
+            self.update_bare_super_default(
+                class_name,
+                method_name,
+                is_singleton,
+                &name,
+                SuperCallArguments::Bound {
+                    positional,
+                    keywords,
+                },
+            );
+        }
+    }
 
-        let arg_types = vec![Type::Nil];
-        let return_type = Self::substitute_param_refs_with_keywords(
-            &parent_method.raw_return_type,
-            &arg_types,
-            &HashMap::new(),
+    /// Later passes bake parameter defaults into returns, but a bare `super` default needs the
+    /// target's return as a function of its parameters.
+    fn stash_bare_super_target_returns(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) {
+        let Some(targets) = self.super_call_targets(class_name, method_name, is_singleton) else {
+            return;
+        };
+        for (owner, target_singleton) in targets {
+            if let Some(raw_return) = self
+                .registry
+                .lookup_method_def(&owner, method_name, target_singleton)
+                .map(|method| method.raw_return_type.clone())
+            {
+                self.bare_super_target_returns
+                    .entry((owner, method_name.to_string(), target_singleton))
+                    .or_insert(raw_return);
+            }
+        }
+    }
+
+    fn update_bare_super_default(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        param_name: &str,
+        arguments: SuperCallArguments,
+    ) {
+        let Some(param_index) = self
+            .registry
+            .lookup_method_def(class_name, method_name, is_singleton)
+            .and_then(|method| {
+                method
+                    .param_infos
+                    .iter()
+                    .position(|param| param.name == param_name)
+            })
+        else {
+            return;
+        };
+        let Some(targets) = self.super_call_targets(class_name, method_name, is_singleton) else {
+            return;
+        };
+        let returns: Vec<Type> = targets
+            .iter()
+            .filter_map(|(owner, target_singleton)| {
+                let raw_return = self
+                    .bare_super_target_returns
+                    .get(&(owner.clone(), method_name.to_string(), *target_singleton))
+                    .cloned();
+                self.super_target_return_with_raw(
+                    owner,
+                    method_name,
+                    *target_singleton,
+                    &arguments,
+                    raw_return,
+                )
+            })
+            .collect();
+        if returns.is_empty() {
+            return;
+        }
+        let SuperCallArguments::Bound {
+            positional,
+            keywords,
+        } = arguments
+        else {
+            return;
+        };
+        let keyword_arg_types: KeywordArgTypes = keywords
+            .into_iter()
+            .map(|(name, ty)| (name.into(), ty))
+            .collect();
+        for (owner, target_singleton) in &targets {
+            let keyword_rest_shape = self.super_keyword_rest_shape(
+                owner,
+                method_name,
+                *target_singleton,
+                &keyword_arg_types,
+            );
+            self.record_inferred_call_site(
+                owner,
+                CallSite {
+                    method_name: method_name.into(),
+                    method_is_singleton: *target_singleton,
+                    arg_types: positional.clone(),
+                    keyword_arg_types: keyword_arg_types.clone(),
+                    keyword_rest_shape,
+                    block: None,
+                    caller_context: None,
+                },
+            );
+        }
+        self.registry.update_method_param_default_type_variant(
+            class_name,
+            method_name,
+            is_singleton,
+            param_index,
+            Type::from_type_vec_preserve_untyped(returns),
         );
-        self.record_inferred_call_site(
-            &superclass,
-            CallSite {
-                method_name: method_name.into(),
-                method_is_singleton,
-                arg_types,
-                keyword_arg_types: KeywordArgTypes::new(),
-                keyword_rest_shape: None,
-                block: None,
-                caller_context: None,
-            },
-        );
-        Some(return_type)
+    }
+
+    fn infer_param_default_type(
+        &mut self,
+        class_name: &str,
+        value: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Type {
+        if value.as_forwarding_super_node().is_some() {
+            return Type::Untyped;
+        }
+        self.infer_node_type(class_name, value, parse_result, scope)
+    }
+
+    fn def_has_bare_super_default(def_node: &ruby_prism::DefNode<'_>) -> bool {
+        def_node.parameters().is_some_and(|params| {
+            params.optionals().iter().any(|param| {
+                param
+                    .as_optional_parameter_node()
+                    .is_some_and(|node| node.value().as_forwarding_super_node().is_some())
+            }) || params.keywords().iter().any(|param| {
+                param
+                    .as_optional_keyword_parameter_node()
+                    .is_some_and(|node| node.value().as_forwarding_super_node().is_some())
+            })
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -16263,13 +16813,14 @@ impl<'a> InferenceEngine<'a> {
                 .then(|| self.scan_method_body_summary(class_name, &body, parse_result, &scope))
         });
         self.active_loop_entry_scopes = saved_active_loop_entry_scopes;
-        let (unresolved_block_receivers, has_case_class_dispatch) = self
+        let (unresolved_block_receivers, has_case_class_dispatch, has_super_call) = self
             .active_method_body
             .take()
             .map(|body| {
                 (
                     body.unresolved_block_receivers,
                     body.has_case_class_dispatch,
+                    body.has_super_call,
                 )
             })
             .unwrap_or_default();
@@ -16411,7 +16962,8 @@ impl<'a> InferenceEngine<'a> {
             || needs_late_constant_return
             || needs_late_ivar_return
             || needs_late_hash_splat;
-        if (has_existing_defer_reason || has_deferred_block_receiver_return)
+        let has_super_call = has_super_call || Self::def_has_bare_super_default(&def_node);
+        if (has_existing_defer_reason || has_deferred_block_receiver_return || has_super_call)
             && !rbs_inline_annotated
             && !sig_annotated
         {
@@ -16421,6 +16973,7 @@ impl<'a> InferenceEngine<'a> {
                 start_offset: def_node.location().start_offset(),
                 has_existing_defer_reason,
                 has_case_class_dispatch,
+                has_super_call,
                 unresolved_block_receivers: has_deferred_block_receiver_return
                     .then_some(unresolved_block_receivers),
             });
@@ -17950,7 +18503,7 @@ impl<'a> InferenceEngine<'a> {
         if !self.record_hover_snapshots {
             return;
         }
-        let ty = self.infer_node_type(class_name, node, parse_result, scope);
+        let ty = self.infer_param_default_type(class_name, node, parse_result, scope);
         self.push_hover_snapshot(HoverSnapshot {
             start: node.location().start_offset(),
             end: node.location().end_offset(),
@@ -18147,8 +18700,12 @@ impl<'a> InferenceEngine<'a> {
                         .as_optional_parameter_node()
                         .expect("must be OptionalParameterNode");
                     let name = String::from_utf8_lossy(opt.name().as_slice()).to_string();
-                    let default_type =
-                        self.infer_node_type(class_name, &opt.value(), parse_result, &scope);
+                    let default_type = self.infer_param_default_type(
+                        class_name,
+                        &opt.value(),
+                        parse_result,
+                        &scope,
+                    );
                     names.push(name.clone());
                     infos.push(ParamInfo {
                         name,
@@ -18214,8 +18771,12 @@ impl<'a> InferenceEngine<'a> {
                             .as_optional_keyword_parameter_node()
                             .expect("must be OptionalKeywordParameterNode");
                         let name = String::from_utf8_lossy(kw.name().as_slice()).to_string();
-                        let default_type =
-                            self.infer_node_type(class_name, &kw.value(), parse_result, &scope);
+                        let default_type = self.infer_param_default_type(
+                            class_name,
+                            &kw.value(),
+                            parse_result,
+                            &scope,
+                        );
                         names.push(name.clone());
                         infos.push(ParamInfo {
                             name,
@@ -30443,11 +31004,14 @@ impl<'a> InferenceEngine<'a> {
                 let block_node = node
                     .as_forwarding_super_node()
                     .and_then(|forwarding_super| forwarding_super.block());
+                if let Some(body) = self.active_method_body.as_mut() {
+                    body.has_super_call = true;
+                }
                 let block = self.register_forwarding_super_call_site(
                     class_name,
                     scope,
                     block_node,
-                    Some(parse_result),
+                    parse_result,
                 );
                 let ty = self
                     .resolve_super_call_return(class_name, scope, None, None, block.as_ref())
@@ -30457,6 +31021,9 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::SuperNode { .. } => {
                 let super_node = node.as_super_node().expect("must be SuperNode");
+                if let Some(body) = self.active_method_body.as_mut() {
+                    body.has_super_call = true;
+                }
                 let explicit_empty = super_node.arguments().is_none()
                     && Self::source_slice_contains_explicit_empty_super(
                         parse_result.source(),
@@ -30476,7 +31043,7 @@ impl<'a> InferenceEngine<'a> {
                         class_name,
                         scope,
                         super_node.block().and_then(|block| block.as_block_node()),
-                        Some(parse_result),
+                        parse_result,
                     )
                 } else {
                     self.register_super_call_site(class_name, node, parse_result, scope)
@@ -57254,19 +57821,20 @@ impl<'a> InferenceEngine<'a> {
             std::mem::take(&mut self.deferred_method_bodies)
                 .into_iter()
                 .filter_map(|body| {
-                    let receiver_dependency_resolved = body
-                        .unresolved_block_receivers
-                        .as_ref()
-                        .is_some_and(|receivers| {
-                            receivers.iter().any(|receiver| {
-                                Self::deferred_receiver_type_resolves_to_concrete(
-                                    &self.registry,
-                                    &body.class_name,
-                                    receiver,
-                                    &mut deferred_receiver_visiting,
-                                )
-                            })
-                        });
+                    let receiver_dependency_resolved = body.has_super_call
+                        || body
+                            .unresolved_block_receivers
+                            .as_ref()
+                            .is_some_and(|receivers| {
+                                receivers.iter().any(|receiver| {
+                                    Self::deferred_receiver_type_resolves_to_concrete(
+                                        &self.registry,
+                                        &body.class_name,
+                                        receiver,
+                                        &mut deferred_receiver_visiting,
+                                    )
+                                })
+                            });
                     if include_existing_defer_reasons {
                         if !body.has_existing_defer_reason && !receiver_dependency_resolved {
                             return None;
@@ -57461,7 +58029,8 @@ impl<'a> InferenceEngine<'a> {
                                 is_singleton || in_singleton_class,
                             )
                             .map(|method| method.raw_return_type.clone());
-                        if previous_return_type != updated_return_type
+                        if (previous_return_type != updated_return_type
+                            || Self::def_has_bare_super_default(&def_node))
                             && updated_return_type.is_some()
                         {
                             changed_method_returns.insert((
@@ -57477,24 +58046,31 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn direct_implicit_call_name(body: &Node<'_>) -> Option<String> {
-        let call = match body {
-            Node::CallNode { .. } => body.as_call_node()?,
+    fn direct_call_node<'b>(body: &Node<'b>) -> Option<ruby_prism::CallNode<'b>> {
+        match body {
+            Node::CallNode { .. } => body.as_call_node(),
             Node::StatementsNode { .. } => {
                 let mut statements = body.as_statements_node()?.body().iter();
                 let statement = statements.next()?;
                 if statements.next().is_some() {
                     return None;
                 }
-                statement.as_call_node()?
+                statement.as_call_node()
             }
-            _ => return None,
-        };
-        call.receiver()
-            .is_none()
-            .then_some(())
-            .filter(|()| call.block().is_none())
-            .map(|()| String::from_utf8_lossy(call.name().as_slice()).to_string())
+            _ => None,
+        }
+    }
+
+    /// Bare calls have a dependency on the method they name; a call through a receiver is matched by
+    /// name in the body, which keeps its replay cheap.
+    fn body_calls_with_receiver(body: &Node<'_>) -> bool {
+        Self::direct_call_node(body).is_none_or(|call| call.receiver().is_some())
+    }
+
+    fn direct_implicit_call_name(body: &Node<'_>) -> Option<String> {
+        let call = Self::direct_call_node(body)?;
+        (call.receiver().is_none() && call.block().is_none())
+            .then(|| String::from_utf8_lossy(call.name().as_slice()).to_string())
     }
 
     fn call_site_types_are_stable(site: &CallSite) -> bool {
@@ -57558,7 +58134,7 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
         }
-        candidates.retain(|key| stability.get(key) == Some(&true));
+        candidates.retain(|key| stability.get(key) != Some(&false));
         candidates
     }
 
@@ -57638,6 +58214,39 @@ impl<'a> InferenceEngine<'a> {
                     let Some(body) = def_node.body() else {
                         continue;
                     };
+                    let method_is_singleton = in_singleton_class || def_node.receiver().is_some();
+                    let (caller_owner, _) = self.const_receiver_method_owner(
+                        class_name,
+                        &def_node,
+                        parse_result,
+                        in_singleton_class,
+                    );
+                    let caller_name = String::from_utf8_lossy(def_node.name().as_slice());
+                    let caller_return_is_unknown = self
+                        .registry
+                        .lookup_method_def(&caller_owner, &caller_name, method_is_singleton)
+                        .is_some_and(|method| Self::type_contains_untyped(&method.raw_return_type));
+                    if caller_return_is_unknown
+                        && changed_callees.iter().any(|(_, name, _)| {
+                            Self::source_slice_may_contain(
+                                parse_result.source(),
+                                body.location().start_offset(),
+                                body.location().end_offset(),
+                                name.as_bytes(),
+                            )
+                        })
+                        && Self::body_calls_with_receiver(&body)
+                    {
+                        callers.insert(
+                            def_node.location().start_offset(),
+                            DeferredMethodReplay {
+                                is_singleton: method_is_singleton,
+                                source_return_dependency_resolved: true,
+                                ..DeferredMethodReplay::default()
+                            },
+                        );
+                        continue;
+                    }
                     let Some(called_name) = Self::direct_implicit_call_name(&body) else {
                         continue;
                     };
@@ -57647,7 +58256,6 @@ impl<'a> InferenceEngine<'a> {
                         parse_result,
                         in_singleton_class,
                     );
-                    let method_is_singleton = in_singleton_class || def_node.receiver().is_some();
                     for (owner, is_singleton) in self.registry.resolve_method_call_owners(
                         &method_owner,
                         &called_name,
@@ -57832,6 +58440,15 @@ impl<'a> InferenceEngine<'a> {
             return;
         }
 
+        if Self::def_has_bare_super_default(def_node) {
+            self.refresh_bare_super_defaults(class_name, &method_name, is_singleton, def_node);
+        }
+        let method_info = self
+            .registry
+            .lookup_method_def(class_name, &method_name, is_singleton)
+            .cloned()
+            .unwrap_or(method_info);
+
         let Some(body) = def_node.body() else {
             return;
         };
@@ -57843,16 +58460,34 @@ impl<'a> InferenceEngine<'a> {
             body.location().start_offset(),
             body.location().end_offset(),
         );
-        let has_concrete_call_site = self.registry.get_call_sites(class_name).iter().any(|site| {
-            site.method_name.as_ref() == method_name
-                && site.method_is_singleton == is_singleton
-                && (site.arg_types.iter().any(|ty| !matches!(ty, Type::Untyped))
+        let includer_call_sites = self
+            .registry
+            .module_call_sites_from_includers(class_name, &method_name);
+        if replay.receiver_dependency_resolved {
+            for site in &includer_call_sites {
+                let mut site = site.clone();
+                site.method_is_singleton = is_singleton;
+                if !self.registry.get_call_sites(class_name).contains(&site) {
+                    self.registry.add_call_site(class_name, site);
+                }
+            }
+        }
+        let has_concrete_call_site = self
+            .registry
+            .get_call_sites(class_name)
+            .iter()
+            .filter(|site| {
+                site.method_name.as_ref() == method_name && site.method_is_singleton == is_singleton
+            })
+            .chain(&includer_call_sites)
+            .any(|site| {
+                site.arg_types.iter().any(|ty| !matches!(ty, Type::Untyped))
                     || site
                         .keyword_arg_types
                         .iter()
                         .any(|(_, ty)| !matches!(ty, Type::Untyped))
-                    || site.keyword_rest_shape.is_some())
-        });
+                    || site.keyword_rest_shape.is_some()
+            });
         let has_hash_splat = Self::source_slice_may_contain(
             parse_result.source(),
             body.location().start_offset(),
@@ -57886,6 +58521,7 @@ impl<'a> InferenceEngine<'a> {
                     site.method_name.as_ref() == method_name
                         && site.method_is_singleton == is_singleton
                 })
+                .chain(&includer_call_sites)
                 .collect();
             let has_keyword_sites = method_call_sites.iter().any(|site| {
                 !site.keyword_arg_types.is_empty() || site.keyword_rest_shape.is_some()
@@ -57917,15 +58553,20 @@ impl<'a> InferenceEngine<'a> {
         let has_concrete = resolved_param_types
             .iter()
             .any(|t| !matches!(t, Type::Untyped));
+        let has_bare_super_default = Self::def_has_bare_super_default(def_node);
         let receiver_replay_can_use_defaults = replay.receiver_dependency_resolved
             && method_info
                 .param_infos
                 .iter()
                 .all(|param| match param.kind {
-                    ParamKind::Optional | ParamKind::KeywordOptional => param
-                        .default_type
-                        .as_ref()
-                        .is_some_and(|ty| !Self::type_needs_backward_propagation(ty)),
+                    ParamKind::Optional | ParamKind::KeywordOptional => {
+                        param.default_type.as_ref().is_some_and(|ty| {
+                            has_bare_super_default || !Self::type_needs_backward_propagation(ty)
+                        })
+                    }
+                    ParamKind::Rest | ParamKind::DoubleRest | ParamKind::Block => {
+                        has_bare_super_default
+                    }
                     _ => false,
                 });
         if !method_info.param_infos.is_empty()
@@ -58216,7 +58857,10 @@ impl<'a> InferenceEngine<'a> {
             && Self::case_return_replay_is_precise(&old_case_return, &new_return_type);
         let reinfer_degraded =
             Self::return_reinfer_is_degraded(&method_info.raw_return_type, &new_return_type);
-        if reinfer_degraded && !exhaustively_narrowed_case_return {
+        if reinfer_degraded
+            && !exhaustively_narrowed_case_return
+            && !Self::def_has_bare_super_default(def_node)
+        {
             if let Some(saved) = saved_ctx {
                 self.enter_method_body_context(saved);
             }

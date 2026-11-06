@@ -96,6 +96,12 @@ Ruby の method lookup ではその配列を mixin 種別ごとに後ろから�
 `include` / `prepend` / `extend` を先に解決する。`extend` はクラスオブジェクト側だけに
 現れ、インスタンス側の `ancestors` には含めない。
 
+`super` はこの順序で現在の定義の次にある定義を解決する。module の `super` は受け手で変わるため、
+同じ解析単位で mixin するクラスごとに次の定義を求め、戻り値と block 型を join する。module が
+includer より先に定義されていても、本体を再推論して解決する。implicit `super` の `*rest` と `**rest`
+は caller の位置・keyword に展開し、bare `super` の既定値には束縛済みの値、自身と後続の optional には
+`nil`、後続 keyword には caller が渡した値だけを渡す。別ファイルの includer は対象外。
+
 静的に解決できる mixin edge には、Ruby が実行時に呼ぶ `included` / `extended` /
 `prepended` callback の call site も対応付ける。callback の第一引数には mixin の適用先を
 `singleton(...)` として渡し、既存の call site ベースの引数型推論で同じ hook の複数の適用先を

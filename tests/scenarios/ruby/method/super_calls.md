@@ -65,16 +65,12 @@ class DefaultSuperChild < DefaultSuperParent
 end
 
 class DefaultSuperParent
-  def implicit: (?Symbol? value) -> Symbol?
+  def implicit: (?Symbol? value) -> :parent?
   def explicit: (?Symbol value) -> Symbol
 end
 ```
 
 ## Bare super in later and keyword defaults forwards current values
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -113,10 +109,6 @@ end
 ```
 
 ## Bare super defaults use prior and supplied arguments
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -228,10 +220,6 @@ end
 
 ## Rest arguments forwarded by implicit super keep positional boundaries
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -264,10 +252,6 @@ end
 
 ## Rest arguments and the caller block pass through implicit super
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -288,15 +272,15 @@ def call_render = BlockChild.new.render("value") { |item| item.to_sym }
 
 ```rbs
 class BlockChild < BlockParent
-  def render: (*String args) { (String) -> :value } -> :value?
+  def render: (*String args) { (String) -> Symbol } -> Symbol?
 end
 
 class BlockParent
-  def render: (String item) { (String) -> :value } -> :value?
+  def render: (String item) ?{ (String) -> Symbol } -> Symbol?
 end
 
 class Object < BasicObject
-  def call_render: -> :value?
+  def call_render: -> Symbol?
 end
 ```
 
@@ -333,10 +317,6 @@ end
 ```
 
 ## `super` inside an included module continues after the module
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -396,10 +376,6 @@ end
 
 ## Bare super preserves post-required argument positions
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -433,10 +409,6 @@ end
 ```
 
 ## Bare super expands rest arguments and keeps trailing required arguments
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -478,10 +450,6 @@ end
 
 ## Keyword defaults forward positional and keyword rest values
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -502,11 +470,11 @@ end
 
 ```rbs
 class KeywordRestDefaultCallSite
-  def value: -> [Array[Symbol], nil, Hash[Symbol, Integer]]
+  def value: -> [Array[Symbol], nil, Hash[Symbol, untyped]]
 end
 
 class KeywordRestDefaultChild < KeywordRestDefaultParent
-  def value: (*Symbol values, ?option: [Array[Symbol], nil, Hash[Symbol, Integer]], **Integer others) -> [Array[Symbol], nil, Hash[Symbol, Integer]]
+  def value: (*Symbol values, ?option: [Array[Symbol], nil, Hash[Symbol, untyped]], **Integer others) -> [Array[Symbol], nil, Hash[Symbol, untyped]]
 end
 
 class KeywordRestDefaultParent
@@ -515,10 +483,6 @@ end
 ```
 
 ## A concrete prepend call keeps the nested `super` result
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -572,10 +536,6 @@ end
 
 ## A nested expression keeps an included module `super` result
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -615,10 +575,6 @@ end
 ```
 
 ## Nested returns resolve across a chain of included modules
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -670,10 +626,6 @@ end
 
 ## Separate `super` expressions resolve inside records and arrays
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -714,10 +666,6 @@ end
 
 ## A deferred `super` result resolves inside a Proc
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -757,10 +705,6 @@ end
 ```
 
 ## `super` follows an included method before the superclass
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -805,10 +749,6 @@ end
 
 ## `super` in an extended module follows the singleton chain
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -849,10 +789,6 @@ end
 
 ## An included module forwards keyword rest through `super`
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -879,7 +815,7 @@ class KeywordSuperChild < KeywordSuperParent
 end
 
 module KeywordSuperMethods
-  def render: (String item, **(Integer | Symbol) kwargs) -> [String, Symbol, Hash[Symbol, untyped]]
+  def render: (String item, **(Integer | Symbol) kwargs) -> [String, Symbol, { extra: 1 }]
 end
 
 class KeywordSuperParent
@@ -887,15 +823,11 @@ class KeywordSuperParent
 end
 
 class Object < BasicObject
-  def call_keyword_super: -> [String, Symbol, Hash[Symbol, untyped]]
+  def call_keyword_super: -> [String, Symbol, { extra: 1 }]
 end
 ```
 
 ## An included module forwards a block through `super`
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -929,7 +861,7 @@ module BlockSuperMethods
 end
 
 class BlockSuperParent
-  def render: (String item) { (String) -> Symbol } -> Symbol?
+  def render: (String item) ?{ (String) -> Symbol } -> Symbol?
 end
 
 class Object < BasicObject
@@ -938,10 +870,6 @@ end
 ```
 
 ## An included module joins block types from every `super` target
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -983,7 +911,7 @@ class MultiBlockStringChild < MultiBlockStringParent
 end
 
 class MultiBlockStringParent
-  def render: (String item) { (String) -> String } -> String?
+  def render: (String item) ?{ (String) -> String } -> String?
 end
 
 module MultiBlockSuperMethods
@@ -996,7 +924,7 @@ class MultiBlockSymbolChild < MultiBlockSymbolParent
 end
 
 class MultiBlockSymbolParent
-  def render: (String item) { (Symbol) -> String } -> String?
+  def render: (String item) ?{ (Symbol) -> String } -> String?
 end
 
 class Object < BasicObject

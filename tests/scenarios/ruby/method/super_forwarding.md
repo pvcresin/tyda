@@ -1,9 +1,5 @@
 ## Explicit rest splat in super preserves positional boundaries
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

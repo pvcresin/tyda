@@ -3243,7 +3243,7 @@ impl TypeRegistry {
         arg_types: &[Type],
         param_infos: &[ParamInfo],
     ) {
-        let positional_infos: Vec<_> = param_infos
+        let positional_infos: Vec<&ParamInfo> = param_infos
             .iter()
             .filter(|pi| {
                 matches!(
@@ -3252,43 +3252,46 @@ impl TypeRegistry {
                 )
             })
             .collect();
-        let Some(rest_index) = positional_infos
+        let bound = Self::bind_positional_arguments(&positional_infos, arg_types);
+        for (slot, arg_types) in param_types.iter_mut().zip(bound) {
+            for arg_type in arg_types {
+                Type::append_union_parts(slot, arg_type);
+            }
+        }
+    }
+
+    /// Ruby's positional binding: required parameters first, then optionals, then the rest.
+    pub(crate) fn bind_positional_arguments(
+        params: &[&ParamInfo],
+        args: &[Type],
+    ) -> Vec<Vec<Type>> {
+        let required_count = params
             .iter()
-            .position(|pi| matches!(pi.kind, ParamKind::Rest))
-        else {
-            for (i, arg_type) in arg_types.iter().enumerate() {
-                if i < param_types.len() {
-                    Type::append_union_parts(&mut param_types[i], arg_type.clone());
+            .filter(|param| matches!(param.kind, ParamKind::Required))
+            .count();
+        let optional_count = params
+            .iter()
+            .filter(|param| matches!(param.kind, ParamKind::Optional))
+            .count();
+        let mut optional_args = args.len().saturating_sub(required_count);
+        let mut rest_args = optional_args.saturating_sub(optional_count);
+        let mut args = args.iter().cloned();
+        params
+            .iter()
+            .map(|param| match param.kind {
+                ParamKind::Optional if optional_args == 0 => Vec::new(),
+                ParamKind::Optional => {
+                    optional_args -= 1;
+                    args.next().into_iter().collect()
                 }
-            }
-            return;
-        };
-
-        let trailing_count = positional_infos.len().saturating_sub(rest_index + 1);
-        for (i, arg_type) in arg_types.iter().take(rest_index).enumerate() {
-            if i < param_types.len() {
-                Type::append_union_parts(&mut param_types[i], arg_type.clone());
-            }
-        }
-
-        let trailing_start = arg_types.len().saturating_sub(trailing_count);
-        for (offset, arg_type) in arg_types.iter().skip(trailing_start).enumerate() {
-            let param_index = rest_index + 1 + offset;
-            if param_index < param_types.len() {
-                Type::append_union_parts(&mut param_types[param_index], arg_type.clone());
-            }
-        }
-
-        let middle_end = trailing_start.max(rest_index);
-        for arg_type in arg_types
-            .iter()
-            .skip(rest_index)
-            .take(middle_end - rest_index)
-        {
-            if rest_index < param_types.len() {
-                Type::append_union_parts(&mut param_types[rest_index], arg_type.clone());
-            }
-        }
+                ParamKind::Rest => {
+                    let collected = args.by_ref().take(rest_args).collect();
+                    rest_args = 0;
+                    collected
+                }
+                _ => args.next().into_iter().collect(),
+            })
+            .collect()
     }
 
     pub fn new() -> Self {
@@ -6257,6 +6260,142 @@ impl TypeRegistry {
             .and_then(|idx| idx.get(class_name))
             .map(Vec::as_slice)
             .unwrap_or(&[])
+    }
+
+    /// Next definitions after `owner` in Ruby's ancestor order. A module owner has one chain per
+    /// class of this analysis pass that mixes it in, because `super` depends on the receiver.
+    pub(crate) fn super_method_targets(
+        &self,
+        owner: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Vec<(String, bool)> {
+        let mut targets = Vec::new();
+        let mut add_root = |class_name: &str, root_is_singleton: bool| {
+            let mut chain = Vec::with_capacity(16);
+            self.collect_ancestor_chain(class_name, root_is_singleton, &mut chain);
+            let Some(position) = chain
+                .iter()
+                .position(|&(name, singleton)| name == owner && singleton == is_singleton)
+            else {
+                return;
+            };
+            let next = chain[position + 1..].iter().find(|&&(name, singleton)| {
+                self.class_data.get(name).is_some_and(|data| {
+                    Self::method_for_lookup_kind(data, method_name, Some(singleton)).is_some()
+                })
+            });
+            if let Some(&(name, singleton)) = next
+                && !targets.iter().any(|(target, target_singleton)| {
+                    target == name && *target_singleton == singleton
+                })
+            {
+                targets.push((name.to_string(), singleton));
+            }
+        };
+        add_root(owner, is_singleton);
+        if !is_singleton
+            && self
+                .class_data
+                .get(owner)
+                .is_some_and(|data| data.is_module)
+        {
+            for class_name in &self.file_contribution_names {
+                add_root(class_name, false);
+                add_root(class_name, true);
+            }
+        }
+        targets.sort();
+        targets
+    }
+
+    /// Call sites on classes of this analysis pass that dispatch to `method_name` through `module`.
+    pub(crate) fn module_call_sites_from_includers(
+        &self,
+        module: &str,
+        method_name: &str,
+    ) -> Vec<CallSite> {
+        if !self
+            .class_data
+            .get(module)
+            .is_some_and(|data| data.is_module)
+        {
+            return Vec::new();
+        }
+        let mut sites = Vec::new();
+        for class_name in &self.file_contribution_names {
+            let Some(data) = self.class_data.get(class_name.as_str()) else {
+                continue;
+            };
+            if data.call_sites.is_empty() || class_name == module {
+                continue;
+            }
+            let mut chain = Vec::with_capacity(16);
+            self.collect_ancestor_chain(class_name, false, &mut chain);
+            self.collect_ancestor_chain(class_name, true, &mut chain);
+            if !chain.iter().any(|&(name, _)| name == module) {
+                continue;
+            }
+            sites.extend(
+                data.call_sites
+                    .iter()
+                    .filter(|site| site.method_name.as_ref() == method_name)
+                    .cloned(),
+            );
+        }
+        sites
+    }
+
+    fn collect_ancestor_chain<'a>(
+        &'a self,
+        class_name: &'a str,
+        is_singleton: bool,
+        chain: &mut Vec<(&'a str, bool)>,
+    ) {
+        if chain.contains(&(class_name, is_singleton)) {
+            return;
+        }
+        let Some((class_name, data)) = self.class_data.get_key_value(class_name) else {
+            return;
+        };
+        let class_name = class_name.as_str();
+        if is_singleton {
+            chain.push((class_name, true));
+            for mixin in data.mixins.iter().rev() {
+                let mixin_ref =
+                    self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
+                if mixin.kind == MixinKind::Extend {
+                    self.collect_ancestor_chain(mixin_ref, false, chain);
+                } else {
+                    if self.is_concern_module(mixin_ref) {
+                        self.collect_ancestor_chain(mixin_ref, true, chain);
+                    }
+                    if let Some(class_methods) = self.concern_class_methods_owner(mixin_ref) {
+                        self.collect_ancestor_chain(class_methods, false, chain);
+                    }
+                }
+            }
+        } else {
+            for mixin in data.mixins.iter().rev() {
+                if mixin.kind == MixinKind::Prepend {
+                    let mixin_ref = self
+                        .resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
+                    self.collect_ancestor_chain(mixin_ref, false, chain);
+                }
+            }
+            chain.push((class_name, false));
+            for mixin in data.mixins.iter().rev() {
+                if mixin.kind == MixinKind::Include {
+                    let mixin_ref = self
+                        .resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
+                    self.collect_ancestor_chain(mixin_ref, false, chain);
+                }
+            }
+        }
+        if let Some(superclass) = &data.superclass {
+            let super_ref = self.resolve_superclass_ref_borrow(class_name, superclass.as_ref());
+            self.collect_ancestor_chain(super_ref, is_singleton, chain);
+        }
     }
 
     pub(crate) fn includers_of(&self, module_name: &str) -> &[SharedName] {
