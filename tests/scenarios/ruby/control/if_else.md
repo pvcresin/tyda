@@ -221,6 +221,46 @@ class RangeResponseIterator
 end
 ```
 
+## Narrow an instance variable on the right of a short-circuit like a local
+
+### update
+
+```ruby
+class IvarShortCircuitNarrowing
+  def initialize(options)
+    @urls = options[:urls] || ["/x"]
+  end
+
+  def with_and = @urls.is_a?(Array) && [@urls.any?]
+  def with_ternary = @urls.is_a?(Array) ? [@urls.any?] : false
+
+  def with_if
+    if @urls.is_a?(Array)
+      [@urls.any?]
+    else
+      false
+    end
+  end
+
+  def with_local
+    urls = @urls
+    urls.is_a?(Array) && [urls.any?]
+  end
+end
+```
+
+### result
+
+```rbs
+class IvarShortCircuitNarrowing
+  def initialize: (untyped options) -> void
+  def with_and: -> false | untyped | [bool]
+  def with_ternary: -> false | [bool]
+  def with_if: -> false | [bool]
+  def with_local: -> false | untyped | [bool]
+end
+```
+
 ## Preserve tuple correlation across nested branches
 
 ### update
