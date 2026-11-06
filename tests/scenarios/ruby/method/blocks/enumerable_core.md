@@ -50,9 +50,6 @@ end
 
 ## Deferred repetition counts do not choose the String overload
 
-`Array#*` returns `String` for a separator and `Array` for a count, so an argument that only
-resolves later stays unknown. The result is not `String`, so `join` is not reported as missing.
-
 ### update
 
 ```ruby

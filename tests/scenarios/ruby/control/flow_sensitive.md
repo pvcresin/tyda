@@ -169,11 +169,7 @@ class Object < BasicObject
 end
 ```
 
-## Correlated locals keep paths up to the world limit
-
-Each independent branch doubles the paths: five branches make 32 worlds and keep the
-correlation, and six make 64 and join the values. The joined result stays sound, so this pins
-the boundary rather than a goal. Raising `MAX_CORRELATED_WORLDS` should update this case.
+## Five branches keep correlation at 32 worlds and six join values at 64
 
 ### update
 
