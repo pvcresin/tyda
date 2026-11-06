@@ -4356,3 +4356,235 @@ fn diagnostics_output_is_deterministic() {
         "special file diagnostics must be in position order: {special_diags:?}"
     );
 }
+
+// `post_while_bare` retains an existing dynamic-reference diagnostic gap and is
+// deliberately kept outside this pre-test loop regression assertion.
+#[test]
+fn diagnostics_loop_assignment_narrowing_respects_evaluation_order() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("loop_assignment.rb");
+    let source = r#"class LoopAssignmentEntry
+  def name = "entry"
+end
+
+class LoopAssignmentSource
+  #: (bool) -> LoopAssignmentEntry?
+  def next_entry(flag)
+    @calls = (@calls || 0) + 1
+    flag ? LoopAssignmentEntry.new : nil
+  end
+
+  def always_entry
+    @calls = (@calls || 0) + 1
+    LoopAssignmentEntry.new
+  end
+end
+
+class LoopAssignmentDiagnostics
+  def while_single(source, flag)
+    entry = nil
+    while (entry = source.next_entry(flag))
+      entry.name
+    end
+  end
+
+  def while_nested(source, flag)
+    entry = nil
+    while ((entry = source.next_entry(flag)))
+      entry.name
+    end
+  end
+
+  def while_bare(source, flag)
+    entry = nil
+    while entry = source.next_entry(flag)
+      entry.name
+    end
+  end
+
+  def while_body_reentry(source, flag)
+    entry = nil
+    while (entry = source.next_entry(flag))
+      entry.name
+      entry = nil
+      entry.name
+    end
+  end
+
+  def while_unreachable_body()
+    while (entry = nil)
+      entry.name
+    end
+    entry.name
+  end
+
+  def until_single()
+    until (entry = nil)
+      entry.name
+      break
+    end
+  end
+
+  def until_bare()
+    until entry = nil
+      entry.name
+      break
+    end
+  end
+
+  def until_dynamic(source, flag)
+    until (entry = source.next_entry(flag))
+      entry.name
+      break
+    end
+  end
+
+  def sequence_unrelated()
+    while (entry = nil; true)
+      entry.name
+      break
+    end
+  end
+
+  def post_while_single(source, flag)
+    entry = nil
+    begin
+      entry.name
+    end while (entry = source.next_entry(flag))
+  end
+
+  def post_while_bare(source, flag)
+    entry = nil
+    begin
+      entry.name
+    end while entry = source.next_entry(flag)
+  end
+
+  def post_while_keeps_existing_value(source)
+    entry = LoopAssignmentEntry.new
+    begin
+      entry.name
+    end while (entry = source.always_entry)
+  end
+
+  def post_until_single()
+    entry = nil
+    begin
+      entry.name
+    end until (entry = nil)
+  end
+
+  def post_until_truthy()
+    entry = nil
+    begin
+      entry.name
+    end until (entry = LoopAssignmentEntry.new)
+  end
+
+  def post_until_bare()
+    entry = nil
+    begin
+      entry.name
+    end until entry = nil
+  end
+end
+
+probe = LoopAssignmentDiagnostics.new
+source = LoopAssignmentSource.new
+probe.while_single(source, true)
+probe.while_nested(source, true)
+probe.while_bare(source, true)
+probe.while_body_reentry(source, true)
+probe.while_unreachable_body
+probe.until_single
+probe.until_bare
+probe.until_dynamic(source, false)
+probe.sequence_unrelated
+probe.post_while_single(source, true)
+probe.post_while_bare(source, true)
+probe.post_while_keeps_existing_value(source)
+probe.post_until_single
+probe.post_until_bare
+probe.post_until_truthy
+"#;
+    fs::write(&rb_file, source).expect("failed to write Ruby source");
+
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("--diagnostics")
+        .arg(&rb_file)
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    let nil_name_lines: Vec<usize> = diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic["code"] == "missing_method"
+                && diagnostic["unresolved_method"] == "NilClass#name"
+        })
+        .map(|diagnostic| {
+            usize::try_from(
+                diagnostic["line"]
+                    .as_u64()
+                    .expect("line should be an integer"),
+            )
+            .expect("line should fit usize")
+        })
+        .collect();
+    let call_line = |method_name: &str, call_index: usize| {
+        let marker = format!("  def {method_name}(");
+        let method_start = source
+            .find(&marker)
+            .expect("method definition should exist");
+        let call_offset = source[method_start..]
+            .match_indices("entry.name")
+            .nth(call_index)
+            .map(|(offset, _)| method_start + offset)
+            .expect("method body should call entry.name");
+        source[..call_offset]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1
+    };
+    let expected_warning_lines = [
+        ("until_single", 0),
+        ("until_bare", 0),
+        ("until_dynamic", 0),
+        ("sequence_unrelated", 0),
+        ("post_while_single", 0),
+        ("post_until_single", 0),
+        ("post_until_bare", 0),
+        ("post_until_truthy", 0),
+        ("while_body_reentry", 1),
+        ("while_unreachable_body", 1),
+    ]
+    .map(|(method_name, call_index)| call_line(method_name, call_index));
+
+    for expected_line in expected_warning_lines {
+        assert!(
+            nil_name_lines.contains(&expected_line),
+            "expected NilClass#name at line {expected_line}: {diagnostics:?}"
+        );
+    }
+
+    for method_name in [
+        "while_single",
+        "while_nested",
+        "while_bare",
+        "while_body_reentry",
+        "while_unreachable_body",
+        "post_while_keeps_existing_value",
+    ] {
+        let line = call_line(method_name, 0);
+        assert!(
+            !nil_name_lines.contains(&line),
+            "did not expect NilClass#name at line {line}: {diagnostics:?}"
+        );
+    }
+}

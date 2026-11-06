@@ -1149,3 +1149,47 @@ class ForEachBreakAfter
   def result: -> :after
 end
 ```
+
+## Parenthesized while assignment narrows the body
+
+### update
+
+```ruby
+class WhileAssignmentEntry
+  def name = "entry"
+end
+
+class WhileAssignmentSource
+  #: (bool) -> WhileAssignmentEntry?
+  def next_entry(flag)
+    @calls = (@calls || 0) + 1
+    flag ? WhileAssignmentEntry.new : nil
+  end
+end
+
+class WhileAssignmentProbe
+  def first_name(source, flag)
+    while ((entry = source.next_entry(flag)))
+      break entry.name
+    end
+  end
+end
+
+WhileAssignmentProbe.new.first_name(WhileAssignmentSource.new, true)
+```
+
+### result
+
+```rbs
+class WhileAssignmentEntry
+  def name: -> "entry"
+end
+
+class WhileAssignmentProbe
+  def first_name: (WhileAssignmentSource source, bool flag) -> "entry"?
+end
+
+class WhileAssignmentSource
+  def next_entry: (bool flag) -> WhileAssignmentEntry?
+end
+```

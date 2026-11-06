@@ -6680,6 +6680,24 @@ impl<'a> InferenceEngine<'a> {
         collection_type
     }
 
+    fn loop_predicate_local_assignment<'pr>(
+        predicate: &Node<'pr>,
+    ) -> Option<ruby_prism::LocalVariableWriteNode<'pr>> {
+        if let Node::ParenthesesNode { .. } = predicate {
+            let body = predicate.as_parentheses_node()?.body()?;
+            return Self::loop_predicate_local_assignment(&body);
+        }
+        if let Node::StatementsNode { .. } = predicate {
+            let mut statements = predicate.as_statements_node()?.body().iter();
+            let expression = statements.next()?;
+            if statements.next().is_some() {
+                return None;
+            }
+            return Self::loop_predicate_local_assignment(&expression);
+        }
+        predicate.as_local_variable_write_node()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn process_loop_scope(
         &mut self,
@@ -6723,9 +6741,20 @@ impl<'a> InferenceEngine<'a> {
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
-        // `while x = expr` (not `until`): the body runs only when the assigned
-        // value is truthy, so bind `x` to the non-nil RHS type for the body.
-        if !is_until && let Node::LocalVariableWriteNode { .. } = predicate {
+        let parenthesized_assignment = if !is_begin_modifier
+            && !is_until
+            && let Node::ParenthesesNode { .. } = predicate
+        {
+            Self::loop_predicate_local_assignment(predicate)
+        } else {
+            None
+        };
+        if let Some(write) = parenthesized_assignment {
+            let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+            let predicate_value = predicate_type.clone();
+            let body_value = Type::project_truthy(&predicate_value).unwrap_or(predicate_value);
+            loop_scope.set(&name, body_value);
+        } else if !is_until && let Node::LocalVariableWriteNode { .. } = predicate {
             let write = predicate
                 .as_local_variable_write_node()
                 .expect("must be LocalVariableWriteNode");
