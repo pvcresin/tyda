@@ -1077,3 +1077,43 @@ fn same_call_argument_mutation_keeps_nil_warning_after_direct_ivar_guard() {
         "the first argument can clear @resource before the second argument is evaluated: {nil_close_lines:?}"
     );
 }
+
+#[test]
+fn is_a_guard_refines_instance_variable_call_receiver() {
+    let source = concat!(
+        "class FlowBase\n",
+        "  end\n",
+        "class FlowChild < FlowBase\n",
+        "  def child_only = \"child\"\n",
+        "  end\n",
+        "class IvarIsAGuard\n",
+        "  def initialize\n",
+        "    @value = FlowBase.new\n",
+        "  end\n",
+        "  def unguarded\n",
+        "    @value.child_only\n",
+        "  end\n",
+        "  def guarded\n",
+        "    if @value.is_a?(FlowChild)\n",
+        "      value = [@value.child_only, self.is_a?(IvarIsAGuard)]\n",
+        "      value\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+    );
+
+    let actual = diagnostics(source, false);
+    let child_method_diagnostics: Vec<_> = actual
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == "missing_method"
+                && diagnostic.unresolved_method.ends_with("#child_only")
+        })
+        .collect();
+    assert_eq!(
+        child_method_diagnostics.len(),
+        1,
+        "the unguarded call should remain, while the call guarded by is_a? should be narrowed: {actual:?}"
+    );
+    assert_eq!(child_method_diagnostics[0].line, 11);
+}
