@@ -56063,8 +56063,9 @@ impl<'a> InferenceEngine<'a> {
                             }
                             _ => return None,
                         };
-                        let current =
-                            self.resolve_subject_input_type(class_name, scope, &subject)?;
+                        let current = self
+                            .resolve_subject_input_type(class_name, scope, &subject)
+                            .or_else(|| Self::uncollected_ivar_type(&subject, scope))?;
                         let has_override = self.type_has_known_source_instance_method_override(
                             &current, &method, scope,
                         ) || (Self::type_has_unknown_class_member(&current)
@@ -59270,6 +59271,16 @@ impl<'a> InferenceEngine<'a> {
                 let sig = self.registry.lookup_method_sig(class_name, name)?;
                 (!Self::contains_unresolved_ref(&sig.return_type)).then_some(sig.return_type)
             }),
+        }
+    }
+
+    /// An ivar whose writers are not collected yet stays a deferred reference, like a local alias of it.
+    fn uncollected_ivar_type(subject: &NarrowSubject, scope: &Scope) -> Option<Type> {
+        match subject {
+            NarrowSubject::Ivar(name) if !scope.singleton_dispatch => {
+                Some(Type::IvarRef(Sym::new(name)))
+            }
+            _ => None,
         }
     }
 

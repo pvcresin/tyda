@@ -2762,3 +2762,52 @@ class Object < BasicObject
   def refined_regexp: -> :unmatched
 end
 ```
+
+## Narrow an ivar inside a modifier if across files
+
+### update
+
+```ruby
+module TypeProf
+  module Core
+    module AST
+      class Node
+      end
+
+      class LoopNode
+        #: (Node) -> void
+        def initialize(cond)
+          @cond = cond
+        end
+
+        def value
+          @cond.var if @cond.is_a?(LocalVariableReadNode)
+        end
+      end
+    end
+  end
+end
+```
+
+### file: ast/variable.rb
+
+```ruby
+module TypeProf
+  module Core
+    module AST
+      class LocalVariableReadNode < Node
+        def var = "var".upcase
+      end
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class TypeProf::Core::AST::LoopNode
+  def initialize: (Node cond) -> void
+  def value: -> String?
+end
+```
