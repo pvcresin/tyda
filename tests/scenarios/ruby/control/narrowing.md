@@ -909,3 +909,55 @@ class RefinedIsATarget
   def marker: -> :narrowed
 end
 ```
+
+## An or condition proves nothing for the taken branch when one side is opaque
+
+### update
+
+```ruby
+class OrConditionNarrowing
+  def left_guard(flag)
+    value = flag ? 1 : "value"
+    if value.is_a?(Integer) || value.frozen?
+      value
+    else
+      :other
+    end
+  end
+
+  def right_guard(flag)
+    value = flag ? 1 : "value"
+    if value.frozen? || value.is_a?(Integer)
+      value
+    else
+      :other
+    end
+  end
+
+  def falsy_side_still_narrows(flag)
+    value = flag ? 1 : "value"
+    return :early if value.frozen? || value.is_a?(Integer)
+    value
+  end
+
+  def and_keeps_taken_branch(flag)
+    value = flag ? 1 : "value"
+    if value.is_a?(Integer) && value.frozen?
+      value
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class OrConditionNarrowing
+  def left_guard: (untyped flag) -> (1 | "value" | :other)
+  def right_guard: (untyped flag) -> (1 | "value" | :other)
+  def falsy_side_still_narrows: (untyped flag) -> ("value" | :early)
+  def and_keeps_taken_branch: (untyped flag) -> (1 | :other)
+end
+```

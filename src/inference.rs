@@ -55696,7 +55696,7 @@ impl<'a> InferenceEngine<'a> {
             (None, None) => None,
             (Some(only), None) | (None, Some(only)) => Some(CondNarrowing {
                 subject: only.subject,
-                then_ty: only.then_ty,
+                then_ty: if is_and { only.then_ty } else { None },
                 else_ty: if is_and { None } else { only.else_ty },
             }),
             (Some(left), Some(right)) if left.subject == right.subject => {
