@@ -46631,11 +46631,14 @@ impl<'a> InferenceEngine<'a> {
                 {
                     return Some(ret);
                 }
-                // Unknown arguments can select any overload the nearest owner accepts, so only an
-                // agreed return is known.
+                // Unknown arguments can select any overload the nearest owner accepts, so only a
+                // return they agree on is known. A nil-accepting fallback overload still agrees.
                 match &unknown_arg_return {
                     None => unknown_arg_return = Some((overload.owner_class.clone(), ret)),
-                    Some((owner, seen)) if *owner == overload.owner_class && *seen != ret => {
+                    Some((owner, seen))
+                        if *owner == overload.owner_class
+                            && Self::remove_nil(seen) != Self::remove_nil(&ret) =>
+                    {
                         return Some(Type::Untyped);
                     }
                     Some(_) => {}
