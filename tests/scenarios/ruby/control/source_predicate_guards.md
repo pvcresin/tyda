@@ -272,3 +272,145 @@ class PredicateWithUnrelatedNames
   def checked: -> (String | :none)
 end
 ```
+
+## Aliased source predicates keep nil
+
+### update
+
+```ruby
+class PredicateWithAlias
+  #: () -> String?
+  def maybe_string = nil
+
+  def present?(value)
+    return false unless value
+    true
+  end
+  alias aliased_present? present?
+
+  def checked
+    value = maybe_string
+    return :none unless present?(value)
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class PredicateWithAlias
+  def maybe_string: -> String?
+  def present?: (String? value) -> bool
+  alias aliased_present? present?
+  def checked: -> (String | :none)?
+end
+```
+
+## Mixin overrides in another file keep nil
+
+### update
+
+### file: base.rb
+
+```ruby
+class PredicateCrossFileBase
+  #: () -> String?
+  def maybe_string = nil
+
+  def present?(value)
+    return false unless value
+    true
+  end
+
+  def checked
+    value = maybe_string
+    return :none unless present?(value)
+    value
+  end
+end
+```
+
+### file: child.rb
+
+```ruby
+module PredicateCrossFileOverride
+  def present?(_value) = true
+end
+
+class PredicateCrossFileChild < PredicateCrossFileBase
+  include PredicateCrossFileOverride
+end
+```
+
+### result
+
+```rbs
+class PredicateCrossFileBase
+  def maybe_string: -> String?
+  def present?: (String? value) -> bool
+  def checked: -> (String | :none)?
+end
+
+class PredicateCrossFileChild < PredicateCrossFileBase
+  include PredicateCrossFileOverride
+end
+
+module PredicateCrossFileOverride
+  def present?: (untyped _value) -> true
+end
+```
+
+## Nil guards on a local narrow the guarded branch
+
+### update
+
+```ruby
+class NullableLocalGuard
+  def readable? = true
+end
+
+class NullableLocalGuardFlow
+  #: () -> NullableLocalGuard?
+  def maybe = nil
+
+  def short_circuit
+    resource = maybe
+    resource && resource.readable?
+  end
+
+  def assigned_in_condition
+    if (resource = maybe) && resource.readable?
+      resource
+    else
+      :none
+    end
+  end
+
+  def assigned_in_unless
+    unless (resource = maybe) && resource.readable?
+      :none
+    else
+      resource
+    end
+  end
+
+  def unguarded = maybe.readable?
+end
+```
+
+### result
+
+```rbs
+class NullableLocalGuard
+  def readable?: -> true
+end
+
+class NullableLocalGuardFlow
+  def maybe: -> NullableLocalGuard?
+  def short_circuit: -> true | nil
+  def assigned_in_condition: -> :none | NullableLocalGuard
+  def assigned_in_unless: -> :none | NullableLocalGuard
+  def unguarded: -> true
+end
+```

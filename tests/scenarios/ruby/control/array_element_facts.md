@@ -132,3 +132,49 @@ class ArrayElementFactControls
   def element_nil_kept: -> :empty?
 end
 ```
+
+## Array element facts end when a helper can change the array
+
+### update
+
+```ruby
+class ArrayElementFactEscapes
+  #: () -> Array[Integer]
+  def ints = []
+
+  def clear_it(values)
+    values.clear
+  end
+
+  def through_wrapper
+    values = ints
+    return :empty unless values.size >= 1
+    clear_it(values)
+    values[0]
+  end
+
+  def through_ivar_alias
+    values = ints
+    @alias_values = values
+    return :empty unless values.size >= 1
+    clear_alias
+    values[0]
+  end
+
+  def clear_alias
+    @alias_values.clear
+  end
+end
+```
+
+### result
+
+```rbs
+class ArrayElementFactEscapes
+  def ints: -> Array[Integer]
+  def clear_it: (Array[Integer] values) -> [ ]
+  def through_wrapper: -> (Integer | :empty)?
+  def through_ivar_alias: -> (Integer | :empty)?
+  def clear_alias: -> [ ]
+end
+```
