@@ -7001,6 +7001,34 @@ impl<'a> InferenceEngine<'a> {
         Some(integer == float_integer)
     }
 
+    fn is_numeric_value_type(ty: &Type) -> bool {
+        match ty {
+            Type::Integer | Type::Float | Type::LiteralInteger(_) | Type::LiteralFloat(_) => true,
+            Type::Class(name) => matches!(name.as_str(), "Rational" | "Complex"),
+            _ => false,
+        }
+    }
+
+    /// `None` means the static types allow both outcomes.
+    fn numeric_value_equality(left: &Type, right: &Type) -> Option<bool> {
+        match (left, right) {
+            (Type::LiteralInteger(left), Type::LiteralInteger(right)) => Some(left == right),
+            (Type::LiteralFloat(left), Type::LiteralFloat(right)) => {
+                Self::literal_float_equality(left, right)
+            }
+            (Type::LiteralInteger(integer), Type::LiteralFloat(float))
+            | (Type::LiteralFloat(float), Type::LiteralInteger(integer)) => {
+                Self::literal_integer_float_equality(*integer, float)
+            }
+            (Type::Integer, Type::LiteralFloat(float))
+            | (Type::LiteralFloat(float), Type::Integer) => {
+                let float = Self::literal_float_value(float)?;
+                (float.fract() != 0.0).then_some(false)
+            }
+            _ => None,
+        }
+    }
+
     fn static_literal_equality_result(
         &self,
         target_type: &Type,
@@ -56789,7 +56817,11 @@ impl<'a> InferenceEngine<'a> {
             };
 
         if method == "==" {
-            return Some((var_name, literal_ty));
+            let narrowed = scope
+                .get(&var_name)
+                .and_then(|current| Self::numeric_equality_narrowing(current, &literal_ty))
+                .unwrap_or(literal_ty);
+            return Some((var_name, narrowed));
         }
 
         self.negate_narrowing(
@@ -56799,6 +56831,52 @@ impl<'a> InferenceEngine<'a> {
             &literal_ty,
         )
         .map(|remaining| (var_name, remaining))
+    }
+
+    /// Numeric `==` crosses classes: `1 == 1.0`, so an Integer stays an Integer under `== 1.0`.
+    /// Returns `None` when no arm has a numeric class other than the literal's.
+    fn numeric_equality_narrowing(current: &Type, literal: &Type) -> Option<Type> {
+        if !Self::is_numeric_value_type(literal) {
+            return None;
+        }
+        let arms = match current {
+            Type::Union(parts) => parts.as_slice(),
+            single => std::slice::from_ref(single),
+        };
+        let is_same_class = |arm: &Type| {
+            matches!(
+                (arm, literal),
+                (
+                    Type::Integer | Type::LiteralInteger(_),
+                    Type::LiteralInteger(_)
+                ) | (Type::Float | Type::LiteralFloat(_), Type::LiteralFloat(_))
+            )
+        };
+        if !arms
+            .iter()
+            .any(|arm| Self::is_numeric_value_type(arm) && !is_same_class(arm))
+        {
+            return None;
+        }
+        let narrowed = arms
+            .iter()
+            .filter(|arm| {
+                Self::is_numeric_value_type(arm)
+                    && Self::numeric_value_equality(arm, literal) != Some(false)
+            })
+            .map(|arm| {
+                if is_same_class(arm) {
+                    literal.clone()
+                } else {
+                    arm.clone()
+                }
+            })
+            .collect::<Vec<_>>();
+        Some(if narrowed.is_empty() {
+            Type::Bot
+        } else {
+            Type::from_type_vec(narrowed)
+        })
     }
 
     fn extract_record_discriminant_equality_narrowing(
@@ -58084,17 +58162,14 @@ impl<'a> InferenceEngine<'a> {
                     matched_types.push(Type::Float);
                     unmatched_types.push(Type::Float);
                 }
-                Type::LiteralInteger(_) if class_name == "Integer" => {
-                    if subject == pattern_type {
-                        matched_types.push(subject);
-                    } else {
-                        unmatched_types.push(subject);
+                Type::LiteralInteger(_) | Type::LiteralFloat(_)
+                    if matches!(class_name, "Integer" | "Float") =>
+                {
+                    let equality = Self::numeric_value_equality(&pattern_type, &subject);
+                    if equality != Some(false) {
+                        matched_types.push(subject.clone());
                     }
-                }
-                Type::LiteralFloat(_) if class_name == "Float" => {
-                    if subject == pattern_type {
-                        matched_types.push(subject);
-                    } else {
+                    if equality != Some(true) {
                         unmatched_types.push(subject);
                     }
                 }

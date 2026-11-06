@@ -1065,3 +1065,43 @@ class SourcePredicateNarrowing
   def truthy_exit_control: -> String?
 end
 ```
+
+## Numeric equality keeps the subject's numeric class
+
+### update
+
+```rbs
+class NumericEqualityNarrowing
+  def maybe_integer: -> Integer?
+  def maybe_float: -> Float?
+end
+```
+
+```ruby
+class NumericEqualityNarrowing
+  def integer_against_integral_float
+    value = maybe_integer
+    value if value == 1.0
+  end
+
+  def integer_against_fractional_float
+    value = maybe_integer
+    value if value == 1.5
+  end
+
+  def float_against_integer
+    value = maybe_float
+    value if value == 1
+  end
+end
+```
+
+### result
+
+```rbs
+class NumericEqualityNarrowing
+  def integer_against_integral_float: -> Integer?
+  def integer_against_fractional_float: -> nil
+  def float_against_integer: -> Float?
+end
+```

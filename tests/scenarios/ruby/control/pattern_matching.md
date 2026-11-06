@@ -1433,3 +1433,36 @@ class RefinedHashPatternProbe
   def self.classify: -> :matched | :other
 end
 ```
+
+## Match integer and float literal patterns through numeric equality
+
+### update
+
+```ruby
+def integer_matches_float_pattern
+  case 1
+  in 1.0
+    :matched
+  else
+    :unmatched
+  end
+end
+
+def float_matches_integer_pattern
+  case 1.0
+  in 1
+    :matched
+  else
+    :unmatched
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def integer_matches_float_pattern: -> :matched
+  def float_matches_integer_pattern: -> :matched
+end
+```
