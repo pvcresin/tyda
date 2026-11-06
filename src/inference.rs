@@ -19,9 +19,9 @@ use crate::rbs::inline::{
 };
 use crate::rbs::stdlib_loader::LazyRbsLoader;
 use crate::registry::{
-    CallSite, CallSiteCallerContext, ClassData, KeywordArgTypes, MethodBlockMeta,
-    MethodBodySummary, MethodDef, MixinKind, ParamInfo, PendingScopedTypeRef, TypeRegistry,
-    Visibility,
+    BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, KeywordArgTypes,
+    LiteralBranchedDef, MethodBlockMeta, MethodBodySummary, MethodDef, MixinKind, ParamInfo,
+    PendingScopedTypeRef, TypeRegistry, Visibility,
 };
 use crate::sorbet::annotations::{
     extract_sig_source, find_method_annotations, sig_source_return_type, sig_sources_to_rbs_lines,
@@ -37,6 +37,7 @@ use crate::types::{
 };
 
 mod block_flow;
+use block_flow::LiteralArg;
 mod deps;
 mod dsl_patterns;
 mod hash_key_flow;
@@ -923,6 +924,13 @@ fn offset_to_location_from(
     offset_to_location(source, offset)
 }
 
+/// Keyed by owner, method, singleton, literal arguments, and whether `when` arms are selected. An
+/// entry holds the def it came from, so a redefinition misses.
+type LiteralBlockFlowMemo = HashMap<
+    (String, String, bool, Vec<Option<LiteralArg>>, bool),
+    (Arc<LiteralBranchedDef>, BlockFlowSummary),
+>;
+
 #[derive(Debug, Clone)]
 struct DeferredMethodBody {
     class_name: String,
@@ -1039,6 +1047,7 @@ pub struct InferenceEngine<'a> {
     source_base_case_equality_override: bool,
     /// Source of each `===` defined in this file, reparsed when a call site asks how it narrows.
     source_case_equality_defs: HashMap<(String, bool), Arc<str>>,
+    literal_block_flows: LiteralBlockFlowMemo,
     in_source_case_equality_guard: bool,
     /// Full analysis re-infers bodies, so first-pass ParamRef call sites are skipped.
     /// Compact/CLI snapshots have no re-infer and must keep those sites.
@@ -2448,6 +2457,7 @@ impl<'a> InferenceEngine<'a> {
             case_when_narrowing_enabled: false,
             source_base_case_equality_override: false,
             source_case_equality_defs: HashMap::new(),
+            literal_block_flows: LiteralBlockFlowMemo::default(),
             in_source_case_equality_guard: false,
             defer_unresolved_body_call_sites: false,
             track_deferred_block_receiver_bodies: false,
@@ -2525,6 +2535,7 @@ impl<'a> InferenceEngine<'a> {
             case_when_narrowing_enabled: false,
             source_base_case_equality_override: false,
             source_case_equality_defs: HashMap::new(),
+            literal_block_flows: LiteralBlockFlowMemo::default(),
             in_source_case_equality_guard: false,
             defer_unresolved_body_call_sites: false,
             track_deferred_block_receiver_bodies: false,
@@ -18097,12 +18108,10 @@ impl<'a> InferenceEngine<'a> {
                     || existing_block_meta.yields,
                 yields_at_least_once,
                 yield_requires_block,
-                block_flow: def_node.body().map(|body| {
-                    block_flow::summarize_block_flow(
-                        &body,
-                        scope.current_block_param_name.as_deref(),
-                    )
-                }),
+                block_flow: block_flow::summarize_block_flow(
+                    &def_node,
+                    scope.current_block_param_name.as_deref(),
+                ),
             },
         );
         self.record_method_definition_hover_snapshot(
@@ -22115,14 +22124,107 @@ impl<'a> InferenceEngine<'a> {
         let Some((owner, singleton)) = target else {
             return IterationCardinality::Maybe;
         };
-        self.source_block_invocation(&owner, method_name, singleton, &mut Vec::new())
+        self.source_block_invocation(
+            &owner,
+            method_name,
+            singleton,
+            Some(call_node),
+            &mut Vec::new(),
+        )
+    }
+
+    /// The call's literal positional arguments, with those no branch reads left out.
+    fn branched_literal_args(
+        call_node: &ruby_prism::CallNode<'_>,
+        def: &LiteralBranchedDef,
+    ) -> Option<Vec<Option<LiteralArg>>> {
+        let arguments = call_node.arguments()?;
+        let mut literals = Vec::new();
+        for (index, argument) in arguments.arguments().iter().enumerate() {
+            if matches!(
+                argument,
+                Node::SplatNode { .. } | Node::ForwardingArgumentsNode { .. }
+            ) {
+                break;
+            }
+            literals.push(
+                def.branched_params
+                    .contains(&index)
+                    .then(|| LiteralArg::from_node(&argument))
+                    .flatten(),
+            );
+        }
+        literals.iter().any(Option::is_some).then_some(literals)
+    }
+
+    /// `===` on a literal class can be redefined; a `when` then decides nothing statically.
+    fn literal_case_equality_is_standard(&self) -> bool {
+        const OWNERS: [&str; 11] = [
+            "Symbol",
+            "Integer",
+            "Numeric",
+            "String",
+            "NilClass",
+            "TrueClass",
+            "FalseClass",
+            "Comparable",
+            "Object",
+            "Kernel",
+            "BasicObject",
+        ];
+        let redefines = |registry: &TypeRegistry| {
+            OWNERS.into_iter().any(|owner| {
+                ["===", "=="].into_iter().any(|method_name| {
+                    registry
+                        .lookup_method_def(owner, method_name, false)
+                        .is_some_and(|method| !method.rbs_file_source)
+                })
+            })
+        };
+        !redefines(&self.registry) && !self.external_rbs.is_some_and(redefines)
+    }
+
+    fn block_flow_for_call(
+        &mut self,
+        flow: BlockFlowSummary,
+        call_node: Option<&ruby_prism::CallNode<'_>>,
+        (owner, method_name, is_singleton): (&str, &str, bool),
+    ) -> BlockFlowSummary {
+        let (Some(call_node), Some(def)) = (call_node, flow.literal_branched_def.clone()) else {
+            return flow;
+        };
+        let Some(literals) = Self::branched_literal_args(call_node, &def) else {
+            return flow;
+        };
+        let select_case_arms = self.literal_case_equality_is_standard();
+        let key = (
+            owner.to_string(),
+            method_name.to_string(),
+            is_singleton,
+            literals,
+            select_case_arms,
+        );
+        if let Some((cached_def, cached)) = self.literal_block_flows.get(&key)
+            && Arc::ptr_eq(cached_def, &def)
+        {
+            return cached.clone();
+        }
+        let Some(computed) =
+            block_flow::summarize_block_flow_for_literals(&def, &key.3, select_case_arms)
+        else {
+            return flow;
+        };
+        self.literal_block_flows
+            .insert(key, (def, computed.clone()));
+        computed
     }
 
     fn source_block_invocation(
-        &self,
+        &mut self,
         owner_class: &str,
         method_name: &str,
         is_singleton: bool,
+        call_node: Option<&ruby_prism::CallNode<'_>>,
         visiting: &mut Vec<(String, String, bool)>,
     ) -> IterationCardinality {
         let (owner, is_singleton) =
@@ -22142,13 +22244,14 @@ impl<'a> InferenceEngine<'a> {
         let (true, Some(flow)) = (is_source, flow) else {
             return IterationCardinality::Maybe;
         };
+        let flow = self.block_flow_for_call(flow, call_node, (&owner, method_name, is_singleton));
         if flow.must_invoke {
             return IterationCardinality::AtLeastOnce;
         }
         let forwarded = flow.forward.as_ref().map(|forward| {
             visiting.push(key);
             let target =
-                self.source_block_invocation(&owner, &forward.name, is_singleton, visiting);
+                self.source_block_invocation(&owner, &forward.name, is_singleton, None, visiting);
             visiting.pop();
             (target, forward.must)
         });
@@ -23931,6 +24034,7 @@ impl<'a> InferenceEngine<'a> {
             owner_class,
             method_name,
             method_is_singleton,
+            Some(call_node),
             &mut Vec::new(),
         ) {
             IterationCardinality::Never => {}

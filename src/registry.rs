@@ -776,12 +776,20 @@ pub struct BlockForward {
     pub must: bool,
 }
 
-/// How a source method body treats a block it receives, independent of its arguments.
+/// The source of a def whose block flow depends on these positional parameters.
+#[derive(Debug)]
+pub struct LiteralBranchedDef {
+    pub source: Box<str>,
+    pub branched_params: Vec<usize>,
+}
+
+/// How a source method body treats a block it receives, for arguments of unknown value.
 #[derive(Debug, Clone, Default)]
 pub struct BlockFlowSummary {
     pub may_invoke: bool,
     pub must_invoke: bool,
     pub forward: Option<BlockForward>,
+    pub literal_branched_def: Option<Arc<LiteralBranchedDef>>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -356,10 +356,6 @@ end
 
 ## Literal arguments select the block path through a source method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -458,6 +454,202 @@ class LiteralArgumentBlockPath
   def after_loop: -> :before
   def from_rescue: -> :after
   def after_short_circuit: -> :after
+end
+```
+
+## Literal arguments decide only what the callee reads unchanged
+
+### update
+
+```ruby
+class LiteralBlockEdges
+  def yield_if(flag)
+    yield if flag
+    :done
+  end
+
+  def yield_unless_not(flag)
+    yield unless !flag
+    :done
+  end
+
+  def overwritten_flag(flag)
+    flag = !flag
+    yield if flag
+    :done
+  end
+
+  def shadowed_in_closure(flag)
+    [1].each { |flag| yield if flag }
+    :done
+  end
+
+  def case_undecided(flag)
+    case flag
+    when Integer then yield
+    when :other then :no
+    end
+    :done
+  end
+
+  def case_multi(flag)
+    case flag
+    when :a, :b then yield
+    else :no
+    end
+    :done
+  end
+
+  def case_float(flag)
+    case flag
+    when 1.0 then yield
+    end
+    :done
+  end
+
+  def do_while(flag)
+    begin
+      yield
+    end while flag
+    :done
+  end
+
+  def until_loop(flag)
+    until flag
+      yield
+      break
+    end
+    :done
+  end
+
+  def optional(flag = nil)
+    yield if flag
+    :done
+  end
+
+  def trailing(first = 1, flag)
+    yield if flag
+    :done
+  end
+
+  def retried(flag, &block)
+    callback = block
+    begin
+      raise if flag
+    rescue
+      callback.call
+      callback = -> { :other }
+      retry if false
+    end
+    :done
+  end
+
+  def forwarded(flag, &block)
+    return :none unless flag
+    target(&block)
+  end
+
+  def target = yield
+
+  def nil_skips = (v = :before; yield_if(nil) { v = :after }; v)
+  def symbol_runs = (v = :before; yield_if(:x) { v = :after }; v)
+  def negated_runs = (v = :before; yield_unless_not(:x) { v = :after }; v)
+  def overwritten_is_unknown = (v = :before; overwritten_flag(true) { v = :after }; v)
+  def shadowed_is_unknown = (v = :before; shadowed_in_closure(nil) { v = :after }; v)
+  def undecided_pattern_is_unknown = (v = :before; case_undecided(:other) { v = :after }; v)
+  def multi_pattern_runs = (v = :before; case_multi(:b) { v = :after }; v)
+  def no_pattern_skips = (v = :before; case_multi(:c) { v = :after }; v)
+  def float_pattern_is_unknown = (v = :before; case_float(1) { v = :after }; v)
+  def do_while_is_unknown = (v = :before; do_while(false) { v = :after }; v)
+  def until_enters = (v = :before; until_loop(nil) { v = :after }; v)
+  def until_skips = (v = :before; until_loop(true) { v = :after }; v)
+  def optional_given_runs = (v = :before; optional(true) { v = :after }; v)
+  def optional_omitted_is_unknown = (v = :before; optional { v = :after }; v)
+  def trailing_is_unknown = (v = :before; trailing(nil, 1) { v = :after }; v)
+  def retry_is_unknown = (v = :before; retried(true) { v = :after }; v)
+  def forward_runs = (v = :before; forwarded(1) { v = :after }; v)
+  def forward_skips = (v = :before; forwarded(nil) { v = :after }; v)
+  def splat_is_unknown = (v = :before; yield_if(*[nil]) { v = :after }; v)
+  def non_literal_is_unknown(flag) = (v = :before; yield_if(flag) { v = :after }; v)
+end
+```
+
+### result
+
+```rbs
+class LiteralBlockEdges
+  def yield_if: (Symbol? flag) { () -> :after } -> :done
+  def yield_unless_not: (Symbol flag) { () -> :after } -> :done
+  def overwritten_flag: (bool flag) { () -> :after } -> :done
+  def shadowed_in_closure: (nil flag) { () -> :after } -> :done
+  def case_undecided: (Symbol flag) { () -> :after } -> :done
+  def case_multi: (Symbol flag) { () -> :after } -> :done
+  def case_float: (Integer flag) { () -> :after } -> :done
+  def do_while: (bool flag) { () -> :after } -> :done
+  def until_loop: (bool? flag) { () -> :after } -> :done
+  def optional: (?bool? flag) { () -> :after } -> :done
+  def trailing: (?Integer? first, Integer flag) { () -> :after } -> :done
+  def retried: (bool flag, ?untyped &block) -> :done
+  def forwarded: (Integer? flag) { () -> untyped } -> (untyped | :none)
+  def target: { () -> untyped } -> untyped
+  def nil_skips: -> :before
+  def symbol_runs: -> :after
+  def negated_runs: -> :after
+  def overwritten_is_unknown: -> :after | :before
+  def shadowed_is_unknown: -> :after | :before
+  def undecided_pattern_is_unknown: -> :after | :before
+  def multi_pattern_runs: -> :after
+  def no_pattern_skips: -> :before
+  def float_pattern_is_unknown: -> :after | :before
+  def do_while_is_unknown: -> :after | :before
+  def until_enters: -> :after
+  def until_skips: -> :before
+  def optional_given_runs: -> :after
+  def optional_omitted_is_unknown: -> :after | :before
+  def trailing_is_unknown: -> :after | :before
+  def retry_is_unknown: -> :after | :before
+  def forward_runs: -> :after
+  def forward_skips: -> :before
+  def splat_is_unknown: -> :after | :before
+  def non_literal_is_unknown: (untyped flag) -> (:after | :before)
+end
+```
+
+## A redefined literal case equality keeps every when arm
+
+### update
+
+```ruby
+class Symbol
+  def ===(_other) = true
+end
+
+class RedefinedLiteralCase
+  def run(flag)
+    case flag
+    when :a then yield
+    end
+    :done
+  end
+
+  def still_unknown
+    value = :before
+    run(:b) { value = :after }
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class RedefinedLiteralCase
+  def run: (Symbol flag) { () -> :after } -> :done
+  def still_unknown: -> :after | :before
+end
+
+class Symbol
+  def ===: (untyped _other) -> true
 end
 ```
 

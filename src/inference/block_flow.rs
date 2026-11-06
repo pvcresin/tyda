@@ -2,14 +2,67 @@
 //!
 //! The walk assumes a block was given, follows which locals may or must still hold it, and records
 //! whether normal completion implies an invocation. Any other use of the block counts as a possible
-//! invocation.
+//! invocation. A method that branches on a positional parameter keeps its source, so a call passing
+//! a literal there can repeat the walk with that value known.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use ruby_prism::{Node, Visit};
 
-use crate::registry::{BlockFlowSummary, BlockForward};
+use crate::registry::{BlockFlowSummary, BlockForward, LiteralBranchedDef};
 use crate::types::SharedName;
+
+/// An argument's value as far as branching on it can tell.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum LiteralArg {
+    Nil,
+    True,
+    False,
+    Symbol(Vec<u8>),
+    Integer(bool, Vec<u32>),
+    String(Vec<u8>),
+    /// Truthy, but `===` against it is not decided here.
+    OtherTruthy,
+}
+
+impl LiteralArg {
+    pub(super) fn from_node(node: &Node<'_>) -> Option<Self> {
+        match node {
+            Node::NilNode { .. } => Some(Self::Nil),
+            Node::TrueNode { .. } => Some(Self::True),
+            Node::FalseNode { .. } => Some(Self::False),
+            Node::SymbolNode { .. } => {
+                Some(Self::Symbol(node.as_symbol_node()?.unescaped().to_vec()))
+            }
+            Node::IntegerNode { .. } => {
+                let integer = node.as_integer_node()?.value();
+                let (negative, digits) = integer.to_u32_digits();
+                Some(Self::Integer(negative, digits.to_vec()))
+            }
+            Node::StringNode { .. } => {
+                Some(Self::String(node.as_string_node()?.unescaped().to_vec()))
+            }
+            Node::FloatNode { .. } | Node::RationalNode { .. } | Node::ImaginaryNode { .. } => {
+                Some(Self::OtherTruthy)
+            }
+            _ => None,
+        }
+    }
+
+    fn is_truthy(&self) -> bool {
+        !matches!(self, Self::Nil | Self::False)
+    }
+
+    /// `pattern === self`, or `None` when it depends on more than two exact literals.
+    fn case_matches(&self, pattern: &Node<'_>) -> Option<bool> {
+        let pattern = Self::from_node(pattern)?;
+        if matches!(self, Self::OtherTruthy) || matches!(pattern, Self::OtherTruthy) {
+            return None;
+        }
+        Some(*self == pattern)
+    }
+}
 
 #[derive(Clone, Default)]
 struct FlowState {
@@ -51,6 +104,13 @@ impl FlowState {
 
 #[derive(Default)]
 struct BlockFlowWalker {
+    positional_params: Vec<Option<Vec<u8>>>,
+    branched_params: HashSet<usize>,
+    literal_args: HashMap<Vec<u8>, LiteralArg>,
+    select_case_arms: bool,
+    closure_depth: u32,
+    /// Per enclosing `begin`, the locals that held the block at every point of its body so far.
+    rescue_must_hold: Vec<HashSet<Vec<u8>>>,
     state: FlowState,
     ever_held: HashSet<Vec<u8>>,
     may_invoke: bool,
@@ -66,36 +126,82 @@ struct BlockFlowWalker {
 const MAX_FLOW_DEPTH: usize = 256;
 
 pub(super) fn summarize_block_flow(
-    body: &Node<'_>,
+    def_node: &ruby_prism::DefNode<'_>,
     block_param_name: Option<&str>,
-) -> BlockFlowSummary {
-    let mut walker = BlockFlowWalker::default();
-    if let Some(name) = block_param_name {
-        let name = name.as_bytes().to_vec();
-        walker.state.must_hold.insert(name.clone());
-        walker.state.may_hold.insert(name.clone());
-        walker.ever_held.insert(name);
+) -> Option<BlockFlowSummary> {
+    let body = def_node.body()?;
+    let mut walker = BlockFlowWalker::for_block_param(block_param_name);
+    walker.positional_params = positional_param_names(def_node);
+    walker.visit(&body);
+    let branched_params: Vec<usize> = walker.branched_params.iter().copied().collect();
+    let mut summary = walker.finish();
+    if !branched_params.is_empty() && (summary.may_invoke || summary.forward.is_some()) {
+        let source = String::from_utf8_lossy(def_node.location().as_slice());
+        summary.literal_branched_def = Some(Arc::new(LiteralBranchedDef {
+            source: source.as_ref().into(),
+            branched_params: {
+                let mut sorted = branched_params;
+                sorted.sort_unstable();
+                sorted
+            },
+        }));
     }
-    walker.visit(body);
-    if walker.too_deep {
-        return BlockFlowSummary {
-            may_invoke: true,
-            must_invoke: false,
-            forward: None,
-        };
+    Some(summary)
+}
+
+/// Repeats the walk of a stored def with the literal passed to each positional parameter known.
+pub(super) fn summarize_block_flow_for_literals(
+    def: &LiteralBranchedDef,
+    literal_args: &[Option<LiteralArg>],
+    select_case_arms: bool,
+) -> Option<BlockFlowSummary> {
+    let parse_result = ruby_prism::parse(def.source.as_bytes());
+    let root = parse_result.node();
+    let program = root.as_program_node()?;
+    let statements = program.statements().body();
+    let first = statements.iter().next()?;
+    let def_node = first.as_def_node()?;
+    let body = def_node.body()?;
+
+    let block_param_name = def_node
+        .parameters()
+        .and_then(|params| params.block())
+        .and_then(|block| block.as_block_parameter_node()?.name())
+        .map(|name| String::from_utf8_lossy(name.as_slice()).to_string());
+    let mut walker = BlockFlowWalker::for_block_param(block_param_name.as_deref());
+    walker.select_case_arms = select_case_arms;
+    for (name, literal) in positional_param_names(&def_node)
+        .into_iter()
+        .zip(literal_args)
+    {
+        if let (Some(name), Some(literal)) = (name, literal) {
+            walker.literal_args.insert(name, literal.clone());
+        }
     }
-    let state = &walker.state;
-    let forward = walker.forward_target.take().map(|name| BlockForward {
-        name,
-        must: (state.dead || state.forwarded) && !walker.returned_unforwarded,
+    walker.visit(&body);
+    Some(walker.finish())
+}
+
+/// Names by the index a positional argument binds to. Trailing required parameters shift that
+/// index, so optional parameters are left out when any exist.
+fn positional_param_names(def_node: &ruby_prism::DefNode<'_>) -> Vec<Option<Vec<u8>>> {
+    let Some(params) = def_node.parameters() else {
+        return Vec::new();
+    };
+    let requireds = params.requireds().iter().map(|param| {
+        param
+            .as_required_parameter_node()
+            .map(|param| param.name().as_slice().to_vec())
     });
-    BlockFlowSummary {
-        may_invoke: walker.may_invoke,
-        must_invoke: walker.may_invoke
-            && (state.dead || state.invoked)
-            && !walker.returned_uninvoked,
-        forward,
+    let mut names: Vec<_> = requireds.collect();
+    if params.posts().iter().next().is_none() {
+        names.extend(params.optionals().iter().map(|param| {
+            param
+                .as_optional_parameter_node()
+                .map(|param| param.name().as_slice().to_vec())
+        }));
     }
+    names
 }
 
 /// Outer or block-local names written anywhere in the block, including nested closures.
@@ -175,19 +281,101 @@ fn strip_parentheses<'pr>(node: Node<'pr>) -> Node<'pr> {
     strip_parentheses(body)
 }
 
+/// Whether the arm runs for `subject`; `None` when a pattern is not an exact literal.
+fn when_matches(when: &ruby_prism::WhenNode<'_>, subject: &LiteralArg) -> Option<bool> {
+    let mut undecided = false;
+    for pattern in when.conditions().iter() {
+        match subject.case_matches(&pattern) {
+            Some(true) => return Some(true),
+            Some(false) => {}
+            None => undecided = true,
+        }
+    }
+    (!undecided).then_some(false)
+}
+
+/// A retry re-enters the body with whatever the rescue clause wrote.
+fn rescue_may_retry(clause: &ruby_prism::RescueNode<'_>) -> bool {
+    #[derive(Default)]
+    struct Retries(bool);
+
+    impl<'pr> Visit<'pr> for Retries {
+        fn visit_retry_node(&mut self, _node: &ruby_prism::RetryNode<'pr>) {
+            self.0 = true;
+        }
+    }
+
+    let mut retries = Retries::default();
+    retries.visit_rescue_node(clause);
+    retries.0
+}
+
 fn read_name(node: &Node<'_>) -> Option<Vec<u8>> {
     node.as_local_variable_read_node()
         .map(|read| read.name().as_slice().to_vec())
 }
 
 impl BlockFlowWalker {
+    fn for_block_param(block_param_name: Option<&str>) -> Self {
+        let mut walker = Self::default();
+        if let Some(name) = block_param_name {
+            let name = name.as_bytes().to_vec();
+            walker.state.must_hold.insert(name.clone());
+            walker.state.may_hold.insert(name.clone());
+            walker.ever_held.insert(name);
+        }
+        walker
+    }
+
+    fn finish(mut self) -> BlockFlowSummary {
+        if self.too_deep {
+            return BlockFlowSummary {
+                may_invoke: true,
+                ..BlockFlowSummary::default()
+            };
+        }
+        let state = &self.state;
+        let forward = self.forward_target.take().map(|name| BlockForward {
+            name,
+            must: (state.dead || state.forwarded) && !self.returned_unforwarded,
+        });
+        BlockFlowSummary {
+            may_invoke: self.may_invoke,
+            must_invoke: self.may_invoke
+                && (state.dead || state.invoked)
+                && !self.returned_uninvoked,
+            forward,
+            literal_branched_def: None,
+        }
+    }
+
     fn exceeded_depth(&mut self) -> bool {
         self.too_deep |= self.depth > MAX_FLOW_DEPTH;
         self.too_deep
     }
 
-    /// A condition answered by the block being present.
-    fn known_truthiness(&self, node: &Node<'_>) -> Option<bool> {
+    /// The literal a read of a positional parameter yields; records the branch on that parameter.
+    fn branch_on_param(
+        &mut self,
+        read: &ruby_prism::LocalVariableReadNode<'_>,
+    ) -> Option<&LiteralArg> {
+        if read.depth() != self.closure_depth {
+            return None;
+        }
+        let name = read.name();
+        let name = name.as_slice();
+        if let Some(index) = self
+            .positional_params
+            .iter()
+            .position(|param| param.as_deref() == Some(name))
+        {
+            self.branched_params.insert(index);
+        }
+        self.literal_args.get(name)
+    }
+
+    /// A condition answered by the block being present or a literal argument.
+    fn known_truthiness(&mut self, node: &Node<'_>) -> Option<bool> {
         if let Some(call) = node.as_call_node() {
             let name = call.name();
             if name.as_slice() == b"!" {
@@ -199,10 +387,21 @@ impl BlockFlowWalker {
                 && call.arguments().is_none())
             .then_some(true);
         }
+        let read = node.as_local_variable_read_node()?;
+        if let Some(literal) = self.branch_on_param(&read) {
+            return Some(literal.is_truthy());
+        }
         self.state
             .must_hold
-            .contains(&read_name(node)?)
+            .contains(read.name().as_slice())
             .then_some(true)
+    }
+
+    /// Whether a `while` or `until` loop's first predicate check enters the body. A `begin...end
+    /// while` runs its body first, so its predicate says nothing about that.
+    fn loop_entry(&mut self, predicate: Node<'_>, begin_modifier: bool) -> Option<bool> {
+        let known = self.known_truthiness(&strip_parentheses(predicate));
+        if begin_modifier { None } else { known }
     }
 
     fn visit_branches(
@@ -255,12 +454,20 @@ impl BlockFlowWalker {
         &mut self,
         predicate: Option<Node<'pr>>,
         statements: Option<ruby_prism::StatementsNode<'pr>>,
+        enters: Option<bool>,
     ) {
+        if enters == Some(false) {
+            return;
+        }
         let outer_exits = std::mem::take(&mut self.loop_exits);
         if let Some(predicate) = &predicate {
             self.visit(predicate);
         }
-        let mut after = self.state.clone();
+        let mut after = if enters == Some(true) {
+            FlowState::dead()
+        } else {
+            self.state.clone()
+        };
         // A second pass lets an alias written late in the body reach its earlier reads.
         for _ in 0..2 {
             if let Some(statements) = &statements {
@@ -282,12 +489,14 @@ impl BlockFlowWalker {
     fn visit_closure(&mut self, parameters: Option<Node<'_>>, body: Option<Node<'_>>) {
         let entry = self.state.clone();
         let outer_exits = std::mem::take(&mut self.loop_exits);
+        self.closure_depth += 1;
         if let Some(parameters) = &parameters {
             self.visit(parameters);
         }
         if let Some(body) = &body {
             self.visit(body);
         }
+        self.closure_depth -= 1;
         self.loop_exits = outer_exits;
         let after = std::mem::replace(&mut self.state, entry);
         self.state = std::mem::take(&mut self.state).join(after);
@@ -341,9 +550,14 @@ impl BlockFlowWalker {
         true
     }
 
-    fn rescue_entry(&self, entry: &FlowState, body_end: &FlowState) -> FlowState {
+    fn rescue_entry(
+        &self,
+        entry: &FlowState,
+        body_end: &FlowState,
+        must_hold: HashSet<Vec<u8>>,
+    ) -> FlowState {
         FlowState {
-            must_hold: HashSet::new(),
+            must_hold,
             may_hold: self.ever_held.clone(),
             invoked: entry.invoked,
             forwarded: entry.forwarded,
@@ -351,8 +565,18 @@ impl BlockFlowWalker {
         }
     }
 
-    fn write_local(&mut self, name: &[u8], value: Option<&[u8]>) {
+    fn forget_local(&mut self, name: &[u8]) {
+        self.literal_args.remove(name);
         self.state.must_hold.remove(name);
+        if !self.state.dead {
+            for must_hold in &mut self.rescue_must_hold {
+                must_hold.remove(name);
+            }
+        }
+    }
+
+    fn write_local(&mut self, name: &[u8], value: Option<&[u8]>) {
+        self.forget_local(name);
         self.state.may_hold.remove(name);
         let Some(source) = value else {
             return;
@@ -419,7 +643,7 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
         node: &ruby_prism::LocalVariableOrWriteNode<'pr>,
     ) {
         self.visit(&node.value());
-        self.state.must_hold.remove(node.name().as_slice());
+        self.forget_local(node.name().as_slice());
     }
 
     fn visit_local_variable_and_write_node(
@@ -427,7 +651,7 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
         node: &ruby_prism::LocalVariableAndWriteNode<'pr>,
     ) {
         self.visit(&node.value());
-        self.state.must_hold.remove(node.name().as_slice());
+        self.forget_local(node.name().as_slice());
     }
 
     fn visit_local_variable_operator_write_node(
@@ -435,7 +659,7 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
         node: &ruby_prism::LocalVariableOperatorWriteNode<'pr>,
     ) {
         self.visit(&node.value());
-        self.state.must_hold.remove(node.name().as_slice());
+        self.forget_local(node.name().as_slice());
     }
 
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
@@ -581,14 +805,37 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
         if self.exceeded_depth() {
             return;
         }
+        let subject_literal = node.predicate().and_then(|predicate| {
+            let predicate = strip_parentheses(predicate);
+            let read = predicate.as_local_variable_read_node()?;
+            self.branch_on_param(&read).cloned()
+        });
         if let Some(predicate) = node.predicate() {
             self.visit(&predicate);
         }
         let else_clause = node.else_clause();
-        let no_match_continues = else_clause.is_none();
+        let mut no_match_continues = else_clause.is_none();
+        let mut arms: Vec<Node<'pr>> = Vec::new();
+        let mut matched = false;
+        for arm in node.conditions().iter() {
+            let matches = match (&subject_literal, arm.as_when_node()) {
+                (Some(subject), Some(when)) if self.select_case_arms => {
+                    when_matches(&when, subject)
+                }
+                _ => None,
+            };
+            if matches != Some(false) {
+                arms.push(arm);
+            }
+            if matches == Some(true) {
+                matched = true;
+                no_match_continues = false;
+                break;
+            }
+        }
+        let else_clause = else_clause.filter(|_| !matched);
         self.visit_alternatives(
-            node.conditions()
-                .iter()
+            arms.into_iter()
                 .chain(else_clause.map(|clause| clause.as_node())),
             no_match_continues,
         );
@@ -613,14 +860,18 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
         if self.exceeded_depth() {
             return;
         }
-        self.visit_loop(Some(node.predicate()), node.statements());
+        let enters = self.loop_entry(node.predicate(), node.is_begin_modifier());
+        self.visit_loop(Some(node.predicate()), node.statements(), enters);
     }
 
     fn visit_until_node(&mut self, node: &ruby_prism::UntilNode<'pr>) {
         if self.exceeded_depth() {
             return;
         }
-        self.visit_loop(Some(node.predicate()), node.statements());
+        let enters = self
+            .loop_entry(node.predicate(), node.is_begin_modifier())
+            .map(|truthy| !truthy);
+        self.visit_loop(Some(node.predicate()), node.statements(), enters);
     }
 
     fn visit_for_node(&mut self, node: &ruby_prism::ForNode<'pr>) {
@@ -629,7 +880,7 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
         }
         self.visit(&node.collection());
         self.visit(&node.index());
-        self.visit_loop(None, node.statements());
+        self.visit_loop(None, node.statements(), None);
     }
 
     fn visit_begin_node(&mut self, node: &ruby_prism::BeginNode<'pr>) {
@@ -637,8 +888,16 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
             return;
         }
         let entry = self.state.clone();
+        self.rescue_must_hold.push(entry.must_hold.clone());
         if let Some(statements) = node.statements() {
             self.visit_statements_node(&statements);
+        }
+        let mut rescue_must_hold = self.rescue_must_hold.pop().unwrap_or_default();
+        if node
+            .rescue_clause()
+            .is_some_and(|clause| rescue_may_retry(&clause))
+        {
+            rescue_must_hold.clear();
         }
         let body_end = self.state.clone();
         if let Some(else_clause) = node.else_clause() {
@@ -647,7 +906,7 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
         let mut joined = std::mem::take(&mut self.state);
         let mut rescue_clause = node.rescue_clause();
         while let Some(clause) = rescue_clause {
-            self.state = self.rescue_entry(&entry, &body_end);
+            self.state = self.rescue_entry(&entry, &body_end, rescue_must_hold.clone());
             for exception in clause.exceptions().iter() {
                 self.visit(&exception);
             }
@@ -664,7 +923,7 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
         if let Some(ensure_clause) = node.ensure_clause() {
             let exits_dead = self.state.dead;
             if exits_dead {
-                self.state = self.rescue_entry(&entry, &body_end);
+                self.state = self.rescue_entry(&entry, &body_end, HashSet::new());
             }
             if let Some(statements) = ensure_clause.statements() {
                 self.visit_statements_node(&statements);
@@ -677,7 +936,7 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
         let entry = self.state.clone();
         self.visit(&node.expression());
         let body_end = std::mem::take(&mut self.state);
-        self.state = self.rescue_entry(&entry, &body_end);
+        self.state = self.rescue_entry(&entry, &body_end, HashSet::new());
         self.visit(&node.rescue_expression());
         let after_rescue = std::mem::take(&mut self.state);
         self.state = body_end.join(after_rescue);
