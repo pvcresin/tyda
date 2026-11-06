@@ -60,8 +60,8 @@ end
 
 ```rbs
 class UsersController < ActionController::Base
-  def read_param: -> String
-  def fetch_param: -> String
+  def read_param: -> untyped
+  def fetch_param: -> untyped
 end
 ```
 
@@ -109,8 +109,8 @@ end
 class UsersController < ActionController::Base
   def remote_ip: -> String
   def get_request: -> bool
-  def notice: -> String
-  def user_id: -> Integer
+  def notice: -> untyped
+  def user_id: -> untyped
 end
 ```
 

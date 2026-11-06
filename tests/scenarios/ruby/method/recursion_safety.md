@@ -53,9 +53,9 @@ def f = odd?(3)
 
 ```rbs
 class Object < BasicObject
-  def odd?: (Integer n) -> bool
-  def even?: (Integer n) -> bool
-  def f: -> bool
+  def odd?: (Integer n) -> (true | false | untyped)
+  def even?: (Integer n) -> (true | false | untyped)
+  def f: -> true | false | untyped
 end
 ```
 

@@ -39,7 +39,7 @@ class Probe
   def count_items: -> Integer
   def any_item: -> bool
   def include_two: -> bool
-  def map_to_string: -> Array[String]
+  def map_to_string: -> Array[untyped]
   def select_evens: -> Array[untyped]
 end
 ```

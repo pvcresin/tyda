@@ -27,8 +27,8 @@ end
 
 ```rbs
 class Store
-  def read_option: -> String
-  def fetch_option: -> String
+  def read_option: -> untyped
+  def fetch_option: -> untyped
   def slice_options: -> HashWithIndifferentAccess
 end
 ```

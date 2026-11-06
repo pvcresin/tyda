@@ -35,7 +35,7 @@ end
 ```ruby
 class DeferredShortCircuit
   def self.maybe_strings(flag)
-    [flag.to_s] if flag
+    [String(flag)] if flag
   end
 
   def self.with_default(flag)

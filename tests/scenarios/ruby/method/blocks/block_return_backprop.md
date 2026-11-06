@@ -127,7 +127,7 @@ end
 
 ```rbs
 class C
-  def self.to_text: { () -> "ready"? } -> String?
+  def self.to_text: { () -> "ready"? } -> nil | untyped
   def self.from_nil: -> nil
   def self.from_string: -> String
 end

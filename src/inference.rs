@@ -934,37 +934,6 @@ struct SourceCallContext {
     in_method_body: bool,
 }
 
-#[derive(Clone, Copy)]
-enum UniversalConversionFallback {
-    Bool,
-    String,
-    Integer,
-    Class(&'static str),
-    Symbols,
-    Symbol,
-    Float,
-    Array,
-    UntypedArray,
-    Method,
-}
-
-impl UniversalConversionFallback {
-    fn return_type(self) -> Type {
-        match self {
-            Self::Bool => Type::Bool,
-            Self::String => Type::String,
-            Self::Integer => Type::Integer,
-            Self::Class(class_name) => Type::Class(Sym::new(class_name)),
-            Self::Symbols => Type::Array(Some(Box::new(Type::Symbol))),
-            Self::Symbol => Type::Symbol,
-            Self::Float => Type::Float,
-            Self::Array => Type::Array(None),
-            Self::UntypedArray => Type::Array(Some(Box::new(Type::Untyped))),
-            Self::Method => Type::Class(Sym::new("Method")),
-        }
-    }
-}
-
 pub struct InferenceEngine<'a> {
     registry: TypeRegistry,
     constants: HashMap<String, Type>,
@@ -16546,11 +16515,6 @@ impl<'a> InferenceEngine<'a> {
         {
             return;
         }
-        let new_return_type = if method_name.ends_with('?') {
-            Self::resolve_predicate_return_type(new_return_type)
-        } else {
-            new_return_type
-        };
         if !Self::type_needs_backward_propagation(&method_info.raw_return_type)
             && !Self::is_concrete(&new_return_type)
         {
@@ -17683,10 +17647,6 @@ impl<'a> InferenceEngine<'a> {
             )
         {
             return_type = Type::Void;
-        }
-
-        if method_name.ends_with('?') {
-            return_type = Self::resolve_predicate_return_type(return_type);
         }
 
         if is_singleton && Self::def_body_returns_only_bare_new(&def_node) {
@@ -52357,29 +52317,6 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn universal_conversion_fallback(method_name: &str) -> Option<UniversalConversionFallback> {
-        let fallback = match method_name {
-            "!" => UniversalConversionFallback::Bool,
-            "to_s" | "inspect" | "to_str" => UniversalConversionFallback::String,
-            "hash" | "object_id" | "__id__" | "to_i" | "to_int" => {
-                UniversalConversionFallback::Integer
-            }
-            "class" => UniversalConversionFallback::Class("Class"),
-            "methods" | "public_methods" | "private_methods" | "protected_methods"
-            | "singleton_methods" | "instance_variables" | "instance_methods"
-            | "class_variables" | "constants" => UniversalConversionFallback::Symbols,
-            "to_sym" => UniversalConversionFallback::Symbol,
-            "to_f" => UniversalConversionFallback::Float,
-            "to_r" => UniversalConversionFallback::Class("Rational"),
-            "to_c" => UniversalConversionFallback::Class("Complex"),
-            "to_a" => UniversalConversionFallback::Array,
-            "to_ary" => UniversalConversionFallback::UntypedArray,
-            "method" => UniversalConversionFallback::Method,
-            _ => return None,
-        };
-        Some(fallback)
-    }
-
     fn resolve_method_on_call(
         &mut self,
         receiver_type: &Type,
@@ -52481,7 +52418,10 @@ impl<'a> InferenceEngine<'a> {
         if let Some(arel_result) = Self::synthetic_arel_method_return(receiver_type, method_name) {
             return arel_result;
         }
-        if matches!(method_name, "to_datetime" | "to_date" | "to_time") {
+        if self.rails_feature_enabled()
+            && !Self::is_unresolved_receiver(receiver_type)
+            && matches!(method_name, "to_datetime" | "to_date" | "to_time")
+        {
             if let Type::Union(parts) = receiver_type {
                 let mut results = Vec::with_capacity(parts.len());
                 for part in parts {
@@ -52558,22 +52498,10 @@ impl<'a> InferenceEngine<'a> {
             }
         }
         let unresolved_receiver = Self::is_unresolved_receiver(receiver_type);
-        let universal_conversion_fallback = if unresolved_receiver {
-            Self::universal_conversion_fallback(method_name)
-        } else {
-            None
-        };
-        let bool_method_fallback = if unresolved_receiver {
-            method_tables::RBS_CORE_BOOL_METHODS.contains(&method_name)
-        } else {
-            method_tables::UNIVERSAL_BOOL_METHODS.contains(&method_name)
-        };
-        let source_override_needed = bool_method_fallback
-            || method_tables::IDENTITY_METHODS.contains(&method_name)
+        let source_override_needed = method_tables::IDENTITY_METHODS.contains(&method_name)
             || (self.rails_feature_enabled()
                 && (matches!(method_name, "blank?" | "present?")
-                    || unresolved_receiver && method_name == "to_json"))
-            || universal_conversion_fallback.is_some();
+                    || unresolved_receiver && method_name == "to_json"));
         let source_override = source_override_needed
             && (match receiver_type {
                 Type::Singleton(class_name) => {
@@ -52585,9 +52513,6 @@ impl<'a> InferenceEngine<'a> {
                         self.instance_method_has_source_override(&class_name, method_name)
                     }),
             } || (unresolved_receiver && self.source_method_name_is_defined(method_name)));
-        if bool_method_fallback && !source_override {
-            return Type::Bool;
-        }
         if method_tables::IDENTITY_METHODS.contains(&method_name) && !source_override {
             return receiver_type.clone();
         }
@@ -52673,12 +52598,6 @@ impl<'a> InferenceEngine<'a> {
             }
             return Type::from_type_vec_preserve_untyped(resolved);
         }
-        if unresolved_receiver
-            && !source_override
-            && let Some(fallback) = universal_conversion_fallback
-        {
-            return fallback.return_type();
-        }
         let class_name = match receiver_type {
             Type::Integer | Type::LiteralInteger(_) => "Integer",
             Type::Float | Type::LiteralFloat(_) => "Float",
@@ -52703,9 +52622,6 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(_)
             | Type::PatternTrailingRef(_, _)
             | Type::PatternKeyRestRef(_, _) => {
-                if method_name == "!" || method_name.ends_with('?') {
-                    return Type::Bool;
-                }
                 return Type::ReceiverMethodRef(
                     Box::new(receiver_type.clone()),
                     Sym::new(method_name),
@@ -53803,35 +53719,6 @@ impl<'a> InferenceEngine<'a> {
                 | Node::InstanceVariableAndWriteNode { .. }
                 | Node::InstanceVariableOperatorWriteNode { .. }
         )
-    }
-
-    fn resolve_predicate_return_type(return_type: Type) -> Type {
-        match &return_type {
-            Type::ReceiverMethodRef(_, m) if m.ends_with('?') => Type::Bool,
-            Type::MethodReturnRef(_, m) if m.ends_with('?') => Type::Bool,
-            Type::Union(parts) => {
-                let has_method_ref = parts.iter().any(|t| {
-                    matches!(
-                        t,
-                        Type::ReceiverMethodRef(_, _) | Type::MethodReturnRef(_, _)
-                    )
-                });
-                if !has_method_ref {
-                    return return_type;
-                }
-                let all_boolean_context = parts.iter().all(|t| match t {
-                    Type::Bool | Type::True | Type::False | Type::Nil => true,
-                    Type::ReceiverMethodRef(_, m) | Type::MethodReturnRef(_, m) => m.ends_with('?'),
-                    _ => false,
-                });
-                if all_boolean_context {
-                    Type::Bool
-                } else {
-                    return_type
-                }
-            }
-            _ => return_type,
-        }
     }
 
     fn return_type_is_controller_void(&self, class_name: &str, return_type: &Type) -> bool {
@@ -59961,12 +59848,6 @@ impl<'a> InferenceEngine<'a> {
             return;
         }
 
-        let new_return_type = if method_name.ends_with('?') {
-            Self::resolve_predicate_return_type(new_return_type)
-        } else {
-            new_return_type
-        };
-
         self.registry.update_method_return_type_variant(
             class_name,
             &method_name,
@@ -60206,60 +60087,6 @@ impl<'a> InferenceEngine<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn universal_conversion_fallbacks_keep_their_return_types() {
-        let fallbacks = [
-            ("!", Type::Bool),
-            ("to_s", Type::String),
-            ("inspect", Type::String),
-            ("hash", Type::Integer),
-            ("object_id", Type::Integer),
-            ("__id__", Type::Integer),
-            ("class", Type::Class(Sym::new("Class"))),
-            ("methods", Type::Array(Some(Box::new(Type::Symbol)))),
-            ("public_methods", Type::Array(Some(Box::new(Type::Symbol)))),
-            ("private_methods", Type::Array(Some(Box::new(Type::Symbol)))),
-            (
-                "protected_methods",
-                Type::Array(Some(Box::new(Type::Symbol))),
-            ),
-            (
-                "singleton_methods",
-                Type::Array(Some(Box::new(Type::Symbol))),
-            ),
-            (
-                "instance_variables",
-                Type::Array(Some(Box::new(Type::Symbol))),
-            ),
-            ("to_str", Type::String),
-            ("to_sym", Type::Symbol),
-            ("to_i", Type::Integer),
-            ("to_int", Type::Integer),
-            ("to_f", Type::Float),
-            ("to_r", Type::Class(Sym::new("Rational"))),
-            ("to_c", Type::Class(Sym::new("Complex"))),
-            ("to_a", Type::Array(None)),
-            ("to_ary", Type::Array(Some(Box::new(Type::Untyped)))),
-            ("method", Type::Class(Sym::new("Method"))),
-            (
-                "instance_methods",
-                Type::Array(Some(Box::new(Type::Symbol))),
-            ),
-            ("class_variables", Type::Array(Some(Box::new(Type::Symbol)))),
-            ("constants", Type::Array(Some(Box::new(Type::Symbol)))),
-        ];
-        for (method_name, expected) in fallbacks {
-            assert_eq!(
-                InferenceEngine::universal_conversion_fallback(method_name)
-                    .map(UniversalConversionFallback::return_type),
-                Some(expected)
-            );
-        }
-        for method_name in ["to_date", "to_datetime", "to_json", "empty?"] {
-            assert!(InferenceEngine::universal_conversion_fallback(method_name).is_none());
-        }
-    }
 
     #[test]
     fn primitive_flow_overlap_preserves_ambiguous_values() {
@@ -61132,7 +60959,7 @@ end
             "    matches = scopes.grep(/\\Auser:(\\d+)\\z/)\n",
             "    return unless matches.length == 1\n",
             "\n",
-            "    matches[0][/\\Auser:(\\d+)\\z/, 1].to_i\n",
+            "    Integer(matches[0])\n",
             "  end\n",
             "end\n",
         );

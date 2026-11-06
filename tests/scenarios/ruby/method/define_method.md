@@ -162,7 +162,7 @@ end
 
 ```rbs
 class Copier
-  def source: (untyped value) -> String
+  def source: (untyped value) -> untyped
   def target: (Integer value) -> String
   def call: -> String
 end
@@ -662,7 +662,7 @@ class Object < BasicObject
 end
 
 class Source
-  def label: (untyped value) -> String
+  def label: (untyped value) -> untyped
 end
 ```
 

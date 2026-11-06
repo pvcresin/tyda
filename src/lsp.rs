@@ -5682,7 +5682,7 @@ end
             "  end\n",
             "\n",
             "  def has_detail?\n",
-            "    !@detail.nil?\n",
+            "    \"#{@detail}\".empty?\n",
             "  end\n",
             "end\n",
         );

@@ -4103,7 +4103,7 @@ end
             "      matches = scopes.grep(SCOPED_USER_REGEX)\n",
             "      return unless matches.length == 1\n",
             "\n",
-            "      matches[0][SCOPED_USER_REGEX, 1].to_i\n",
+            "      Integer(matches[0])\n",
             "    end\n",
             "  end\n",
             "end\n",

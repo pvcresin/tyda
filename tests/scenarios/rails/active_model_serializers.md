@@ -116,8 +116,8 @@ class A::B < ActiveModelSerializers::Model
   def x=: (untyped x) -> untyped
   def y: -> untyped
   def y=: (untyped y) -> untyped
-  def z: -> DateTime
-  def z=: (DateTime z) -> DateTime
+  def z: -> untyped
+  def z=: (untyped z) -> untyped
   def item: -> untyped
   def item=: (untyped item) -> untyped
   def initialize: (untyped item, untyped attrs) -> void
@@ -150,8 +150,8 @@ end
 
 ```rbs
 class A::B < ActiveModelSerializers::Model
-  def z: -> DateTime
-  def z=: (DateTime z) -> DateTime
+  def z: -> untyped
+  def z=: (untyped z) -> untyped
   def initialize: (untyped attrs) -> void
   def ok?: -> bool
 end

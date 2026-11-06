@@ -2190,7 +2190,7 @@ class IndexAccess
   def tuple_first_elem: -> 1
   def tuple_last_elem: -> "a"
   def tuple_out_of_range: -> nil
-  def tuple_dynamic_index: (untyped i) -> (1 | "a")?
+  def tuple_dynamic_index: (untyped i) -> untyped
 end
 ```
 

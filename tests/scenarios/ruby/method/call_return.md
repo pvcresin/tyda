@@ -76,7 +76,7 @@ class A
 end
 ```
 
-## Infer Object method on untyped receiver
+## Keep Object methods untyped on an untyped receiver
 
 ### update
 
@@ -95,16 +95,16 @@ end
 
 ```rbs
 class Checker
-  def check_nil: (untyped x) -> bool
-  def check_equal: (untyped x, untyped y) -> bool
-  def object_identity: (untyped x) -> Integer
-  def to_string: (untyped x) -> String
-  def to_integer: (untyped x) -> Integer
+  def check_nil: (untyped x) -> untyped
+  def check_equal: (untyped x, untyped y) -> untyped
+  def object_identity: (untyped x) -> untyped
+  def to_string: (untyped x) -> untyped
+  def to_integer: (untyped x) -> untyped
   def check_pred: (untyped x) -> untyped
 end
 ```
 
-## Keep a known nil predicate on a union with an untyped member
+## Dispatch nil? per arm on a union with an untyped member
 
 ### update
 
@@ -135,7 +135,7 @@ end
 ```rbs
 class UntypedUnionPredicate
   def dynamic_value: (untyped flag) -> untyped
-  def nil_predicate: (untyped flag) -> bool
+  def nil_predicate: (untyped flag) -> (false | untyped)
   def value_type: (untyped flag) -> (untyped | "known")
   def unknown_predicate: (untyped flag) -> untyped
 end
@@ -174,7 +174,7 @@ class UntypedUnionOverride
 end
 ```
 
-## Infer common conversion methods on untyped receiver
+## Keep conversion methods untyped on an untyped receiver
 
 ### update
 
@@ -194,13 +194,13 @@ end
 
 ```rbs
 class Conv
-  def sym: (untyped x) -> Symbol
+  def sym: (untyped x) -> untyped
   def len: (untyped x) -> untyped
   def siz: (untyped x) -> untyped
   def cnt: (untyped x) -> untyped
-  def flt: (untyped x) -> Float
-  def arr: (untyped x) -> Array
-  def neg: (untyped x) -> bool
+  def flt: (untyped x) -> untyped
+  def arr: (untyped x) -> untyped
+  def neg: (untyped x) -> untyped
 end
 ```
 
@@ -298,7 +298,7 @@ end
 
 class Object < BasicObject
   def unresolved_to_date: (untyped value) -> untyped
-  def custom_date_conversion_union: (untyped flag) -> (:custom | Date)
+  def custom_date_conversion_union: (untyped flag) -> :custom
 end
 ```
 
@@ -510,7 +510,7 @@ class AbstractSource
   def value: -> bot
   def build: -> :built
   def build_with_keyword: -> :built
-  def value_as_string: -> String
+  def value_as_string: -> untyped
   def build_after_raise: -> bot
   def build_after_keyword_raise: -> bot
 end

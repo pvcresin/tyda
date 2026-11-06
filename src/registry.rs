@@ -9123,17 +9123,6 @@ impl TypeRegistry {
                 return Type::from_type_vec_preserve_untyped(resolved_parts);
             }
         }
-        if method_name == "!" || method_name.ends_with('?') {
-            return Type::Bool;
-        }
-        match method_name {
-            "to_s" | "to_str" | "inspect" => return Type::String,
-            "to_i" | "to_int" | "hash" | "object_id" => return Type::Integer,
-            "to_f" => return Type::Float,
-            "to_a" => return Type::Array(None),
-            "to_h" => return Type::Hash(None, None),
-            _ => {}
-        }
         Type::Untyped
     }
 

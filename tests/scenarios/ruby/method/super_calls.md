@@ -272,15 +272,15 @@ def call_render = BlockChild.new.render("value") { |item| item.to_sym }
 
 ```rbs
 class BlockChild < BlockParent
-  def render: (*String args) { (String) -> Symbol } -> Symbol?
+  def render: (*String args) { (String) -> :value } -> :value?
 end
 
 class BlockParent
-  def render: (String item) ?{ (String) -> Symbol } -> Symbol?
+  def render: (String item) ?{ (String) -> :value } -> :value?
 end
 
 class Object < BasicObject
-  def call_render: -> Symbol?
+  def call_render: -> :value?
 end
 ```
 

@@ -284,7 +284,7 @@ end
 
 ```rbs
 class Worker
-  def normalize: (untyped value) -> String
+  def normalize: (untyped value) -> untyped
   def identity: (untyped value) -> untyped
   def direct: -> String
   def via_proc: -> String
@@ -309,8 +309,8 @@ end
 
 ```rbs
 class Worker
-  def normalize: (untyped value) -> String
-  def build: (untyped value) -> [untyped, String]
+  def normalize: (untyped value) -> untyped
+  def build: (untyped value) -> [untyped, untyped]
   def values: -> Array[String]
   def pairs: -> Array[[1?, String]]
 end
@@ -345,8 +345,8 @@ class Caller
 end
 
 class Formatter
-  def self.render: (untyped value) -> String
-  def label: (untyped value) -> String
+  def self.render: (untyped value) -> untyped
+  def label: (untyped value) -> untyped
 end
 ```
 
@@ -411,7 +411,7 @@ class ArityMismatchBlockRunner
 end
 
 class BlockRunner
-  def run: { (Integer) -> (String | 1) } -> String | 1
+  def run: { (Integer) -> (1 | untyped) } -> String | 1
   def via_lambda: -> String
   def via_identity_lambda: -> 1
   def via_proc: -> String

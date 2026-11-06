@@ -70,8 +70,8 @@ end
 
 class Object < BasicObject
   def value_labels: -> { first: "label", second: "label" }
-  def value_strings: -> { name: String, count: String }
-  def stringify: (untyped value) -> String
+  def value_strings: -> { name: untyped, count: untyped }
+  def stringify: (untyped value) -> untyped
 end
 ```
 
@@ -230,7 +230,7 @@ end
 
 ```rbs
 class RecursiveContainerTraversal
-  def visit: (untyped value) -> (String | Array | Hash)
+  def visit: (untyped value) -> (untyped | Array | Hash)
   def visit_hash: (Hash hash) -> Hash
   def visit_array: (Array array) -> Array
 end
@@ -538,11 +538,11 @@ def one_yield_missing_second = OneYieldSource.new.each { |_item, extra| extra.to
 ```rbs
 class Object < BasicObject
   def bare_hash_pairs: -> Array[[untyped, untyped]]
-  def one_yield_missing_second: -> String
+  def one_yield_missing_second: -> untyped
 end
 
 class OneYieldSource
-  def each: { (Symbol) -> String } -> String
+  def each: { (Symbol) -> untyped } -> untyped
 end
 ```
 
@@ -571,6 +571,6 @@ end
 
 ```rbs
 class ClassBodyPairConsumer
-  RESULT: bool?
+  RESULT: untyped?
 end
 ```

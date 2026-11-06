@@ -623,7 +623,7 @@ def stringify = [1].map { it.to_s }
 
 ```rbs
 class Object < BasicObject
-  def stringify: -> Array[String]
+  def stringify: -> Array[untyped]
 end
 ```
 

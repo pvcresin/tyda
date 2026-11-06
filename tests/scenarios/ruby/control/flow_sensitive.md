@@ -575,7 +575,7 @@ end
 ```ruby
 class BoolTruthinessSplit
   def split(x)
-    value = x.nil?
+    value = "#{x}".empty?
     if value
       { truthy: value }
     else
@@ -1312,7 +1312,7 @@ end
 ```ruby
 class BoolEqualitySplit
   def split(x)
-    flag = x.nil?
+    flag = "#{x}".empty?
     if flag == true
       { yes: flag }
     else
@@ -1889,7 +1889,7 @@ read_dynamic(DynamicReceiver.new)
 
 ```rbs
 class DynamicReceiver
-  def respond_to_missing?: (untyped name, ?bool include_private) -> bool
+  def respond_to_missing?: (untyped name, ?bool include_private) -> untyped
   def method_missing: (untyped name, *untyped args) -> "dynamic"
 end
 

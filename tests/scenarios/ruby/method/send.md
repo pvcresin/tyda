@@ -226,7 +226,7 @@ end
 class Tool
   NAME: :build
 
-  def build: (untyped value) -> String
+  def build: (untyped value) -> untyped
   def via_local: -> String
   def via_const: -> String
 end
@@ -268,7 +268,7 @@ end
 
 class Item
   def echo: (untyped value) -> untyped
-  def label: (untyped value) -> String
+  def label: (untyped value) -> untyped
   def self.via_bare: -> "ok"
   def self.via_public: -> String
 end
@@ -295,7 +295,7 @@ end
 class Source
   METHOD: Proc
 
-  def label: (untyped value) -> String
+  def label: (untyped value) -> untyped
   def self.via_const: -> String
   def via_bind: -> String
 end

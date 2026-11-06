@@ -161,7 +161,7 @@ def wrap_untyped(values) = Array(values)
 ```rbs
 class Object < BasicObject
   def ids: -> Array[1 | 2 | 3]
-  def map_untyped: (untyped values) -> Array[String]
+  def map_untyped: (untyped values) -> Array[untyped]
   def wrap_untyped: (untyped values) -> Array[untyped]
 end
 ```
