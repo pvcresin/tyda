@@ -678,8 +678,37 @@ pub fn detect_declared_gems(root: &Path) -> BTreeSet<String> {
     }
     if let Ok(content) = std::fs::read_to_string(root.join("Gemfile")) {
         collect_gems_from_gemfile(&content, &mut gems);
+        if content.lines().any(|line| line.trim() == "gemspec")
+            && let Some(name) = local_gemspec_name(root)
+        {
+            gems.insert(name);
+        }
     }
     gems
+}
+
+/// The name in the project's only `*.gemspec`: a gem's own repository is a project for that gem.
+fn local_gemspec_name(root: &Path) -> Option<String> {
+    let mut gemspecs = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "gemspec"));
+    let gemspec = gemspecs.next()?;
+    if gemspecs.next().is_some() {
+        return None;
+    }
+    let content = std::fs::read_to_string(gemspec).ok()?;
+    content.lines().find_map(|line| {
+        let (target, value) = line.split_once('=')?;
+        let is_name_write = !line.trim_start().starts_with('#')
+            && !value.starts_with('=')
+            && target.trim_end().ends_with(".name");
+        is_name_write
+            .then(|| extract_quoted_token(value))
+            .flatten()
+            .map(str::to_string)
+    })
 }
 
 /// Constants derived from the Gemfile plus framework constants, so arbitrary gems don't trigger `unresolved_constant`.

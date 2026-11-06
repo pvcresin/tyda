@@ -135,7 +135,7 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 - Devise は `devise` に指定した module に対応する model instance method を追加し、Paperclip は ActiveRecord model の `has_attached_file` から attachment reader を追加する。Rack::Attack が有効な場合、`Rack::Attack::Request` は `Rack::Request` の request method surface を継承する
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
-- Rake が有効な project では、`String#ext` / `String#pathmap` の戻り値を `String` として扱う
+- Rake が有効な project では、`String#ext` / `String#pathmap` の戻り値を `String` として扱う。Gemfile の引数なし `gemspec` は root の唯一の `*.gemspec` の gem 名も宣言済み gem として扱う
 - GitLab in-tree の Presenter / CurrentSettings / Metrics / EE 拡張を検出する
 - Redmine の `acts_as_*` など、ライブラリ内部の実行時登録は展開しない。必要なら手書き
   `.rbs` / `.rbi`、または生成済み定義を入力する

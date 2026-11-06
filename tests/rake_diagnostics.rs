@@ -10,6 +10,13 @@ const SOURCE: &str = r#"
 "lib/rake_probe.rb".ext(".txt")
 String.new("lib/rake_probe.rb").pathmap("%n")
 String.new("lib/rake_probe.rb").not_a_rake_extension
+
+def extension_for(flag)
+  task_name = flag ? "lib/rake_probe.rb" : nil
+  task_name.ext(".txt")
+  task_name.pathmap("%n")
+  1.ext(".txt")
+end
 "#;
 
 fn missing_methods(source: &str, dsl_activation: DslActivation) -> BTreeSet<String> {
@@ -42,11 +49,24 @@ fn rake_string_extensions_are_scoped_to_rake_projects() {
     let rake_project = tempdir().expect("tempdir");
     std::fs::write(
         rake_project.path().join("Gemfile"),
-        "source 'https://rubygems.org'\ngem 'rake'\n",
+        "source 'https://rubygems.org'\ngemspec\n",
     )
     .expect("write Rake Gemfile");
+    std::fs::write(
+        rake_project.path().join("rake.gemspec"),
+        "Gem::Specification.new do |spec|\n  spec.name = 'rake'\nend\n",
+    )
+    .expect("write Rake gemspec");
     let detected = detect_dsl_libraries_from_gems(rake_project.path());
     assert!(detected.contains(&DslLibrary::Rake));
+
+    let rake_dependent = tempdir().expect("tempdir");
+    std::fs::write(
+        rake_dependent.path().join("Gemfile"),
+        "source 'https://rubygems.org'\ngem 'rake'\n",
+    )
+    .expect("write dependent Gemfile");
+    assert!(detect_dsl_libraries_from_gems(rake_dependent.path()).contains(&DslLibrary::Rake));
 
     let missing = missing_methods(SOURCE, DslActivation::with_auto_detected(detected));
     assert!(!missing.contains("String#ext"), "{missing:?}");
@@ -55,6 +75,9 @@ fn rake_string_extensions_are_scoped_to_rake_projects() {
         missing.contains("String#not_a_rake_extension"),
         "{missing:?}"
     );
+    assert!(missing.contains("NilClass#ext"), "{missing:?}");
+    assert!(missing.contains("NilClass#pathmap"), "{missing:?}");
+    assert!(missing.contains("Integer#ext"), "{missing:?}");
 
     let plain_project = tempdir().expect("tempdir");
     std::fs::write(
