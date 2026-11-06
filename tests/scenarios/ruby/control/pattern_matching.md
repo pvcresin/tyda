@@ -1011,11 +1011,7 @@ class PatternMatchExpressionBindings
 end
 ```
 
-## Evaluate a literal guard before choosing the case arm
-
-```yaml
-known_issue: true
-```
+## Keep both case arms because the literal guard is not evaluated
 
 ### update
 
@@ -1037,7 +1033,7 @@ end
 
 ```rbs
 class PatternMatchLiteralGuard
-  def capture_in_statically_matched_guard_else: -> -1
+  def capture_in_statically_matched_guard_else: -> -1 | :matched
 end
 ```
 
