@@ -616,7 +616,7 @@ end
 
 class PairSourceCaller
   def read: -> [String, String]
-  def assigned_name: -> "name"?
+  def assigned_name: -> "name"
 end
 
 class WhileYieldCaller

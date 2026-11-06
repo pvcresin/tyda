@@ -770,6 +770,20 @@ impl<'a> Iterator for CallSiteIter<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BlockForward {
+    pub name: SharedName,
+    pub must: bool,
+}
+
+/// How a source method body treats a block it receives, independent of its arguments.
+#[derive(Debug, Clone, Default)]
+pub struct BlockFlowSummary {
+    pub may_invoke: bool,
+    pub must_invoke: bool,
+    pub forward: Option<BlockForward>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MethodBlockMeta {
     pub yield_param_types: Vec<Type>,
@@ -778,6 +792,7 @@ pub struct MethodBlockMeta {
     pub yields: bool,
     pub yields_at_least_once: bool,
     pub yield_requires_block: Option<bool>,
+    pub block_flow: Option<BlockFlowSummary>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -12516,6 +12531,7 @@ mod tests {
                 yields: true,
                 yields_at_least_once: false,
                 yield_requires_block: None,
+                block_flow: None,
             },
         );
         registry.set_method_block_meta(
@@ -12529,6 +12545,7 @@ mod tests {
                 yields: true,
                 yields_at_least_once: false,
                 yield_requires_block: None,
+                block_flow: None,
             },
         );
         registry.set_method_block_meta(
@@ -12542,6 +12559,7 @@ mod tests {
                 yields: true,
                 yields_at_least_once: false,
                 yield_requires_block: None,
+                block_flow: None,
             },
         );
 
@@ -12611,6 +12629,7 @@ mod tests {
                 yields: true,
                 yields_at_least_once: false,
                 yield_requires_block: None,
+                block_flow: None,
             },
         );
 

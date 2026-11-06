@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | 定義・dispatch・visibility | supported | class / module / mixin / constant / method / `super` |
 | 変数・flow | supported | local / ivar（method 内の再代入・分岐・複合代入） / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入と、閉じた subject の case） / 分岐間のlocal相関 / rescue |
-| block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy |
+| block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy。source method が block を実行しない / 必ず実行する / 実行し得るかを本文の flow から要約し（引数の値には依存しない）、block 内で代入した外側 local を保持 / 置換 / join する（定義順で未解析の callee は join） |
 | collection shape | supported | Array、Hash、Set、Tuple、Record（静的 symbol key を持つキーワード splat の Record union を含む） |
 | pattern matching | partial | version gate、array / hash / find binding、閉じた Record union では必須のリテラルキーを持つ hash pattern で枝を絞り込み、hash class pattern は標準 `Class#===` のclass predicateを先に評価（source override・未解決class・不明な継承は枝を保守的に維持）、literal / expression subject のcapture型維持、guard 内の capture、rightward assignment の正常経路で subject local を絞り込み、`case/in` の不一致は例外経路。`&&` / `||` / `!` / 条件式 / guard の捕捉変数はその経路で評価された operand だけから束縛し、未確定 guard の else へも引き継ぐ |
 | 動的定義 | partial | 静的な名前の `define_method`、yield する source method に渡した class-body block 内の `def`、`attr_*`（静的な Record / Tuple iterator 内の束縛名と、判定可能な `next if` / `next unless` を含む）、`Struct.new`、`Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） |

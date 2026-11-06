@@ -86,10 +86,6 @@ end
 
 ## Source methods distinguish yielded blocks from unused blocks
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -213,33 +209,84 @@ class ExplicitBlockInvocation
     value
   end
 
-  def maybe_overwritten_block_alias_updates_outer_local
+  def maybe_overwritten_block_alias_updates_outer_local(flag)
     value = :before
-    conditionally_overwrite_alias(:unknown) { value = :after }
+    conditionally_overwrite_alias(flag) { value = :after }
     value
   end
 
-  def case_block_alias_updates_outer_local
+  def case_block_alias_updates_outer_local(flag)
     value = :before
-    invoke_from_case(:invoke) { value = :after }
+    invoke_from_case(flag) { value = :after }
     value
   end
 
-  def loop_block_alias_updates_outer_local
+  def loop_block_alias_updates_outer_local(flag)
     value = :before
-    invoke_after_loop(:unknown) { value = :after }
+    invoke_after_loop(flag) { value = :after }
     value
   end
 
-  def rescue_block_alias_updates_outer_local
+  def rescue_block_alias_updates_outer_local(flag)
     value = :before
-    invoke_from_rescue(:unknown) { value = :after }
+    invoke_from_rescue(flag) { value = :after }
     value
   end
 
-  def short_circuit_block_alias_updates_outer_local
+  def short_circuit_block_alias_updates_outer_local(flag)
     value = :before
-    invoke_after_short_circuit(:unknown) { value = :after }
+    invoke_after_short_circuit(flag) { value = :after }
+    value
+  end
+
+  def mutation_in_repeated_block_widens
+    items = []
+    ExplicitBlockReceiver.new.repeat { items << 1 }
+    items
+  end
+
+  def guarded_yield(&block)
+    yield if block_given?
+    :done
+  end
+
+  def guarded_yield_updates_outer_local
+    value = :before
+    guarded_yield { value = :after }
+    value
+  end
+
+  def early_return_before_yield(flag)
+    return :early if flag
+    yield
+  end
+
+  def early_return_joins_outer_local(flag)
+    value = :before
+    early_return_before_yield(flag) { value = :after }
+    value
+  end
+
+  def escaped_block(&block)
+    @callback = block
+    :stored
+  end
+
+  def escaped_block_joins_outer_local
+    value = :before
+    escaped_block { value = :after }
+    value
+  end
+
+  def receiver_ignored_block
+    value = :before
+    ExplicitBlockReceiver.new.ignore { value = :after }
+    value
+  end
+
+  def receiver_yielded_block
+    value = :before
+    ExplicitBlockReceiver.new.run { value = :after }
     value
   end
 
@@ -247,6 +294,16 @@ class ExplicitBlockInvocation
     value = :before
     invoke_before_overwrite { value = :after }
     value
+  end
+end
+
+class ExplicitBlockReceiver
+  def ignore(&block) = :ignored
+  def run = yield
+
+  def repeat
+    yield
+    yield
   end
 end
 ```
@@ -260,11 +317,11 @@ class ExplicitBlockInvocation
   def run_via_alias: (?untyped &block) -> :after
   def alias_and_ignore: (?untyped &block) -> :ignored
   def overwrite_alias: (?untyped &block) -> :ignored
-  def conditionally_overwrite_alias: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_from_case: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_after_loop: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_from_rescue: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_after_short_circuit: (Symbol flag, ?untyped &block) -> :ignored
+  def conditionally_overwrite_alias: (untyped flag, ?untyped &block) -> :ignored
+  def invoke_from_case: (untyped flag, ?untyped &block) -> :ignored
+  def invoke_after_loop: (untyped flag, ?untyped &block) -> :ignored
+  def invoke_from_rescue: (untyped flag, ?untyped &block) -> :ignored
+  def invoke_after_short_circuit: (untyped flag, ?untyped &block) -> :ignored
   def invoke_before_overwrite: (?untyped &block) -> :ignored
   def ignore: (?untyped &block) -> :ignored
   def block_call_updates_outer_local: -> :after
@@ -273,12 +330,134 @@ class ExplicitBlockInvocation
   def unused_block_alias_keeps_outer_local: -> :before
   def unused_block_keeps_outer_local: -> :before
   def overwritten_block_alias_keeps_outer_local: -> :before
-  def maybe_overwritten_block_alias_updates_outer_local: -> :before
-  def case_block_alias_updates_outer_local: -> :after
-  def loop_block_alias_updates_outer_local: -> :before
-  def rescue_block_alias_updates_outer_local: -> :after
-  def short_circuit_block_alias_updates_outer_local: -> :after
+  def maybe_overwritten_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
+  def case_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
+  def loop_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
+  def rescue_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
+  def short_circuit_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
+  def mutation_in_repeated_block_widens: -> Array[1]
+  def guarded_yield: (?untyped &block) -> :done
+  def guarded_yield_updates_outer_local: -> :after
+  def early_return_before_yield: (untyped flag) { () -> untyped } -> (untyped | :early)
+  def early_return_joins_outer_local: (untyped flag) -> (:after | :before)
+  def escaped_block: (?untyped &block) -> :stored
+  def escaped_block_joins_outer_local: -> :after | :before
+  def receiver_ignored_block: -> :before
+  def receiver_yielded_block: -> :after
   def block_alias_runs_before_overwrite: -> :after
+end
+
+class ExplicitBlockReceiver
+  def ignore: (?untyped &block) -> :ignored
+  def run: { () -> :after } -> :after
+  def repeat: { () -> [1] } -> [1]
+end
+```
+
+## Literal arguments select the block path through a source method
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class LiteralArgumentBlockPath
+  def conditionally_overwrite_alias(flag, &block)
+    callback = block
+    if flag
+      callback = -> { :other }
+    end
+    callback.call
+    :ignored
+  end
+
+  def invoke_from_case(flag, &block)
+    callback = block
+    case flag
+    when :overwrite
+      callback = -> { :other }
+    when :invoke
+      callback.call
+    end
+    :ignored
+  end
+
+  def invoke_after_loop(flag, &block)
+    callback = block
+    while flag
+      callback = -> { :other }
+      break
+    end
+    callback.call
+    :ignored
+  end
+
+  def invoke_from_rescue(flag, &block)
+    callback = block
+    begin
+      raise if flag
+      callback = -> { :other }
+    rescue
+      callback.call
+    end
+    :ignored
+  end
+
+  def invoke_after_short_circuit(flag, &block)
+    callback = block
+    flag || callback = -> { :other }
+    callback.call
+    :ignored
+  end
+
+  def maybe_overwritten
+    value = :before
+    conditionally_overwrite_alias(:unknown) { value = :after }
+    value
+  end
+
+  def from_case
+    value = :before
+    invoke_from_case(:invoke) { value = :after }
+    value
+  end
+
+  def after_loop
+    value = :before
+    invoke_after_loop(:unknown) { value = :after }
+    value
+  end
+
+  def from_rescue
+    value = :before
+    invoke_from_rescue(:unknown) { value = :after }
+    value
+  end
+
+  def after_short_circuit
+    value = :before
+    invoke_after_short_circuit(:unknown) { value = :after }
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class LiteralArgumentBlockPath
+  def conditionally_overwrite_alias: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_from_case: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_after_loop: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_from_rescue: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_after_short_circuit: (Symbol flag, ?untyped &block) -> :ignored
+  def maybe_overwritten: -> :before
+  def from_case: -> :after
+  def after_loop: -> :before
+  def from_rescue: -> :after
+  def after_short_circuit: -> :after
 end
 ```
 

@@ -36,6 +36,7 @@ use crate::types::{
     Type,
 };
 
+mod block_flow;
 mod deps;
 mod dsl_patterns;
 pub(crate) mod hover;
@@ -4574,6 +4575,26 @@ impl<'a> InferenceEngine<'a> {
         merged.next_types = base.next_types.clone();
         merged.break_types = base.break_types.clone();
         merged.self_override = base.self_override.clone();
+        merged
+    }
+
+    /// A block that certainly ran replaces the outer locals it assigns. A mutation may repeat
+    /// with each run, so it keeps the widening of an ordinary block merge.
+    fn replace_with_block_scope_locals(
+        &self,
+        base: &Scope,
+        block_scope: &Scope,
+        block: &ruby_prism::BlockNode<'_>,
+        local_names: &HashSet<String>,
+    ) -> Scope {
+        let mut merged = self.merge_block_scope_locals(base, block_scope, local_names);
+        for name in block_flow::block_assigned_local_names(block) {
+            if !local_names.contains(&name)
+                && let Some(ty) = block_scope.get(&name)
+            {
+                merged.set(&name, ty.clone());
+            }
+        }
         merged
     }
 
@@ -17065,6 +17086,7 @@ impl<'a> InferenceEngine<'a> {
                 yields: true,
                 yields_at_least_once: false,
                 yield_requires_block: None,
+                block_flow: None,
             })
     }
 
@@ -17894,6 +17916,12 @@ impl<'a> InferenceEngine<'a> {
                     || existing_block_meta.yields,
                 yields_at_least_once,
                 yield_requires_block,
+                block_flow: def_node.body().map(|body| {
+                    block_flow::summarize_block_flow(
+                        &body,
+                        scope.current_block_param_name.as_deref(),
+                    )
+                }),
             },
         );
         self.record_method_definition_hover_snapshot(
@@ -21398,28 +21426,15 @@ impl<'a> InferenceEngine<'a> {
         let is_current_self = call_node
             .receiver()
             .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }));
-        if is_current_self
-            && scope.self_override.is_none()
-            && !matches!(method_name.as_ref(), "proc" | "lambda")
-            && self.registry.method_call_has_user_source_definition(
-                class_name,
-                &method_name,
-                scope.singleton_dispatch,
-            )
-            && !self.method_has_explicit_block_param(
-                class_name,
-                &method_name,
-                scope.singleton_dispatch,
-            )
-            && self
-                .registry
-                .lookup_method_block_meta(class_name, &method_name, scope.singleton_dispatch)
-                .is_some_and(|meta| {
-                    !meta.yields
-                        && meta.yield_param_types.is_empty()
-                        && meta.forwarded_block.is_none()
-                })
-        {
+        let block_invocation = self.call_block_invocation(
+            class_name,
+            call_node,
+            &method_name,
+            is_current_self,
+            parse_result,
+            scope,
+        );
+        if block_invocation == IterationCardinality::Never {
             return;
         }
         if std::env::var_os("TYDA_BLOCK_WALK_STATS").is_some() {
@@ -21884,7 +21899,85 @@ impl<'a> InferenceEngine<'a> {
             block_scope.set(name, Type::Integer);
         }
         let _ = self.infer_body_return_type(class_name, &body, parse_result, &mut block_scope);
-        *scope = self.merge_block_scope_locals(scope, &block_scope, &block_local_names);
+        *scope = if block_invocation == IterationCardinality::AtLeastOnce {
+            self.replace_with_block_scope_locals(scope, &block_scope, &block, &block_local_names)
+        } else {
+            self.merge_block_scope_locals(scope, &block_scope, &block_local_names)
+        };
+    }
+
+    /// How often the source method dispatched by `call_node` runs a literal block.
+    fn call_block_invocation(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        method_name: &str,
+        is_current_self: bool,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> IterationCardinality {
+        let target = if is_current_self {
+            scope
+                .self_override
+                .is_none()
+                .then(|| (class_name.to_string(), scope.singleton_dispatch))
+        } else {
+            call_node.receiver().and_then(|receiver| {
+                let receiver_type =
+                    self.infer_node_type(class_name, &receiver, parse_result, scope);
+                let receiver_class = self.type_to_class_name(&receiver_type)?;
+                let singleton =
+                    Self::receiver_is_singleton_dispatch(&receiver, scope.singleton_dispatch);
+                Some((receiver_class, singleton))
+            })
+        };
+        let Some((owner, singleton)) = target else {
+            return IterationCardinality::Maybe;
+        };
+        self.source_block_invocation(&owner, method_name, singleton, &mut Vec::new())
+    }
+
+    fn source_block_invocation(
+        &self,
+        owner_class: &str,
+        method_name: &str,
+        is_singleton: bool,
+        visiting: &mut Vec<(String, String, bool)>,
+    ) -> IterationCardinality {
+        let (owner, is_singleton) =
+            self.block_dispatch_owner(owner_class, method_name, is_singleton);
+        let key = (owner.clone(), method_name.to_string(), is_singleton);
+        if visiting.contains(&key) {
+            return IterationCardinality::Maybe;
+        }
+        let is_source = self
+            .registry
+            .lookup_method_def(&owner, method_name, is_singleton)
+            .is_some_and(|method| !method.rbs_file_source && !method.synthetic_dsl_source);
+        let flow = self
+            .registry
+            .lookup_method_block_meta(&owner, method_name, is_singleton)
+            .and_then(|meta| meta.block_flow.clone());
+        let (true, Some(flow)) = (is_source, flow) else {
+            return IterationCardinality::Maybe;
+        };
+        if flow.must_invoke {
+            return IterationCardinality::AtLeastOnce;
+        }
+        let forwarded = flow.forward.as_ref().map(|forward| {
+            visiting.push(key);
+            let target =
+                self.source_block_invocation(&owner, &forward.name, is_singleton, visiting);
+            visiting.pop();
+            (target, forward.must)
+        });
+        match forwarded {
+            Some((IterationCardinality::AtLeastOnce, true)) => IterationCardinality::AtLeastOnce,
+            Some((IterationCardinality::Never, _)) | None if !flow.may_invoke => {
+                IterationCardinality::Never
+            }
+            _ => IterationCardinality::Maybe,
+        }
     }
 
     fn infer_lambda_block_param_types_from_call_sites_at(
@@ -23653,7 +23746,25 @@ impl<'a> InferenceEngine<'a> {
         } else {
             Type::Nil
         };
-        *scope = self.merge_block_scope_locals(scope, &block_scope, &block_local_names);
+        match self.source_block_invocation(
+            owner_class,
+            method_name,
+            method_is_singleton,
+            &mut Vec::new(),
+        ) {
+            IterationCardinality::Never => {}
+            IterationCardinality::Maybe => {
+                *scope = self.merge_block_scope_locals(scope, &block_scope, &block_local_names);
+            }
+            IterationCardinality::AtLeastOnce => {
+                *scope = self.replace_with_block_scope_locals(
+                    scope,
+                    &block_scope,
+                    &block,
+                    &block_local_names,
+                );
+            }
+        }
 
         Some(HoverBlockSig {
             params: block_param_types
