@@ -21,6 +21,13 @@ impl<'a> InferenceEngine<'a> {
         Some(self.expand_target_classes_with_ancestors(contributed.clone()))
     }
 
+    /// Resolution visits classes in this order, so it must not follow set iteration order.
+    fn sorted_class_syms(names: &HashSet<String>) -> Vec<Sym> {
+        let mut names: Vec<&String> = names.iter().collect();
+        names.sort_unstable();
+        names.into_iter().map(Sym::new).collect()
+    }
+
     fn is_stdlib_root_class(name: &str) -> bool {
         matches!(
             name,
@@ -171,7 +178,7 @@ impl<'a> InferenceEngine<'a> {
 
     fn resolution_class_names(&self) -> Vec<Sym> {
         if let Some(target_classes) = self.current_file_target_classes() {
-            target_classes.iter().map(Sym::new).collect()
+            Self::sorted_class_syms(&target_classes)
         } else {
             self.registry.class_names_unsorted()
         }
@@ -1365,11 +1372,9 @@ impl<'a> InferenceEngine<'a> {
         let target_classes = self.current_file_target_classes();
         let mut receiver_types = HashSet::new();
         let class_names: Vec<Sym> = if let Some(targets) = target_classes.as_ref() {
-            targets
-                .iter()
-                .filter(|name| self.registry.is_user_defined_class(name))
-                .map(Sym::new)
-                .collect()
+            let mut names = Self::sorted_class_syms(targets);
+            names.retain(|name| self.registry.is_user_defined_class(name));
+            names
         } else {
             self.registry.user_defined_class_names_unsorted()
         };
@@ -1395,11 +1400,11 @@ impl<'a> InferenceEngine<'a> {
             Self::collect_receiver_classes(&resolved, &mut pending);
         }
 
-        let mut seen = HashSet::new();
-        while let Some(class_name) = pending.pop() {
-            if seen.insert(class_name.clone()) {
-                self.ensure_class_available(&class_name);
-            }
+        // Load order affects later resolution, so it must not follow set iteration order.
+        pending.sort_unstable();
+        pending.dedup();
+        for class_name in pending {
+            self.ensure_class_available(&class_name);
         }
         found_receiver_types
     }
