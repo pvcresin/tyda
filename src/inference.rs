@@ -24870,6 +24870,7 @@ impl<'a> InferenceEngine<'a> {
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, value_type);
                 } else {
+                    let value_type = Self::ivar_value_outside_initialize(scope, value_type);
                     self.registry
                         .add_ivar_type(class_name, &ivar_name, value_type);
                 }
@@ -24937,6 +24938,7 @@ impl<'a> InferenceEngine<'a> {
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, result_type);
                 } else {
+                    let result_type = Self::ivar_value_outside_initialize(scope, result_type);
                     self.registry
                         .add_ivar_type(class_name, &ivar_name, result_type);
                 }
@@ -25115,6 +25117,7 @@ impl<'a> InferenceEngine<'a> {
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, result_type);
                 } else {
+                    let result_type = Self::ivar_value_outside_initialize(scope, result_type);
                     self.registry
                         .add_ivar_type(class_name, &ivar_name, result_type);
                 }
@@ -25137,6 +25140,7 @@ impl<'a> InferenceEngine<'a> {
                 if scope.singleton_dispatch {
                     self.record_singleton_ivar(class_name, &ivar_name, result_type);
                 } else {
+                    let result_type = Self::ivar_value_outside_initialize(scope, result_type);
                     self.registry
                         .add_ivar_type(class_name, &ivar_name, result_type);
                 }
@@ -34116,6 +34120,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_instance_variable_target_node()
                     .expect("must be InstanceVariableTargetNode");
                 let name = String::from_utf8_lossy(target_node.name().as_slice()).to_string();
+                let ty = Self::ivar_value_outside_initialize(scope, ty);
                 self.registry.add_ivar_type(class_name, &name, ty);
                 // A multiple/destructuring assignment changes the value, so in addition to this
                 // ivar's fact, conservatively discard the fact for any method name whose backing ivar is statically unknown.
@@ -59559,6 +59564,29 @@ impl<'a> InferenceEngine<'a> {
         scope.self_override = Some(ty);
     }
 
+    /// Stored ivar `ParamRef`s bind to `initialize` arguments, so another method's parameter is an
+    /// unknown value. A call on an untyped receiver keeps that arm in the ivar's union.
+    fn ivar_value_outside_initialize(scope: &Scope, value: Type) -> Type {
+        if scope.method_name.as_deref() == Some("initialize") {
+            return value;
+        }
+        match value {
+            Type::Untyped | Type::ParamRef(_) | Type::KeywordParamRef(_) => {
+                Type::ReceiverMethodRef(Box::new(Type::Untyped), Sym::new("itself"))
+            }
+            Type::Union(parts) => Type::Union(
+                parts
+                    .into_iter()
+                    .map(|part| Self::ivar_value_outside_initialize(scope, part))
+                    .collect(),
+            ),
+            other if TypeRegistry::type_contains_param_ref_static(&other) => {
+                Self::substitute_param_refs_with_keywords(&other, &[], &HashMap::new())
+            }
+            other => other,
+        }
+    }
+
     fn can_track_ivar_write_locally(value: &Node<'_>, ty: &Type) -> bool {
         // Method return summaries may include branches excluded by this call's arguments.
         let call_result_is_stable = match value {
@@ -60841,6 +60869,8 @@ impl<'a> InferenceEngine<'a> {
                     _ => Some(Type::from_type_vec(kept)),
                 }
             }
+            // Written by another method; `initialize` replay cannot supersede it.
+            Type::ReceiverMethodRef(..) if ty.is_unknown_call_result() => Some(ty.clone()),
             Type::Untyped
             | Type::ParamRef(_)
             | Type::KeywordParamRef(_)

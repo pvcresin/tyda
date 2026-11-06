@@ -84,3 +84,37 @@ class Counter
   def count: -> Integer
 end
 ```
+
+## Parameters of other methods do not bind to initialize arguments
+
+### update
+
+```ruby
+class IvarSetter
+  attr_reader :count, :name, :names
+
+  def initialize(count)
+    @count = count
+    @name = nil
+  end
+
+  def rename(name)
+    @name = name
+    @names = [name]
+  end
+end
+
+IvarSetter.new(1)
+```
+
+### result
+
+```rbs
+class IvarSetter
+  def count: -> Integer
+  def name: -> untyped?
+  def names: -> [untyped]
+  def initialize: (Integer count) -> void
+  def rename: (untyped name) -> [untyped]
+end
+```
