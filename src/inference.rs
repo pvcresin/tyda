@@ -29460,20 +29460,22 @@ impl<'a> InferenceEngine<'a> {
                     ) {
                         return result;
                     }
-                    if Self::type_contains_receiver_resolution_ref(&receiver_type) {
-                        let resolved_arms =
-                            self.resolve_receiver_method_refs_keeping_untyped(&receiver_type);
-                        if let Some(result) = self.dispatch_receiver_union_with_unknown_arm(
+                    // Resolving again from these arms reuses the lookups they already settled.
+                    let resolved_arms = Self::resolution_can_yield_unknown_arm(&receiver_type)
+                        .then(|| self.resolve_receiver_method_refs_keeping_untyped(&receiver_type));
+                    if let Some(resolved_arms) = &resolved_arms
+                        && let Some(result) = self.dispatch_receiver_union_with_unknown_arm(
                             class_name,
                             node,
                             &receiver,
-                            &resolved_arms,
+                            resolved_arms,
                             parse_result,
                             scope,
-                        ) {
-                            return result;
-                        }
+                        )
+                    {
+                        return result;
                     }
+                    let receiver_to_resolve = resolved_arms.as_ref().unwrap_or(&receiver_type);
                     let track_deferred_block_receiver = (call_node.block().is_some()
                         || call_node.arguments().is_some())
                         && (self.defer_unresolved_body_call_sites
@@ -29483,12 +29485,15 @@ impl<'a> InferenceEngine<'a> {
                         if track_deferred_block_receiver {
                             let (resolved, has_deferred_method_ref) = self
                                 .resolve_receiver_method_refs_with_deferred_candidate(
-                                    &receiver_type,
+                                    receiver_to_resolve,
                                 );
                             let has_deferred_ivar = Self::type_contains_method_ref(&resolved);
                             (resolved, has_deferred_method_ref || has_deferred_ivar)
                         } else {
-                            (self.resolve_receiver_method_refs(&receiver_type), false)
+                            (
+                                self.resolve_receiver_method_refs(receiver_to_resolve),
+                                false,
+                            )
                         };
                     if has_deferred_receiver_candidate
                         && let Some(body) = self.active_method_body.as_mut()
@@ -53899,6 +53904,29 @@ impl<'a> InferenceEngine<'a> {
         None
     }
 
+    /// Calls on an unknown receiver stay unresolved however far the chain goes.
+    fn is_unknown_receiver_chain(ty: &Type) -> bool {
+        let mut current = ty;
+        while let Type::ReceiverMethodRef(receiver, _) = current {
+            current = receiver;
+        }
+        matches!(current, Type::Untyped) && !std::ptr::eq(current, ty)
+    }
+
+    /// Shape arms such as `Hash` stay known, so only a reference can resolve to an unknown arm.
+    fn resolution_can_yield_unknown_arm(ty: &Type) -> bool {
+        match ty {
+            Type::Union(parts) => parts.iter().any(Self::resolution_can_yield_unknown_arm),
+            Type::MethodReturnRef(..)
+            | Type::DeferredSafeNavigation(..)
+            | Type::TruthyProjection(_)
+            | Type::FalsyProjection(_)
+            | Type::NonNilProjection(_) => Self::type_contains_receiver_resolution_ref(ty),
+            Type::ReceiverMethodRef(..) => !Self::is_unknown_receiver_chain(ty),
+            _ => false,
+        }
+    }
+
     fn resolve_receiver_method_refs(&mut self, ty: &Type) -> Type {
         if !Self::type_contains_receiver_resolution_ref(ty) {
             return ty.clone();
@@ -54010,6 +54038,9 @@ impl<'a> InferenceEngine<'a> {
     ) -> Type {
         const MAX_DEPTH: usize = 32;
         if depth >= MAX_DEPTH {
+            return ty.clone();
+        }
+        if Self::is_unknown_receiver_chain(ty) {
             return ty.clone();
         }
         let key = (ty.clone(), preserve_untyped);
