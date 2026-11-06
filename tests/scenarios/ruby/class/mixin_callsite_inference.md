@@ -175,3 +175,35 @@ module Shared
   def foo: (?(Integer | String) x) -> (String | 1)
 end
 ```
+
+## Resolve methods included into a singleton class
+
+### update
+
+```ruby
+module Redisable
+  def redis = Object.new
+end
+
+class DeliveryFailureTracker
+  class << self
+    include Redisable
+
+    def warning_domains = redis
+  end
+end
+```
+
+### result
+
+```rbs
+class DeliveryFailureTracker
+  extend Redisable
+
+  def self.warning_domains: -> Object
+end
+
+module Redisable
+  def redis: -> Object
+end
+```

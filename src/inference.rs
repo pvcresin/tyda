@@ -15105,13 +15105,19 @@ impl<'a> InferenceEngine<'a> {
                                     );
                                 }
                             }
+                            "include" if singleton_depth > 1 => pending_sigs.clear(),
                             "include" => {
                                 pending_sigs.clear();
+                                let kind = if in_singleton_class {
+                                    MixinKind::Extend
+                                } else {
+                                    MixinKind::Include
+                                };
                                 if !self.collect_mixin_scoped(
                                     class_name,
                                     &call_node,
                                     parse_result,
-                                    MixinKind::Include,
+                                    kind,
                                     0,
                                     &class_body_scope,
                                 ) {
@@ -15123,13 +15129,19 @@ impl<'a> InferenceEngine<'a> {
                                     );
                                 }
                             }
+                            "prepend" if singleton_depth > 1 => pending_sigs.clear(),
                             "prepend" => {
                                 pending_sigs.clear();
+                                let kind = if in_singleton_class {
+                                    MixinKind::Extend
+                                } else {
+                                    MixinKind::Prepend
+                                };
                                 if !self.collect_mixin_scoped(
                                     class_name,
                                     &call_node,
                                     parse_result,
-                                    MixinKind::Prepend,
+                                    kind,
                                     0,
                                     &class_body_scope,
                                 ) {
