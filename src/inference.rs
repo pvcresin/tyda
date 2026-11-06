@@ -39,6 +39,7 @@ use crate::types::{
 mod block_flow;
 mod deps;
 mod dsl_patterns;
+mod hash_key_flow;
 pub(crate) mod hover;
 mod method_tables;
 mod passes;
@@ -1556,6 +1557,7 @@ pub(crate) struct Scope {
     self_override: Option<Type>,
     self_facts: Arc<HashMap<String, Type>>,
     array_first_facts: Arc<HashMap<ArrayGuardKey, Type>>,
+    hash_key_facts: Arc<hash_key_flow::HashKeyFacts>,
     runtime_facts: Arc<HashMap<String, RuntimeFact>>,
     respond_to_guards: Arc<HashMap<String, Vec<Vec<String>>>>,
     initialized_record_keys: Arc<HashSet<(String, String)>>,
@@ -1754,6 +1756,7 @@ impl Scope {
             self_override: self.self_override.clone(),
             self_facts: self.self_facts.clone(),
             array_first_facts: self.array_first_facts.clone(),
+            hash_key_facts: self.hash_key_facts.clone(),
             runtime_facts: self.runtime_facts.clone(),
             respond_to_guards: self.respond_to_guards.clone(),
             initialized_record_keys: self.initialized_record_keys.clone(),
@@ -1772,6 +1775,7 @@ impl Scope {
         scope.next_types.clear();
         scope.break_types.clear();
         scope.clear_array_first_facts();
+        scope.hash_key_facts = Arc::default();
         scope
     }
 
@@ -4276,6 +4280,7 @@ impl<'a> InferenceEngine<'a> {
             merged.self_override = Self::merge_branch_self_override(base, then_scope, else_scope);
             merged.self_facts = Self::merge_branch_self_facts(then_scope, else_scope);
             merged.array_first_facts = Arc::default();
+            merged.hash_key_facts = Arc::default();
             merged.initialized_record_keys = Arc::new(
                 then_scope
                     .initialized_record_keys
@@ -4343,6 +4348,10 @@ impl<'a> InferenceEngine<'a> {
             self_override: Self::merge_branch_self_override(base, then_scope, else_scope),
             self_facts: Self::merge_branch_self_facts(then_scope, else_scope),
             array_first_facts: Arc::default(),
+            hash_key_facts: Arc::new(hash_key_flow::merge_hash_key_facts(
+                &then_scope.hash_key_facts,
+                &else_scope.hash_key_facts,
+            )),
             runtime_facts: base.runtime_facts.clone(),
             respond_to_guards: Arc::default(),
             local_singleton_methods: base.local_singleton_methods.clone(),
@@ -4628,6 +4637,7 @@ impl<'a> InferenceEngine<'a> {
             self_override: Self::merge_loop_self_override(base, loop_scope),
             self_facts: Arc::default(),
             array_first_facts: Arc::default(),
+            hash_key_facts: base.hash_key_facts.clone(),
             runtime_facts: base.runtime_facts.clone(),
             respond_to_guards: Arc::default(),
             initialized_record_keys: base.initialized_record_keys.clone(),
@@ -24439,6 +24449,13 @@ impl<'a> InferenceEngine<'a> {
         {
             scope.clear_array_first_facts();
         }
+        if !scope.hash_key_facts.is_empty() {
+            hash_key_flow::invalidate_hash_key_facts(
+                node,
+                Arc::make_mut(&mut scope.hash_key_facts),
+            );
+        }
+        self.record_hash_index_assignment(class_name, node, parse_result, scope);
         self.apply_sorbet_self_bind_for_statement(class_name, node, parse_result, scope);
         let invalidates_self_facts = !scope.self_facts.is_empty()
             && self.statement_invalidates_self_facts(
@@ -24554,6 +24571,7 @@ impl<'a> InferenceEngine<'a> {
                 if let Some(runtime_fact) = runtime_fact {
                     scope.set_runtime_fact(&var_name, runtime_fact);
                 }
+                Self::record_empty_hash_assignment(&var_name, &value_node, scope);
             }
             Node::InstanceVariableWriteNode { .. } => {
                 let write_node = node
@@ -25058,9 +25076,17 @@ impl<'a> InferenceEngine<'a> {
                     (write_node.receiver(), write_node.arguments())
                     && let Some(key_node) = arguments.arguments().iter().next()
                 {
+                    let receiver = Self::unwrap_index_write_receiver(receiver);
                     self.mark_initialized_record_key(
                         class_name,
-                        &Self::unwrap_index_write_receiver(receiver),
+                        &receiver,
+                        &key_node,
+                        parse_result,
+                        scope,
+                    );
+                    self.record_hash_key_write(
+                        class_name,
+                        &receiver,
                         &key_node,
                         parse_result,
                         scope,
@@ -25119,6 +25145,18 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                if let (Some(receiver), Some(arguments)) =
+                    (write_node.receiver(), write_node.arguments())
+                    && let Some(key_node) = arguments.arguments().iter().next()
+                {
+                    self.record_hash_key_write(
+                        class_name,
+                        &Self::unwrap_index_write_receiver(receiver),
+                        &key_node,
+                        parse_result,
+                        scope,
+                    );
+                }
                 self.apply_index_write_side_effect(
                     class_name,
                     write_node.receiver(),
@@ -27510,6 +27548,11 @@ impl<'a> InferenceEngine<'a> {
             return Type::Untyped;
         };
         if let Some(inferred) = self.context_free_node_type_cached(node) {
+            return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
+        }
+        if !scope.hash_key_facts.is_empty()
+            && let Some(inferred) = self.hash_key_fact_read(class_name, node, parse_result, scope)
+        {
             return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
         }
         if let Some(call_node) = node.as_call_node()

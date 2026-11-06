@@ -223,10 +223,6 @@ end
 
 ## Preserve the value assigned through a dynamic hash key
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class DynamicHashOrAssignment
   def self.initialized_value
@@ -271,6 +267,46 @@ class DynamicHashOrAssignment
     key << :changed
     values[key]
   end
+
+  def self.plain_write(key)
+    values = {}
+    values[key] = 1
+    values[key]
+  end
+
+  def self.reassigned_key_may_be_absent(key, other)
+    values = {}
+    values[key] = 1
+    key = other
+    values[key]
+  end
+
+  def self.deleted_key_may_be_absent(key)
+    values = {}
+    values[key] = 1
+    values.delete(key)
+    values[key]
+  end
+
+  def self.branch_write_may_be_absent(key, flag)
+    values = {}
+    values[key] = 1 if flag
+    values[key]
+  end
+
+  def self.aliased_hash_may_lose_key(key)
+    values = {}
+    values[key] = 1
+    other = values
+    other.clear
+    values[key]
+  end
+
+  def self.default_hash_key_may_be_defaulted
+    values = Hash.new(0)
+    values[:a] = 1
+    values[:b]
+  end
 end
 ```
 
@@ -284,5 +320,11 @@ class DynamicHashOrAssignment
   def self.append_to_untyped_hash: (untyped values, untyped key) -> untyped
   def self.different_key_returns_nil: -> nil
   def self.mutated_key_returns_nil: -> nil
+  def self.plain_write: (untyped key) -> 1
+  def self.reassigned_key_may_be_absent: (untyped key, untyped other) -> 1?
+  def self.deleted_key_may_be_absent: (untyped key) -> 1?
+  def self.branch_write_may_be_absent: (untyped key, untyped flag) -> untyped
+  def self.aliased_hash_may_lose_key: (untyped key) -> 1?
+  def self.default_hash_key_may_be_defaulted: -> (0 | 1)?
 end
 ```
