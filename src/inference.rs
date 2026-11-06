@@ -1037,6 +1037,9 @@ pub struct InferenceEngine<'a> {
     suppress_external_merge: bool,
     case_when_narrowing_enabled: bool,
     source_base_case_equality_override: bool,
+    /// Source of each `===` defined in this file, reparsed when a call site asks how it narrows.
+    source_case_equality_defs: HashMap<(String, bool), Arc<str>>,
+    in_source_case_equality_guard: bool,
     /// Full analysis re-infers bodies, so first-pass ParamRef call sites are skipped.
     /// Compact/CLI snapshots have no re-infer and must keep those sites.
     defer_unresolved_body_call_sites: bool,
@@ -2444,6 +2447,8 @@ impl<'a> InferenceEngine<'a> {
             suppress_external_merge: false,
             case_when_narrowing_enabled: false,
             source_base_case_equality_override: false,
+            source_case_equality_defs: HashMap::new(),
+            in_source_case_equality_guard: false,
             defer_unresolved_body_call_sites: false,
             track_deferred_block_receiver_bodies: false,
             read_settled_ivars: false,
@@ -2519,6 +2524,8 @@ impl<'a> InferenceEngine<'a> {
             suppress_external_merge: false,
             case_when_narrowing_enabled: false,
             source_base_case_equality_override: false,
+            source_case_equality_defs: HashMap::new(),
+            in_source_case_equality_guard: false,
             defer_unresolved_body_call_sites: false,
             track_deferred_block_receiver_bodies: false,
             read_settled_ivars: false,
@@ -17984,6 +17991,13 @@ impl<'a> InferenceEngine<'a> {
                 unresolved_block_receivers: has_deferred_block_receiver_return
                     .then_some(unresolved_block_receivers),
             });
+        }
+
+        if method_name == "===" {
+            self.source_case_equality_defs.insert(
+                (class_name.to_string(), is_singleton),
+                String::from_utf8_lossy(def_node.location().as_slice()).into(),
+            );
         }
 
         let existing_block_meta = self
@@ -56261,11 +56275,14 @@ impl<'a> InferenceEngine<'a> {
         };
         let target_name = target_name.to_string();
 
+        if !self.uses_standard_class_case_equality_in_scope(&target_name, scope) {
+            let guard = self.source_case_equality_guard(&target_name, &current, scope)?;
+            return Some(CondNarrowing { subject, ..guard });
+        }
         if self
             .registry
             .class_data_for(&target_name)
             .is_none_or(|class| class.is_module)
-            || !self.uses_standard_class_case_equality_in_scope(&target_name, scope)
         {
             return None;
         }
@@ -56285,6 +56302,75 @@ impl<'a> InferenceEngine<'a> {
                 then_ty: Some(Type::Bot),
                 else_ty: Some(current),
             })
+    }
+
+    /// Narrowing a source `===` proves about its argument: the def must be a single expression
+    /// narrowing its only parameter. The result's subject is that parameter.
+    fn source_case_equality_guard(
+        &mut self,
+        target_name: &str,
+        argument_type: &Type,
+        scope: &Scope,
+    ) -> Option<CondNarrowing> {
+        if self.in_source_case_equality_guard
+            || self.active_refinement_overrides_instance_method("Class", "===", scope)
+            || self.external_method_call_has_user_source_definition(target_name, "===", true)
+        {
+            return None;
+        }
+        let (owner, is_singleton) = self
+            .registry
+            .resolve_method_call_owners(target_name, "===", true)
+            .into_iter()
+            .next()?;
+        let source = self
+            .source_case_equality_defs
+            .get(&(owner.clone(), is_singleton))?
+            .clone();
+        let parse_result = ruby_prism::parse(source.as_bytes());
+        let root = parse_result.node();
+        let program = root.as_program_node()?;
+        let statements = program.statements().body();
+        let def_node = statements.iter().next()?.as_def_node()?;
+        let param_name = Self::single_required_param_name(&def_node)?;
+        let body = def_node.body()?;
+        let mut body_statements = body.as_statements_node()?.body().iter();
+        let predicate = body_statements.next()?;
+        if body_statements.next().is_some() {
+            return None;
+        }
+
+        let mut guard_scope = Scope {
+            singleton_dispatch: is_singleton,
+            ..Scope::default()
+        };
+        guard_scope.set(&param_name, argument_type.clone());
+        self.in_source_case_equality_guard = true;
+        let narrowing = self.extract_condition_narrowing(
+            &owner,
+            &predicate,
+            &parse_result,
+            &guard_scope,
+            false,
+        );
+        self.in_source_case_equality_guard = false;
+        narrowing.filter(|narrowing| {
+            matches!(&narrowing.subject, NarrowSubject::Local(name) if *name == param_name)
+        })
+    }
+
+    fn single_required_param_name(def_node: &ruby_prism::DefNode<'_>) -> Option<String> {
+        let params = def_node.parameters()?;
+        let mut requireds = params.requireds().iter();
+        let only = requireds.next()?.as_required_parameter_node()?;
+        (requireds.next().is_none()
+            && params.optionals().iter().next().is_none()
+            && params.rest().is_none()
+            && params.posts().iter().next().is_none()
+            && params.keywords().iter().next().is_none()
+            && params.keyword_rest().is_none()
+            && params.block().is_none())
+        .then(|| String::from_utf8_lossy(only.name().as_slice()).to_string())
     }
 
     fn extract_if_node_narrowing(
