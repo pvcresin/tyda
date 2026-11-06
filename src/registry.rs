@@ -7428,12 +7428,18 @@ impl TypeRegistry {
                 };
                 projection.unwrap_or(Type::Bot)
             }
-            Type::Union(parts) => Type::from_type_vec(
-                parts
+            Type::Union(parts) => {
+                let resolved = parts
                     .iter()
                     .map(|t| self.resolve_subclass_refs_in_type(t))
-                    .collect(),
-            ),
+                    .collect();
+                // A reference that has no answer yet is dropped; a known `untyped` arm is not.
+                if parts.contains(&Type::Untyped) {
+                    Type::from_type_vec_preserve_untyped(resolved)
+                } else {
+                    Type::from_type_vec(resolved)
+                }
+            }
             Type::Intersection(parts) => Type::Intersection(
                 parts
                     .iter()

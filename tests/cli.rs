@@ -70,6 +70,28 @@ fn no_args_exits_with_error() {
 }
 
 #[test]
+fn batch_resolution_keeps_untyped_right_side_of_short_circuit() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("list.rb");
+    fs::write(
+        &file,
+        "class Node\n  def initialize(tail)\n    @tail = tail\n  end\n  attr_reader :tail\n  \
+         def empty? = false\n  def same_end(other)\n    current = self\n    \
+         current = current.tail if other\n    current.empty? && other.empty?\n  end\nend\n\
+         class Empty < Node\n  def initialize; end\n  def empty? = true\nend\n\
+         Node.new(Empty.new)\n",
+    )
+    .unwrap();
+    let output = tyda_bin().arg(&file).output().expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("def same_end: (untyped other) -> (false | untyped)"),
+        "got: {stdout}"
+    );
+}
+
+#[test]
 fn analyze_single_file() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("a.rb");

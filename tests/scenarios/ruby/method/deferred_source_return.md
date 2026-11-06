@@ -374,3 +374,51 @@ class AppRevision
   def self.git_revision: -> String
 end
 ```
+
+## A short circuit over a deferred subclass arm keeps an untyped right side
+
+### update
+
+```ruby
+class DeferredListNode
+  def initialize(head, tail)
+    @head = head
+    @tail = tail
+  end
+
+  attr_reader :head, :tail
+
+  def empty? = false
+
+  def same_end(other)
+    current = self
+    current = current.tail if other
+    current.empty? && other.empty?
+  end
+end
+
+class DeferredEmptyNode < DeferredListNode
+  def initialize; end
+
+  def empty? = true
+end
+
+DeferredListNode.new(1, DeferredEmptyNode.new)
+```
+
+### result
+
+```rbs
+class DeferredEmptyNode < DeferredListNode
+  def initialize: -> void
+  def empty?: -> true
+end
+
+class DeferredListNode
+  def initialize: (Integer head, DeferredEmptyNode tail) -> void
+  def head: -> Integer
+  def tail: -> DeferredEmptyNode
+  def empty?: -> false
+  def same_end: (untyped other) -> (false | untyped)
+end
+```
