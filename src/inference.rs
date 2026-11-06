@@ -341,6 +341,31 @@ struct SelfFactInvalidatorScan<'a> {
     is_pure_reader: &'a dyn Fn(&str) -> bool,
 }
 
+struct SelfFactReadScan<'a> {
+    found: bool,
+    fact_keys: &'a HashMap<String, Type>,
+}
+
+impl<'pr> ruby_prism::Visit<'pr> for SelfFactReadScan<'_> {
+    fn visit_instance_variable_read_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableReadNode<'pr>,
+    ) {
+        self.found |= self
+            .fact_keys
+            .contains_key(String::from_utf8_lossy(node.name().as_slice()).as_ref());
+    }
+
+    fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+        if node.receiver().is_none() {
+            self.found |= self
+                .fact_keys
+                .contains_key(String::from_utf8_lossy(node.name().as_slice()).as_ref());
+        }
+        ruby_prism::visit_call_node(self, node);
+    }
+}
+
 #[derive(Default)]
 struct InstanceVariableWriteCollector {
     names: HashSet<String>,
@@ -24795,6 +24820,15 @@ impl<'a> InferenceEngine<'a> {
         // An expression reads its operands before its last call can invalidate facts on self.
         // Keep the facts while inferring it, then discard them for later statements.
         let defer_self_fact_invalidation = invalidates_self_facts
+            && match node {
+                Node::CallNode { .. } => node
+                    .as_call_node()
+                    .is_some_and(|call_node| call_node.block().is_none()),
+                Node::LocalVariableWriteNode { .. } | Node::ArrayNode { .. } => {
+                    self.expression_has_ordered_operands(class_name, node, scope)
+                }
+                _ => false,
+            }
             && !self.expression_invalidates_before_later_reads(class_name, node, scope);
         if invalidates_self_facts && !defer_self_fact_invalidation {
             scope.clear_self_facts();
@@ -46567,10 +46601,11 @@ impl<'a> InferenceEngine<'a> {
         let mut relation_cache = HashMap::new();
         let call_has_block = call_node.block().is_some();
         let mut skipped_required_block_match = false;
-        let args_are_unknown = arg_types
-            .iter()
-            .chain(kw_arg_types.values())
-            .any(|ty| !Self::is_concrete(ty) || Self::type_contains_untyped(ty));
+        let args_are_unknown = arg_types.iter().chain(kw_arg_types.values()).any(|ty| {
+            !Self::is_unresolved_call_arg_type(ty)
+                && !matches!(ty, Type::Union(_))
+                && Self::type_contains_untyped(ty)
+        });
         let mut unknown_arg_return: Option<(String, Type)> = None;
         for overload in &overloads {
             let mt = &overload.method_type;
@@ -46632,14 +46667,18 @@ impl<'a> InferenceEngine<'a> {
                     return Some(ret);
                 }
                 // Unknown arguments can select any overload the nearest owner accepts, so only a
-                // return they agree on is known. A nil-accepting fallback overload still agrees.
-                match &unknown_arg_return {
+                // return covering the others is known. A nil-only difference keeps the earlier one.
+                match &mut unknown_arg_return {
                     None => unknown_arg_return = Some((overload.owner_class.clone(), ret)),
-                    Some((owner, seen))
-                        if *owner == overload.owner_class
-                            && Self::remove_nil(seen) != Self::remove_nil(&ret) =>
-                    {
-                        return Some(Type::Untyped);
+                    Some((owner, seen)) if *owner == overload.owner_class => {
+                        let seen_value = Self::remove_nil(seen);
+                        let ret_value = Self::remove_nil(&ret);
+                        let covering = seen_value.clone().union_with(ret_value.clone());
+                        if covering == ret_value && covering != seen_value {
+                            *seen = ret;
+                        } else if covering != seen_value {
+                            return Some(Type::Untyped);
+                        }
                     }
                     Some(_) => {}
                 }
@@ -59226,6 +59265,38 @@ impl<'a> InferenceEngine<'a> {
         scan.found
     }
 
+    /// Whether `node` evaluates left to right without a block or branch that may invalidate self facts.
+    fn expression_has_ordered_operands(
+        &self,
+        class_name: &str,
+        node: &Node<'_>,
+        scope: &Scope,
+    ) -> bool {
+        let ordered =
+            |operand: Node<'_>| self.expression_has_ordered_operands(class_name, &operand, scope);
+        match node {
+            Node::CallNode { .. } => node.as_call_node().is_some_and(|call| {
+                call.block().is_none()
+                    && call.receiver().is_none_or(ordered)
+                    && call
+                        .arguments()
+                        .is_none_or(|arguments| arguments.arguments().iter().all(ordered))
+            }),
+            Node::LocalVariableWriteNode { .. } => node
+                .as_local_variable_write_node()
+                .is_some_and(|write| ordered(write.value())),
+            Node::ArrayNode { .. } => node
+                .as_array_node()
+                .is_some_and(|array| array.elements().iter().all(ordered)),
+            _ => !self.statement_invalidates_self_facts(
+                class_name,
+                scope.singleton_dispatch,
+                node,
+                &scope.self_facts,
+            ),
+        }
+    }
+
     /// Whether evaluating `node` can invalidate self facts while a later operand still reads them.
     fn expression_invalidates_before_later_reads(
         &self,
@@ -59241,10 +59312,10 @@ impl<'a> InferenceEngine<'a> {
                 &scope.self_facts,
             )
         };
-        let mut operands: Vec<Node<'_>> = match node {
+        let operands: Vec<Node<'_>> = match node {
             Node::CallNode { .. } => {
-                let Some(call) = node.as_call_node().filter(|call| call.block().is_none()) else {
-                    return true;
+                let Some(call) = node.as_call_node() else {
+                    return false;
                 };
                 call.receiver()
                     .into_iter()
@@ -59265,13 +59336,25 @@ impl<'a> InferenceEngine<'a> {
                 .into_iter()
                 .flat_map(|array| array.elements().iter().collect::<Vec<_>>())
                 .collect(),
-            _ => return invalidates(node),
+            _ => return false,
         };
-        let Some(last) = operands.pop() else {
-            return false;
+        operands.iter().enumerate().any(|(index, operand)| {
+            self.expression_invalidates_before_later_reads(class_name, operand, scope)
+                || (invalidates(operand)
+                    && operands[index + 1..]
+                        .iter()
+                        .any(|later| Self::node_reads_self_fact(later, &scope.self_facts)))
+        })
+    }
+
+    fn node_reads_self_fact(node: &Node<'_>, fact_keys: &HashMap<String, Type>) -> bool {
+        use ruby_prism::Visit;
+        let mut scan = SelfFactReadScan {
+            found: false,
+            fact_keys,
         };
-        operands.iter().any(invalidates)
-            || self.expression_invalidates_before_later_reads(class_name, &last, scope)
+        scan.visit(node);
+        scan.found
     }
 
     fn is_pure_ivar_reader(&self, class_name: &str, singleton_dispatch: bool, name: &str) -> bool {
