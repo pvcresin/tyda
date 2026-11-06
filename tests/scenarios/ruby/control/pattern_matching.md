@@ -865,10 +865,6 @@ end
 
 ## Bind captures in short-circuit pattern predicate expressions
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -921,13 +917,59 @@ class PatternMatchExpressionBindings
     end
   end
 
-  def capture_in_statically_matched_guard_else
-    value = -1
+  def capture_in_guard_else(value, flag)
     case value
-    in Integer => number if value.positive?
+    in Integer => number if flag
       :matched
     else
       number
+    end
+  end
+
+  def capture_in_unless_guard_else(value, flag)
+    case value
+    in Integer => number unless flag
+      :matched
+    else
+      number
+    end
+  end
+
+  def capture_kept_for_later_arm(value, flag)
+    case value
+    in Integer => number if flag
+      :matched
+    in String
+      number
+    end
+  end
+
+  def capture_in_negated_statement(value)
+    !(value in Integer => number)
+    number
+  end
+
+  def assignment_in_short_circuit_rhs(flag)
+    flag && (number = 1)
+    number
+  end
+
+  def assignment_in_or_rhs(flag)
+    flag || number = 1
+    number
+  end
+
+  def partial_capture_on_failed_match(value)
+    if (value in [Integer => first, String])
+      :matched
+    else
+      first
+    end
+  end
+
+  def capture_in_loop_condition(value)
+    while (value in Integer => number)
+      return number
     end
   end
 
@@ -956,9 +998,46 @@ class PatternMatchExpressionBindings
   def short_circuit_or: (untyped value) -> Integer?
   def short_circuit_or_rhs: (untyped value, untyped flag) -> Integer?
   def capture_in_or_condition: (untyped value, untyped flag) -> Integer?
-  def capture_in_statically_matched_guard_else: -> -1
+  def capture_in_guard_else: (untyped value, untyped flag) -> (Integer | :matched)?
+  def capture_in_unless_guard_else: (untyped value, untyped flag) -> (Integer | :matched)?
+  def capture_kept_for_later_arm: (untyped value, untyped flag) -> (Integer | :matched)?
+  def capture_in_negated_statement: (untyped value) -> Integer?
+  def assignment_in_short_circuit_rhs: (untyped flag) -> 1?
+  def assignment_in_or_rhs: (untyped flag) -> 1?
+  def partial_capture_on_failed_match: (untyped value) -> (Integer | :matched)?
+  def capture_in_loop_condition: (untyped value) -> Integer?
   def parenthesized_local_assignment: -> 1
   def assignment_keeps_statically_matched_literal: -> "x"
+end
+```
+
+## Evaluate a literal guard before choosing the case arm
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class PatternMatchLiteralGuard
+  def capture_in_statically_matched_guard_else
+    value = -1
+    case value
+    in Integer => number if value.positive?
+      :matched
+    else
+      number
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchLiteralGuard
+  def capture_in_statically_matched_guard_else: -> -1
 end
 ```
 

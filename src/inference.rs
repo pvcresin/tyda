@@ -551,6 +551,23 @@ impl<'a, 'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'a> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConditionOutcome {
+    Truthy,
+    Falsy,
+    Either,
+}
+
+impl ConditionOutcome {
+    fn negated(self) -> Self {
+        match self {
+            Self::Truthy => Self::Falsy,
+            Self::Falsy => Self::Truthy,
+            Self::Either => Self::Either,
+        }
+    }
+}
+
 struct CondNarrowing {
     subject: NarrowSubject,
     then_ty: Option<Type>,
@@ -7530,6 +7547,20 @@ impl<'a> InferenceEngine<'a> {
         loop_scope.clear_self_facts();
         loop_scope.break_types.clear();
         loop_scope.next_types.clear();
+        if !is_begin_modifier {
+            let body_outcome = if is_until {
+                ConditionOutcome::Falsy
+            } else {
+                ConditionOutcome::Truthy
+            };
+            self.apply_condition_effects(
+                class_name,
+                predicate,
+                body_outcome,
+                parse_result,
+                &mut loop_scope,
+            );
+        }
         let parenthesized_assignment = if !is_begin_modifier
             && !is_until
             && let Node::ParenthesesNode { .. } = predicate
@@ -24314,6 +24345,17 @@ impl<'a> InferenceEngine<'a> {
         if invalidates_self_facts && !defer_self_fact_invalidation {
             scope.clear_self_facts();
         }
+        if node.as_call_node().is_some() && Self::condition_has_flow_effects(node) {
+            self.infer_node_type(class_name, node, parse_result, scope);
+            self.apply_condition_effects(
+                class_name,
+                node,
+                ConditionOutcome::Either,
+                parse_result,
+                scope,
+            );
+            return false;
+        }
         let mut statement_exits = false;
         match node {
             Node::DefNode { .. } => {
@@ -24335,17 +24377,13 @@ impl<'a> InferenceEngine<'a> {
                 let runtime_fact =
                     self.runtime_fact_from_value(class_name, &value_node, parse_result, scope);
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
-                if matches!(
-                    value_node,
-                    Node::ParenthesesNode { .. } | Node::MatchPredicateNode { .. }
-                ) {
-                    self.bind_pattern_captures_from_assignment_value(
-                        class_name,
-                        &value_node,
-                        parse_result,
-                        scope,
-                    );
-                }
+                self.apply_condition_effects(
+                    class_name,
+                    &value_node,
+                    ConditionOutcome::Either,
+                    parse_result,
+                    scope,
+                );
                 if let Some(call_node) = value_node.as_call_node() {
                     self.apply_receiver_mutating_call_side_effect(
                         class_name,
@@ -24775,10 +24813,13 @@ impl<'a> InferenceEngine<'a> {
                 self.process_statement(class_name, &shareable.write(), parse_result, scope);
             }
             Node::MatchPredicateNode { .. } => {
-                let match_node = node
-                    .as_match_predicate_node()
-                    .expect("must be MatchPredicateNode");
-                self.bind_match_predicate_captures(class_name, &match_node, parse_result, scope);
+                self.apply_condition_effects(
+                    class_name,
+                    node,
+                    ConditionOutcome::Either,
+                    parse_result,
+                    scope,
+                );
             }
             Node::MatchRequiredNode { .. } => {
                 let match_node = node
@@ -25451,6 +25492,13 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => {
                 self.infer_node_type(class_name, node, parse_result, scope);
+                self.apply_condition_effects(
+                    class_name,
+                    node,
+                    ConditionOutcome::Either,
+                    parse_result,
+                    scope,
+                );
             }
         }
         if defer_self_fact_invalidation {
@@ -25483,6 +25531,13 @@ impl<'a> InferenceEngine<'a> {
                     self.infer_node_type(class_name, &or_node.left(), parse_result, scope);
                 let left_truthiness = Self::syntactic_node_truthiness(&or_node.left());
                 if left_truthiness == Some(true) {
+                    self.apply_condition_effects(
+                        class_name,
+                        &or_node.left(),
+                        ConditionOutcome::Truthy,
+                        parse_result,
+                        scope,
+                    );
                     return left_type;
                 }
                 let mut right_scope = scope.fork_for_branch();
@@ -25493,6 +25548,13 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                     &mut right_scope,
                     false,
+                );
+                self.apply_condition_effects(
+                    class_name,
+                    &or_node.left(),
+                    ConditionOutcome::Falsy,
+                    parse_result,
+                    &mut right_scope,
                 );
                 let right_type =
                     self.infer_node_type(class_name, &or_node.right(), parse_result, &right_scope);
@@ -25510,6 +25572,13 @@ impl<'a> InferenceEngine<'a> {
                     right_type
                 };
                 if left_truthiness == Some(false) {
+                    self.apply_condition_effects(
+                        class_name,
+                        node,
+                        ConditionOutcome::Either,
+                        parse_result,
+                        scope,
+                    );
                     return right_type;
                 }
                 if Self::type_never_returns(&right_type) {
@@ -25521,6 +25590,13 @@ impl<'a> InferenceEngine<'a> {
                         &base,
                         scope,
                         true,
+                    );
+                    self.apply_condition_effects(
+                        class_name,
+                        &or_node.left(),
+                        ConditionOutcome::Truthy,
+                        parse_result,
+                        scope,
                     );
                     if let Node::LocalVariableWriteNode { .. } = or_node.left() {
                         let write = or_node
@@ -25535,6 +25611,13 @@ impl<'a> InferenceEngine<'a> {
                     }
                     return Self::deferred_truthy_only(&left_type).unwrap_or(left_type);
                 }
+                self.apply_condition_effects(
+                    class_name,
+                    node,
+                    ConditionOutcome::Either,
+                    parse_result,
+                    scope,
+                );
                 let mut result_types = Vec::new();
                 if let Some(truthy) = Self::deferred_truthy_only(&left_type) {
                     result_types.push(truthy);
@@ -25561,6 +25644,13 @@ impl<'a> InferenceEngine<'a> {
                     self.infer_node_type(class_name, &and_node.left(), parse_result, scope);
                 let left_truthiness = Self::syntactic_node_truthiness(&and_node.left());
                 if left_truthiness == Some(false) {
+                    self.apply_condition_effects(
+                        class_name,
+                        &and_node.left(),
+                        ConditionOutcome::Falsy,
+                        parse_result,
+                        scope,
+                    );
                     return left_type;
                 }
                 let mut right_scope = scope.fork_for_branch();
@@ -25571,6 +25661,13 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                     &mut right_scope,
                     true,
+                );
+                self.apply_condition_effects(
+                    class_name,
+                    &and_node.left(),
+                    ConditionOutcome::Truthy,
+                    parse_result,
+                    &mut right_scope,
                 );
                 let right_type =
                     self.infer_node_type(class_name, &and_node.right(), parse_result, &right_scope);
@@ -25586,6 +25683,13 @@ impl<'a> InferenceEngine<'a> {
                     right_type
                 };
                 if left_truthiness == Some(true) {
+                    self.apply_condition_effects(
+                        class_name,
+                        node,
+                        ConditionOutcome::Either,
+                        parse_result,
+                        scope,
+                    );
                     return right_type;
                 }
                 if Self::type_never_returns(&right_type) {
@@ -25598,8 +25702,22 @@ impl<'a> InferenceEngine<'a> {
                         scope,
                         false,
                     );
+                    self.apply_condition_effects(
+                        class_name,
+                        &and_node.left(),
+                        ConditionOutcome::Falsy,
+                        parse_result,
+                        scope,
+                    );
                     return Self::deferred_falsy_only(&left_type).unwrap_or(left_type);
                 }
+                self.apply_condition_effects(
+                    class_name,
+                    node,
+                    ConditionOutcome::Either,
+                    parse_result,
+                    scope,
+                );
                 let mut result_types = Vec::new();
                 if let Some(falsy) = Self::deferred_falsy_only(&left_type) {
                     result_types.push(falsy);
@@ -25659,6 +25777,13 @@ impl<'a> InferenceEngine<'a> {
                     })
                 };
                 let mut then_scope = scope.fork_for_branch();
+                self.apply_condition_effects(
+                    class_name,
+                    &if_node.predicate(),
+                    ConditionOutcome::Truthy,
+                    parse_result,
+                    &mut then_scope,
+                );
                 if let Some(n) = &narrowing
                     && let Some(ty) = &n.then_ty
                 {
@@ -25671,12 +25796,6 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                     &mut then_scope,
                     true,
-                );
-                self.bind_pattern_locals_from_condition(
-                    class_name,
-                    &if_node.predicate(),
-                    parse_result,
-                    &mut then_scope,
                 );
                 self.bind_match_write_captures(class_name, &if_node.predicate(), &mut then_scope);
                 if let Some(projection) = &assignment_projection {
@@ -25698,6 +25817,13 @@ impl<'a> InferenceEngine<'a> {
                     Type::Nil
                 };
                 let mut else_scope = scope.fork_for_branch();
+                self.apply_condition_effects(
+                    class_name,
+                    &if_node.predicate(),
+                    ConditionOutcome::Falsy,
+                    parse_result,
+                    &mut else_scope,
+                );
                 if let Some(n) = &narrowing
                     && let Some(ty) = &n.else_ty
                 {
@@ -25790,6 +25916,13 @@ impl<'a> InferenceEngine<'a> {
                 );
 
                 let mut body_scope = scope.fork_for_branch();
+                self.apply_condition_effects(
+                    class_name,
+                    &unless_node.predicate(),
+                    ConditionOutcome::Falsy,
+                    parse_result,
+                    &mut body_scope,
+                );
                 if let Some(n) = &narrowing
                     && let Some(ty) = &n.else_ty
                 {
@@ -25817,6 +25950,13 @@ impl<'a> InferenceEngine<'a> {
                 };
 
                 let mut else_scope = scope.fork_for_branch();
+                self.apply_condition_effects(
+                    class_name,
+                    &unless_node.predicate(),
+                    ConditionOutcome::Truthy,
+                    parse_result,
+                    &mut else_scope,
+                );
                 if let Some(n) = &narrowing
                     && let Some(ty) = &n.then_ty
                 {
@@ -25829,12 +25969,6 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                     &mut else_scope,
                     true,
-                );
-                self.bind_pattern_locals_from_condition(
-                    class_name,
-                    &unless_node.predicate(),
-                    parse_result,
-                    &mut else_scope,
                 );
                 let else_type = if truthiness == Some(false) {
                     Type::Bot
@@ -26172,59 +26306,68 @@ impl<'a> InferenceEngine<'a> {
                 let mut remaining_subject_type = subject_type.clone();
                 let mut remaining_subject_is_known = subject_type.is_some();
                 let mut literal_partitioning_enabled = subject_type.is_some();
+                let mut fallthrough: Option<Scope> = None;
                 for condition in case_node.conditions().iter() {
                     if remaining_subject_is_known && remaining_subject_type.is_none() {
                         break;
                     }
                     if let Node::InNode { .. } = &condition {
                         let in_node = condition.as_in_node().expect("must be InNode");
-                        let narrowed_type =
-                            if Self::is_irrefutable_variable_pattern(&in_node.pattern()) {
-                                let matched_type = if literal_partitioning_enabled {
-                                    remaining_subject_type.clone()
-                                } else {
-                                    None
-                                };
-                                remaining_subject_type = None;
-                                remaining_subject_is_known = true;
-                                literal_partitioning_enabled = false;
-                                matched_type
-                            } else if literal_partitioning_enabled {
-                                if let Some((matched_type, unmatched_type)) = self
-                                    .partition_case_pattern(
-                                        class_name,
-                                        &in_node.pattern(),
-                                        remaining_subject_type.as_ref(),
-                                        scope,
-                                    )
-                                {
-                                    remaining_subject_type = unmatched_type;
-                                    remaining_subject_is_known = true;
-                                    let Some(matched_type) = matched_type else {
-                                        continue;
-                                    };
-                                    Some(matched_type)
-                                } else {
-                                    literal_partitioning_enabled = false;
-                                    remaining_subject_is_known = false;
-                                    self.extract_pattern_narrowing(
-                                        class_name,
-                                        &in_node.pattern(),
-                                        parse_result,
-                                        subject_type.as_ref(),
-                                        scope,
-                                    )
-                                }
+                        let full_pattern = in_node.pattern();
+                        let guard = Self::split_pattern_guard(&full_pattern);
+                        let pattern = guard.as_ref().map_or(&full_pattern, |guard| &guard.0);
+                        let arm_start = (
+                            remaining_subject_type.clone(),
+                            remaining_subject_is_known,
+                            literal_partitioning_enabled,
+                        );
+                        let narrowed_type = if Self::is_irrefutable_variable_pattern(pattern) {
+                            let matched_type = if literal_partitioning_enabled {
+                                remaining_subject_type.clone()
                             } else {
+                                None
+                            };
+                            remaining_subject_type = None;
+                            remaining_subject_is_known = true;
+                            literal_partitioning_enabled = false;
+                            matched_type
+                        } else if literal_partitioning_enabled {
+                            if let Some((matched_type, unmatched_type)) = self
+                                .partition_case_pattern(
+                                    class_name,
+                                    pattern,
+                                    remaining_subject_type.as_ref(),
+                                    scope,
+                                )
+                            {
+                                remaining_subject_type = unmatched_type;
+                                remaining_subject_is_known = true;
+                                let Some(matched_type) = matched_type else {
+                                    continue;
+                                };
+                                Some(matched_type)
+                            } else {
+                                literal_partitioning_enabled = false;
+                                remaining_subject_is_known = false;
                                 self.extract_pattern_narrowing(
                                     class_name,
-                                    &in_node.pattern(),
+                                    pattern,
                                     parse_result,
                                     subject_type.as_ref(),
                                     scope,
                                 )
-                            };
-                        let mut branch_scope = scope.fork_for_branch();
+                            }
+                        } else {
+                            self.extract_pattern_narrowing(
+                                class_name,
+                                pattern,
+                                parse_result,
+                                subject_type.as_ref(),
+                                scope,
+                            )
+                        };
+                        let mut branch_scope =
+                            fallthrough.as_ref().unwrap_or(&*scope).fork_for_branch();
                         if let (Some(var_name), Some(narrow_ty)) = (&predicate_var, &narrowed_type)
                         {
                             branch_scope.narrow(var_name, narrow_ty.clone());
@@ -26237,11 +26380,32 @@ impl<'a> InferenceEngine<'a> {
                             binding_subject_type,
                             narrowed_type.as_ref(),
                         );
-                        self.bind_pattern_locals(
-                            &in_node.pattern(),
-                            &binding_type,
-                            &mut branch_scope,
-                        );
+                        self.bind_pattern_locals(pattern, &binding_type, &mut branch_scope);
+                        if let Some((_, guard_node, required)) = &guard {
+                            let mut guard_fallthrough = fallthrough
+                                .take()
+                                .unwrap_or_else(|| scope.fork_for_branch());
+                            let passes = self.apply_case_in_guard(
+                                class_name,
+                                pattern,
+                                guard_node,
+                                *required,
+                                &binding_type,
+                                arm_start.0.as_ref().or(subject_type.as_ref()),
+                                parse_result,
+                                &branch_scope,
+                                &mut guard_fallthrough,
+                            );
+                            fallthrough = Some(guard_fallthrough);
+                            if passes != Some(true) {
+                                remaining_subject_type = arm_start.0;
+                                remaining_subject_is_known = arm_start.1;
+                                literal_partitioning_enabled = arm_start.2;
+                                if passes == Some(false) {
+                                    continue;
+                                }
+                            }
+                        }
                         let branch_type = if let Some(statements) = in_node.statements() {
                             self.infer_statements_return_type(
                                 class_name,
@@ -26281,7 +26445,7 @@ impl<'a> InferenceEngine<'a> {
                 let else_reachable =
                     !remaining_subject_is_known || remaining_subject_type.is_some();
                 if let Some(else_clause) = case_node.else_clause().filter(|_| else_reachable) {
-                    let mut else_scope = scope.fork_for_branch();
+                    let mut else_scope = fallthrough.as_ref().unwrap_or(&*scope).fork_for_branch();
                     let else_type = if let Some(statements) = else_clause.statements() {
                         self.infer_statements_return_type(
                             class_name,
@@ -31056,6 +31220,13 @@ impl<'a> InferenceEngine<'a> {
                     Type::Bot
                 } else if let Some(statements) = if_node.statements() {
                     let mut then_scope = scope.fork_for_branch();
+                    self.apply_condition_effects(
+                        class_name,
+                        &if_node.predicate(),
+                        ConditionOutcome::Truthy,
+                        parse_result,
+                        &mut then_scope,
+                    );
                     if let Some(n) = &narrowing
                         && let Some(ty) = &n.then_ty
                     {
@@ -31068,12 +31239,6 @@ impl<'a> InferenceEngine<'a> {
                         scope,
                         &mut then_scope,
                         true,
-                    );
-                    self.bind_pattern_locals_from_condition(
-                        class_name,
-                        &if_node.predicate(),
-                        parse_result,
-                        &mut then_scope,
                     );
                     self.bind_match_write_captures(
                         class_name,
@@ -31100,6 +31265,13 @@ impl<'a> InferenceEngine<'a> {
                     Type::Bot
                 } else if let Some(else_clause) = if_node.subsequent() {
                     let mut else_scope = scope.fork_for_branch();
+                    self.apply_condition_effects(
+                        class_name,
+                        &if_node.predicate(),
+                        ConditionOutcome::Falsy,
+                        parse_result,
+                        &mut else_scope,
+                    );
                     if let Some(n) = &narrowing
                         && let Some(ty) = &n.else_ty
                     {
@@ -31139,6 +31311,13 @@ impl<'a> InferenceEngine<'a> {
 
                 let body_type = if let Some(statements) = unless_node.statements() {
                     let mut body_scope = scope.fork_for_branch();
+                    self.apply_condition_effects(
+                        class_name,
+                        &unless_node.predicate(),
+                        ConditionOutcome::Falsy,
+                        parse_result,
+                        &mut body_scope,
+                    );
                     if let Some(n) = &narrowing
                         && let Some(ty) = &n.else_ty
                     {
@@ -31165,6 +31344,13 @@ impl<'a> InferenceEngine<'a> {
                 let else_type = if let Some(else_clause) = unless_node.else_clause() {
                     if let Some(statements) = else_clause.statements() {
                         let mut else_scope = scope.fork_for_branch();
+                        self.apply_condition_effects(
+                            class_name,
+                            &unless_node.predicate(),
+                            ConditionOutcome::Truthy,
+                            parse_result,
+                            &mut else_scope,
+                        );
                         if let Some(n) = &narrowing
                             && let Some(ty) = &n.then_ty
                         {
@@ -31177,12 +31363,6 @@ impl<'a> InferenceEngine<'a> {
                             scope,
                             &mut else_scope,
                             true,
-                        );
-                        self.bind_pattern_locals_from_condition(
-                            class_name,
-                            &unless_node.predicate(),
-                            parse_result,
-                            &mut else_scope,
                         );
                         self.infer_statements_return_type(
                             class_name,
@@ -31371,6 +31551,7 @@ impl<'a> InferenceEngine<'a> {
                     let mut remaining_subject_type = subject_type.clone();
                     let mut remaining_subject_is_known = subject_type.is_some();
                     let mut literal_partitioning_enabled = subject_type.is_some();
+                    let mut fallthrough: Option<Scope> = None;
 
                     for condition in case_node.conditions().iter() {
                         if remaining_subject_is_known && remaining_subject_type.is_none() {
@@ -31378,53 +31559,61 @@ impl<'a> InferenceEngine<'a> {
                         }
                         if let Node::InNode { .. } = &condition {
                             let in_node = condition.as_in_node().expect("must be InNode");
-                            let narrowed_type =
-                                if Self::is_irrefutable_variable_pattern(&in_node.pattern()) {
-                                    let matched_type = if literal_partitioning_enabled {
-                                        remaining_subject_type.clone()
-                                    } else {
-                                        None
-                                    };
-                                    remaining_subject_type = None;
-                                    remaining_subject_is_known = true;
-                                    literal_partitioning_enabled = false;
-                                    matched_type
-                                } else if literal_partitioning_enabled {
-                                    if let Some((matched_type, unmatched_type)) = self
-                                        .partition_case_pattern(
-                                            class_name,
-                                            &in_node.pattern(),
-                                            remaining_subject_type.as_ref(),
-                                            scope,
-                                        )
-                                    {
-                                        remaining_subject_type = unmatched_type;
-                                        remaining_subject_is_known = true;
-                                        let Some(matched_type) = matched_type else {
-                                            continue;
-                                        };
-                                        Some(matched_type)
-                                    } else {
-                                        literal_partitioning_enabled = false;
-                                        remaining_subject_is_known = false;
-                                        self.extract_pattern_narrowing(
-                                            class_name,
-                                            &in_node.pattern(),
-                                            parse_result,
-                                            subject_type.as_ref(),
-                                            scope,
-                                        )
-                                    }
+                            let full_pattern = in_node.pattern();
+                            let guard = Self::split_pattern_guard(&full_pattern);
+                            let pattern = guard.as_ref().map_or(&full_pattern, |guard| &guard.0);
+                            let arm_start = (
+                                remaining_subject_type.clone(),
+                                remaining_subject_is_known,
+                                literal_partitioning_enabled,
+                            );
+                            let narrowed_type = if Self::is_irrefutable_variable_pattern(pattern) {
+                                let matched_type = if literal_partitioning_enabled {
+                                    remaining_subject_type.clone()
                                 } else {
+                                    None
+                                };
+                                remaining_subject_type = None;
+                                remaining_subject_is_known = true;
+                                literal_partitioning_enabled = false;
+                                matched_type
+                            } else if literal_partitioning_enabled {
+                                if let Some((matched_type, unmatched_type)) = self
+                                    .partition_case_pattern(
+                                        class_name,
+                                        pattern,
+                                        remaining_subject_type.as_ref(),
+                                        scope,
+                                    )
+                                {
+                                    remaining_subject_type = unmatched_type;
+                                    remaining_subject_is_known = true;
+                                    let Some(matched_type) = matched_type else {
+                                        continue;
+                                    };
+                                    Some(matched_type)
+                                } else {
+                                    literal_partitioning_enabled = false;
+                                    remaining_subject_is_known = false;
                                     self.extract_pattern_narrowing(
                                         class_name,
-                                        &in_node.pattern(),
+                                        pattern,
                                         parse_result,
                                         subject_type.as_ref(),
                                         scope,
                                     )
-                                };
-                            let mut branch_scope = scope.fork_for_branch();
+                                }
+                            } else {
+                                self.extract_pattern_narrowing(
+                                    class_name,
+                                    pattern,
+                                    parse_result,
+                                    subject_type.as_ref(),
+                                    scope,
+                                )
+                            };
+                            let mut branch_scope =
+                                fallthrough.as_ref().unwrap_or(scope).fork_for_branch();
                             if let (Some(var_name), Some(narrow_ty)) =
                                 (&predicate_var, &narrowed_type)
                             {
@@ -31438,11 +31627,32 @@ impl<'a> InferenceEngine<'a> {
                                 binding_subject_type,
                                 narrowed_type.as_ref(),
                             );
-                            self.bind_pattern_locals(
-                                &in_node.pattern(),
-                                &binding_type,
-                                &mut branch_scope,
-                            );
+                            self.bind_pattern_locals(pattern, &binding_type, &mut branch_scope);
+                            if let Some((_, guard_node, required)) = &guard {
+                                let mut guard_fallthrough = fallthrough
+                                    .take()
+                                    .unwrap_or_else(|| scope.fork_for_branch());
+                                let passes = self.apply_case_in_guard(
+                                    class_name,
+                                    pattern,
+                                    guard_node,
+                                    *required,
+                                    &binding_type,
+                                    arm_start.0.as_ref().or(subject_type.as_ref()),
+                                    parse_result,
+                                    &branch_scope,
+                                    &mut guard_fallthrough,
+                                );
+                                fallthrough = Some(guard_fallthrough);
+                                if passes != Some(true) {
+                                    remaining_subject_type = arm_start.0;
+                                    remaining_subject_is_known = arm_start.1;
+                                    literal_partitioning_enabled = arm_start.2;
+                                    if passes == Some(false) {
+                                        continue;
+                                    }
+                                }
+                            }
 
                             let branch_type = if let Some(statements) = in_node.statements() {
                                 self.infer_statements_return_type(
@@ -31466,7 +31676,7 @@ impl<'a> InferenceEngine<'a> {
                                 class_name,
                                 &statements,
                                 parse_result,
-                                &mut scope.fork_for_branch(),
+                                &mut fallthrough.as_ref().unwrap_or(scope).fork_for_branch(),
                             )
                         } else {
                             Type::Nil
@@ -31506,9 +31716,10 @@ impl<'a> InferenceEngine<'a> {
                     &mut right_scope,
                     true,
                 );
-                self.bind_pattern_locals_from_condition(
+                self.apply_condition_effects(
                     class_name,
                     &and_node.left(),
+                    ConditionOutcome::Truthy,
                     parse_result,
                     &mut right_scope,
                 );
@@ -31534,6 +31745,13 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                     &mut right_scope,
                     false,
+                );
+                self.apply_condition_effects(
+                    class_name,
+                    &or_node.left(),
+                    ConditionOutcome::Falsy,
+                    parse_result,
+                    &mut right_scope,
                 );
                 let right_type =
                     self.infer_node_type(class_name, &or_node.right(), parse_result, &right_scope);
@@ -50613,6 +50831,13 @@ impl<'a> InferenceEngine<'a> {
             self.supports_pattern_matching(),
         );
         let mut then_scope = scope.fork_for_branch();
+        self.apply_condition_effects(
+            class_name,
+            &if_node.predicate(),
+            ConditionOutcome::Truthy,
+            parse_result,
+            &mut then_scope,
+        );
         if let Some(n) = &narrowing
             && let Some(ty) = &n.then_ty
         {
@@ -50639,6 +50864,13 @@ impl<'a> InferenceEngine<'a> {
             );
         }
         let mut else_scope = scope.fork_for_branch();
+        self.apply_condition_effects(
+            class_name,
+            &if_node.predicate(),
+            ConditionOutcome::Falsy,
+            parse_result,
+            &mut else_scope,
+        );
         if let Some(n) = &narrowing
             && let Some(ty) = &n.else_ty
         {
@@ -57545,59 +57777,6 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn bind_pattern_locals_from_condition(
-        &mut self,
-        class_name: &str,
-        predicate: &Node<'_>,
-        parse_result: &ParseResult<'_>,
-        scope: &mut Scope,
-    ) {
-        if !self.supports_pattern_matching() {
-            return;
-        }
-        match predicate {
-            Node::ParenthesesNode { .. } => {
-                let Some(paren) = predicate.as_parentheses_node() else {
-                    return;
-                };
-                let Some(body) = paren.body() else {
-                    return;
-                };
-                let inner = if let Some(statements) = body.as_statements_node() {
-                    statements.body().iter().last()
-                } else {
-                    Some(body)
-                };
-                if let Some(inner) = inner {
-                    self.bind_pattern_locals_from_condition(
-                        class_name,
-                        &inner,
-                        parse_result,
-                        scope,
-                    );
-                }
-            }
-            Node::MatchPredicateNode { .. } => {
-                let Some(match_node) = predicate.as_match_predicate_node() else {
-                    return;
-                };
-                let subject_type =
-                    self.infer_node_type(class_name, &match_node.value(), parse_result, scope);
-                let narrowed = self.extract_pattern_narrowing(
-                    class_name,
-                    &match_node.pattern(),
-                    parse_result,
-                    Some(&subject_type),
-                    scope,
-                );
-                let binding_type =
-                    Self::pattern_binding_type(Some(&subject_type), narrowed.as_ref());
-                self.bind_pattern_locals(&match_node.pattern(), &binding_type, scope);
-            }
-            _ => {}
-        }
-    }
-
     fn pattern_capture_bound_type(value_pattern: &Node<'_>, matched_type: &Type) -> Type {
         let pattern_ty = match value_pattern {
             Node::ConstantReadNode { .. } => value_pattern
@@ -57657,175 +57836,278 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn bind_pattern_captures_from_assignment_value(
+    fn condition_has_flow_effects(node: &Node<'_>) -> bool {
+        match node {
+            Node::MatchPredicateNode { .. } | Node::LocalVariableWriteNode { .. } => true,
+            Node::ParenthesesNode { .. } => node
+                .as_parentheses_node()
+                .and_then(|paren| paren.body())
+                .is_some_and(|body| Self::condition_has_flow_effects(&body)),
+            Node::StatementsNode { .. } => node.as_statements_node().is_some_and(|statements| {
+                statements
+                    .body()
+                    .iter()
+                    .any(|statement| Self::condition_has_flow_effects(&statement))
+            }),
+            Node::AndNode { .. } => node.as_and_node().is_some_and(|and_node| {
+                Self::condition_has_flow_effects(&and_node.left())
+                    || Self::condition_has_flow_effects(&and_node.right())
+            }),
+            Node::OrNode { .. } => node.as_or_node().is_some_and(|or_node| {
+                Self::condition_has_flow_effects(&or_node.left())
+                    || Self::condition_has_flow_effects(&or_node.right())
+            }),
+            Node::CallNode { .. } => Self::negated_operand(node)
+                .is_some_and(|operand| Self::condition_has_flow_effects(&operand)),
+            _ => false,
+        }
+    }
+
+    fn negated_operand<'pr>(node: &Node<'pr>) -> Option<Node<'pr>> {
+        let call = node.as_call_node()?;
+        if call.name().as_slice() == b"!" && call.arguments().is_none() {
+            call.receiver()
+        } else {
+            None
+        }
+    }
+
+    /// Applies the local bindings a condition leaves behind when evaluation reaches `outcome`.
+    /// Only the operands that ran on that path contribute: `a && b` is falsy either through
+    /// `a` alone or through `a` then `b`, and those two paths are joined.
+    fn apply_condition_effects(
         &mut self,
         class_name: &str,
-        value: &Node<'_>,
+        node: &Node<'_>,
+        outcome: ConditionOutcome,
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
-        match value {
+        if !Self::condition_has_flow_effects(node) {
+            return;
+        }
+        match node {
             Node::ParenthesesNode { .. } => {
-                let Some(parentheses) = value.as_parentheses_node() else {
-                    return;
-                };
-                let Some(body) = parentheses.body() else {
-                    return;
-                };
-                let contains_pattern =
-                    Self::pattern_assignment_sequence_contains_match_predicate(&body);
-                if !contains_pattern {
-                    return;
+                if let Some(body) = node.as_parentheses_node().and_then(|paren| paren.body()) {
+                    self.apply_condition_effects(class_name, &body, outcome, parse_result, scope);
                 }
-                if let Some(statements) = body.as_statements_node() {
-                    if !statements
-                        .body()
-                        .iter()
-                        .all(|statement| Self::pattern_assignment_sequence_statement(&statement))
-                    {
-                        return;
-                    }
-                    for statement in statements.body().iter() {
-                        self.bind_pattern_captures_from_assignment_value(
+            }
+            Node::StatementsNode { .. } => {
+                let Some(statements) = node.as_statements_node() else {
+                    return;
+                };
+                let mut body = statements.body().iter().peekable();
+                while let Some(statement) = body.next() {
+                    if body.peek().is_some() {
+                        self.process_statement(class_name, &statement, parse_result, scope);
+                    } else {
+                        self.apply_condition_effects(
                             class_name,
                             &statement,
+                            outcome,
                             parse_result,
                             scope,
                         );
                     }
-                } else {
-                    self.bind_pattern_captures_from_assignment_value(
+                }
+            }
+            Node::AndNode { .. } => {
+                if let Some(and_node) = node.as_and_node() {
+                    self.apply_short_circuit_effects(
                         class_name,
-                        &body,
+                        (&and_node.left(), &and_node.right()),
+                        ConditionOutcome::Truthy,
+                        outcome,
                         parse_result,
                         scope,
-                    )
+                    );
+                }
+            }
+            Node::OrNode { .. } => {
+                if let Some(or_node) = node.as_or_node() {
+                    self.apply_short_circuit_effects(
+                        class_name,
+                        (&or_node.left(), &or_node.right()),
+                        ConditionOutcome::Falsy,
+                        outcome,
+                        parse_result,
+                        scope,
+                    );
+                }
+            }
+            Node::CallNode { .. } => {
+                if let Some(operand) = Self::negated_operand(node) {
+                    self.apply_condition_effects(
+                        class_name,
+                        &operand,
+                        outcome.negated(),
+                        parse_result,
+                        scope,
+                    );
                 }
             }
             Node::MatchPredicateNode { .. } => {
-                if let Some(match_node) = value.as_match_predicate_node() {
+                if self.supports_pattern_matching()
+                    && let Some(match_node) = node.as_match_predicate_node()
+                {
                     self.bind_match_predicate_captures(
                         class_name,
                         &match_node,
+                        outcome,
                         parse_result,
                         scope,
                     );
                 }
             }
             Node::LocalVariableWriteNode { .. } => {
-                let Some(write) = value.as_local_variable_write_node() else {
+                let Some(write) = node.as_local_variable_write_node() else {
                     return;
                 };
-                let assigned = write.value();
-                if !Self::pattern_assignment_sequence_literal(&assigned) {
-                    return;
+                let value = write.value();
+                let value_type = self.infer_node_type(class_name, &value, parse_result, scope);
+                self.apply_condition_effects(class_name, &value, outcome, parse_result, scope);
+                let projected = match outcome {
+                    ConditionOutcome::Truthy => Self::truthy_only(&value_type),
+                    ConditionOutcome::Falsy => Self::falsy_only(&value_type),
+                    ConditionOutcome::Either => None,
                 }
+                .unwrap_or(value_type);
                 let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-                let ty = self.infer_node_type(class_name, &assigned, parse_result, scope);
                 let loc =
                     offset_to_location(parse_result.source(), write.location().start_offset());
-                scope.set_with_definition(&name, ty, loc);
+                scope.set_with_definition(&name, projected, loc);
             }
             _ => {}
         }
     }
 
-    fn pattern_assignment_sequence_statement(node: &Node<'_>) -> bool {
-        match node {
-            Node::ParenthesesNode { .. } => {
-                let Some(parentheses) = node.as_parentheses_node() else {
-                    return false;
-                };
-                let Some(body) = parentheses.body() else {
-                    return false;
-                };
-                if let Some(statements) = body.as_statements_node() {
-                    statements
-                        .body()
-                        .iter()
-                        .all(|statement| Self::pattern_assignment_sequence_statement(&statement))
-                } else {
-                    Self::pattern_assignment_sequence_statement(&body)
-                }
+    /// `continues_on` is the left outcome that evaluates the right operand.
+    fn apply_short_circuit_effects(
+        &mut self,
+        class_name: &str,
+        (left, right): (&Node<'_>, &Node<'_>),
+        continues_on: ConditionOutcome,
+        outcome: ConditionOutcome,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        if let Some(left_truthiness) = Self::syntactic_node_truthiness(left) {
+            let left_outcome = if left_truthiness {
+                ConditionOutcome::Truthy
+            } else {
+                ConditionOutcome::Falsy
+            };
+            self.apply_condition_effects(class_name, left, left_outcome, parse_result, scope);
+            if left_outcome == continues_on {
+                self.apply_condition_effects(class_name, right, outcome, parse_result, scope);
             }
-            Node::MatchPredicateNode { .. } => true,
-            Node::LocalVariableWriteNode { .. } => node
-                .as_local_variable_write_node()
-                .is_some_and(|write| Self::pattern_assignment_sequence_literal(&write.value())),
-            _ => Self::pattern_assignment_sequence_literal(node),
+            return;
         }
+        if outcome == continues_on {
+            self.apply_condition_effects(class_name, left, continues_on, parse_result, scope);
+            self.apply_condition_effects(class_name, right, outcome, parse_result, scope);
+            return;
+        }
+        let mut stopped = scope.fork_for_branch();
+        self.apply_condition_effects(
+            class_name,
+            left,
+            continues_on.negated(),
+            parse_result,
+            &mut stopped,
+        );
+        let mut continued = scope.fork_for_branch();
+        self.apply_condition_effects(class_name, left, continues_on, parse_result, &mut continued);
+        self.apply_condition_effects(class_name, right, outcome, parse_result, &mut continued);
+        *scope = self.merge_scope_locals(scope, &stopped, &continued);
     }
 
-    fn pattern_assignment_sequence_contains_match_predicate(node: &Node<'_>) -> bool {
-        match node {
-            Node::MatchPredicateNode { .. } => true,
-            Node::StatementsNode { .. } => node.as_statements_node().is_some_and(|statements| {
-                statements.body().iter().any(|statement| {
-                    Self::pattern_assignment_sequence_contains_match_predicate(&statement)
-                })
-            }),
-            Node::ParenthesesNode { .. } => {
-                let Some(parentheses) = node.as_parentheses_node() else {
-                    return false;
-                };
-                let Some(body) = parentheses.body() else {
-                    return false;
-                };
-                if let Some(statements) = body.as_statements_node() {
-                    statements.body().iter().any(|statement| {
-                        Self::pattern_assignment_sequence_contains_match_predicate(&statement)
-                    })
-                } else {
-                    Self::pattern_assignment_sequence_contains_match_predicate(&body)
-                }
-            }
-            _ => false,
-        }
+    /// Splits `pattern if guard` into the pattern, the guard, and the truthiness the guard needs.
+    fn split_pattern_guard<'pr>(pattern: &Node<'pr>) -> Option<(Node<'pr>, Node<'pr>, bool)> {
+        let (predicate, statements, required) = if let Some(if_node) = pattern.as_if_node() {
+            (if_node.predicate(), if_node.statements(), true)
+        } else {
+            let unless_node = pattern.as_unless_node()?;
+            (unless_node.predicate(), unless_node.statements(), false)
+        };
+        let inner = statements?.body().iter().last()?;
+        Some((inner, predicate, required))
     }
 
-    fn pattern_assignment_sequence_literal(node: &Node<'_>) -> bool {
-        matches!(
-            node,
-            Node::SymbolNode { .. }
-                | Node::StringNode { .. }
-                | Node::IntegerNode { .. }
-                | Node::FloatNode { .. }
-                | Node::TrueNode { .. }
-                | Node::FalseNode { .. }
-                | Node::NilNode { .. }
-                | Node::LocalVariableReadNode { .. }
-        )
+    /// Evaluates an `in` guard against the arm's bindings. Unless the guard certainly passes,
+    /// the captures stay bound for later arms. Returns whether the guard passes, if known.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_case_in_guard(
+        &mut self,
+        class_name: &str,
+        pattern: &Node<'_>,
+        guard: &Node<'_>,
+        required: bool,
+        binding_type: &Type,
+        subject_before_arm: Option<&Type>,
+        parse_result: &ParseResult<'_>,
+        branch_scope: &Scope,
+        fallthrough: &mut Scope,
+    ) -> Option<bool> {
+        let guard_type = self.infer_node_type(class_name, guard, parse_result, branch_scope);
+        let passes = self
+            .branch_truthiness(class_name, guard, &guard_type, parse_result, branch_scope)
+            .map(|truthy| truthy == required);
+        if passes != Some(true) {
+            let possible_failure = !subject_before_arm.is_some_and(|subject| {
+                self.pattern_definitely_matches_subject(class_name, pattern, subject, fallthrough)
+            });
+            self.bind_pattern_locals_with_failure(
+                pattern,
+                binding_type,
+                possible_failure,
+                fallthrough,
+            );
+        }
+        passes
     }
 
     fn bind_match_predicate_captures(
         &mut self,
         class_name: &str,
         match_node: &ruby_prism::MatchPredicateNode<'_>,
+        outcome: ConditionOutcome,
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
+        let pattern = match_node.pattern();
+        if outcome == ConditionOutcome::Falsy && !Self::pattern_can_fail_after_binding(&pattern) {
+            return;
+        }
         let subject_type =
             self.infer_node_type(class_name, &match_node.value(), parse_result, scope);
         let narrowed = self.extract_pattern_narrowing(
             class_name,
-            &match_node.pattern(),
+            &pattern,
             parse_result,
             Some(&subject_type),
             scope,
         );
         let binding_type = Self::pattern_binding_type(Some(&subject_type), narrowed.as_ref());
-        let possible_failure = !self.pattern_definitely_matches_subject(
-            class_name,
-            &match_node.pattern(),
-            &subject_type,
-            scope,
-        );
-        self.bind_pattern_locals_with_failure(
-            &match_node.pattern(),
-            &binding_type,
-            possible_failure,
-            scope,
-        );
+        let possible_failure = match outcome {
+            ConditionOutcome::Truthy => false,
+            ConditionOutcome::Falsy => true,
+            ConditionOutcome::Either => {
+                !self.pattern_definitely_matches_subject(class_name, &pattern, &subject_type, scope)
+            }
+        };
+        self.bind_pattern_locals_with_failure(&pattern, &binding_type, possible_failure, scope);
+    }
+
+    /// A failed match leaves earlier captures of a composite pattern bound. A lone
+    /// `Pattern => name` binds only after its value pattern succeeded.
+    fn pattern_can_fail_after_binding(pattern: &Node<'_>) -> bool {
+        matches!(
+            pattern,
+            Node::ArrayPatternNode { .. }
+                | Node::FindPatternNode { .. }
+                | Node::HashPatternNode { .. }
+        )
     }
 
     fn pattern_definitely_matches_subject(
@@ -57885,11 +58167,8 @@ impl<'a> InferenceEngine<'a> {
 
     fn bind_pattern_locals(&self, pattern: &Node<'_>, matched_type: &Type, scope: &mut Scope) {
         match pattern {
-            Node::IfNode { .. } => {
-                let if_node = pattern.as_if_node().expect("must be IfNode");
-                if let Some(statements) = if_node.statements()
-                    && let Some(inner) = statements.body().iter().last()
-                {
+            Node::IfNode { .. } | Node::UnlessNode { .. } => {
+                if let Some((inner, _, _)) = Self::split_pattern_guard(pattern) {
                     self.bind_pattern_locals(&inner, matched_type, scope);
                 }
             }
