@@ -46646,9 +46646,8 @@ impl<'a> InferenceEngine<'a> {
         let call_has_block = call_node.block().is_some();
         let mut skipped_required_block_match = false;
         let args_are_unknown = arg_types.iter().chain(kw_arg_types.values()).any(|ty| {
-            !Self::is_unresolved_call_arg_type(ty)
-                && !matches!(ty, Type::Union(_))
-                && Self::type_contains_untyped(ty)
+            Self::is_unresolved_call_arg_type(ty)
+                || (!matches!(ty, Type::Union(_)) && Self::type_contains_untyped(ty))
         });
         let mut unknown_arg_return: Option<(String, Type)> = None;
         for overload in &overloads {
@@ -51002,6 +51001,25 @@ impl<'a> InferenceEngine<'a> {
             })
             .filter(|mt| call_matches(mt, &mut relation_cache))
             .collect();
+
+        // An argument that resolves later can still select any accepted overload.
+        let args_are_deferred = call_arg_types
+            .iter()
+            .chain(call_kw_arg_types.values())
+            .any(Self::is_unresolved_call_arg_type);
+        if args_are_deferred
+            && let Some((first, rest)) = no_block_overloads.split_first()
+            && rest.iter().any(|overload| {
+                overload.owner_class == first.owner_class
+                    && TypeRegistry::rbs_return_without_nil(
+                        &overload.method_type.function_type.return_type,
+                    ) != TypeRegistry::rbs_return_without_nil(
+                        &first.method_type.function_type.return_type,
+                    )
+            })
+        {
+            return None;
+        }
 
         for overload in no_block_overloads.iter().chain(block_overloads.iter()) {
             let rbs_mt = &overload.method_type;

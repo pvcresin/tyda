@@ -2189,7 +2189,7 @@ class IndexAccess
   def ints: -> Array[Integer]
   def pair: -> [1, "a"]
   def widened_literal_index: -> Integer?
-  def widened_dynamic_index: (untyped i) -> Integer?
+  def widened_dynamic_index: (untyped i) -> untyped
   def widened_unknown_index: (untyped i) -> untyped
   def widened_at: -> Integer?
   def widened_fetch: -> Integer

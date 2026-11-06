@@ -1138,3 +1138,20 @@ TOP_LEVEL_FILTER = lambda { |value| top_level_pattern.match?(value) }
         assert!(found.is_empty(), "compact={compact}: {found:?}");
     }
 }
+
+#[test]
+fn deferred_repeat_count_does_not_report_missing_join() {
+    let source = r#"
+class RepeatedTokens
+  def joined(tokens) = (["entry"] * tokens.size).join(" ")
+
+  def joined_param(count)
+    (["entry"] * count).join(" ")
+  end
+end
+"#;
+    for compact in [true, false] {
+        let found = diagnostics(source, compact);
+        assert!(found.is_empty(), "compact={compact}: {found:?}");
+    }
+}

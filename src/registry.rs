@@ -6993,7 +6993,7 @@ impl TypeRegistry {
         })
     }
 
-    fn rbs_return_without_nil(ty: &rbs_ir::RbsType) -> &rbs_ir::RbsType {
+    pub(crate) fn rbs_return_without_nil(ty: &rbs_ir::RbsType) -> &rbs_ir::RbsType {
         match ty {
             rbs_ir::RbsType::Optional(inner) => inner,
             _ => ty,

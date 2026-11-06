@@ -48,6 +48,38 @@ class Object < BasicObject
 end
 ```
 
+## Deferred repetition counts do not choose the String overload
+
+`Array#*` returns `String` for a separator and `Array` for a count, so an argument that only
+resolves later stays unknown. The result is not `String`, so `join` is not reported as missing.
+
+### update
+
+```ruby
+class DeferredRepeatCount
+  def from_param(n) = ["entry"] * n
+  def from_method(n) = ["entry"] * n.size
+  def local_result(n)
+    repeated = ["entry"] * n.to_i
+    repeated.join(",")
+  end
+  def literal_count = ["entry"] * 2
+  def literal_separator = ["entry"] * ","
+end
+```
+
+### result
+
+```rbs
+class DeferredRepeatCount
+  def from_param: (untyped n) -> untyped
+  def from_method: (untyped n) -> untyped
+  def local_result: (untyped n) -> untyped
+  def literal_count: -> Array["entry"]
+  def literal_separator: -> "entry"
+end
+```
+
 ## Re-infer a block call after its receiver's source return is resolved
 
 ### update
