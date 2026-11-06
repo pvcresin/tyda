@@ -352,6 +352,96 @@ impl<'pr> ruby_prism::Visit<'pr> for InstanceVariableWriteCollector {
     }
 }
 
+#[derive(Default)]
+struct CallNodeScan {
+    found: bool,
+}
+
+impl CallNodeScan {
+    fn finds(node: &Node<'_>) -> bool {
+        let mut scan = Self::default();
+        ruby_prism::Visit::visit(&mut scan, node);
+        scan.found
+    }
+}
+
+impl<'pr> ruby_prism::Visit<'pr> for CallNodeScan {
+    fn visit_call_node(&mut self, _node: &ruby_prism::CallNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_yield_node(&mut self, _node: &ruby_prism::YieldNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_super_node(&mut self, _node: &ruby_prism::SuperNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_forwarding_super_node(&mut self, _node: &ruby_prism::ForwardingSuperNode<'pr>) {
+        self.found = true;
+    }
+}
+
+/// `recorded_breaks`: the scope holds this loop's `break` types, so statement-level ones are
+/// accounted for. `nexts_leave`: reaching the predicate again could end the loop.
+#[derive(Clone, Copy)]
+struct LoopExitQuery {
+    recorded_breaks: bool,
+    nexts_leave: bool,
+}
+
+impl LoopExitQuery {
+    fn finds(self, node: &Node<'_>) -> bool {
+        let mut scan = LoopExitScan {
+            found: false,
+            nexts_leave: self.nexts_leave,
+        };
+        ruby_prism::Visit::visit(&mut scan, node);
+        scan.found
+    }
+}
+
+/// Finds `break`/`next` bound to the enclosing loop, without entering scopes that rebind them.
+struct LoopExitScan {
+    found: bool,
+    nexts_leave: bool,
+}
+
+impl<'pr> ruby_prism::Visit<'pr> for LoopExitScan {
+    fn visit_break_node(&mut self, _node: &ruby_prism::BreakNode<'pr>) {
+        self.found = true;
+    }
+
+    fn visit_next_node(&mut self, _node: &ruby_prism::NextNode<'pr>) {
+        self.found |= self.nexts_leave;
+    }
+
+    fn visit_while_node(&mut self, node: &ruby_prism::WhileNode<'pr>) {
+        ruby_prism::Visit::visit(self, &node.predicate());
+    }
+
+    fn visit_until_node(&mut self, node: &ruby_prism::UntilNode<'pr>) {
+        ruby_prism::Visit::visit(self, &node.predicate());
+    }
+
+    fn visit_for_node(&mut self, node: &ruby_prism::ForNode<'pr>) {
+        ruby_prism::Visit::visit(self, &node.collection());
+    }
+
+    fn visit_block_node(&mut self, _node: &ruby_prism::BlockNode<'pr>) {}
+
+    fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
+
+    fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+
+    fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
+
+    fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
+
+    fn visit_singleton_class_node(&mut self, _node: &ruby_prism::SingletonClassNode<'pr>) {}
+}
+
 impl<'a, 'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'a> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         if self.found {
@@ -5342,6 +5432,245 @@ impl<'a> InferenceEngine<'a> {
             .is_some_and(|node| matches!(node, Node::ReturnNode { .. }))
     }
 
+    /// Whether control cannot reach the statement after `node`, deciding branches only from
+    /// literal conditions. Inferred predicate types describe one state of a value that may
+    /// change, which can prune a branch but must not discard the code that follows it.
+    fn node_exits_by_literal_flow(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> bool {
+        match node {
+            Node::StatementsNode { .. } => {
+                let statements = node.as_statements_node().expect("must be StatementsNode");
+                self.statements_exit_by_literal_flow(class_name, &statements, parse_result, scope)
+            }
+            Node::ParenthesesNode { .. } => node
+                .as_parentheses_node()
+                .and_then(|parentheses| parentheses.body())
+                .is_some_and(|body| {
+                    self.node_exits_by_literal_flow(class_name, &body, parse_result, scope)
+                }),
+            Node::IfNode { .. } => {
+                let if_node = node.as_if_node().expect("must be IfNode");
+                let truthiness = self.literal_condition_truthiness(&if_node.predicate());
+                let else_exits = |this: &mut Self| {
+                    if_node.subsequent().is_some_and(|subsequent| {
+                        this.node_exits_by_literal_flow(
+                            class_name,
+                            &subsequent,
+                            parse_result,
+                            scope,
+                        )
+                    })
+                };
+                let then_exits = |this: &mut Self| {
+                    if_node.statements().is_some_and(|statements| {
+                        this.statements_exit_by_literal_flow(
+                            class_name,
+                            &statements,
+                            parse_result,
+                            scope,
+                        )
+                    })
+                };
+                match truthiness {
+                    Some(true) => then_exits(self),
+                    Some(false) => else_exits(self),
+                    None => else_exits(self) && then_exits(self),
+                }
+            }
+            Node::UnlessNode { .. } => {
+                let unless_node = node.as_unless_node().expect("must be UnlessNode");
+                let truthiness = self.literal_condition_truthiness(&unless_node.predicate());
+                let else_exits = |this: &mut Self| {
+                    unless_node
+                        .else_clause()
+                        .and_then(|else_clause| else_clause.statements())
+                        .is_some_and(|statements| {
+                            this.statements_exit_by_literal_flow(
+                                class_name,
+                                &statements,
+                                parse_result,
+                                scope,
+                            )
+                        })
+                };
+                let body_exits = |this: &mut Self| {
+                    unless_node.statements().is_some_and(|statements| {
+                        this.statements_exit_by_literal_flow(
+                            class_name,
+                            &statements,
+                            parse_result,
+                            scope,
+                        )
+                    })
+                };
+                match truthiness {
+                    Some(true) => else_exits(self),
+                    Some(false) => body_exits(self),
+                    None => else_exits(self) && body_exits(self),
+                }
+            }
+            Node::ElseNode { .. } => node
+                .as_else_node()
+                .and_then(|else_node| else_node.statements())
+                .is_some_and(|statements| {
+                    self.statements_exit_by_literal_flow(
+                        class_name,
+                        &statements,
+                        parse_result,
+                        scope,
+                    )
+                }),
+            Node::CaseNode { .. } => {
+                let case_node = node.as_case_node().expect("must be CaseNode");
+                self.case_exits_by_literal_flow(class_name, &case_node, parse_result, scope)
+            }
+            Node::AndNode { .. } => {
+                let and_node = node.as_and_node().expect("must be AndNode");
+                Self::syntactic_node_truthiness(&and_node.left()) == Some(true)
+                    && self.node_exits_by_literal_flow(
+                        class_name,
+                        &and_node.right(),
+                        parse_result,
+                        scope,
+                    )
+            }
+            Node::OrNode { .. } => {
+                let or_node = node.as_or_node().expect("must be OrNode");
+                Self::syntactic_node_truthiness(&or_node.left()) == Some(false)
+                    && self.node_exits_by_literal_flow(
+                        class_name,
+                        &or_node.right(),
+                        parse_result,
+                        scope,
+                    )
+            }
+            Node::BeginNode { .. } => {
+                let begin_node = node.as_begin_node().expect("must be BeginNode");
+                if begin_node.rescue_clause().is_none()
+                    && begin_node.else_clause().is_none()
+                    && begin_node.statements().is_some_and(|statements| {
+                        self.statements_exit_by_literal_flow(
+                            class_name,
+                            &statements,
+                            parse_result,
+                            scope,
+                        )
+                    })
+                {
+                    return true;
+                }
+                self.node_always_exits_in_method_scope(class_name, scope, node)
+            }
+            _ => self.node_always_exits_in_method_scope(class_name, scope, node),
+        }
+    }
+
+    fn statements_exit_by_literal_flow(
+        &mut self,
+        class_name: &str,
+        statements: &ruby_prism::StatementsNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> bool {
+        statements.body().iter().any(|statement| {
+            self.node_exits_by_literal_flow(class_name, &statement, parse_result, scope)
+        })
+    }
+
+    fn case_exits_by_literal_flow(
+        &mut self,
+        class_name: &str,
+        case_node: &ruby_prism::CaseNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> bool {
+        let predicate = case_node.predicate();
+        let subject_type = predicate
+            .as_ref()
+            .and_then(Self::literal_singleton_type_from_node);
+        let is_literal_case = predicate.is_none() || subject_type.is_some();
+        for condition in case_node.conditions().iter() {
+            let Some(when_node) = condition.as_when_node() else {
+                return false;
+            };
+            let matched = if is_literal_case {
+                self.literal_when_result(
+                    class_name,
+                    predicate.is_some(),
+                    subject_type.as_ref(),
+                    &when_node,
+                    parse_result,
+                    scope,
+                )
+            } else {
+                None
+            };
+            if matched == Some(false) {
+                continue;
+            }
+            let body_exits = when_node.statements().is_some_and(|statements| {
+                self.statements_exit_by_literal_flow(class_name, &statements, parse_result, scope)
+            });
+            if matched == Some(true) || !body_exits {
+                return body_exits;
+            }
+        }
+        case_node
+            .else_clause()
+            .and_then(|else_clause| else_clause.statements())
+            .is_some_and(|statements| {
+                self.statements_exit_by_literal_flow(class_name, &statements, parse_result, scope)
+            })
+    }
+
+    fn literal_when_result(
+        &mut self,
+        class_name: &str,
+        has_predicate: bool,
+        subject_type: Option<&Type>,
+        when_node: &ruby_prism::WhenNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<bool> {
+        let all_literal = when_node.conditions().iter().all(|condition| {
+            Self::literal_singleton_type_from_node(&condition).is_some()
+                || condition.as_range_node().is_some()
+        });
+        if !all_literal {
+            return None;
+        }
+        self.static_case_when_result(
+            class_name,
+            has_predicate,
+            subject_type,
+            when_node,
+            parse_result,
+            scope,
+        )
+        .0
+    }
+
+    /// `Kernel#loop` finishes on `break` or on a `StopIteration` from anything the body calls.
+    fn kernel_loop_block_never_finishes(block: &ruby_prism::BlockNode<'_>) -> bool {
+        let Some(statements) = block.body().and_then(|body| body.as_statements_node()) else {
+            return false;
+        };
+        if !Self::statements_always_exit(&statements) {
+            return false;
+        }
+        let statements = statements.as_node();
+        let query = LoopExitQuery {
+            recorded_breaks: false,
+            nexts_leave: true,
+        };
+        !query.finds(&statements) && !CallNodeScan::finds(&statements)
+    }
+
     fn type_never_returns(ty: &Type) -> bool {
         match ty {
             Type::Bot => true,
@@ -5581,6 +5910,19 @@ impl<'a> InferenceEngine<'a> {
                 .and_then(|block| block.as_block_node())
                 .is_some_and(|block| Self::block_always_returns_from_method(&block));
             if is_current_self
+                && method_name == "loop"
+                && call.arguments().is_none()
+                && call
+                    .block()
+                    .and_then(|block| block.as_block_node())
+                    .is_some_and(|block| Self::kernel_loop_block_never_finishes(&block))
+                && !self
+                    .registry
+                    .has_any_method_variant(class_name, &method_name)
+            {
+                return true;
+            }
+            if is_current_self
                 && block_always_exits
                 && self
                     .registry
@@ -5730,12 +6072,90 @@ impl<'a> InferenceEngine<'a> {
         false
     }
 
-    fn statements_last_is_break(statements: &ruby_prism::StatementsNode<'_>) -> bool {
-        statements
-            .body()
-            .iter()
-            .last()
-            .is_some_and(|node| matches!(node, Node::BreakNode { .. }))
+    fn single_parenthesized_expression<'pr>(node: &Node<'pr>) -> Option<Node<'pr>> {
+        let body = node.as_parentheses_node()?.body()?;
+        let mut statements = body.as_statements_node()?.body().iter();
+        let statement = statements.next()?;
+        statements.next().is_none().then_some(statement)
+    }
+
+    /// `x && return` style exits are statements in all but syntax: record them like one.
+    /// Returns whether `right` is itself such an exit.
+    fn record_short_circuit_control(
+        &mut self,
+        class_name: &str,
+        right: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        right_scope: &Scope,
+        scope: &mut Scope,
+    ) -> bool {
+        if let Some(inner) = Self::single_parenthesized_expression(right) {
+            return self.record_short_circuit_control(
+                class_name,
+                &inner,
+                parse_result,
+                right_scope,
+                scope,
+            );
+        }
+        match right {
+            Node::ReturnNode { .. } => {
+                let arguments = right.as_return_node().and_then(|node| node.arguments());
+                let ty = self.infer_control_arguments_type(
+                    class_name,
+                    arguments,
+                    parse_result,
+                    right_scope,
+                );
+                scope.add_return_type(ty);
+                true
+            }
+            Node::BreakNode { .. } => {
+                let arguments = right.as_break_node().and_then(|node| node.arguments());
+                let ty = self.infer_control_arguments_type(
+                    class_name,
+                    arguments,
+                    parse_result,
+                    right_scope,
+                );
+                scope.add_break_type(ty);
+                true
+            }
+            Node::NextNode { .. } => {
+                let arguments = right.as_next_node().and_then(|node| node.arguments());
+                let ty = self.infer_control_arguments_type(
+                    class_name,
+                    arguments,
+                    parse_result,
+                    right_scope,
+                );
+                scope.add_next_type(ty);
+                true
+            }
+            Node::AndNode { .. } => {
+                let inner = right.as_and_node().expect("must be AndNode").right();
+                self.record_short_circuit_control(
+                    class_name,
+                    &inner,
+                    parse_result,
+                    right_scope,
+                    scope,
+                );
+                false
+            }
+            Node::OrNode { .. } => {
+                let inner = right.as_or_node().expect("must be OrNode").right();
+                self.record_short_circuit_control(
+                    class_name,
+                    &inner,
+                    parse_result,
+                    right_scope,
+                    scope,
+                );
+                false
+            }
+            _ => false,
+        }
     }
 
     fn return_node_has_non_raising_arguments(node: &Node<'_>) -> bool {
@@ -5813,6 +6233,32 @@ impl<'a> InferenceEngine<'a> {
             | Node::RationalNode { .. }
             | Node::StringNode { .. }
             | Node::SymbolNode { .. } => Some(true),
+            Node::ParenthesesNode { .. } => {
+                let body = node.as_parentheses_node()?.body()?;
+                Self::syntactic_node_truthiness(&body)
+            }
+            Node::StatementsNode { .. } => {
+                let mut statements = node.as_statements_node()?.body().iter();
+                let statement = statements.next()?;
+                if statements.next().is_some() {
+                    return None;
+                }
+                Self::syntactic_node_truthiness(&statement)
+            }
+            Node::AndNode { .. } => {
+                let and_node = node.as_and_node()?;
+                match Self::syntactic_node_truthiness(&and_node.left())? {
+                    true => Self::syntactic_node_truthiness(&and_node.right()),
+                    false => Some(false),
+                }
+            }
+            Node::OrNode { .. } => {
+                let or_node = node.as_or_node()?;
+                match Self::syntactic_node_truthiness(&or_node.left())? {
+                    true => Some(true),
+                    false => Self::syntactic_node_truthiness(&or_node.right()),
+                }
+            }
             _ => None,
         }
     }
@@ -5929,6 +6375,25 @@ impl<'a> InferenceEngine<'a> {
         self.inferred_dispatch_return_type_for_call(class_name, &call, parse_result, scope)
     }
 
+    /// `syntactic_node_truthiness`, plus `!literal` unless the program redefines `!` for it.
+    fn literal_condition_truthiness(&self, node: &Node<'_>) -> Option<bool> {
+        if let Some(truthiness) = Self::syntactic_node_truthiness(node) {
+            return Some(truthiness);
+        }
+        let call = node.as_call_node()?;
+        if call.name().as_slice() != b"!" || call.arguments().is_some() {
+            return None;
+        }
+        let receiver = call.receiver()?;
+        let truthiness = Self::syntactic_node_truthiness(&receiver)?;
+        let receiver_class =
+            self.type_to_class_name(&Self::literal_singleton_type_from_node(&receiver)?)?;
+        (!self
+            .registry
+            .method_call_has_user_source_definition(&receiver_class, "!", false))
+        .then_some(!truthiness)
+    }
+
     pub(super) fn branch_truthiness(
         &mut self,
         class_name: &str,
@@ -5954,6 +6419,9 @@ impl<'a> InferenceEngine<'a> {
         let Some(call) = node.as_call_node() else {
             return Self::node_truthiness(inferred_type);
         };
+        if let Some(truthiness) = self.literal_condition_truthiness(node) {
+            return Some(truthiness);
+        }
         let method_name = String::from_utf8_lossy(call.name().as_slice());
         if method_name == "[]"
             && call.block().is_none()
@@ -6575,6 +7043,45 @@ impl<'a> InferenceEngine<'a> {
         (result, safe_to_narrow)
     }
 
+    fn static_integer_range_match(
+        &self,
+        condition: &Node<'_>,
+        subject_type: Option<&Type>,
+    ) -> Option<bool> {
+        let range = condition.as_range_node()?;
+        let Some(Type::LiteralInteger(subject)) = subject_type else {
+            return None;
+        };
+        let bound = |node: Option<Node<'_>>| -> Option<Option<i64>> {
+            let Some(node) = node else {
+                return Some(None);
+            };
+            match Self::literal_singleton_type_from_node(&node)? {
+                Type::LiteralInteger(value) => Some(Some(value)),
+                _ => None,
+            }
+        };
+        let low = bound(range.left())?;
+        let high = bound(range.right())?;
+        if self.has_user_numeric_case_equality_override()
+            || self
+                .registry
+                .method_call_has_user_source_definition("Range", "===", false)
+        {
+            return None;
+        }
+        Some(
+            low.is_none_or(|low| low <= *subject)
+                && high.is_none_or(|high| {
+                    if range.is_exclude_end() {
+                        *subject < high
+                    } else {
+                        *subject <= high
+                    }
+                }),
+        )
+    }
+
     fn static_case_when_result(
         &mut self,
         class_name: &str,
@@ -6589,7 +7096,12 @@ impl<'a> InferenceEngine<'a> {
         let mut safe_to_narrow = has_predicate;
         for condition in when_node.conditions().iter() {
             saw_condition = true;
-            let result = if has_predicate {
+            let result = if has_predicate
+                && let Some(result) = self.static_integer_range_match(&condition, subject_type)
+            {
+                safe_to_narrow = false;
+                Some(result)
+            } else if has_predicate {
                 let Some(target_type) =
                     self.static_case_expression_type(class_name, &condition, parse_result, scope)
                 else {
@@ -6637,24 +7149,270 @@ impl<'a> InferenceEngine<'a> {
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
-        if let Some(stmts) = statements {
-            self.process_statements_for_returns(class_name, &stmts, parse_result, &mut loop_scope);
-            if !loop_scope.break_types.is_empty() {
-                let break_type =
-                    Type::from_type_vec_preserve_untyped(loop_scope.break_types.clone());
-                let runs_at_least_once = is_begin_modifier
-                    || if is_until {
-                        matches!(Self::node_truthiness(&predicate_type), Some(false))
-                    } else {
-                        matches!(Self::node_truthiness(&predicate_type), Some(true))
-                    };
-                if runs_at_least_once && Self::statements_last_is_break(&stmts) {
-                    return break_type;
-                }
-                return break_type.union_with(Type::Nil);
+        loop_scope.break_types.clear();
+        loop_scope.next_types.clear();
+        let body_exits = statements.as_ref().is_some_and(|stmts| {
+            self.process_statements_for_returns(class_name, stmts, parse_result, &mut loop_scope)
+        });
+        let finishes = self.while_loop_finishes_by_predicate(
+            class_name,
+            predicate,
+            statements.as_ref(),
+            &predicate_type,
+            is_begin_modifier,
+            is_until,
+            body_exits,
+            parse_result,
+            &loop_scope,
+        );
+        Self::while_loop_value(&loop_scope, finishes, body_exits)
+    }
+
+    /// An endless loop whose body completes keeps the value `nil`; statement reachability still
+    /// treats it as never finishing.
+    fn while_loop_value(loop_scope: &Scope, finishes: bool, body_exits: bool) -> Type {
+        let yields_nil = finishes || (!body_exits && loop_scope.break_types.is_empty());
+        Self::loop_result_type(loop_scope, yields_nil.then_some(Type::Nil))
+    }
+
+    /// Whether a `while`/`until` can leave other than through a recorded `break`.
+    /// Only literal predicates prove a loop stays: an inferred predicate type describes the
+    /// entry state, and the body may change it.
+    #[allow(clippy::too_many_arguments)]
+    fn while_loop_finishes_by_predicate(
+        &mut self,
+        class_name: &str,
+        predicate: &Node<'_>,
+        statements: Option<&ruby_prism::StatementsNode<'_>>,
+        predicate_type: &Type,
+        is_begin_modifier: bool,
+        is_until: bool,
+        body_exits: bool,
+        parse_result: &ParseResult<'_>,
+        loop_scope: &Scope,
+    ) -> bool {
+        let reaches_predicate_again = !body_exits || !loop_scope.next_types.is_empty();
+        let stays_in_loop = Self::syntactic_node_truthiness(predicate) == Some(!is_until);
+        let proven_by_syntax = stays_in_loop || (is_begin_modifier && !reaches_predicate_again);
+        let entered_by_type = Self::node_truthiness(predicate_type) == Some(!is_until);
+        let proven_by_break =
+            entered_by_type && !reaches_predicate_again && !loop_scope.break_types.is_empty();
+        if !proven_by_syntax && !proven_by_break {
+            return true;
+        }
+        let query = LoopExitQuery {
+            recorded_breaks: !loop_scope.break_types.is_empty(),
+            nexts_leave: !stays_in_loop,
+        };
+        statements.is_some_and(|stmts| {
+            self.statements_may_leave_loop(class_name, stmts, parse_result, loop_scope, query)
+        })
+    }
+
+    /// Whether the body holds a `break` or `next` the recorded types do not account for: one in
+    /// an expression is never recorded, and one in a branch pruned by an inferred predicate type
+    /// may still run. Only branches ruled out by literal conditions are skipped.
+    fn statements_may_leave_loop(
+        &mut self,
+        class_name: &str,
+        statements: &ruby_prism::StatementsNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+        query: LoopExitQuery,
+    ) -> bool {
+        for statement in statements.body().iter() {
+            if self.node_may_leave_loop(class_name, &statement, parse_result, scope, query) {
+                return true;
+            }
+            if self.node_exits_by_literal_flow(class_name, &statement, parse_result, scope) {
+                return false;
             }
         }
-        Type::Nil
+        false
+    }
+
+    fn node_may_leave_loop(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+        query: LoopExitQuery,
+    ) -> bool {
+        macro_rules! in_statements {
+            ($statements:expr) => {
+                $statements.is_some_and(|statements| {
+                    self.statements_may_leave_loop(
+                        class_name,
+                        &statements,
+                        parse_result,
+                        scope,
+                        query,
+                    )
+                })
+            };
+        }
+        match node {
+            Node::StatementsNode { .. } => {
+                in_statements!(node.as_statements_node())
+            }
+            Node::ParenthesesNode { .. } => node
+                .as_parentheses_node()
+                .and_then(|parentheses| parentheses.body())
+                .is_some_and(|body| {
+                    self.node_may_leave_loop(class_name, &body, parse_result, scope, query)
+                }),
+            Node::IfNode { .. } => {
+                let if_node = node.as_if_node().expect("must be IfNode");
+                let truthiness = self.literal_condition_truthiness(&if_node.predicate());
+                query.finds(&if_node.predicate())
+                    || (truthiness != Some(false) && in_statements!(if_node.statements()))
+                    || (truthiness != Some(true)
+                        && if_node.subsequent().is_some_and(|subsequent| {
+                            self.node_may_leave_loop(
+                                class_name,
+                                &subsequent,
+                                parse_result,
+                                scope,
+                                query,
+                            )
+                        }))
+            }
+            Node::UnlessNode { .. } => {
+                let unless_node = node.as_unless_node().expect("must be UnlessNode");
+                let truthiness = self.literal_condition_truthiness(&unless_node.predicate());
+                query.finds(&unless_node.predicate())
+                    || (truthiness != Some(true) && in_statements!(unless_node.statements()))
+                    || (truthiness != Some(false)
+                        && in_statements!(
+                            unless_node
+                                .else_clause()
+                                .and_then(|else_clause| else_clause.statements())
+                        ))
+            }
+            Node::ElseNode { .. } => {
+                in_statements!(
+                    node.as_else_node()
+                        .and_then(|else_node| else_node.statements())
+                )
+            }
+            Node::CaseNode { .. } => {
+                let case_node = node.as_case_node().expect("must be CaseNode");
+                let predicate = case_node.predicate();
+                if predicate.as_ref().is_some_and(|node| query.finds(node)) {
+                    return true;
+                }
+                let subject_type = predicate
+                    .as_ref()
+                    .and_then(Self::literal_singleton_type_from_node);
+                let is_literal_case = predicate.is_none() || subject_type.is_some();
+                for condition in case_node.conditions().iter() {
+                    let Some(when_node) = condition.as_when_node() else {
+                        return true;
+                    };
+                    if when_node.conditions().iter().any(|c| query.finds(&c)) {
+                        return true;
+                    }
+                    let matched = if is_literal_case {
+                        self.literal_when_result(
+                            class_name,
+                            predicate.is_some(),
+                            subject_type.as_ref(),
+                            &when_node,
+                            parse_result,
+                            scope,
+                        )
+                    } else {
+                        None
+                    };
+                    if matched != Some(false) && in_statements!(when_node.statements()) {
+                        return true;
+                    }
+                    if matched == Some(true) {
+                        return false;
+                    }
+                }
+                in_statements!(
+                    case_node
+                        .else_clause()
+                        .and_then(|else_clause| else_clause.statements())
+                )
+            }
+            Node::BeginNode { .. } => {
+                let begin_node = node.as_begin_node().expect("must be BeginNode");
+                let mut rescue_clause = begin_node.rescue_clause();
+                while let Some(rescue) = rescue_clause {
+                    if in_statements!(rescue.statements()) {
+                        return true;
+                    }
+                    rescue_clause = rescue.subsequent();
+                }
+                in_statements!(begin_node.statements())
+                    || in_statements!(
+                        begin_node
+                            .else_clause()
+                            .and_then(|else_clause| else_clause.statements())
+                    )
+                    || in_statements!(
+                        begin_node
+                            .ensure_clause()
+                            .and_then(|ensure_clause| ensure_clause.statements())
+                    )
+            }
+            Node::AndNode { .. } => {
+                let and_node = node.as_and_node().expect("must be AndNode");
+                query.finds(&and_node.left())
+                    || (Self::syntactic_node_truthiness(&and_node.left()) != Some(false)
+                        && self.node_may_leave_loop(
+                            class_name,
+                            &and_node.right(),
+                            parse_result,
+                            scope,
+                            query,
+                        ))
+            }
+            Node::OrNode { .. } => {
+                let or_node = node.as_or_node().expect("must be OrNode");
+                query.finds(&or_node.left())
+                    || (Self::syntactic_node_truthiness(&or_node.left()) != Some(true)
+                        && self.node_may_leave_loop(
+                            class_name,
+                            &or_node.right(),
+                            parse_result,
+                            scope,
+                            query,
+                        ))
+            }
+            Node::BreakNode { .. } => {
+                !query.recorded_breaks
+                    || node
+                        .as_break_node()
+                        .and_then(|break_node| break_node.arguments())
+                        .is_some_and(|arguments| {
+                            arguments.arguments().iter().any(|a| query.finds(&a))
+                        })
+            }
+            Node::NextNode { .. } => {
+                query.nexts_leave
+                    || node
+                        .as_next_node()
+                        .and_then(|next_node| next_node.arguments())
+                        .is_some_and(|arguments| {
+                            arguments.arguments().iter().any(|a| query.finds(&a))
+                        })
+            }
+            _ => query.finds(node),
+        }
+    }
+
+    /// `normal` is the value of a loop that finishes without `break`, if it can.
+    fn loop_result_type(loop_scope: &Scope, normal: Option<Type>) -> Type {
+        let mut types = loop_scope.break_types.clone();
+        types.extend(normal);
+        match types.len() {
+            0 => Type::Bot,
+            _ => Type::from_type_vec_preserve_untyped(types),
+        }
     }
 
     fn infer_for_type(
@@ -6680,31 +7438,54 @@ impl<'a> InferenceEngine<'a> {
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
+        loop_scope.break_types.clear();
+        loop_scope.next_types.clear();
         let index_type = source_each
             .map(|(_, target_type)| target_type)
             .unwrap_or_else(|| Self::for_iteration_target_type(&resolved_collection_type));
         self.assign_multi_target(class_name, &for_node.index(), index_type, &mut loop_scope);
 
-        if let Some(statements) = for_node.statements() {
+        let body_exits = for_node.statements().is_some_and(|statements| {
             self.process_statements_for_returns(
                 class_name,
                 &statements,
                 parse_result,
                 &mut loop_scope,
-            );
-            if !loop_scope.break_types.is_empty() {
-                let break_type =
-                    Type::from_type_vec_preserve_untyped(loop_scope.break_types.clone());
-                if matches!(cardinality, IterationCardinality::AtLeastOnce)
-                    && Self::statements_last_is_break(&statements)
-                {
-                    return break_type;
-                }
-                return collection_type.union_with(break_type);
-            }
-        }
+            )
+        });
+        let finishes = self.for_loop_finishes_by_iteration(
+            class_name,
+            for_node,
+            cardinality,
+            body_exits,
+            parse_result,
+            &loop_scope,
+        );
+        Self::loop_result_type(&loop_scope, finishes.then_some(collection_type))
+    }
 
-        collection_type
+    fn for_loop_finishes_by_iteration(
+        &mut self,
+        class_name: &str,
+        for_node: &ruby_prism::ForNode<'_>,
+        cardinality: IterationCardinality,
+        body_exits: bool,
+        parse_result: &ParseResult<'_>,
+        loop_scope: &Scope,
+    ) -> bool {
+        if !matches!(cardinality, IterationCardinality::AtLeastOnce)
+            || !body_exits
+            || !loop_scope.next_types.is_empty()
+        {
+            return true;
+        }
+        let query = LoopExitQuery {
+            recorded_breaks: !loop_scope.break_types.is_empty(),
+            nexts_leave: true,
+        };
+        for_node.statements().is_some_and(|statements| {
+            self.statements_may_leave_loop(class_name, &statements, parse_result, loop_scope, query)
+        })
     }
 
     fn loop_predicate_local_assignment<'pr>(
@@ -6735,17 +7516,20 @@ impl<'a> InferenceEngine<'a> {
         is_until: bool,
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
-    ) -> Type {
+    ) -> (Type, bool) {
         let predicate_type = self.infer_node_type(class_name, predicate, parse_result, scope);
         let Some(stmts) = statements else {
-            self.apply_loop_predicate_residual(
-                class_name,
-                predicate,
-                parse_result,
-                scope,
-                is_until,
-            );
-            return Type::Nil;
+            let endless = Self::syntactic_node_truthiness(predicate) == Some(!is_until);
+            if !endless {
+                self.apply_loop_predicate_residual(
+                    class_name,
+                    predicate,
+                    parse_result,
+                    scope,
+                    is_until,
+                );
+            }
+            return (Type::Nil, endless);
         };
 
         let body_reachable = is_begin_modifier
@@ -6762,12 +7546,14 @@ impl<'a> InferenceEngine<'a> {
                 scope,
                 is_until,
             );
-            return Type::Nil;
+            return (Type::Nil, false);
         }
 
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
+        loop_scope.break_types.clear();
+        loop_scope.next_types.clear();
         let parenthesized_assignment = if !is_begin_modifier
             && !is_until
             && let Node::ParenthesesNode { .. } = predicate
@@ -6820,9 +7606,15 @@ impl<'a> InferenceEngine<'a> {
             loop_entry_scopes.insert(predicate.location().start_offset(), loop_scope.clone());
         }
         const LOOP_FIXPOINT_LIMIT: usize = 4;
+        let mut body_exits = false;
         for _ in 0..LOOP_FIXPOINT_LIMIT {
             let mut body_scope = loop_scope.clone();
-            self.process_statements_for_returns(class_name, &stmts, parse_result, &mut body_scope);
+            body_exits = self.process_statements_for_returns(
+                class_name,
+                &stmts,
+                parse_result,
+                &mut body_scope,
+            );
             let merged = self.merge_loop_scope_locals(&loop_scope, &body_scope);
             if Self::loop_locals_stable(&loop_scope, &merged) {
                 loop_scope = body_scope;
@@ -6835,36 +7627,37 @@ impl<'a> InferenceEngine<'a> {
             loop_scope = merged;
         }
 
-        let loop_value = if loop_scope.break_types.is_empty() {
-            Type::Nil
-        } else {
-            let break_type = Type::from_type_vec_preserve_untyped(loop_scope.break_types.clone());
-            let runs_at_least_once = is_begin_modifier
-                || if is_until {
-                    matches!(Self::node_truthiness(&predicate_type), Some(false))
-                } else {
-                    matches!(Self::node_truthiness(&predicate_type), Some(true))
-                };
-            if runs_at_least_once && Self::statements_last_is_break(&stmts) {
-                break_type
-            } else {
-                break_type.union_with(Type::Nil)
-            }
-        };
+        let finishes = self.while_loop_finishes_by_predicate(
+            class_name,
+            predicate,
+            Some(&stmts),
+            &predicate_type,
+            is_begin_modifier,
+            is_until,
+            body_exits,
+            parse_result,
+            &loop_scope,
+        );
+        let loop_value = Self::while_loop_value(&loop_scope, finishes, body_exits);
+        let never_completes = !finishes && loop_scope.break_types.is_empty();
 
         let stops_after_first_body = if is_until {
             matches!(Self::node_truthiness(&predicate_type), Some(true))
         } else {
             matches!(Self::node_truthiness(&predicate_type), Some(false))
         };
+        let outer_breaks = std::mem::take(&mut scope.break_types);
+        let outer_nexts = std::mem::take(&mut scope.next_types);
         if is_begin_modifier && stops_after_first_body {
-            loop_scope.break_types.clear();
-            loop_scope.next_types.clear();
             *scope = loop_scope;
-            return loop_value;
+            scope.break_types = outer_breaks;
+            scope.next_types = outer_nexts;
+            return (loop_value, never_completes);
         }
 
         *scope = self.merge_loop_scope_locals(scope, &loop_scope);
+        scope.break_types = outer_breaks;
+        scope.next_types = outer_nexts;
         if loop_scope.break_types.is_empty() {
             self.apply_loop_predicate_residual(
                 class_name,
@@ -6874,7 +7667,7 @@ impl<'a> InferenceEngine<'a> {
                 is_until,
             );
         }
-        loop_value
+        (loop_value, never_completes)
     }
 
     fn apply_loop_predicate_residual(
@@ -6910,7 +7703,7 @@ impl<'a> InferenceEngine<'a> {
         for_node: &ruby_prism::ForNode<'_>,
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
-    ) -> (Type, bool) {
+    ) -> Type {
         let collection_type =
             self.infer_node_type(class_name, &for_node.collection(), parse_result, scope);
         let resolved_collection_type =
@@ -6923,46 +7716,45 @@ impl<'a> InferenceEngine<'a> {
 
         if matches!(cardinality, IterationCardinality::Never) {
             self.assign_multi_target(class_name, &for_node.index(), Type::Nil, scope);
-            return (collection_type, false);
+            return collection_type;
         }
 
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
+        loop_scope.break_types.clear();
+        loop_scope.next_types.clear();
         let index_type = source_each
             .map(|(_, target_type)| target_type)
             .unwrap_or_else(|| Self::for_iteration_target_type(&resolved_collection_type));
         self.assign_multi_target(class_name, &for_node.index(), index_type, &mut loop_scope);
-        let mut for_value = collection_type.clone();
-        let mut exits_method = false;
-        if let Some(statements) = for_node.statements() {
+        let body_exits = for_node.statements().is_some_and(|statements| {
             self.process_statements_for_returns(
                 class_name,
                 &statements,
                 parse_result,
                 &mut loop_scope,
-            );
-            if !loop_scope.break_types.is_empty() {
-                let break_type =
-                    Type::from_type_vec_preserve_untyped(loop_scope.break_types.clone());
-                for_value = if matches!(cardinality, IterationCardinality::AtLeastOnce)
-                    && Self::statements_last_is_break(&statements)
-                {
-                    break_type
-                } else {
-                    collection_type.union_with(break_type)
-                };
-            }
-            exits_method = matches!(cardinality, IterationCardinality::AtLeastOnce)
-                && loop_scope.break_types.is_empty()
-                && Self::statements_guarantee_method_return(&statements);
-        }
+            )
+        });
+        let finishes = self.for_loop_finishes_by_iteration(
+            class_name,
+            for_node,
+            cardinality,
+            body_exits,
+            parse_result,
+            &loop_scope,
+        );
+        let for_value = Self::loop_result_type(&loop_scope, finishes.then_some(collection_type));
 
+        let outer_breaks = std::mem::take(&mut scope.break_types);
+        let outer_nexts = std::mem::take(&mut scope.next_types);
         *scope = self.merge_loop_scope_locals(scope, &loop_scope);
+        scope.break_types = outer_breaks;
+        scope.next_types = outer_nexts;
         if matches!(cardinality, IterationCardinality::AtLeastOnce) {
             self.overwrite_definite_target_locals(&for_node.index(), &loop_scope, scope);
         }
-        (for_value, exits_method)
+        for_value
     }
 
     fn source_defined_each_info(
@@ -8004,14 +8796,6 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => false,
         }
-    }
-
-    fn statements_guarantee_method_return(statements: &ruby_prism::StatementsNode<'_>) -> bool {
-        statements
-            .body()
-            .iter()
-            .next()
-            .is_some_and(|statement| matches!(statement, Node::ReturnNode { .. }))
     }
 
     fn collection_iteration_cardinality(ty: &Type) -> IterationCardinality {
@@ -20198,10 +20982,10 @@ impl<'a> InferenceEngine<'a> {
                 let mut body_nodes = statements.body().iter().peekable();
                 while let Some(node) = body_nodes.next() {
                     if body_nodes.peek().is_some() {
-                        let for_exits_method =
+                        let statement_exits =
                             self.process_statement(class_name, &node, parse_result, scope);
-                        if self.node_always_exits_in_method_scope(class_name, scope, &node)
-                            || for_exits_method
+                        if statement_exits
+                            || self.node_always_exits_in_method_scope(class_name, scope, &node)
                         {
                             return Self::normal_flow_type_from_scope(scope, None);
                         }
@@ -20232,6 +21016,8 @@ impl<'a> InferenceEngine<'a> {
                     }
                     return Type::Bot;
                 }
+                let live_rescue =
+                    self.live_rescue_clause(class_name, &begin_node, parse_result, scope);
                 let normal = if let Some(else_clause) = begin_node.else_clause()
                     && let Some(else_stmts) = else_clause.statements()
                 {
@@ -20244,7 +21030,7 @@ impl<'a> InferenceEngine<'a> {
                 } else {
                     Type::Nil
                 };
-                let result = if let Some(rescue_clause) = begin_node.rescue_clause() {
+                let result = if let Some(rescue_clause) = live_rescue {
                     let rescue_type =
                         self.infer_rescue_type(class_name, &rescue_clause, parse_result, scope);
                     normal.union_with(rescue_type)
@@ -23493,7 +24279,7 @@ impl<'a> InferenceEngine<'a> {
         if invalidates_self_facts && !defer_self_fact_invalidation {
             scope.clear_self_facts();
         }
-        let mut for_exits_method = false;
+        let mut statement_exits = false;
         match node {
             Node::DefNode { .. } => {
                 if let Some(def_node) = node.as_def_node() {
@@ -24592,35 +25378,40 @@ impl<'a> InferenceEngine<'a> {
             | Node::OrNode { .. }
             | Node::AndNode { .. } => {
                 self.infer_node_type_with_scope(class_name, node, parse_result, scope);
-            }
-            Node::WhileNode { .. } => {
-                let while_node = node.as_while_node().expect("must be WhileNode");
-                self.process_loop_scope(
-                    class_name,
-                    &while_node.predicate(),
-                    while_node.statements(),
-                    while_node.is_begin_modifier(),
-                    false,
-                    parse_result,
-                    scope,
-                );
-            }
-            Node::UntilNode { .. } => {
-                let until_node = node.as_until_node().expect("must be UntilNode");
-                self.process_loop_scope(
-                    class_name,
-                    &until_node.predicate(),
-                    until_node.statements(),
-                    until_node.is_begin_modifier(),
-                    true,
-                    parse_result,
-                    scope,
-                );
+                statement_exits =
+                    self.node_exits_by_literal_flow(class_name, node, parse_result, scope);
             }
             Node::ForNode { .. } => {
                 let for_node = node.as_for_node().expect("must be ForNode");
-                for_exits_method = self
-                    .process_for_scope(class_name, &for_node, parse_result, scope)
+                let ty = self.process_for_scope(class_name, &for_node, parse_result, scope);
+                statement_exits = Self::type_never_returns(&ty);
+            }
+            Node::WhileNode { .. } => {
+                let while_node = node.as_while_node().expect("must be WhileNode");
+                statement_exits = self
+                    .process_loop_scope(
+                        class_name,
+                        &while_node.predicate(),
+                        while_node.statements(),
+                        while_node.is_begin_modifier(),
+                        false,
+                        parse_result,
+                        scope,
+                    )
+                    .1;
+            }
+            Node::UntilNode { .. } => {
+                let until_node = node.as_until_node().expect("must be UntilNode");
+                statement_exits = self
+                    .process_loop_scope(
+                        class_name,
+                        &until_node.predicate(),
+                        until_node.statements(),
+                        until_node.is_begin_modifier(),
+                        true,
+                        parse_result,
+                        scope,
+                    )
                     .1;
             }
             _ => {
@@ -24631,7 +25422,7 @@ impl<'a> InferenceEngine<'a> {
             scope.clear_self_facts();
         }
         scope.clear_array_first_facts();
-        for_exits_method
+        statement_exits
     }
 
     fn infer_node_type_with_scope(
@@ -24655,6 +25446,10 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let left_type =
                     self.infer_node_type(class_name, &or_node.left(), parse_result, scope);
+                let left_truthiness = Self::syntactic_node_truthiness(&or_node.left());
+                if left_truthiness == Some(true) {
+                    return left_type;
+                }
                 let mut right_scope = scope.fork_for_branch();
                 self.apply_compound_branch_leaf(
                     class_name,
@@ -24668,6 +25463,20 @@ impl<'a> InferenceEngine<'a> {
                     self.infer_node_type(class_name, &or_node.right(), parse_result, &right_scope);
                 let right_type =
                     Self::optional_block_value_type(&or_node.right(), right_type, scope);
+                let right_type = if self.record_short_circuit_control(
+                    class_name,
+                    &or_node.right(),
+                    parse_result,
+                    &right_scope,
+                    scope,
+                ) {
+                    Type::Bot
+                } else {
+                    right_type
+                };
+                if left_truthiness == Some(false) {
+                    return right_type;
+                }
                 if Self::type_never_returns(&right_type) {
                     let base = scope.clone();
                     self.apply_compound_branch_leaf(
@@ -24715,6 +25524,10 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let left_type =
                     self.infer_node_type(class_name, &and_node.left(), parse_result, scope);
+                let left_truthiness = Self::syntactic_node_truthiness(&and_node.left());
+                if left_truthiness == Some(false) {
+                    return left_type;
+                }
                 let mut right_scope = scope.fork_for_branch();
                 self.apply_compound_branch_leaf(
                     class_name,
@@ -24726,6 +25539,20 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let right_type =
                     self.infer_node_type(class_name, &and_node.right(), parse_result, &right_scope);
+                let right_type = if self.record_short_circuit_control(
+                    class_name,
+                    &and_node.right(),
+                    parse_result,
+                    &right_scope,
+                    scope,
+                ) {
+                    Type::Bot
+                } else {
+                    right_type
+                };
+                if left_truthiness == Some(true) {
+                    return right_type;
+                }
                 if Self::type_never_returns(&right_type) {
                     let base = scope.clone();
                     self.apply_compound_branch_leaf(
@@ -24912,6 +25739,7 @@ impl<'a> InferenceEngine<'a> {
             Node::UnlessNode { .. } => {
                 let unless_node = node.as_unless_node().expect("must be UnlessNode");
                 self.infer_node_type(class_name, &unless_node.predicate(), parse_result, scope);
+                let truthiness = self.literal_condition_truthiness(&unless_node.predicate());
                 self.bind_condition_assignment_target(
                     class_name,
                     &unless_node.predicate(),
@@ -24940,7 +25768,9 @@ impl<'a> InferenceEngine<'a> {
                     &mut body_scope,
                     false,
                 );
-                let body_type = if let Some(statements) = unless_node.statements() {
+                let body_type = if truthiness == Some(true) {
+                    Type::Bot
+                } else if let Some(statements) = unless_node.statements() {
                     self.infer_statements_return_type(
                         class_name,
                         &statements,
@@ -24971,7 +25801,9 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &mut else_scope,
                 );
-                let else_type = if let Some(else_clause) = unless_node.else_clause()
+                let else_type = if truthiness == Some(false) {
+                    Type::Bot
+                } else if let Some(else_clause) = unless_node.else_clause()
                     && let Some(statements) = else_clause.statements()
                 {
                     self.infer_statements_return_type(
@@ -24984,14 +25816,16 @@ impl<'a> InferenceEngine<'a> {
                     Type::Nil
                 };
 
-                let body_always_exits = unless_node
-                    .statements()
-                    .is_some_and(|s| Self::statements_always_exit(&s))
+                let body_always_exits = truthiness != Some(true)
+                    && unless_node
+                        .statements()
+                        .is_some_and(|s| Self::statements_always_exit(&s))
                     || Self::type_never_returns(&body_type);
-                let else_always_exits = unless_node
-                    .else_clause()
-                    .and_then(|e| e.statements())
-                    .is_some_and(|s| Self::statements_always_exit(&s))
+                let else_always_exits = truthiness != Some(false)
+                    && unless_node
+                        .else_clause()
+                        .and_then(|e| e.statements())
+                        .is_some_and(|s| Self::statements_always_exit(&s))
                     || (unless_node.else_clause().is_some()
                         && Self::type_never_returns(&else_type));
                 if body_always_exits && !else_always_exits {
@@ -25474,9 +26308,11 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::BeginNode { .. } => {
                 let begin_node = node.as_begin_node().expect("must be BeginNode");
-                let retries = begin_node
-                    .rescue_clause()
-                    .is_some_and(|rescue| Self::rescue_clause_has_retry(&rescue));
+                let live_rescue =
+                    self.live_rescue_clause(class_name, &begin_node, parse_result, scope);
+                let retries = live_rescue
+                    .as_ref()
+                    .is_some_and(|rescue| Self::rescue_clause_has_retry(rescue));
                 let retry_limit = if retries { 4 } else { 1 };
                 let mut entry_scope = scope.fork_for_branch();
                 let mut merged_scope = entry_scope.clone();
@@ -25514,10 +26350,10 @@ impl<'a> InferenceEngine<'a> {
                         Some(prev) => prev.union_with(normal_type),
                         None => normal_type,
                     });
-                    if let Some(rescue_clause) = begin_node.rescue_clause() {
+                    if let Some(rescue_clause) = live_rescue.as_ref() {
                         for (name, _) in self.collect_rescue_reference_bindings(
                             class_name,
-                            &rescue_clause,
+                            rescue_clause,
                             parse_result,
                             scope,
                         ) {
@@ -25533,12 +26369,12 @@ impl<'a> InferenceEngine<'a> {
                         rescue_scope.clear_self_facts();
                         let rescue_type = self.process_rescue_scope(
                             class_name,
-                            &rescue_clause,
+                            rescue_clause,
                             parse_result,
                             &mut rescue_scope,
                         );
                         let rescue_continues = !Self::type_never_returns(&rescue_type)
-                            && !Self::rescue_clause_always_exits(&rescue_clause);
+                            && !Self::rescue_clause_always_exits(rescue_clause);
                         merged_scope = self.merge_continuing_scope_branches(
                             scope,
                             &normal_scope,
@@ -25611,6 +26447,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 )
+                .0
             }
             Node::UntilNode { .. } => {
                 let until_node = node.as_until_node().expect("must be UntilNode");
@@ -25623,26 +26460,32 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 )
+                .0
             }
             Node::ForNode { .. } => {
                 let for_node = node.as_for_node().expect("must be ForNode");
                 self.process_for_scope(class_name, &for_node, parse_result, scope)
-                    .0
             }
             _ => self.infer_node_type(class_name, node, parse_result, scope),
         }
     }
 
+    /// Returns whether the statements cannot complete normally; later code is then skipped.
     fn process_statements_for_returns(
         &mut self,
         class_name: &str,
         statements: &ruby_prism::StatementsNode<'_>,
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
-    ) {
+    ) -> bool {
         for node in statements.body().iter() {
-            self.process_statement(class_name, &node, parse_result, scope);
+            if self.process_statement(class_name, &node, parse_result, scope)
+                || self.node_always_exits_in_method_scope(class_name, scope, &node)
+            {
+                return true;
+            }
         }
+        false
     }
 
     fn literal_integer_type_from_digits(negative: bool, digits: &[u32]) -> Type {
@@ -30895,7 +31738,9 @@ impl<'a> InferenceEngine<'a> {
                 if Self::begin_ensure_always_exits(&begin_node) {
                     return Type::Bot;
                 }
-                if let Some(ref rescue_clause) = begin_node.rescue_clause() {
+                if let Some(ref rescue_clause) =
+                    self.live_rescue_clause(class_name, &begin_node, parse_result, scope)
+                {
                     let normal_type = if let Some(else_clause) = begin_node.else_clause()
                         && let Some(stmts) = else_clause.statements()
                     {
@@ -32013,11 +32858,11 @@ impl<'a> InferenceEngine<'a> {
         let mut body_nodes = statements.body().iter().peekable();
         while let Some(node) = body_nodes.next() {
             if body_nodes.peek().is_some() {
-                let for_exits_method =
+                let statement_exits =
                     self.process_statement(class_name, &node, parse_result, scope);
                 self.record_raise_exception_from_node(class_name, &node, parse_result, scope);
-                if self.node_always_exits_in_method_scope(class_name, scope, &node)
-                    || for_exits_method
+                if statement_exits
+                    || self.node_always_exits_in_method_scope(class_name, scope, &node)
                     || Self::statement_assigns_bot(&node, scope)
                 {
                     return Self::normal_flow_type_from_scope(scope, Some(Type::Bot));
@@ -32031,6 +32876,177 @@ impl<'a> InferenceEngine<'a> {
             return Self::normal_flow_type_from_scope(scope, implicit);
         }
         Type::Nil
+    }
+
+    /// The rescue clause of `begin_node`, unless control can never leave it normally.
+    fn live_rescue_clause<'pr>(
+        &self,
+        class_name: &str,
+        begin_node: &ruby_prism::BeginNode<'pr>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<ruby_prism::RescueNode<'pr>> {
+        let rescue = begin_node.rescue_clause()?;
+        if self.rescue_retries_every_entry(class_name, begin_node, &rescue, parse_result, scope) {
+            return None;
+        }
+        Some(rescue)
+    }
+
+    /// A body that can only raise from `raise ... if guard` enters the rescue with `guard` still
+    /// true, so a rescue opening with `retry if guard` always retries and yields no value.
+    fn rescue_retries_every_entry(
+        &self,
+        class_name: &str,
+        begin_node: &ruby_prism::BeginNode<'_>,
+        rescue: &ruby_prism::RescueNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> bool {
+        if rescue.subsequent().is_some() {
+            return false;
+        }
+        let Some(guard) = rescue
+            .statements()
+            .and_then(|statements| statements.body().iter().next())
+            .and_then(|statement| Self::guard_of_single_statement_if(&statement))
+            .filter(|(_, statement)| matches!(statement, Node::RetryNode { .. }))
+            .map(|(guard, _)| guard)
+        else {
+            return false;
+        };
+        let Some(statements) = begin_node.statements() else {
+            return false;
+        };
+        let source = parse_result.source();
+        let guard_source = Self::node_source(source, &guard);
+        let mut numeric_locals = HashSet::new();
+        let mut is_numeric_local = |name: &[u8], added: bool| {
+            let name = String::from_utf8_lossy(name).to_string();
+            if added {
+                numeric_locals.insert(name);
+                return true;
+            }
+            numeric_locals.contains(&name)
+                || scope.get(&name).is_some_and(Self::is_numeric_loop_type)
+        };
+        let mut saw_guarded_raise = false;
+        for statement in statements.body().iter() {
+            if let Some((statement_guard, action)) = Self::guard_of_single_statement_if(&statement)
+            {
+                if Self::node_source(source, &statement_guard) != guard_source
+                    || !Self::is_numeric_comparison(&statement_guard, &mut is_numeric_local)
+                    || !self.is_standard_raise_with_static_arguments(class_name, &action, scope)
+                {
+                    return false;
+                }
+                saw_guarded_raise = true;
+                continue;
+            }
+            let safe = match &statement {
+                Node::LocalVariableWriteNode { .. } => {
+                    let write = statement
+                        .as_local_variable_write_node()
+                        .expect("must be LocalVariableWriteNode");
+                    Self::is_numeric_literal(&write.value())
+                        && is_numeric_local(write.name().as_slice(), true)
+                }
+                Node::LocalVariableOperatorWriteNode { .. } => {
+                    let write = statement
+                        .as_local_variable_operator_write_node()
+                        .expect("must be LocalVariableOperatorWriteNode");
+                    matches!(write.binary_operator().as_slice(), b"+" | b"-" | b"*")
+                        && Self::is_numeric_literal(&write.value())
+                        && is_numeric_local(write.name().as_slice(), false)
+                }
+                _ => Self::literal_singleton_type_from_node(&statement).is_some(),
+            };
+            if !safe {
+                return false;
+            }
+        }
+        saw_guarded_raise
+    }
+
+    fn guard_of_single_statement_if<'pr>(node: &Node<'pr>) -> Option<(Node<'pr>, Node<'pr>)> {
+        let if_node = node.as_if_node()?;
+        if if_node.subsequent().is_some() {
+            return None;
+        }
+        let mut statements = if_node.statements()?.body().iter();
+        let statement = statements.next()?;
+        statements
+            .next()
+            .is_none()
+            .then(|| (if_node.predicate(), statement))
+    }
+
+    fn node_source<'s>(source: &'s [u8], node: &Node<'_>) -> &'s [u8] {
+        let location = node.location();
+        source
+            .get(location.start_offset()..location.end_offset())
+            .unwrap_or_default()
+    }
+
+    fn is_numeric_literal(node: &Node<'_>) -> bool {
+        matches!(node, Node::IntegerNode { .. } | Node::FloatNode { .. })
+    }
+
+    fn is_numeric_comparison(
+        node: &Node<'_>,
+        is_numeric_local: &mut impl FnMut(&[u8], bool) -> bool,
+    ) -> bool {
+        let Some(call) = node.as_call_node() else {
+            return false;
+        };
+        if !matches!(
+            call.name().as_slice(),
+            b"<" | b"<=" | b">" | b">=" | b"==" | b"!="
+        ) {
+            return false;
+        }
+        let mut is_numeric_operand = |operand: &Node<'_>| {
+            Self::is_numeric_literal(operand)
+                || operand
+                    .as_local_variable_read_node()
+                    .is_some_and(|read| is_numeric_local(read.name().as_slice(), false))
+        };
+        call.receiver()
+            .is_some_and(|receiver| is_numeric_operand(&receiver))
+            && call.arguments().is_some_and(|arguments| {
+                arguments
+                    .arguments()
+                    .iter()
+                    .all(|argument| is_numeric_operand(&argument))
+            })
+    }
+
+    fn is_standard_raise_with_static_arguments(
+        &self,
+        class_name: &str,
+        node: &Node<'_>,
+        scope: &Scope,
+    ) -> bool {
+        let Some(call) = node.as_call_node() else {
+            return false;
+        };
+        let name = String::from_utf8_lossy(call.name().as_slice());
+        matches!(name.as_ref(), "raise" | "fail")
+            && call.receiver().is_none()
+            && call.block().is_none()
+            && call.arguments().is_none_or(|arguments| {
+                arguments.arguments().iter().all(|argument| {
+                    matches!(
+                        argument,
+                        Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+                    ) || Self::literal_singleton_type_from_node(&argument).is_some()
+                })
+            })
+            && !self.registry.method_call_has_user_source_definition(
+                class_name,
+                &name,
+                scope.singleton_dispatch,
+            )
     }
 
     fn rescue_clause_always_exits(rescue_node: &ruby_prism::RescueNode<'_>) -> bool {

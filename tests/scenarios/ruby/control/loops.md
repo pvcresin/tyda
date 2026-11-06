@@ -436,10 +436,6 @@ end
 
 ## Ignore code after loop returns from the method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -984,6 +980,185 @@ class Object < BasicObject
   def for_empty_array_continues: -> :reachable
   def for_nonempty_hash_returns: -> :returned
   def for_unknown_splat_continues: (untyped values) -> (:reachable | :returned)
+end
+```
+
+## Keep code after a loop that can still finish
+
+### update
+
+```ruby
+def expression_break(flag)
+  while true
+    value = flag || break
+    return value
+  end
+  :after
+end
+
+def expression_next(flag)
+  for item in [1]
+    value = flag || next
+    return value
+  end
+  :after
+end
+
+def branch_pruned_by_inferred_type
+  items = [1]
+  while true
+    items.shift
+    break if items.empty?
+  end
+  :after
+end
+
+def kernel_loop_stop_iteration(enumerator)
+  loop do
+    return enumerator.next
+  end
+  :after
+end
+
+def non_literal_predicate(node)
+  current = 1
+  while current
+    current = node.parent
+    return :returned
+  end
+  :after
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def expression_break: (untyped flag) -> (nil | untyped | :after)
+  def expression_next: (untyped flag) -> (nil | untyped | :after)
+  def branch_pruned_by_inferred_type: -> :after
+  def kernel_loop_stop_iteration: (untyped enumerator) -> (untyped | :after)
+  def non_literal_predicate: (untyped node) -> (:after | :returned)
+end
+```
+
+## Loop exits bind to the innermost loop
+
+### update
+
+```ruby
+def inner_break_stays_inside
+  while true
+    while true
+      break 1
+    end
+    return :returned
+  end
+  :unreachable
+end
+
+def inner_next_stays_inside
+  [1].map do |item|
+    while item
+      next 5
+    end
+    item
+  end
+end
+
+def block_break_stays_inside
+  while true
+    [1].each { break }
+    return :returned
+  end
+  :unreachable
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def inner_break_stays_inside: -> :returned
+  def inner_next_stays_inside: -> Array[1]
+  def block_break_stays_inside: -> :returned
+end
+```
+
+## Endless loops leave only through their exits
+
+### update
+
+```ruby
+def conditional_break_value(flag)
+  while true
+    break 1 if flag
+  end
+end
+
+def conditional_return(flag)
+  while true
+    return 1 if flag
+  end
+  :unreachable
+end
+
+def next_keeps_looping(flag)
+  while true
+    next if flag
+    return :returned
+  end
+  :unreachable
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def conditional_break_value: (untyped flag) -> 1
+  def conditional_return: (untyped flag) -> 1
+  def next_keeps_looping: (untyped flag) -> :returned
+end
+```
+
+## Short-circuit exits reach their targets
+
+### update
+
+```ruby
+def and_return(flag)
+  flag && return(:early)
+  :late
+end
+
+def or_return(flag)
+  flag or return :early
+  :late
+end
+
+def and_break_value(flag)
+  while true
+    flag && break(:broken)
+  end
+end
+
+def or_next_value(values)
+  values.map do |value|
+    value || next
+    :kept
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def and_return: (untyped flag) -> (:early | :late)
+  def or_return: (untyped flag) -> (:early | :late)
+  def and_break_value: (untyped flag) -> :broken
+  def or_next_value: (untyped values) -> Array[:kept?]
 end
 ```
 

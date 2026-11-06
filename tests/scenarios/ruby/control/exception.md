@@ -473,10 +473,6 @@ end
 
 ## retry
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -498,6 +494,73 @@ end
 ```rbs
 class Object < BasicObject
   def with_retry: -> "success"
+end
+```
+
+## retry only hides the fallback when the guard holds on every rescue entry
+
+### update
+
+```ruby
+def another_call_may_raise
+  attempts = 0
+  begin
+    attempts += 1
+    risky(attempts)
+    raise "fail" if attempts < 3
+    :success
+  rescue
+    retry if attempts < 3
+    :failed
+  end
+end
+
+def different_guard
+  attempts = 0
+  limit = 0
+  begin
+    attempts += 1
+    raise "fail" if attempts < 3
+    :success
+  rescue
+    retry if limit < 3
+    :failed
+  end
+end
+
+def guard_changes_in_rescue
+  attempts = 0
+  begin
+    attempts += 1
+    raise "fail" if attempts < 3
+    :success
+  rescue
+    attempts = 5
+    retry if attempts < 3
+    :failed
+  end
+end
+
+def counter_may_raise(attempts)
+  begin
+    attempts += 1
+    raise "fail" if attempts < 3
+    :success
+  rescue
+    retry if attempts < 3
+    :failed
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def another_call_may_raise: -> :failed | :success
+  def different_guard: -> :failed | :success
+  def guard_changes_in_rescue: -> :failed | :success
+  def counter_may_raise: (untyped attempts) -> (:failed | :success)
 end
 ```
 
