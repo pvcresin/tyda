@@ -24795,9 +24795,11 @@ impl<'a> InferenceEngine<'a> {
         // A call reads its receiver and arguments before it can invalidate facts on self.
         // Keep the facts while inferring the call, then discard them for later statements.
         let defer_self_fact_invalidation = invalidates_self_facts
-            && node
-                .as_call_node()
-                .is_some_and(|call_node| call_node.block().is_none());
+            && node.as_call_node().is_some_and(|call_node| {
+                call_node.block().is_none()
+                    && !self
+                        .call_operands_invalidate_before_later_reads(class_name, &call_node, scope)
+            });
         if invalidates_self_facts && !defer_self_fact_invalidation {
             scope.clear_self_facts();
         }
@@ -56310,9 +56312,11 @@ impl<'a> InferenceEngine<'a> {
                     if Self::node_truthiness(&current).is_some()
                         && self.ivar_written_in_another_method(class_name, scope, &name)
                     {
-                        return None;
+                        // Writers in other methods may still widen the type, so project at resolution time.
+                        Type::IvarRef(Sym::new(&name))
+                    } else {
+                        current
                     }
-                    current
                 };
                 let subject = NarrowSubject::Ivar(name);
                 Some(CondNarrowing {
@@ -59195,6 +59199,37 @@ impl<'a> InferenceEngine<'a> {
             _ => scan.visit(node),
         }
         scan.found
+    }
+
+    /// Whether an operand can invalidate self facts while a later operand still has to read them.
+    fn call_operands_invalidate_before_later_reads(
+        &self,
+        class_name: &str,
+        call: &ruby_prism::CallNode<'_>,
+        scope: &Scope,
+    ) -> bool {
+        let mut operands: Vec<Node<'_>> = call.receiver().into_iter().collect();
+        if let Some(arguments) = call.arguments() {
+            operands.extend(arguments.arguments().iter());
+        }
+        let Some(last) = operands.pop() else {
+            return false;
+        };
+        let invalidates = |operand: &Node<'_>| {
+            self.statement_invalidates_self_facts(
+                class_name,
+                scope.singleton_dispatch,
+                operand,
+                &scope.self_facts,
+            )
+        };
+        operands.iter().any(invalidates)
+            || match last.as_call_node() {
+                Some(last_call) if last_call.block().is_none() => {
+                    self.call_operands_invalidate_before_later_reads(class_name, &last_call, scope)
+                }
+                _ => invalidates(&last),
+            }
     }
 
     fn is_pure_ivar_reader(&self, class_name: &str, singleton_dispatch: bool, name: &str) -> bool {

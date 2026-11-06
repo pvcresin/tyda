@@ -963,3 +963,117 @@ fn shellwords_extension_resolves_after_method_local_require() {
         "method-local require should load Shellwords before the call: {actual:?}"
     );
 }
+
+#[test]
+fn direct_ivar_guarded_root_call_ignores_nil_from_later_writer_only() {
+    let source = concat!(
+        "class Resource\n",
+        "  def close; end\n",
+        "end\n",
+        "class WriterAfterReader\n",
+        "  def initialize\n",
+        "    @resource = nil\n",
+        "  end\n",
+        "  def read\n",
+        "    if @resource\n",
+        "      @resource.close\n",
+        "    end\n",
+        "  end\n",
+        "  def write\n",
+        "    @resource = Resource.new\n",
+        "  end\n",
+        "end\n",
+        "class WriterBeforeReader\n",
+        "  def initialize\n",
+        "    @resource = nil\n",
+        "  end\n",
+        "  def write\n",
+        "    @resource = Resource.new\n",
+        "  end\n",
+        "  def read\n",
+        "    if @resource\n",
+        "      @resource.close\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+        "class OtherReceiver\n",
+        "end\n",
+        "class NonNilConcreteControl\n",
+        "  def initialize\n",
+        "    @resource = OtherReceiver.new\n",
+        "  end\n",
+        "  def read\n",
+        "    if @resource\n",
+        "      @resource.close\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+    );
+
+    let actual = diagnostics(source, false);
+    let nil_close_lines: Vec<_> = actual
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == "missing_method" && diagnostic.unresolved_method == "NilClass#close"
+        })
+        .map(|diagnostic| diagnostic.line)
+        .collect();
+
+    assert!(
+        !nil_close_lines.contains(&10),
+        "a direct ivar guard proves the writer-after-reader root call is non-nil: {nil_close_lines:?}"
+    );
+    assert!(
+        !nil_close_lines.contains(&26),
+        "writer-before-reader remains free of nil diagnostics: {nil_close_lines:?}"
+    );
+    assert!(
+        actual.iter().any(|diagnostic| {
+            diagnostic.code == "missing_method"
+                && diagnostic.line == 38
+                && diagnostic.unresolved_method == "OtherReceiver#close"
+        }),
+        "the direct call still reports a missing method for a concrete non-nil receiver: {actual:?}"
+    );
+}
+
+#[test]
+fn same_call_argument_mutation_keeps_nil_warning_after_direct_ivar_guard() {
+    let source = concat!(
+        "class Resource\n",
+        "  def close; end\n",
+        "end\n",
+        "class SameCallArgumentMutation\n",
+        "  def initialize\n",
+        "    @resource = nil\n",
+        "  end\n",
+        "  def read\n",
+        "    if @resource\n",
+        "      consume(clear_resource, @resource.close)\n",
+        "    end\n",
+        "  end\n",
+        "  def clear_resource\n",
+        "    @resource = nil\n",
+        "    true\n",
+        "  end\n",
+        "  def write_resource\n",
+        "    @resource = Resource.new\n",
+        "  end\n",
+        "  def consume(first, second); end\n",
+        "end\n",
+    );
+
+    let actual = diagnostics(source, false);
+    let nil_close_lines: Vec<_> = actual
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.code == "missing_method" && diagnostic.unresolved_method == "NilClass#close"
+        })
+        .map(|diagnostic| diagnostic.line)
+        .collect();
+
+    assert!(
+        nil_close_lines.contains(&10),
+        "the first argument can clear @resource before the second argument is evaluated: {nil_close_lines:?}"
+    );
+}
