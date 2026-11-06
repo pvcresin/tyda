@@ -221,10 +221,38 @@ enum ArrayGuardCondition {
 }
 
 #[derive(Debug, Clone)]
-struct CorrelatedLocalAlternative {
-    name: String,
-    then_type: Type,
-    else_type: Type,
+struct CorrelatedWorlds {
+    names: Vec<String>,
+    worlds: Vec<Vec<Type>>,
+}
+
+impl CorrelatedWorlds {
+    fn index_of(&self, name: &str) -> Option<usize> {
+        self.names.iter().position(|candidate| candidate == name)
+    }
+
+    /// Keeps the locals that still differ between paths. Correlation needs two of them.
+    fn normalized(self) -> Option<Self> {
+        let first = self.worlds.first()?;
+        let varying: Vec<usize> = (0..self.names.len())
+            .filter(|&index| self.worlds.iter().any(|world| world[index] != first[index]))
+            .collect();
+        if varying.len() < 2 {
+            return None;
+        }
+        let names = varying
+            .iter()
+            .map(|&index| self.names[index].clone())
+            .collect();
+        let mut worlds: Vec<Vec<Type>> = Vec::with_capacity(self.worlds.len());
+        for world in &self.worlds {
+            let projected: Vec<Type> = varying.iter().map(|&index| world[index].clone()).collect();
+            if !worlds.contains(&projected) {
+                worlds.push(projected);
+            }
+        }
+        (worlds.len() >= 2).then_some(Self { names, worlds })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1569,7 +1597,7 @@ pub(crate) struct Scope {
     regexp_match_captures: bool,
     /// Bounded alternatives from the last then/else join, used for tuple shape
     /// and local correlation. Dropped on the next write to a tracked name.
-    exclusive_local_alts: Option<Arc<[CorrelatedLocalAlternative]>>,
+    exclusive_local_alts: Option<Arc<CorrelatedWorlds>>,
 }
 
 struct AttrWriterCallSite<'a> {
@@ -1865,48 +1893,80 @@ impl Scope {
     }
 
     fn narrow_correlated_local(&mut self, name: &str, ty: Type) {
-        let Some(alternatives) = self.exclusive_local_alts.clone() else {
+        let Some(correlated) = self.exclusive_local_alts.clone() else {
             self.narrow(name, ty);
             return;
         };
-        let Some(subject) = alternatives
-            .iter()
-            .find(|alternative| alternative.name == name)
-        else {
+        let Some(subject) = correlated.index_of(name) else {
             self.narrow(name, ty);
             return;
         };
-        if alternatives.len() < 2
-            || !is_stable_primitive_flow_type(&ty)
-            || !is_stable_primitive_flow_type(&subject.then_type)
-            || !is_stable_primitive_flow_type(&subject.else_type)
+        if !is_stable_primitive_flow_type(&ty)
+            || !correlated
+                .worlds
+                .iter()
+                .all(|world| is_stable_primitive_flow_type(&world[subject]))
         {
             self.narrow(name, ty);
             return;
         }
+        let selected: Vec<&Vec<Type>> = correlated
+            .worlds
+            .iter()
+            .filter(|world| primitive_flow_types_may_overlap(&world[subject], &ty))
+            .collect();
+        if selected.is_empty() {
+            self.narrow(name, ty);
+            return;
+        }
 
-        let then_matches = primitive_flow_types_may_overlap(&subject.then_type, &ty);
-        let else_matches = primitive_flow_types_may_overlap(&subject.else_type, &ty);
-        let selected_then = match (then_matches, else_matches) {
-            (true, false) => true,
-            (false, true) => false,
-            _ => {
-                self.narrow(name, ty);
-                return;
-            }
-        };
-
-        for alternative in alternatives.iter() {
-            if alternative.name != name {
-                let correlated_ty = if selected_then {
-                    &alternative.then_type
-                } else {
-                    &alternative.else_type
-                };
-                self.narrow(&alternative.name, correlated_ty.clone());
+        for (index, local) in correlated.names.iter().enumerate() {
+            if index != subject {
+                let joined = selected
+                    .iter()
+                    .map(|world| world[index].clone())
+                    .reduce(InferenceEngine::merge_branch_types);
+                if let Some(joined) = joined {
+                    self.write_correlated_view(local, joined);
+                }
             }
         }
-        self.narrow(name, ty);
+        self.write_correlated_view(name, ty.clone());
+        self.exclusive_local_alts = (selected.len() >= 2)
+            .then(|| CorrelatedWorlds {
+                names: correlated.names.clone(),
+                worlds: selected
+                    .into_iter()
+                    .map(|world| {
+                        let mut world = world.clone();
+                        world[subject] = ty.clone();
+                        world
+                    })
+                    .collect(),
+            })
+            .and_then(CorrelatedWorlds::normalized)
+            .map(Arc::new);
+    }
+
+    fn write_correlated_view(&mut self, name: &str, ty: Type) {
+        Arc::make_mut(&mut self.locals).insert(name.to_string(), ty);
+        Arc::make_mut(&mut self.aliases).remove(name);
+    }
+
+    /// An assignment gives the local one type on every path, keeping the other correlations.
+    fn assign_correlated_local(&mut self, name: &str, ty: &Type) {
+        let Some(index) = self
+            .exclusive_local_alts
+            .as_ref()
+            .and_then(|correlated| correlated.index_of(name))
+        else {
+            return;
+        };
+        if let Some(correlated) = self.exclusive_local_alts.as_mut() {
+            for world in &mut Arc::make_mut(correlated).worlds {
+                world[index] = ty.clone();
+            }
+        }
     }
 
     fn clear_self_facts(&mut self) {
@@ -1930,6 +1990,7 @@ impl Scope {
     }
 
     fn set(&mut self, name: &str, ty: Type) {
+        self.assign_correlated_local(name, &ty);
         Arc::make_mut(&mut self.locals).insert(name.to_string(), ty);
         Arc::make_mut(&mut self.aliases).remove(name);
         if self.respond_to_guards.contains_key(name) {
@@ -1939,7 +2000,6 @@ impl Scope {
         Arc::make_mut(&mut self.runtime_facts).remove(name);
         Arc::make_mut(&mut self.local_singleton_methods).remove(name);
         Arc::make_mut(&mut self.callback_mutated_record_locals).remove(name);
-        self.invalidate_exclusive_local_alts(name);
     }
 
     fn narrow(&mut self, name: &str, ty: Type) {
@@ -1952,7 +2012,7 @@ impl Scope {
         if self
             .exclusive_local_alts
             .as_ref()
-            .is_some_and(|alts| alts.iter().any(|alt| alt.name == name))
+            .is_some_and(|correlated| correlated.index_of(name).is_some())
         {
             self.exclusive_local_alts = None;
         }
@@ -2144,6 +2204,8 @@ impl Scope {
 
 impl<'a> InferenceEngine<'a> {
     const MAX_PRECISE_SCOPE_MERGE_LOCALS: usize = 64;
+    /// Guards pathological branch chains; past it, locals join without path correlation.
+    const MAX_CORRELATED_WORLDS: usize = 32;
     const MAX_PRECISE_RECORD_LITERAL_FIELDS: usize = 64;
     const MAX_INTERPOLATED_LITERAL_VARIANTS: usize = 128;
     const MAX_EXACT_LITERAL_STRING_BYTES: usize = 4096;
@@ -4374,7 +4436,7 @@ impl<'a> InferenceEngine<'a> {
             ),
         };
 
-        let mut alternatives = Vec::new();
+        let mut correlated_names = Vec::new();
         let mut changed_local_count = 0;
         let mut has_disjoint_primitive_pair = false;
         let mut overlaps_previous = base.exclusive_local_alts.as_ref().is_some_and(|base_alts| {
@@ -4409,12 +4471,8 @@ impl<'a> InferenceEngine<'a> {
                             overlaps_previous |= base
                                 .exclusive_local_alts
                                 .as_ref()
-                                .is_some_and(|alts| alts.iter().any(|alt| alt.name == *name));
-                            alternatives.push(CorrelatedLocalAlternative {
-                                name: name.clone(),
-                                then_type: left.clone(),
-                                else_type: right.clone(),
-                            });
+                                .is_some_and(|correlated| correlated.index_of(name).is_some());
+                            correlated_names.push(name.clone());
                         }
                     }
                     merged.set(name, Self::merge_branch_types(left, right))
@@ -4455,8 +4513,8 @@ impl<'a> InferenceEngine<'a> {
         }
 
         if has_disjoint_primitive_pair && changed_local_count >= 2 {
-            alternatives.clear();
-            alternatives.reserve_exact(changed_local_count);
+            correlated_names.clear();
+            correlated_names.reserve_exact(changed_local_count);
             overlaps_previous = false;
             for name in &names {
                 let base_ty = base.get(name);
@@ -4473,12 +4531,8 @@ impl<'a> InferenceEngine<'a> {
                     overlaps_previous |= base
                         .exclusive_local_alts
                         .as_ref()
-                        .is_some_and(|alts| alts.iter().any(|alt| alt.name == *name));
-                    alternatives.push(CorrelatedLocalAlternative {
-                        name: name.clone(),
-                        then_type: left.clone(),
-                        else_type: right.clone(),
-                    });
+                        .is_some_and(|correlated| correlated.index_of(name).is_some());
+                    correlated_names.push(name.clone());
                 }
             }
         }
@@ -4530,7 +4584,13 @@ impl<'a> InferenceEngine<'a> {
             merge_identical_scope_maps(&then_scope.dsl_bindings, &else_scope.dsl_bindings);
         merged.callback_mutated_record_locals =
             Self::merge_callback_mutated_record_locals(base, then_scope, else_scope);
-        Self::assign_exclusive_local_alts(&mut merged, base, alternatives, overlaps_previous);
+        merged.exclusive_local_alts = Self::merge_correlated_worlds(
+            base,
+            (then_scope, else_scope),
+            correlated_names,
+            overlaps_previous,
+            missing_local_is_nil,
+        );
         merged
     }
 
@@ -4545,21 +4605,99 @@ impl<'a> InferenceEngine<'a> {
         Arc::new(names)
     }
 
-    fn assign_exclusive_local_alts(
-        merged: &mut Scope,
+    /// Each branch contributes its own paths, so nested branches stay separate worlds.
+    fn merge_correlated_worlds(
         base: &Scope,
-        alternatives: Vec<CorrelatedLocalAlternative>,
+        (then_scope, else_scope): (&Scope, &Scope),
+        changed_names: Vec<String>,
         overlaps_previous: bool,
-    ) {
-        if (2..=Self::MAX_PRECISE_SCOPE_MERGE_LOCALS).contains(&alternatives.len()) {
-            merged.exclusive_local_alts = Some(Arc::from(alternatives));
-            return;
+        missing_local_is_nil: bool,
+    ) -> Option<Arc<CorrelatedWorlds>> {
+        let inherits_base = |branch: &Scope| match (
+            base.exclusive_local_alts.as_ref(),
+            branch.exclusive_local_alts.as_ref(),
+        ) {
+            (Some(base_worlds), Some(branch_worlds)) => Arc::ptr_eq(base_worlds, branch_worlds),
+            (None, None) => true,
+            _ => false,
+        };
+        let forms_correlation =
+            (2..=Self::MAX_PRECISE_SCOPE_MERGE_LOCALS).contains(&changed_names.len());
+        let branch_keeps_worlds = !(inherits_base(then_scope) && inherits_base(else_scope))
+            && (then_scope.exclusive_local_alts.is_some()
+                || else_scope.exclusive_local_alts.is_some());
+        if !forms_correlation && !branch_keeps_worlds {
+            return if overlaps_previous {
+                None
+            } else {
+                base.exclusive_local_alts.clone()
+            };
         }
-        if overlaps_previous {
-            merged.exclusive_local_alts = None;
-        } else {
-            merged.exclusive_local_alts = base.exclusive_local_alts.clone();
+
+        let mut names = changed_names;
+        for branch in [then_scope, else_scope] {
+            for name in branch
+                .exclusive_local_alts
+                .iter()
+                .flat_map(|correlated| correlated.names.iter())
+            {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
         }
+        if names.len() > Self::MAX_PRECISE_SCOPE_MERGE_LOCALS {
+            return None;
+        }
+        let mut worlds = Vec::new();
+        for branch in [then_scope, else_scope] {
+            match branch.exclusive_local_alts.as_deref() {
+                Some(correlated) => {
+                    for world in &correlated.worlds {
+                        worlds.push(Self::project_correlated_world(
+                            base,
+                            branch,
+                            &names,
+                            Some((correlated, world)),
+                            missing_local_is_nil,
+                        )?);
+                    }
+                }
+                None => worlds.push(Self::project_correlated_world(
+                    base,
+                    branch,
+                    &names,
+                    None,
+                    missing_local_is_nil,
+                )?),
+            }
+        }
+        if worlds.len() > Self::MAX_CORRELATED_WORLDS {
+            return None;
+        }
+        CorrelatedWorlds { names, worlds }
+            .normalized()
+            .map(Arc::new)
+    }
+
+    fn project_correlated_world(
+        base: &Scope,
+        branch: &Scope,
+        names: &[String],
+        world: Option<(&CorrelatedWorlds, &Vec<Type>)>,
+        missing_local_is_nil: bool,
+    ) -> Option<Vec<Type>> {
+        names
+            .iter()
+            .map(|name| {
+                world
+                    .and_then(|(correlated, world)| {
+                        correlated.index_of(name).map(|index| world[index].clone())
+                    })
+                    .or_else(|| branch.get(name).or_else(|| base.get(name)).cloned())
+                    .or_else(|| missing_local_is_nil.then_some(Type::Nil))
+            })
+            .collect()
     }
 
     fn is_exclusive_join_type(ty: &Type) -> bool {
@@ -32656,44 +32794,35 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn correlated_tuple_from_local_reads(scope: &Scope, elements: &[Node<'_>]) -> Option<Type> {
-        let alts = scope.exclusive_local_alts.as_ref()?;
-        if alts.len() < 2 || elements.len() < 2 {
+        let correlated = scope.exclusive_local_alts.as_ref()?;
+        if elements.len() < 2 {
             return None;
         }
         let mut names = Vec::with_capacity(elements.len());
         for elem in elements {
-            let Node::LocalVariableReadNode { .. } = elem else {
-                return None;
-            };
             let read = elem.as_local_variable_read_node()?;
             names.push(String::from_utf8_lossy(read.name().as_slice()).into_owned());
         }
-        let correlated = names
-            .iter()
-            .filter(|name| alts.iter().any(|alt| alt.name == **name))
-            .count();
-        if correlated < 2 {
+        let positions: Vec<Option<usize>> =
+            names.iter().map(|name| correlated.index_of(name)).collect();
+        if positions.iter().flatten().count() < 2 {
             return None;
         }
-        let mut tuples = Vec::with_capacity(2);
-        for then_branch in [true, false] {
-            let mut elems = Vec::with_capacity(names.len());
-            for name in &names {
-                let ty = alts
+        let tuples = correlated
+            .worlds
+            .iter()
+            .map(|world| {
+                names
                     .iter()
-                    .find(|alternative| alternative.name == *name)
-                    .map(|alternative| {
-                        if then_branch {
-                            alternative.then_type.clone()
-                        } else {
-                            alternative.else_type.clone()
-                        }
+                    .zip(&positions)
+                    .map(|(name, position)| match position {
+                        Some(index) => Some(world[*index].clone()),
+                        None => scope.get(name).cloned(),
                     })
-                    .or_else(|| scope.get(name).cloned())?;
-                elems.push(ty);
-            }
-            tuples.push(Type::Tuple(elems));
-        }
+                    .collect::<Option<Vec<Type>>>()
+                    .map(Type::Tuple)
+            })
+            .collect::<Option<Vec<Type>>>()?;
         Some(Type::from_type_vec_preserve_untyped(tuples))
     }
 
@@ -60668,11 +60797,10 @@ mod tests {
     #[test]
     fn local_alias_writes_and_removals_invalidate_correlations() {
         let mut scope = Scope {
-            exclusive_local_alts: Some(Arc::from(vec![CorrelatedLocalAlternative {
-                name: "subject".to_owned(),
-                then_type: Type::Integer,
-                else_type: Type::String,
-            }])),
+            exclusive_local_alts: Some(Arc::new(CorrelatedWorlds {
+                names: vec!["subject".to_owned()],
+                worlds: vec![vec![Type::Integer], vec![Type::String]],
+            })),
             ..Scope::default()
         };
 
@@ -60684,11 +60812,10 @@ mod tests {
         assert!(scope.exclusive_local_alts.is_none());
 
         let mut scope = Scope {
-            exclusive_local_alts: Some(Arc::from(vec![CorrelatedLocalAlternative {
-                name: "subject".to_owned(),
-                then_type: Type::Integer,
-                else_type: Type::String,
-            }])),
+            exclusive_local_alts: Some(Arc::new(CorrelatedWorlds {
+                names: vec!["subject".to_owned()],
+                worlds: vec![vec![Type::Integer], vec![Type::String]],
+            })),
             ..Scope::default()
         };
         let names = HashSet::from(["subject".to_owned()]);

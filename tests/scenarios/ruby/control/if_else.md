@@ -223,10 +223,6 @@ end
 
 ## Preserve tuple correlation across nested branches
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
