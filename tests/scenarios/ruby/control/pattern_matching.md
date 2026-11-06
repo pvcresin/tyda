@@ -280,6 +280,82 @@ class Object < BasicObject
 end
 ```
 
+## Non-literal numeric subjects can match numeric literal patterns of another class
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class CrossClassNumericPattern
+  #: () -> Integer
+  def int = 1
+
+  #: () -> Float
+  def float = 1.0
+
+  def integer_against_float
+    case int
+    in 1.0
+      :float
+    else
+      :other
+    end
+  end
+
+  def float_against_integer
+    case float
+    in 1
+      :int
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class CrossClassNumericPattern
+  def int: -> Integer
+  def float: -> Float
+  def integer_against_float: -> :float | :other
+  def float_against_integer: -> :int | :other
+end
+```
+
+## Integer subject cannot equal a fractional float pattern
+
+### update
+
+```ruby
+class FractionalFloatPattern
+  #: () -> Integer
+  def int = 1
+
+  def integer_against_fractional
+    case int
+    in 1.5
+      :fraction
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class FractionalFloatPattern
+  def int: -> Integer
+  def integer_against_fractional: -> :other
+end
+```
+
 ## Use string and symbol literal pattern as condition
 
 ### update
