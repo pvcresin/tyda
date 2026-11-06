@@ -654,6 +654,11 @@ end
 def missing_range_slice
   [1, 2][3..]
 end
+
+def range_slice_at_end
+  [1, 2][2..]
+end
+
 ```
 
 ### result
@@ -670,6 +675,7 @@ class Object < BasicObject
   def call_slice_items: -> ["one", "two"]
   def empty_slice: -> [ ]
   def missing_range_slice: -> nil
+  def range_slice_at_end: -> [ ]
 end
 ```
 

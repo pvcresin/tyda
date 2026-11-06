@@ -2468,4 +2468,133 @@ class MutableInstanceVariableTruthiness
   def clock_dma: -> Integer?
 end
 ```
+
+## Narrow a parent type with a subclass from another file
+
+### update
+
+### file: parent.rb
+
+```ruby
+class Parent
+end
+```
+
+### file: child.rb
+
+```ruby
+class Child < Parent
+  def child_only = "child".upcase
+end
+```
+
+### file: checker.rb
+
+```ruby
+class Checker
+  def child_value
+    value = Parent.new
+    return nil unless value.is_a?(Child)
+    value.child_only
+  end
+end
+```
+
+### result
+
+```rbs
+class Child < Parent
+  def child_only: -> String
+end
+
+class Checker
+  def child_value: -> String?
+end
+
+class Parent
+end
+```
+
+## Preserve an overlapping predicate and literal intersection
+
+### update
+
+```ruby
+class CompoundConditionPredicate
+  def present?(value)
+    return false unless value
+    true
+  end
+
+  #: (String?) -> String?
+  def with_literal_condition(value)
+    return nil unless present?(value) && value == "present"
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class CompoundConditionPredicate
+  def present?: (untyped value) -> bool
+  def with_literal_condition: (String? value) -> String?
+end
+```
+
+## Narrow an assignment before the right side of &&
+
+```ruby
+class ConditionAssignmentResource
+  def readable? = true
+  def value = "value"
+end
+
+class ConditionAssignmentFlow
+  #: (bool) -> ConditionAssignmentResource?
+  def maybe_resource(flag)
+    if flag
+      ConditionAssignmentResource.new
+    end
+  end
+
+  def value_if_present(flag)
+    if (resource = maybe_resource(flag)) && resource.readable?
+      resource.value
+    end
+  end
+
+  def value_unless_missing(flag)
+    unless (resource = maybe_resource(flag)) && resource.readable?
+      nil
+    else
+      resource.value
+    end
+  end
+
+  def value_from_unless_expression(flag)
+    result = unless (resource = maybe_resource(flag)) && resource.readable?
+      nil
+    else
+      resource.value
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class ConditionAssignmentFlow
+  def maybe_resource: (bool flag) -> ConditionAssignmentResource?
+  def value_if_present: (untyped flag) -> "value"?
+  def value_unless_missing: (untyped flag) -> "value"?
+  def value_from_unless_expression: (untyped flag) -> "value"?
+end
+
+class ConditionAssignmentResource
+  def readable?: -> true
+  def value: -> "value"
+end
 ```

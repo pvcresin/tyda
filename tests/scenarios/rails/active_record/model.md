@@ -533,6 +533,8 @@ end
 class PostService
   def find_array = Post.find([1, 2, 3])
   def find_many = Post.find(1, 2, 3)
+  def find_splat_single = Post.find(*[1])
+  def find_splat_many = Post.find(*[1, 2])
   def first_n = Post.first(5)
   def last_n = Post.last(3)
 end
@@ -545,6 +547,8 @@ end
 class PostService
   def find_array: -> Array[Post]
   def find_many: -> Array[Post]
+  def find_splat_single: -> Post
+  def find_splat_many: -> Array[Post]
   def first_n: -> Array[Post]
   def last_n: -> Array[Post]
 end
@@ -622,6 +626,8 @@ end
 class PostManager
   def recent_posts = Post.where(published: true)
   def find_post(id) = Post.find(id)
+  def find_many_posts = Post.find(1, 2)
+  def find_posts_by_ids = Post.find([1, 2])
   def first_post = Post.first
   def post_count = Post.count
   def any_posts? = Post.exists?
@@ -642,6 +648,8 @@ end
 class PostManager
   def recent_posts: -> ActiveRecord::Relation[Post]
   def find_post: (untyped id) -> Post
+  def find_many_posts: -> Array[Post]
+  def find_posts_by_ids: -> Array[Post]
   def first_post: -> Post?
   def post_count: -> Integer
   def any_posts?: -> bool

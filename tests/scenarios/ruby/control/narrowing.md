@@ -961,3 +961,107 @@ class OrConditionNarrowing
   def and_keeps_taken_branch: (untyped flag) -> (1 | :other)
 end
 ```
+
+## Source predicates narrow guarded positional arguments
+
+### update
+
+```rbs
+class SourcePredicateNarrowing
+  def maybe_string: -> String?
+end
+```
+
+```ruby
+class SourcePredicateNarrowing
+  def both_present?(left, right)
+    return false unless left
+    return nil unless right
+    true
+  end
+
+  def always_true?(_value)
+    true
+  end
+
+  def reassigned_guard?(value)
+    return false unless value
+    value = nil
+    true
+  end
+
+  def expression_guard?(value)
+    unless value
+      false
+    end
+    true
+  end
+
+  def truthy_exit_guard?(value)
+    return :early unless value
+    true
+  end
+
+  def guarded_arguments
+    left = maybe_string
+    right = maybe_string
+    return unless both_present?(left, right)
+
+    left.upcase
+    right.upcase
+  end
+
+  def nil_actual_control
+    value = maybe_string
+    return unless both_present?(nil, value)
+
+    value.upcase
+  end
+
+  def unconditional_true_control
+    value = maybe_string
+    return unless always_true?(value)
+
+    value.upcase
+  end
+
+  def reassignment_control
+    value = maybe_string
+    return unless reassigned_guard?(value)
+
+    value.upcase
+  end
+
+  def expression_exit_control
+    value = maybe_string
+    return unless expression_guard?(value)
+
+    value.upcase
+  end
+
+  def truthy_exit_control
+    value = maybe_string
+    return unless truthy_exit_guard?(value)
+
+    value.upcase
+  end
+end
+```
+
+### result
+
+```rbs
+class SourcePredicateNarrowing
+  def both_present?: (String? left, String? right) -> bool?
+  def always_true?: (String? _value) -> true
+  def reassigned_guard?: (String? value) -> bool
+  def expression_guard?: (String? value) -> true
+  def truthy_exit_guard?: (String? value) -> (true | :early)
+  def guarded_arguments: -> String?
+  def nil_actual_control: -> String?
+  def unconditional_true_control: -> String?
+  def reassignment_control: -> String?
+  def expression_exit_control: -> String?
+  def truthy_exit_control: -> String?
+end
+```

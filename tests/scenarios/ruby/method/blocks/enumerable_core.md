@@ -32,6 +32,22 @@ class Object < BasicObject
 end
 ```
 
+## Untyped repetition count does not choose the String overload
+
+### update
+
+```ruby
+def join_repeated_values_with_untyped_count(tokens) = (["entry"] * tokens.size).join(" ")
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def join_repeated_values_with_untyped_count: (untyped tokens) -> untyped
+end
+```
+
 ## Re-infer a block call after its receiver's source return is resolved
 
 ### update
