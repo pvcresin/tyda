@@ -1199,3 +1199,79 @@ end
         );
     }
 }
+
+#[test]
+fn respond_to_guard_on_the_left_of_and_covers_the_right() {
+    let source = r#"
+class GuardedNote
+end
+
+class GuardedCaller
+  def run(note)
+    note.respond_to?(:zork) && note.zork
+  end
+
+  def call_run
+    run(GuardedNote.new)
+  end
+end
+"#;
+    for compact in [true, false] {
+        let found = diagnostics(source, compact);
+        assert!(found.is_empty(), "compact={compact}: {found:?}");
+    }
+}
+
+#[test]
+fn class_object_answers_methods_declared_by_class() {
+    let source = r#"
+class Strategy
+end
+
+class KeywordDefault
+  def initialize(strategy: Strategy)
+    strategy.new
+  end
+end
+
+class PositionalDefault
+  def run(strategy = Strategy)
+    strategy.new
+  end
+end
+"#;
+    for compact in [true, false] {
+        let found = diagnostics(source, compact);
+        assert!(found.is_empty(), "compact={compact}: {found:?}");
+    }
+}
+
+#[test]
+fn struct_classes_answer_methods_declared_by_struct() {
+    let source = r#"
+Pair = Struct.new(:left, :right)
+
+class PairBuilder
+  def build(flag)
+    value = pair_or_hash(flag)
+    if value.is_a?(Hash) && value[:left]
+      value
+    end
+  end
+
+  def pair_or_hash(flag)
+    return { left: 1 } if flag
+
+    Pair.new(1, 2)
+  end
+
+  def call_build
+    build(true)
+  end
+end
+"#;
+    for compact in [true, false] {
+        let found = diagnostics(source, compact);
+        assert!(found.is_empty(), "compact={compact}: {found:?}");
+    }
+}

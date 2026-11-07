@@ -3524,6 +3524,18 @@ impl TypeRegistry {
         data.user_defined = true;
     }
 
+    /// The stdlib class that a `Struct.new` or `Data.define` class inherits its methods from.
+    pub(crate) fn constructor_base_class(&self, class_name: &str) -> Option<&'static str> {
+        let cold = self.class_data_for(class_name)?.cold();
+        if cold.struct_constructor_allows_missing_members {
+            Some("Struct")
+        } else if cold.data_constructor.is_some() {
+            Some("Data")
+        } else {
+            None
+        }
+    }
+
     pub fn mark_struct_constructor(&mut self, class_name: &str) {
         self.class_data_mut(class_name)
             .cold_mut()
@@ -6278,7 +6290,7 @@ impl TypeRegistry {
     }
 
     /// first-owner lookup memo (walks the ancestor chain directly when the cache is disabled).
-    fn first_method_call_owner_cached(
+    pub(crate) fn first_method_call_owner_cached(
         &self,
         class_name: &str,
         method_name: &str,

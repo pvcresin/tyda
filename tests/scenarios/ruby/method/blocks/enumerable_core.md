@@ -1925,3 +1925,26 @@ class NestedBlockSink
   def take: (String value) -> String
 end
 ```
+
+## A yield in a loop reads the value assigned earlier in the iteration
+
+```ruby
+class LoopYieldReader
+  def each_part(path)
+    file = File.open(path)
+    while true
+      part = file.read(1)
+      break unless part
+      yield part
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class LoopYieldReader
+  def each_part: (untyped path) { (String) -> untyped } -> nil
+end
+```

@@ -414,3 +414,29 @@ class NullableLocalGuardFlow
   def unguarded: -> true
 end
 ```
+
+## A respond_to guard on the left of and covers the right
+
+```ruby
+class RespondGuardedNote
+end
+
+class RespondGuardedCaller
+  def run(note)
+    note.respond_to?(:zork) && note.zork
+  end
+
+  def call_run
+    run(RespondGuardedNote.new)
+  end
+end
+```
+
+### result
+
+```rbs
+class RespondGuardedCaller
+  def run: (RespondGuardedNote note) -> (false | untyped)
+  def call_run: -> false | untyped
+end
+```

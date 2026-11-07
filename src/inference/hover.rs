@@ -262,11 +262,19 @@ impl<'a> InferenceEngine<'a> {
                 ref receiver_type,
                 ref result_type,
                 singleton_dispatch,
+                ref respond_to_guards,
                 ..
             } = snap.target
             else {
                 continue;
             };
+            if respond_to_guards
+                .iter()
+                .flatten()
+                .any(|name| *name == snap.name)
+            {
+                continue;
+            }
             let mut resolved_receiver = None;
             let unresolved_method = Self::describe_unresolved_ref(result_type).or_else(|| {
                 let Type::ReceiverMethodRef(receiver, method) = result_type else {
@@ -299,12 +307,17 @@ impl<'a> InferenceEngine<'a> {
                     let key = (lookup_receiver.clone(), snap.name.clone());
                     Some(*method_exists_cache.entry(key).or_insert_with(|| {
                         let resolved = self.resolve_method_on_type(&lookup_receiver, &snap.name);
-                        !matches!(
+                        let found = !matches!(
                             resolved,
                             Type::ReceiverMethodRef(resolved_receiver, method)
                                 if resolved_receiver.as_ref() == &lookup_receiver
                                     && method.as_str() == snap.name
-                        )
+                        );
+                        // A class object also answers everything `Class` declares.
+                        found
+                            || (matches!(lookup_receiver, Type::Singleton(_))
+                                && self.class_declares_method("Class", &snap.name))
+                            || self.constructor_base_declares_method(&lookup_receiver, &snap.name)
                     }))
                 })
                 .unwrap_or(false);
@@ -1495,7 +1508,8 @@ impl<'a> InferenceEngine<'a> {
                     registry
                         .lookup_method_return_type_via_including_classes(&class, &snap.name)
                         .is_some()
-                });
+                })
+                || self.constructor_base_declares_method(member, &snap.name);
             if method_is_registered {
                 continue;
             }
@@ -4012,6 +4026,22 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => false,
         }
+    }
+
+    fn constructor_base_declares_method(&mut self, receiver: &Type, method_name: &str) -> bool {
+        let Type::Class(class_name) = receiver else {
+            return false;
+        };
+        self.registry
+            .constructor_base_class(class_name)
+            .is_some_and(|base| self.class_declares_method(base, method_name))
+    }
+
+    fn class_declares_method(&mut self, class_name: &str, method_name: &str) -> bool {
+        self.ensure_class_available_with_ancestors(class_name, 0);
+        self.registry
+            .first_method_call_owner_cached(class_name, method_name, false)
+            .is_some()
     }
 
     fn method_lookup_receiver_type(&self, receiver: &Type) -> Type {

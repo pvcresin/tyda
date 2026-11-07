@@ -18654,6 +18654,24 @@ impl<'a> InferenceEngine<'a> {
         (visitor.yields, visitor.block_param_written)
     }
 
+    /// A loop body starts from the loop-entry scope, so a yield reads what the earlier statements
+    /// of the iteration assigned and narrowed, not the entry value of its locals.
+    fn scan_loop_body_summary(
+        &mut self,
+        class_name: &str,
+        statements: &ruby_prism::StatementsNode<'_>,
+        parse_result: &ParseResult<'_>,
+        mut scope: Scope,
+        summary: &mut BodyScanSummary,
+    ) {
+        for child in statements.body().iter() {
+            self.scan_method_body_summary_node(class_name, &child, parse_result, &scope, summary);
+            if summary.yields {
+                self.process_statement(class_name, &child, parse_result, &mut scope);
+            }
+        }
+    }
+
     fn scan_method_body_summary_node(
         &mut self,
         class_name: &str,
@@ -18827,11 +18845,11 @@ impl<'a> InferenceEngine<'a> {
                     body_scope.set(&name, value_type);
                 }
                 if let Some(statements) = while_node.statements() {
-                    self.scan_method_body_summary_node(
+                    self.scan_loop_body_summary(
                         class_name,
-                        &statements.as_node(),
+                        &statements,
                         parse_result,
-                        &body_scope,
+                        body_scope,
                         summary,
                     );
                 }
@@ -18866,11 +18884,11 @@ impl<'a> InferenceEngine<'a> {
                     body_scope.set(&name, value_type);
                 }
                 if let Some(statements) = until_node.statements() {
-                    self.scan_method_body_summary_node(
+                    self.scan_loop_body_summary(
                         class_name,
-                        &statements.as_node(),
+                        &statements,
                         parse_result,
-                        &body_scope,
+                        body_scope,
                         summary,
                     );
                 }
@@ -26308,6 +26326,14 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &mut right_scope,
                 );
+                if let Some((name, methods)) = self.extract_positive_respond_to_guard(
+                    class_name,
+                    &and_node.left(),
+                    parse_result,
+                    scope,
+                ) {
+                    right_scope.add_respond_to_guard(&name, methods);
+                }
                 let right_type =
                     self.infer_node_type(class_name, &and_node.right(), parse_result, &right_scope);
                 let right_type = if self.record_short_circuit_control(
@@ -32457,6 +32483,14 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &mut right_scope,
                 );
+                if let Some((name, methods)) = self.extract_positive_respond_to_guard(
+                    class_name,
+                    &and_node.left(),
+                    parse_result,
+                    scope,
+                ) {
+                    right_scope.add_respond_to_guard(&name, methods);
+                }
                 let right_type =
                     self.infer_node_type(class_name, &and_node.right(), parse_result, &right_scope);
                 let mut result_types = Vec::new();
@@ -56483,7 +56517,10 @@ impl<'a> InferenceEngine<'a> {
                                     class_name, scope, subject, narrowed,
                                 ))
                             }
-                            Some(_) if matches!(current, Type::ParamRef(_)) => {
+                            Some(_)
+                                if matches!(current, Type::ParamRef(_))
+                                    || Self::contains_unresolved_ref(&current) =>
+                            {
                                 let narrowed = Self::class_name_to_type(&target_name);
                                 Some(self.narrowing_with_default_negation(
                                     class_name, scope, subject, narrowed,
