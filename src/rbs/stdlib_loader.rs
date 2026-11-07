@@ -342,14 +342,13 @@ impl LazyRbsLoader {
     fn build_feature_shape(&self, feature: &str) -> Option<Arc<TypeRegistry>> {
         let paths = self.feature_to_files.get(feature)?;
         let mut shape = TypeRegistry::new();
-        let mut merged = false;
         for path in paths {
+            // Classes new to the feature load on demand; only a reopened core class needs merging.
+            if !reopens_core_class(path) {
+                continue;
+            }
             let registry = self.load_file_registry(path);
             shape.merge_stdlib_rbs_registry(&registry);
-            merged = true;
-        }
-        if !merged {
-            return None;
         }
         crate::rbs::import::finalize_pending_method_aliases(&mut shape);
         shape.shrink_to_fit_after_compact();
@@ -799,6 +798,25 @@ const CORE_OWNED_CLASSES: &[&str] = &[
 ];
 
 /// Lightweight scan for top-level class/module names (defers parsing, excludes core reopens).
+fn reopens_core_class(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    content.lines().any(|line| {
+        let Some(rest) = line
+            .strip_prefix("class ")
+            .or_else(|| line.strip_prefix("module "))
+        else {
+            return false;
+        };
+        let name = rest
+            .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+            .next()
+            .unwrap_or_default();
+        CORE_OWNED_CLASSES.contains(&name.trim_start_matches("::"))
+    })
+}
+
 fn scan_top_level_declarations(path: &Path) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -1320,10 +1338,11 @@ mod tests {
                 .lookup_method_return_type("IO", "console")
                 .is_some()
         );
+        // A class new to the feature loads on demand instead of with the feature.
         assert!(
             registry
                 .lookup_method_return_type("Net::HTTP", "start")
-                .is_some()
+                .is_none()
         );
     }
 
