@@ -1002,6 +1002,16 @@ impl DeferredBlockReceiverCandidates {
     }
 }
 
+/// A block call with an RBS signature is walked once without and once with the declared
+/// parameter types. Nested calls follow the enclosing walk, which keeps both views of every
+/// node and keeps the walk count linear in the nesting depth.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlockPassChain {
+    Open,
+    Unbound,
+    Bound,
+}
+
 #[derive(Default)]
 struct ActiveMethodBody {
     unresolved_block_receivers: DeferredBlockReceiverCandidates,
@@ -1031,6 +1041,8 @@ pub struct InferenceEngine<'a> {
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
     record_hover_snapshots: bool,
+    block_pass_chain: BlockPassChain,
+    unbound_block_return: Option<Type>,
     record_annotated_method_body_hover_snapshots: bool,
     analyzing_rbi_declaration: bool,
     var_snapshots: Vec<HoverSnapshot>,
@@ -2443,6 +2455,8 @@ impl<'a> InferenceEngine<'a> {
             file_path: meta.file_path,
             project_root: meta.project_root,
             record_hover_snapshots: true,
+            block_pass_chain: BlockPassChain::Open,
+            unbound_block_return: None,
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
             var_snapshots: hover_index.snapshots,
@@ -2521,6 +2535,8 @@ impl<'a> InferenceEngine<'a> {
             file_path: None,
             project_root: None,
             record_hover_snapshots: true,
+            block_pass_chain: BlockPassChain::Open,
+            unbound_block_return: None,
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
             var_snapshots: Vec::new(),
@@ -30594,6 +30610,8 @@ impl<'a> InferenceEngine<'a> {
                                 &method_name,
                                 Self::receiver_is_singleton_dispatch(
                                     &receiver,
+                        let mut block_uses_rbs_signature = false;
+                        let mut first_pass_block_return: Option<Type> = None;
                                     scope.singleton_dispatch,
                                 ),
                                 class_name,
@@ -30676,11 +30694,13 @@ impl<'a> InferenceEngine<'a> {
                             let block = if matches!(
                                 method_name.as_str(),
                                 "instance_eval" | "instance_exec" | "class_eval" | "module_eval"
-                            ) {
+                            ) || (block_uses_rbs_signature
+                                && self.block_pass_chain == BlockPassChain::Bound)
+                            {
                                 None
                             } else {
                                 let mut block_scope = scope.fork_for_block();
-                                self.infer_user_defined_call_block(
+                                let block = self.infer_user_defined_call_block(
                                     &target_class,
                                     &method_name,
                                     method_is_singleton,
@@ -30691,12 +30711,24 @@ impl<'a> InferenceEngine<'a> {
                                     &mut block_scope,
                                 )
                             };
+                            block_uses_rbs_signature = self.block_call_uses_rbs_signature(
+                                &target_class,
+                                &method_name,
+                                method_is_singleton,
+                                &safe_nav_receiver_type,
+                                (&arg_types, &kw_types),
+                                &call_node,
+                            );
                             if let Some(block) = block.as_ref() {
                                 self.record_hover_block_return(
                                     &call_node,
                                     block.return_type.clone(),
                                 );
                             }
+                                let outer_chain = self.block_pass_chain;
+                                if block_uses_rbs_signature {
+                                    self.block_pass_chain = BlockPassChain::Unbound;
+                                }
                             user_defined_block_call_result = block.as_ref().and_then(|block| {
                                 self.resolve_user_defined_block_call_return(
                                     &target_class,
@@ -30705,10 +30737,14 @@ impl<'a> InferenceEngine<'a> {
                                     &arg_types,
                                     &kw_types,
                                     block,
-                                )
+                                );
+                                self.block_pass_chain = outer_chain;
+                                block
                             });
                             self.record_inferred_call_site(&target_class, {
                                 let caller_context = self.call_site_caller_context_for_attr_writer(
+                            first_pass_block_return =
+                                block.as_ref().map(|block| block.return_type.clone());
                                     AttrWriterCallSite {
                                         target_class: &target_class,
                                         method_name: &method_name,
@@ -31003,14 +31039,25 @@ impl<'a> InferenceEngine<'a> {
                             {
                                 break 'recv wrap(block_result);
                             }
-                            if let Some(block_result) = self.resolve_block_call_generic(
+                            let outer_chain = self.block_pass_chain;
+                            if block_uses_rbs_signature {
+                                if outer_chain == BlockPassChain::Unbound {
+                                    self.unbound_block_return = first_pass_block_return.take();
+                                } else {
+                                    self.block_pass_chain = BlockPassChain::Bound;
+                                }
+                            }
+                            let generic_result = self.resolve_block_call_generic(
                                 class_name,
                                 &call_node,
                                 &safe_nav_receiver_type,
                                 &method_name,
                                 parse_result,
                                 scope,
-                            ) {
+                            );
+                            self.block_pass_chain = outer_chain;
+                            self.unbound_block_return = None;
+                            if let Some(block_result) = generic_result {
                                 break 'recv wrap(block_result);
                             }
                             if let Some(batch_result) = self
@@ -41051,6 +41098,64 @@ impl<'a> InferenceEngine<'a> {
         let block_node_raw = call_node.block()?;
         let block = block_node_raw.as_block_node()?;
         let normalized = Self::normalize_union_receiver(receiver_type);
+    /// A block call whose arguments fit an RBS overload infers its block from that signature.
+    /// When the declaration alone gives no parameter type, a first pass would see only
+    /// `untyped` and multiply the work at each nesting level.
+    fn block_call_uses_rbs_signature(
+        &mut self,
+        target_class: &str,
+        method_name: &str,
+        method_is_singleton: bool,
+        receiver_type: &Type,
+        (arg_types, kw_types): (&[Type], &HashMap<String, Type>),
+        call_node: &ruby_prism::CallNode<'_>,
+    ) -> bool {
+        let Some(block) = call_node.block().and_then(|block| block.as_block_node()) else {
+            return false;
+        };
+        if self.registry.method_call_has_user_source_definition(
+            target_class,
+            method_name,
+            method_is_singleton,
+        ) {
+            return false;
+        }
+        let (dispatch_owner, dispatch_is_singleton) =
+            self.block_dispatch_owner(target_class, method_name, method_is_singleton);
+        let declared_param_types = self.resolve_user_defined_block_param_types(
+            &dispatch_owner,
+            method_name,
+            dispatch_is_singleton,
+            0,
+        );
+        if declared_param_types.is_some_and(|types| types.iter().any(|ty| *ty != Type::Untyped)) {
+            return false;
+        }
+        let overloads = self.collect_owned_rbs_overloads(
+            target_class,
+            method_name,
+            matches!(receiver_type, Type::Singleton(_)),
+            true,
+        );
+        let block_shape = Self::hover_block_shape(&block);
+        let mut relation_cache = HashMap::new();
+        overloads.iter().any(|overload| {
+            overload.method_type.block.is_some()
+                && Self::hover_overload_accepts_block_shape(
+                    &overload.method_type,
+                    true,
+                    Some(&block_shape),
+                )
+                && self.rbs_method_type_accepts_call(
+                    &overload.method_type,
+                    arg_types,
+                    kw_types,
+                    receiver_type,
+                    &mut relation_cache,
+                )
+        })
+    }
+
         // Block-iterating methods (`map`/`select`/...) need the receiver's concrete element type to thread through the block.
         // A deferred instance-variable or method-return receiver (e.g.
         let receiver_type = &self.try_resolve_receiver_inline(class_name, &normalized);
@@ -41474,7 +41579,9 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
-        let block_return_type = if let Some(body) = block.body() {
+        let block_return_type = if let Some(first_pass_return) = self.unbound_block_return.take() {
+            first_pass_return
+        } else if let Some(body) = block.body() {
             self.infer_body_return_type(class_name, &body, parse_result, &mut block_scope)
         } else {
             Type::Nil

@@ -1896,3 +1896,32 @@ class Object < BasicObject
   def observed_split_header: (untyped address) -> untyped
 end
 ```
+
+## Nested block calls bind the declared parameter at each level
+
+```ruby
+class NestedBlockSink
+  def take(value)
+    value
+  end
+end
+
+class NestedBlockCaller
+  def run
+    lines = File.readlines("input")
+    lines.select { |outer| lines.select { |inner| NestedBlockSink.new.take(outer) } }
+  end
+end
+```
+
+### result
+
+```rbs
+class NestedBlockCaller
+  def run: -> Array[String]
+end
+
+class NestedBlockSink
+  def take: (String value) -> String
+end
+```
