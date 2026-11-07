@@ -11754,7 +11754,7 @@ impl TypeRegistry {
     }
 
     /// method surface is complete once a known stdlib ancestor root is reached (even in an isolated snapshot).
-    fn is_universal_ancestor_root(name: &str) -> bool {
+    pub(crate) fn is_universal_ancestor_root(name: &str) -> bool {
         matches!(
             name,
             "Object"

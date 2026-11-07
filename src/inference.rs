@@ -25955,7 +25955,7 @@ impl<'a> InferenceEngine<'a> {
                                     call_node
                                         .receiver()
                                         .and_then(|receiver| {
-                                            Self::extract_local_var_name_in_scope(&receiver, scope)
+                                            Self::respond_to_guard_subject(&receiver)
                                         })
                                         .map_or_else(Vec::new, |name| {
                                             scope.respond_to_guards_for_local(&name)
@@ -31892,7 +31892,7 @@ impl<'a> InferenceEngine<'a> {
                                     call_node
                                         .receiver()
                                         .and_then(|receiver| {
-                                            Self::extract_local_var_name_in_scope(&receiver, scope)
+                                            Self::respond_to_guard_subject(&receiver)
                                         })
                                         .map_or_else(Vec::new, |name| {
                                             scope.respond_to_guards_for_local(&name)
@@ -53717,6 +53717,8 @@ impl<'a> InferenceEngine<'a> {
                 receiver_type,
                 Type::Integer | Type::LiteralInteger(_) | Type::Float | Type::LiteralFloat(_)
             ) && method_tables::DURATION_METHODS.contains(&method_name)
+                || matches!(receiver_type, Type::Class(name) if name == "Numeric")
+                    && method_tables::DURATION_METHODS.contains(&method_name)
             {
                 return Type::Class(Sym::new("ActiveSupport::Duration"));
             }
@@ -56428,7 +56430,11 @@ impl<'a> InferenceEngine<'a> {
                 let Some(receiver) = call.receiver() else {
                     if call.arguments().is_some()
                         || call.block().is_some()
-                        || !self.is_pure_ivar_reader(class_name, scope.singleton_dispatch, &method)
+                        || !self.self_call_is_narrowable(
+                            class_name,
+                            scope.singleton_dispatch,
+                            &method,
+                        )
                     {
                         return None;
                     }
@@ -57452,7 +57458,7 @@ impl<'a> InferenceEngine<'a> {
             return None;
         }
         let receiver = call.receiver()?;
-        let var_name = Self::extract_local_var_name_in_scope(&receiver, scope)?;
+        let var_name = Self::respond_to_guard_subject(&receiver)?;
         let args = call.arguments()?;
         if args.arguments().iter().nth(1).is_some() {
             return None;
@@ -57461,6 +57467,16 @@ impl<'a> InferenceEngine<'a> {
         let method_names =
             self.static_dispatch_names_from_arg(class_name, &first_arg, parse_result, scope)?;
         Some((var_name, method_names))
+    }
+
+    /// A local or a bare self call: both read the same value in the guarded expression.
+    fn respond_to_guard_subject(node: &Node<'_>) -> Option<String> {
+        if let Some(name) = Self::extract_local_var_name(node) {
+            return Some(name);
+        }
+        let call = node.as_call_node()?;
+        (call.receiver().is_none() && call.arguments().is_none() && call.block().is_none())
+            .then(|| String::from_utf8_lossy(call.name().as_slice()).to_string())
     }
 
     fn extract_positive_respond_to_guard(
@@ -59730,6 +59746,20 @@ impl<'a> InferenceEngine<'a> {
             .is_pure_ivar_reader_method(class_name, name, false)
     }
 
+    /// A no-argument self call reads the same value until a statement invalidates self facts.
+    fn self_call_is_narrowable(
+        &self,
+        class_name: &str,
+        singleton_dispatch: bool,
+        name: &str,
+    ) -> bool {
+        !singleton_dispatch
+            && self
+                .registry
+                .lookup_method_def(class_name, name, false)
+                .is_some_and(|method| method.param_infos.is_empty())
+    }
+
     fn override_result_with_self_fact(
         scope: &Scope,
         call_node: &ruby_prism::CallNode<'_>,
@@ -59794,7 +59824,11 @@ impl<'a> InferenceEngine<'a> {
                     return Some(ty);
                 }
                 let sig = self.registry.lookup_method_sig(class_name, name)?;
-                (!Self::contains_unresolved_ref(&sig.return_type)).then_some(sig.return_type)
+                Some(if Self::contains_unresolved_ref(&sig.return_type) {
+                    Type::MethodReturnRef(Sym::new(class_name), Sym::new(name))
+                } else {
+                    sig.return_type
+                })
             }),
         }
     }

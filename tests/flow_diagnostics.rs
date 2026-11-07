@@ -1329,3 +1329,24 @@ end
         );
     }
 }
+
+#[test]
+fn nil_guard_on_a_self_call_covers_later_reads() {
+    let source = r#"
+class GuardedReader
+  def name
+    rand > 1 ? "a" : nil
+  end
+
+  def run
+    return false unless name
+
+    name.upcase
+  end
+end
+"#;
+    for compact in [true, false] {
+        let found = diagnostics(source, compact);
+        assert!(found.is_empty(), "compact={compact}: {found:?}");
+    }
+}

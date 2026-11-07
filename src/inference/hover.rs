@@ -1820,8 +1820,20 @@ impl<'a> InferenceEngine<'a> {
         let mut out = Vec::new();
 
         for site in sites {
+            // A method of the class's own overriding a universal root is not bound by that root's
+            // signature: `def test` is unrelated to `Kernel#test`.
+            let overrides_universal_root = self.external_rbs.is_some_and(|registry| {
+                registry
+                    .first_method_call_owner_cached(
+                        &site.class_name,
+                        &site.method_name,
+                        site.is_singleton,
+                    )
+                    .is_some_and(|(owner, _)| TypeRegistry::is_universal_ancestor_root(&owner))
+            });
             let signature = self
                 .external_rbs
+                .filter(|_| !overrides_universal_root)
                 .and_then(|registry| {
                     registry.lookup_method_sig_with_hint(
                         &site.class_name,
