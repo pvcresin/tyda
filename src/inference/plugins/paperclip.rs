@@ -43,6 +43,7 @@ impl Plugin for Paperclip {
         };
         let loc = cx.offset_to_location(parse_result.source(), call_node.location().start_offset());
         cx.add_simple_method_if_missing(class_name, &name, Type::Untyped, false, loc);
-        true
+        // The call still reaches any project definition of the macro.
+        false
     }
 }

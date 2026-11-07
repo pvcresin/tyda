@@ -1014,7 +1014,7 @@ impl<'a> InferenceEngine<'a> {
         Self::type_contains_param_ref(&method.raw_return_type)
     }
 
-    fn type_contains_param_ref(ty: &Type) -> bool {
+    pub(super) fn type_contains_param_ref(ty: &Type) -> bool {
         match ty {
             Type::ParamRef(_) | Type::KeywordParamRef(_) => true,
             Type::Union(parts) | Type::Intersection(parts) => {

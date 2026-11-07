@@ -7096,6 +7096,17 @@ impl TypeRegistry {
         else {
             return false;
         };
+        // `def self?.x` is private on instances, so a receiver call never reaches it.
+        if class_name != "Kernel"
+            && owners
+                .first()
+                .is_some_and(|&(owner, is_singleton)| owner == "Kernel" && !is_singleton)
+            && self.class_data.get("Kernel").is_some_and(|data| {
+                Self::method_for_lookup_kind(data, method_name, Some(true)).is_some()
+            })
+        {
+            return true;
+        }
         owners.iter().any(|&(owner, is_singleton)| {
             self.class_data
                 .get(&owner)
@@ -8401,7 +8412,7 @@ impl TypeRegistry {
                             return Type::Untyped;
                         }
                         // even on the deferred path, resolve `instance` to the receiver's instance type (prevents collapsing to the owner).
-                        let resolved = Self::substitute_self_type(&resolved, &resolved_receiver);
+                        let resolved = Self::deferred_self_return(&resolved, &resolved_receiver);
                         let resolved = Self::keep_receiver_type_arguments(
                             resolved,
                             &resolved_receiver,
@@ -8788,7 +8799,7 @@ impl TypeRegistry {
                     let ret = self
                         .lookup_argless_receiver_return(&cls, method_name, prefer_singleton)
                         .unwrap_or(Type::Untyped);
-                    let ret = Self::substitute_self_type(&ret, &resolved_receiver);
+                    let ret = Self::deferred_self_return(&ret, &resolved_receiver);
                     self.resolve_deferred_refs(&cls, &ret)
                 } else if let Type::Union(parts) = &resolved_receiver {
                     let mut resolved_parts: Vec<Type> = Vec::new();
@@ -8974,6 +8985,17 @@ impl TypeRegistry {
                 .iter()
                 .any(|elem| Self::type_needs_deferred_resolution_depth(elem, depth + 1)),
             _ => false,
+        }
+    }
+
+    /// A deferred call keeps no arguments and may have written to the tuple, so `self` is only known
+    /// to be an array of it.
+    fn deferred_self_return(ret: &Type, receiver: &Type) -> Type {
+        match receiver {
+            Type::Tuple(_) => {
+                Self::substitute_self_type(ret, &receiver.clone().widen_tuple_to_array())
+            }
+            _ => Self::substitute_self_type(ret, receiver),
         }
     }
 
@@ -9515,7 +9537,7 @@ impl TypeRegistry {
             let ret = self
                 .lookup_argless_receiver_return(&cls, method_name, prefer_singleton)
                 .unwrap_or(Type::Untyped);
-            let ret = Self::substitute_self_type(&ret, resolved_receiver);
+            let ret = Self::deferred_self_return(&ret, resolved_receiver);
             let resolved = self.resolve_deferred_refs_depth(
                 &cls,
                 prefer_singleton,

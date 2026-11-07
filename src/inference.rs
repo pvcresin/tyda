@@ -26734,7 +26734,14 @@ impl<'a> InferenceEngine<'a> {
                 let subject_type = predicate_subject
                     .as_ref()
                     .and_then(|subject| self.resolve_subject_input_type(class_name, scope, subject))
-                    .map(|ty| self.resolve_receiver_method_refs(&ty))
+                    .map(|ty| {
+                        // A pure reader stays deferred only while other writers can still add types.
+                        if matches!(ty, Type::MethodReturnRef(..)) {
+                            ty
+                        } else {
+                            self.resolve_receiver_method_refs(&ty)
+                        }
+                    })
                     .or_else(|| {
                         predicate.as_ref().and_then(|pred| {
                             self.static_case_expression_type(class_name, pred, parse_result, scope)
@@ -26815,11 +26822,21 @@ impl<'a> InferenceEngine<'a> {
                         if dispatch_match == Some(false) {
                             continue;
                         }
-                        let narrowed_type = class_narrowed_type.or_else(|| {
-                            literal_narrowing_safe
-                                .then(|| Self::extract_when_literal_type(&when_node))
-                                .flatten()
-                        });
+                        let narrowed_type = class_narrowed_type
+                            .or_else(|| {
+                                literal_narrowing_safe
+                                    .then(|| Self::extract_when_literal_type(&when_node))
+                                    .flatten()
+                            })
+                            .or_else(|| {
+                                self.when_hides_param_type(
+                                    class_name,
+                                    &when_node,
+                                    predicate_subject.as_ref(),
+                                    scope,
+                                )
+                                .then_some(Type::Untyped)
+                            });
                         let mut branch_scope = scope.fork_for_branch();
                         if let (Some(narrowing), Some(narrowed_type)) =
                             (&module_name_narrowing, &module_name_narrowed_type)
@@ -32189,7 +32206,14 @@ impl<'a> InferenceEngine<'a> {
                 let subject_type = predicate_subject
                     .as_ref()
                     .and_then(|subject| self.resolve_subject_input_type(class_name, scope, subject))
-                    .map(|ty| self.resolve_receiver_method_refs(&ty))
+                    .map(|ty| {
+                        // A pure reader stays deferred only while other writers can still add types.
+                        if matches!(ty, Type::MethodReturnRef(..)) {
+                            ty
+                        } else {
+                            self.resolve_receiver_method_refs(&ty)
+                        }
+                    })
                     .or_else(|| {
                         predicate.as_ref().and_then(|pred| {
                             self.static_case_expression_type(class_name, pred, parse_result, scope)
@@ -32242,11 +32266,21 @@ impl<'a> InferenceEngine<'a> {
                         if dispatch_match == Some(false) {
                             continue;
                         }
-                        let narrowed_type = class_narrowed_type.or_else(|| {
-                            literal_narrowing_safe
-                                .then(|| Self::extract_when_literal_type(&when_node))
-                                .flatten()
-                        });
+                        let narrowed_type = class_narrowed_type
+                            .or_else(|| {
+                                literal_narrowing_safe
+                                    .then(|| Self::extract_when_literal_type(&when_node))
+                                    .flatten()
+                            })
+                            .or_else(|| {
+                                self.when_hides_param_type(
+                                    class_name,
+                                    &when_node,
+                                    predicate_subject.as_ref(),
+                                    scope,
+                                )
+                                .then_some(Type::Untyped)
+                            });
                         let mut branch_scope = scope.fork_for_branch();
                         if Self::when_sets_regexp_match_globals(&when_node) {
                             branch_scope.regexp_match_captures = true;
@@ -46865,12 +46899,15 @@ impl<'a> InferenceEngine<'a> {
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
 
-        let overloads = self.collect_owned_rbs_overloads(
+        let mut overloads = self.collect_owned_rbs_overloads(
             &receiver_class,
             method_name,
             matches!(receiver_type, Type::Singleton(_)),
             true,
         );
+        if receiver_class != "Kernel" && self.is_kernel_module_function(method_name) {
+            overloads.retain(|overload| overload.owner_class != "Kernel");
+        }
         if overloads.len() <= 1 {
             return None;
         }
@@ -51087,8 +51124,13 @@ impl<'a> InferenceEngine<'a> {
         );
 
         let prefer_singleton = matches!(receiver_type, Type::Singleton(_));
-        let direct_overloads =
+        let hide_kernel_function =
+            receiver_class != "Kernel" && self.is_kernel_module_function(method_name);
+        let mut direct_overloads =
             self.collect_owned_rbs_overloads(&receiver_class, method_name, prefer_singleton, false);
+        if hide_kernel_function {
+            direct_overloads.retain(|overload| overload.owner_class != "Kernel");
+        }
         let has_type_vars = !class_type_vars.is_empty()
             || direct_overloads.iter().any(|overload| {
                 !self
@@ -51131,8 +51173,11 @@ impl<'a> InferenceEngine<'a> {
             return Some(result);
         }
 
-        let all_overloads =
+        let mut all_overloads =
             self.collect_owned_rbs_overloads(&receiver_class, method_name, prefer_singleton, true);
+        if hide_kernel_function {
+            all_overloads.retain(|overload| overload.owner_class != "Kernel");
+        }
         self.resolve_no_block_generic_overloads(
             &all_overloads,
             receiver_type,
@@ -51143,6 +51188,15 @@ impl<'a> InferenceEngine<'a> {
             call_kw_arg_types,
             &class_type_vars,
         )
+    }
+
+    /// `def self?.x` makes `x` private on instances, so an explicit receiver cannot reach it.
+    fn is_kernel_module_function(&self, method_name: &str) -> bool {
+        [false, true].iter().all(|&is_singleton| {
+            self.registry
+                .lookup_method_def("Kernel", method_name, is_singleton)
+                .is_some_and(|method| method.rbs_file_source)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -55467,6 +55521,37 @@ impl<'a> InferenceEngine<'a> {
             targets.push(target);
         }
         (!targets.is_empty()).then_some(targets)
+    }
+
+    /// `when Foo` with a class defined later still proves something about the subject, so the
+    /// branch must not pass on every argument the parameter receives.
+    fn when_hides_param_type(
+        &mut self,
+        class_name: &str,
+        when_node: &ruby_prism::WhenNode<'_>,
+        subject: Option<&NarrowSubject>,
+        scope: &Scope,
+    ) -> bool {
+        let Some(NarrowSubject::Local(name)) = subject else {
+            return false;
+        };
+        scope.get(name).is_some_and(Self::type_contains_param_ref)
+            && when_node.conditions().iter().any(|condition| {
+                matches!(
+                    condition,
+                    Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+                ) && match self.resolve_constant_type_in_scope(
+                    &String::from_utf8_lossy(condition.location().as_slice()),
+                    class_name,
+                ) {
+                    Type::Singleton(target) => self
+                        .registry
+                        .class_data_for(&target)
+                        .is_none_or(|data| !data.has_type_substance()),
+                    Type::Untyped => true,
+                    _ => false,
+                }
+            })
     }
 
     fn is_closed_case_subject_type(ty: &Type) -> bool {
@@ -59837,15 +59922,19 @@ impl<'a> InferenceEngine<'a> {
                 if scope.singleton_dispatch {
                     return None;
                 }
+                let deferred = Type::MethodReturnRef(Sym::new(class_name), Sym::new(name));
                 if self.is_pure_ivar_reader(class_name, false, name)
                     && let Some(ty) = self
                         .registry
                         .resolve_attr_reader_return_type(class_name, name, false)
                     && !Self::contains_unresolved_ref(&ty)
                 {
-                    return Some(ty);
+                    return Some(if self.reader_has_other_writers(class_name, name) {
+                        deferred
+                    } else {
+                        ty
+                    });
                 }
-                let deferred = Type::MethodReturnRef(Sym::new(class_name), Sym::new(name));
                 let Some(sig) = self.registry.lookup_method_sig(class_name, name) else {
                     return Some(deferred);
                 };
@@ -59856,6 +59945,25 @@ impl<'a> InferenceEngine<'a> {
                 })
             }),
         }
+    }
+
+    /// A reader's current type only covers the writers seen so far, so it cannot rule out a branch.
+    fn reader_has_other_writers(&self, class_name: &str, reader: &str) -> bool {
+        if self
+            .registry
+            .lookup_method_def(class_name, &format!("{reader}="), false)
+            .is_some()
+        {
+            return true;
+        }
+        let ivar = format!("@{reader}");
+        self.class_instance_ivar_writes
+            .get(class_name)
+            .is_some_and(|writes_by_method| {
+                writes_by_method
+                    .iter()
+                    .any(|(method, names)| method != "initialize" && names.contains(ivar.as_str()))
+            })
     }
 
     /// An ivar whose writers are not collected yet stays a deferred reference, like a local alias of it.

@@ -422,3 +422,33 @@ class DeferredListNode
   def same_end: (untyped other) -> (false | untyped)
 end
 ```
+
+## A deferred write on a method returning a tuple returns an array
+
+```ruby
+class Breadcrumbs
+  def add(name)
+    crumbs << [name]
+  end
+
+  def crumbs
+    []
+  end
+
+  def seed
+    list = []
+    list << "x"
+    list
+  end
+end
+```
+
+### result
+
+```rbs
+class Breadcrumbs
+  def add: (untyped name) -> Array[untyped]
+  def crumbs: -> [ ]
+  def seed: -> ["x"]
+end
+```

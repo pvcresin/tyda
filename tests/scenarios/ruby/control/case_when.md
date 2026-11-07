@@ -1210,3 +1210,118 @@ class Object < BasicObject
   def chained_accept: -> singleton(Alpha)
 end
 ```
+
+## A reader with a later writer keeps every branch
+
+```ruby
+class ReaderWriters
+  attr_accessor :state
+  attr_reader :name
+
+  def initialize
+    @state = nil
+    @name = nil
+  end
+
+  def by_state
+    case state
+    when :a
+      "a"
+    when :b
+      1
+    end
+  end
+
+  def by_name
+    if name.nil?
+      1
+    else
+      "known"
+    end
+  end
+
+  def rename(arg)
+    @name = arg.to_s
+  end
+end
+
+class OnlyInitialized
+  attr_reader :name
+
+  def initialize
+    @name = nil
+  end
+
+  def label = name.nil? ? 1 : "known"
+end
+```
+
+### result
+
+```rbs
+class OnlyInitialized
+  def name: -> nil
+  def initialize: -> void
+  def label: -> 1
+end
+
+class ReaderWriters
+  def state: -> nil
+  def state=: (nil state) -> nil
+  def name: -> untyped?
+  def initialize: -> void
+  def by_state: -> (1 | "a")?
+  def by_name: -> 1 | "known"
+  def rename: (untyped arg) -> untyped
+end
+```
+
+## A class from a later file hides the parameter's other arguments
+
+### update
+
+### file: formatter.rb
+
+```ruby
+module Formatter
+  def link(project)
+    project
+  end
+
+  def format_object(object)
+    case object
+    when Integer
+      1
+    when LaterModel
+      link(object)
+    end
+  end
+
+  def calls
+    format_object(1)
+    format_object(LaterModel.new)
+  end
+end
+```
+
+### file: later_model.rb
+
+```ruby
+class LaterModel
+  def archived? = false
+end
+```
+
+### result
+
+```rbs
+module Formatter
+  def link: (LaterModel project) -> LaterModel
+  def format_object: ((Integer | LaterModel) object) -> (1 | LaterModel)?
+  def calls: -> (1 | LaterModel)?
+end
+
+class LaterModel
+  def archived?: -> false
+end
+```
