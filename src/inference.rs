@@ -54147,16 +54147,64 @@ impl<'a> InferenceEngine<'a> {
         if depth >= MAX_DEPTH {
             return ty.clone();
         }
-        if Self::is_unknown_receiver_chain(ty) {
+        if Self::is_unknown_receiver_chain(ty) || Self::receiver_resolution_is_identity(ty) {
             return ty.clone();
         }
-        let key = (ty.clone(), preserve_untyped);
-        if let Some(cached) = memo.get(&key) {
-            return cached.clone();
+        // Only a reference can reach itself again or repeat costly lookups, and hashing whole
+        // containers at every level would dominate large unions.
+        let key = matches!(
+            ty,
+            Type::MethodReturnRef(..)
+                | Type::ReceiverMethodRef(..)
+                | Type::DeferredSafeNavigation(..)
+        )
+        .then(|| (ty.clone(), preserve_untyped));
+        if let Some(key) = &key {
+            if let Some(cached) = memo.get(key) {
+                return cached.clone();
+            }
+            if !visiting.insert(key.clone()) {
+                return ty.clone();
+            }
         }
-        if !visiting.insert(key.clone()) {
-            return ty.clone();
+    /// Resolution rebuilds a type unchanged unless it holds a reference, a projection, or a
+    /// union whose `untyped` member is subject to normalization.
+    fn receiver_resolution_is_identity(ty: &Type) -> bool {
+        match ty {
+            Type::MethodReturnRef(..)
+            | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..)
+            | Type::TruthyProjection(_)
+            | Type::FalsyProjection(_)
+            | Type::NonNilProjection(_)
+            | Type::PatternIndexRef(..)
+            | Type::PatternRestRef(_)
+            | Type::PatternTrailingRef(..)
+            | Type::PatternKeyRef(..)
+            | Type::PatternKeyRestRef(..) => false,
+            Type::Union(parts) => {
+                !parts.contains(&Type::Untyped)
+                    && parts.iter().all(Self::receiver_resolution_is_identity)
+            }
+            Type::Intersection(parts) | Type::Tuple(parts) => {
+                parts.iter().all(Self::receiver_resolution_is_identity)
+            }
+            Type::Array(Some(inner)) => Self::receiver_resolution_is_identity(inner),
+            Type::Hash(key, value) => {
+                key.as_deref()
+                    .is_none_or(Self::receiver_resolution_is_identity)
+                    && value
+                        .as_deref()
+                        .is_none_or(Self::receiver_resolution_is_identity)
+            }
+            Type::Record(fields) => fields
+                .iter()
+                .all(|field| Self::receiver_resolution_is_identity(&field.value)),
+            Type::Proc { return_type, .. } => Self::receiver_resolution_is_identity(return_type),
+            _ => true,
         }
+    }
+
         let resolved = match ty {
             Type::MethodReturnRef(class_name, method_name) => {
                 self.ensure_class_available(class_name);
@@ -54466,8 +54514,10 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => ty.clone(),
         };
-        visiting.remove(&key);
-        memo.insert(key, resolved.clone());
+        if let Some(key) = key {
+            visiting.remove(&key);
+            memo.insert(key, resolved.clone());
+        }
         resolved
     }
 
