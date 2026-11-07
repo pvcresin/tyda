@@ -25,18 +25,21 @@ end
 class Product
   def category: -> Category
   def category=: (Category category) -> Category
-  def build_category: -> Category
-  def create_category: -> Category
+  def build_category: (?Hash[String | Symbol, untyped] attributes) -> Category
+  def create_category: (?Hash[String | Symbol, untyped] attributes) -> Category
+  def create_category!: (?Hash[String | Symbol, untyped] attributes) -> Category
   def reviews: -> ActiveRecord::Associations::CollectionProxy[Review]
   def review_ids: -> Array[Integer]
   def review_ids=: (Array[Integer] review_ids) -> Array[Integer]
   def reviews=: (Array[Review] reviews) -> ActiveRecord::Associations::CollectionProxy[Review]
   def detail: -> Detail?
   def detail=: (Detail detail) -> Detail
-  def build_detail: -> Detail
-  def create_detail: -> Detail
+  def build_detail: (?Hash[String | Symbol, untyped] attributes) -> Detail
+  def create_detail: (?Hash[String | Symbol, untyped] attributes) -> Detail
+  def create_detail!: (?Hash[String | Symbol, untyped] attributes) -> Detail
   def self.available: -> ActiveRecord::Relation[Product]
   def self.featured: -> ActiveRecord::Relation[Product]
+  def status: -> String
   def self.statuses: -> Hash[String, untyped]
   def draft?: -> bool
   def draft!: -> bool
@@ -71,8 +74,9 @@ end
 class Post
   def author: -> User
   def author=: (User author) -> User
-  def build_author: -> User
-  def create_author: -> User
+  def build_author: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_author: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_author!: (?Hash[String | Symbol, untyped] attributes) -> User
   def comments: -> ActiveRecord::Associations::CollectionProxy[Comment]
   def comment_ids: -> Array[Integer]
   def comment_ids=: (Array[Integer] comment_ids) -> Array[Integer]
@@ -112,8 +116,9 @@ end
 class Invoice
   def customer: -> Customer
   def customer=: (Customer customer) -> Customer
-  def build_customer: -> Customer
-  def create_customer: -> Customer
+  def build_customer: (?Hash[String | Symbol, untyped] attributes) -> Customer
+  def create_customer: (?Hash[String | Symbol, untyped] attributes) -> Customer
+  def create_customer!: (?Hash[String | Symbol, untyped] attributes) -> Customer
   def line_items: -> ActiveRecord::Associations::CollectionProxy[LineItem]
   def line_item_ids: -> Array[Integer]
   def line_item_ids=: (Array[Integer] line_item_ids) -> Array[Integer]
@@ -528,6 +533,8 @@ end
 class PostService
   def find_array = Post.find([1, 2, 3])
   def find_many = Post.find(1, 2, 3)
+  def find_splat_single = Post.find(*[1])
+  def find_splat_many = Post.find(*[1, 2])
   def first_n = Post.first(5)
   def last_n = Post.last(3)
 end
@@ -540,6 +547,8 @@ end
 class PostService
   def find_array: -> Array[Post]
   def find_many: -> Array[Post]
+  def find_splat_single: -> Post
+  def find_splat_many: -> Array[Post]
   def first_n: -> Array[Post]
   def last_n: -> Array[Post]
 end
@@ -568,8 +577,9 @@ class Order
   def items=: (Array[Item] items) -> ActiveRecord::Associations::CollectionProxy[Item]
   def invoice: -> Invoice?
   def invoice=: (Invoice invoice) -> Invoice
-  def build_invoice: -> Invoice
-  def create_invoice: -> Invoice
+  def build_invoice: (?Hash[String | Symbol, untyped] attributes) -> Invoice
+  def create_invoice: (?Hash[String | Symbol, untyped] attributes) -> Invoice
+  def create_invoice!: (?Hash[String | Symbol, untyped] attributes) -> Invoice
 end
 ```
 
@@ -598,8 +608,9 @@ class Project
   def tasks=: (Array[Task] tasks) -> ActiveRecord::Associations::CollectionProxy[Task]
   def owner: -> User?
   def owner=: (User owner) -> User
-  def build_owner: -> User
-  def create_owner: -> User
+  def build_owner: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_owner: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_owner!: (?Hash[String | Symbol, untyped] attributes) -> User
 end
 ```
 
@@ -615,6 +626,8 @@ end
 class PostManager
   def recent_posts = Post.where(published: true)
   def find_post(id) = Post.find(id)
+  def find_many_posts = Post.find(1, 2)
+  def find_posts_by_ids = Post.find([1, 2])
   def first_post = Post.first
   def post_count = Post.count
   def any_posts? = Post.exists?
@@ -627,13 +640,16 @@ end
 class Post < ApplicationRecord
   def author: -> User
   def author=: (User author) -> User
-  def build_author: -> User
-  def create_author: -> User
+  def build_author: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_author: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_author!: (?Hash[String | Symbol, untyped] attributes) -> User
 end
 
 class PostManager
   def recent_posts: -> ActiveRecord::Relation[Post]
   def find_post: (untyped id) -> Post
+  def find_many_posts: -> Array[Post]
+  def find_posts_by_ids: -> Array[Post]
   def first_post: -> Post?
   def post_count: -> Integer
   def any_posts?: -> bool
@@ -687,12 +703,14 @@ end
 class Appeal < ApplicationRecord
   def approved_by_account: -> Account?
   def approved_by_account=: (Account approved_by_account) -> Account
-  def build_approved_by_account: -> Account
-  def create_approved_by_account: -> Account
+  def build_approved_by_account: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def create_approved_by_account: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def create_approved_by_account!: (?Hash[String | Symbol, untyped] attributes) -> Account
   def rejected_by_account: -> Account?
   def rejected_by_account=: (Account rejected_by_account) -> Account
-  def build_rejected_by_account: -> Account
-  def create_rejected_by_account: -> Account
+  def build_rejected_by_account: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def create_rejected_by_account: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def create_rejected_by_account!: (?Hash[String | Symbol, untyped] attributes) -> Account
 end
 ```
 
@@ -819,5 +837,280 @@ end
 class Post < ApplicationRecord
   def self.with_recursive_test: -> ActiveRecord::Relation[Post]
   def self.regroup_test: -> ActiveRecord::Relation[Post]
+end
+```
+
+## Grouped Active Record count returns grouped counts
+
+### update
+
+```ruby
+class ActiveRecord::Base; end
+class ApplicationRecord < ActiveRecord::Base; end
+
+class Post < ApplicationRecord
+  def self.grouped_counts = group(:status).count
+  def self.grouped_count_keys = group(:status).count.keys
+end
+```
+
+### result
+
+```rbs
+class Post < ApplicationRecord
+  def self.grouped_counts: -> Hash[untyped, Integer]
+  def self.grouped_count_keys: -> Array[untyped]
+end
+```
+
+## Serialized attributes use their declared type
+
+### update
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "users", force: :cascade do |t|
+    t.string "tags"
+    t.string "position"
+  end
+end
+```
+
+```ruby
+class ActiveRecord::Base; end
+class ApplicationRecord < ActiveRecord::Base; end
+
+class Position
+  def line = 1
+end
+
+module SerializedAttributes
+  extend ActiveSupport::Concern
+
+  included do
+    serialize :position, type: Position
+  end
+end
+
+class User < ApplicationRecord
+  serialize :tags, type: Array
+  include SerializedAttributes
+
+  def self.read_tags = new.tags
+  def self.read_position = new.position
+end
+```
+
+### result
+
+```rbs
+class Position
+  def line: -> 1
+end
+
+module SerializedAttributes
+  extend ActiveSupport::Concern
+end
+
+class User < ApplicationRecord
+  include SerializedAttributes
+
+  def tags: -> Array
+  def tags=: (Array tags) -> Array
+  def position: -> Position
+  def position=: (Position position) -> Position
+  def self.read_tags: -> Array
+  def self.read_position: -> Position
+end
+```
+
+## Preserve explicit methods for serialized attributes
+
+### update
+
+```ruby
+class ActiveRecord::Base; end
+class ApplicationRecord < ActiveRecord::Base; end
+
+class SourceSerializedAttribute < ApplicationRecord
+  serialize :payload, type: Array
+
+  def payload = :source_payload
+end
+
+module RbsSerializedAttribute
+  extend ActiveSupport::Concern
+
+  included do
+    serialize :payload, type: Array
+  end
+end
+
+class RbsSerializedAttributeRecord < ApplicationRecord
+  include RbsSerializedAttribute
+
+  #: () -> Symbol
+  def payload = :rbs_payload
+
+  #: (String payload) -> Symbol
+  def payload=(payload) = :rbs_payload
+end
+```
+
+### result
+
+```rbs
+module RbsSerializedAttribute
+  extend ActiveSupport::Concern
+end
+
+class RbsSerializedAttributeRecord < ApplicationRecord
+  include RbsSerializedAttribute
+
+  def payload: -> Symbol
+  def payload=: (String payload) -> Symbol
+end
+
+class SourceSerializedAttribute < ApplicationRecord
+  def payload=: (Array payload) -> Array
+  def payload: -> :source_payload
+end
+```
+
+## Serialized attributes without a declared type stay unknown
+
+### update
+
+```ruby
+class ActiveRecord::Base; end
+class ApplicationRecord < ActiveRecord::Base; end
+
+module UnspecifiedSerializedAttribute
+  extend ActiveSupport::Concern
+
+  included do
+    serialize :payload
+  end
+end
+
+class User < ApplicationRecord
+  include UnspecifiedSerializedAttribute
+
+  def self.read_payload = new.payload
+end
+```
+
+### result
+
+```rbs
+module UnspecifiedSerializedAttribute
+  extend ActiveSupport::Concern
+end
+
+class User < ApplicationRecord
+  include UnspecifiedSerializedAttribute
+
+  def payload: -> untyped
+  def payload=: (untyped payload) -> untyped
+  def self.read_payload: -> untyped
+end
+```
+
+## Fully qualified serialized types apply from a concern
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "draft_notes", force: :cascade do |t|
+    t.text "position"
+    t.text "original_position"
+    t.text "change_position"
+  end
+end
+```
+
+### file: lib/gitlab/diff/position.rb
+
+```ruby
+module Gitlab
+  module Diff
+    class Position
+      def complete? = true
+      def diff_file = "file"
+    end
+  end
+end
+```
+
+### file: app/models/concerns/diff_positionable_note.rb
+
+```ruby
+module DiffPositionableNote
+  extend ActiveSupport::Concern
+
+  included do
+    serialize :original_position, type: Gitlab::Diff::Position
+    serialize :position, type: Gitlab::Diff::Position
+    serialize :change_position, type: Gitlab::Diff::Position
+  end
+end
+```
+
+```ruby
+class ActiveRecord::Base; end
+class ApplicationRecord < ActiveRecord::Base; end
+
+class DraftNote < ApplicationRecord
+  include DiffPositionableNote
+
+  def self.position_complete = new.position&.complete?
+  def self.original_position_diff_file = new.original_position&.diff_file
+  def self.change_position_complete = new.change_position&.complete?
+end
+```
+
+### result
+
+```rbs
+class DraftNote < ApplicationRecord
+  include DiffPositionableNote
+
+  def self.position_complete: -> true
+  def self.original_position_diff_file: -> "file"
+  def self.change_position_complete: -> true
+end
+```
+
+## A scalar find on a model from another file returns the model
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: app/models/entry.rb
+
+```ruby
+class Entry < ApplicationRecord
+end
+```
+
+```ruby
+class EntryLookup
+  def first_entry
+    Entry.find(1)
+  end
+end
+```
+
+### result
+
+```rbs
+class EntryLookup
+  def first_entry: -> Entry
 end
 ```

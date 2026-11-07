@@ -34,10 +34,6 @@ end
 
 ## Underscore method names without parentheses
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

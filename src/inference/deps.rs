@@ -111,6 +111,10 @@ impl<'a> InferenceEngine<'a> {
                     Self::collect_typed_edges_from_type(p, defined, kind, edges);
                 }
             }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Self::collect_typed_edges_from_type(receiver, defined, kind, edges);
+                Self::collect_typed_edges_from_type(result, defined, kind, edges);
+            }
             _ => {}
         }
     }
@@ -204,6 +208,10 @@ impl<'a> InferenceEngine<'a> {
             }
             Type::MethodReturnRef(class, _) if !defined.contains(class.as_str()) => {
                 refs.insert((class.clone()).to_string());
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Self::collect_type_references_into(receiver, defined, refs);
+                Self::collect_type_references_into(result, defined, refs);
             }
             _ => {}
         }

@@ -171,6 +171,7 @@ Redmine の縮退契約は [tests/scenarios/rails/dsl/redmine.md](https://github
 - `didOpen` / `didChange` 後の Hover、CodeLens、diagnostics が最新 snapshot を見ることを固定する。
 - workspace scan 完了前の誤診断抑制、refresh の coalesce、full / incremental change を確認する。
 - diagnostics は真陽性を先に固定し、Unknown を沈黙させる変更では false positive も確認する。
+- 同名の instance / singleton method の parameter 型解決は、RBS 出力ではなく diagnostics と Hover の動作を対象にするため、`tests/flow_diagnostics.rs` で通常 / compact の両経路を固定する。
 
 ## Robustness / performance
 

@@ -1,6 +1,6 @@
-# Ruby / Class / Ivar Camel Case Inference
+# Ruby / Class / Ivar Name No Class Guess
 
-## attr_reader with param name matching a class
+## A parameter named like a class stays unknown on attr_reader
 
 ```ruby
 class Account
@@ -24,12 +24,12 @@ class Account
 end
 
 class Presenter
-  def account: -> Account
-  def initialize: (Account account) -> void
+  def account: -> untyped
+  def initialize: (untyped account) -> void
 end
 ```
 
-## ivar return with CamelCase resolution
+## A parameter named like a class stays unknown on an ivar read
 
 ```ruby
 class User
@@ -52,8 +52,8 @@ end
 
 ```rbs
 class Mailer
-  def initialize: (User user) -> void
-  def recipient: -> User
+  def initialize: (untyped user) -> void
+  def recipient: -> untyped
 end
 
 class User

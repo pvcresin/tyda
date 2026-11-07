@@ -107,3 +107,28 @@ class Object < BasicObject
   def run: (Integer n) { (Float) -> "ok" } -> "ok"
 end
 ```
+
+## safe navigation waits for a yielded return type
+
+### update
+
+```ruby
+class C
+  def self.to_text
+    yield&.to_s
+  end
+
+  def self.from_nil = to_text { nil }
+  def self.from_string = to_text { "ready" }
+end
+```
+
+### result
+
+```rbs
+class C
+  def self.to_text: { () -> "ready"? } -> nil | untyped
+  def self.from_nil: -> nil
+  def self.from_string: -> String
+end
+```

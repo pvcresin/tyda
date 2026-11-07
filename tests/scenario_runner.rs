@@ -125,7 +125,10 @@ fn run_scenario_file(
 }
 
 fn is_known_issue_path(file_name: &str) -> bool {
-    file_name == "known-issues" || file_name.starts_with("known-issues/")
+    Path::new(file_name)
+        .components()
+        .next()
+        .is_some_and(|first| first.as_os_str() == "known-issues")
 }
 
 struct FileRun {

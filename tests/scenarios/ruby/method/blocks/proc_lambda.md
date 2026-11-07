@@ -81,7 +81,7 @@ end
 class Object < BasicObject
   def foo: { (Integer) -> 42 } -> 42
   def proxy: { (Integer) -> 42 } -> 42
-  def bar: -> 42?
+  def bar: -> 42
 end
 ```
 
@@ -109,7 +109,7 @@ end
 class Object < BasicObject
   def foo: (Integer x) { (Integer) -> 42 } -> 42
   def proxy: { (Integer) -> 42 } -> 42
-  def bar: -> 42?
+  def bar: -> 42
 end
 ```
 

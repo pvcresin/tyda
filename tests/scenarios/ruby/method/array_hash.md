@@ -154,6 +154,30 @@ class Object < BasicObject
 end
 ```
 
+## Respect source overrides of Array.new
+
+### update
+
+```ruby
+class Array
+  def self.new(size) = :custom
+end
+
+def custom_array_new = Array.new(1)
+```
+
+### result
+
+```rbs
+class Array[E]
+  def self.new: (Integer size) -> :custom
+end
+
+class Object < BasicObject
+  def custom_array_new: -> :custom
+end
+```
+
 ## Apply Hash.new default proc return to value type
 
 ### update
@@ -630,6 +654,11 @@ end
 def missing_range_slice
   [1, 2][3..]
 end
+
+def range_slice_at_end
+  [1, 2][2..]
+end
+
 ```
 
 ### result
@@ -646,6 +675,7 @@ class Object < BasicObject
   def call_slice_items: -> ["one", "two"]
   def empty_slice: -> [ ]
   def missing_range_slice: -> nil
+  def range_slice_at_end: -> [ ]
 end
 ```
 
@@ -1158,6 +1188,32 @@ class Object < BasicObject
   def join_nested_parts: -> "root/child/leaf"
   def join_default_separator: -> "ab"
   def join_dynamic_parts: (untyped value) -> String
+end
+```
+
+## Array#join returns String after adding a dynamic map result
+
+### update
+
+```ruby
+def created_strategy_message(strategy) = "Created strategy #{strategy}"
+
+def join_after_dynamic_map(feature_flag)
+  message_parts = ["Created feature flag #{feature_flag.name} with description \"#{feature_flag.description}\"."]
+  message_parts += feature_flag.strategies.map do |strategy|
+    created_strategy_message(strategy)
+  end
+  message_parts.join(" ")
+end
+
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def created_strategy_message: (untyped strategy) -> String
+  def join_after_dynamic_map: (untyped feature_flag) -> String
 end
 ```
 
@@ -1678,10 +1734,6 @@ end
 
 ## Direct `[]=` call accepts a block argument
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -2109,6 +2161,10 @@ class IndexAccess
     ints[j]
   end
 
+  def widened_unknown_index(i)
+    ints[i]
+  end
+
   def widened_at = ints.at(0)
 
   def widened_fetch = ints.fetch(0)
@@ -2133,13 +2189,40 @@ class IndexAccess
   def ints: -> Array[Integer]
   def pair: -> [1, "a"]
   def widened_literal_index: -> Integer?
-  def widened_dynamic_index: (untyped i) -> Integer?
+  def widened_dynamic_index: (untyped i) -> untyped
+  def widened_unknown_index: (untyped i) -> untyped
   def widened_at: -> Integer?
   def widened_fetch: -> Integer
   def tuple_first_elem: -> 1
   def tuple_last_elem: -> "a"
   def tuple_out_of_range: -> nil
-  def tuple_dynamic_index: (untyped i) -> (1 | "a")?
+  def tuple_dynamic_index: (untyped i) -> untyped
+end
+```
+
+## Preserve array element types for deferred integer expressions
+
+### update
+
+```ruby
+class IvarIndexAccess
+  def initialize
+    @indices = Array.new(4, 0)
+  end
+
+  def indexed
+    values = Array.new(4, "value")
+    values[@indices[0] >> 1 & 3]
+  end
+end
+```
+
+### result
+
+```rbs
+class IvarIndexAccess
+  def initialize: -> void
+  def indexed: -> "value"?
 end
 ```
 
@@ -2325,5 +2408,66 @@ class PluginBlockMap
   def definitions: -> Hash
   def find_block: (untyped name) -> (nil | untyped)
   def partial: (untyped name) -> (nil | untyped)
+end
+```
+
+## Array compact removes nil from tuple element unions
+
+### update
+
+```ruby
+def compact_nilable_tuple(flag)
+  [flag ? 1 : nil, "right"].compact
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def compact_nilable_tuple: (untyped flag) -> Array[1 | "right"]
+end
+```
+
+## Freezing a shape keeps it when an element is deferred
+
+```ruby
+class FrozenOperators
+  OPERATORS = { "=" => lambda { |value, other| value == other } }.freeze
+end
+```
+
+### result
+
+```rbs
+class FrozenOperators
+  OPERATORS: { "=" => Proc }
+end
+```
+
+## A dig through an unknown first key keeps the nested values
+
+```ruby
+class UnknownKeyDig
+  DEFAULTS = { foo: { title: "a" } }.freeze
+
+  def extract(attribute)
+    DEFAULTS.dig(unknown_key, attribute)
+  end
+
+  def call_extract
+    extract(:title)
+  end
+end
+```
+
+### result
+
+```rbs
+class UnknownKeyDig
+  DEFAULTS: { foo: { title: "a" } }
+
+  def extract: (Symbol attribute) -> "a"?
+  def call_extract: -> "a"?
 end
 ```

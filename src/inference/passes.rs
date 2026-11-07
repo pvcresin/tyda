@@ -1,4 +1,5 @@
 use super::*;
+use crate::registry::CallerCtxMemoScope;
 
 impl<'a> InferenceEngine<'a> {
     fn class_needs_parameter_reference_resolution(data: &ClassData) -> bool {
@@ -19,6 +20,13 @@ impl<'a> InferenceEngine<'a> {
             return None;
         }
         Some(self.expand_target_classes_with_ancestors(contributed.clone()))
+    }
+
+    /// Resolution visits classes in this order, so it must not follow set iteration order.
+    fn sorted_class_syms(names: &HashSet<String>) -> Vec<Sym> {
+        let mut names: Vec<&String> = names.iter().collect();
+        names.sort_unstable();
+        names.into_iter().map(Sym::new).collect()
     }
 
     fn is_stdlib_root_class(name: &str) -> bool {
@@ -171,7 +179,7 @@ impl<'a> InferenceEngine<'a> {
 
     fn resolution_class_names(&self) -> Vec<Sym> {
         if let Some(target_classes) = self.current_file_target_classes() {
-            target_classes.iter().map(Sym::new).collect()
+            Self::sorted_class_syms(&target_classes)
         } else {
             self.registry.class_names_unsorted()
         }
@@ -202,17 +210,53 @@ impl<'a> InferenceEngine<'a> {
             };
             let grouped_call_sites = Self::group_call_sites_by_method(&data.call_sites);
             let mut all_param_types: Vec<Vec<Type>> = Vec::with_capacity(data.methods.len());
+            let caller_ctx_memo = CallerCtxMemoScope::enter();
             for method in &data.methods {
                 let empty: [&CallSite; 0] = [];
                 let method_call_sites = grouped_call_sites
                     .get(&(method.name.as_str(), method.is_singleton))
                     .map(Vec::as_slice)
                     .unwrap_or(&empty);
-                all_param_types.push(Self::resolve_param_types_from_grouped_call_sites(
-                    &method.param_infos,
-                    method_call_sites,
-                ));
+                let forwarded_call_sites: Vec<Option<CallSite>> = method_call_sites
+                    .iter()
+                    .map(|site| self.registry.call_site_with_forwarded_args(site))
+                    .collect();
+                let method_call_sites: Vec<&CallSite> = method_call_sites
+                    .iter()
+                    .zip(&forwarded_call_sites)
+                    .map(|(site, forwarded)| forwarded.as_ref().unwrap_or(site))
+                    .collect();
+                let param_types = if method_call_sites
+                    .iter()
+                    .any(|site| Self::call_site_contains_method_ref(site))
+                {
+                    let resolved_call_sites: Vec<CallSite> = method_call_sites
+                        .iter()
+                        .map(|site| self.resolve_call_site_method_refs(class_name, site))
+                        .collect();
+                    let resolved_call_site_refs: Vec<&CallSite> =
+                        resolved_call_sites.iter().collect();
+                    Self::resolve_param_types_from_grouped_call_sites(
+                        &method.param_infos,
+                        &resolved_call_site_refs,
+                    )
+                } else {
+                    Self::resolve_param_types_from_grouped_call_sites(
+                        &method.param_infos,
+                        &method_call_sites,
+                    )
+                };
+                all_param_types.push(
+                    param_types
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, ty)| {
+                            TypeRegistry::replace_forwarded_markers(ty, &Type::ParamRef(index))
+                        })
+                        .collect(),
+                );
             }
+            drop(caller_ctx_memo);
 
             let init_updates = data
                 .methods
@@ -460,16 +504,38 @@ impl<'a> InferenceEngine<'a> {
                     visiting.remove(&(class_name.to_string(), *method_name));
                     return resolved;
                 }
-                ty.clone()
+                registry
+                    .resolve_attr_reader_return_type(class_name, method_name, false)
+                    .unwrap_or_else(|| ty.clone())
             }
             Type::ReceiverMethodRef(receiver_type, method_name) => {
-                let resolved_receiver = Self::resolve_general_method_refs_depth(
+                let resolved_receiver = Self::resolve_deferred_receiver_type(
                     registry,
                     context_class,
                     receiver_type,
                     visiting,
                     depth + 1,
                 );
+                if let Type::Union(parts) = &resolved_receiver
+                    && parts.contains(&Type::Untyped)
+                {
+                    let arms = parts
+                        .iter()
+                        .map(|part| {
+                            if *part == Type::Untyped {
+                                return Type::Untyped;
+                            }
+                            Self::resolve_general_method_refs_depth(
+                                registry,
+                                context_class,
+                                &Type::ReceiverMethodRef(Box::new(part.clone()), *method_name),
+                                visiting,
+                                depth + 1,
+                            )
+                        })
+                        .collect();
+                    return Type::from_type_vec_preserve_untyped(arms);
+                }
                 if let Some(receiver_class) = Self::static_type_to_class_name(&resolved_receiver) {
                     let ret = registry
                         .lookup_method_return_type_direct(&receiver_class, method_name)
@@ -491,17 +557,53 @@ impl<'a> InferenceEngine<'a> {
                 }
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
             }
-            Type::Union(parts) => Type::from_type_vec(
+            Type::DeferredSafeNavigation(receiver_type, result_type) => {
+                let resolved_receiver = Self::resolve_deferred_receiver_type(
+                    registry,
+                    context_class,
+                    receiver_type,
+                    visiting,
+                    depth + 1,
+                );
+                let resolved_result = Self::resolve_deferred_receiver_type(
+                    registry,
+                    context_class,
+                    result_type,
+                    visiting,
+                    depth + 1,
+                );
+                Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
+            }
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
+                let resolved_inner = Self::resolve_general_method_refs_depth(
+                    registry,
+                    context_class,
+                    inner,
+                    visiting,
+                    depth + 1,
+                );
+                Self::resolve_method_ref_projection(ty, resolved_inner)
+            }
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
                 parts
                     .iter()
-                    .map(|t| {
-                        Self::resolve_general_method_refs_depth(
+                    .map(|part| match part {
+                        Type::TruthyProjection(inner)
+                        | Type::FalsyProjection(inner)
+                        | Type::NonNilProjection(inner)
+                            if Self::type_contains_method_ref(inner) =>
+                        {
+                            part.clone()
+                        }
+                        _ => Self::resolve_general_method_refs_depth(
                             registry,
                             context_class,
-                            t,
+                            part,
                             visiting,
                             depth + 1,
-                        )
+                        ),
                     })
                     .collect(),
             ),
@@ -532,12 +634,81 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn resolve_deferred_receiver_type(
+        registry: &TypeRegistry,
+        context_class: &str,
+        ty: &Type,
+        visiting: &mut FxHashSet<(String, Sym)>,
+        depth: usize,
+    ) -> Type {
+        match ty {
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
+                parts
+                    .iter()
+                    .map(|part| {
+                        Self::resolve_deferred_receiver_type(
+                            registry,
+                            context_class,
+                            part,
+                            visiting,
+                            depth + 1,
+                        )
+                    })
+                    .collect(),
+            ),
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
+                let resolved_inner = Self::resolve_general_method_refs_depth(
+                    registry,
+                    context_class,
+                    inner,
+                    visiting,
+                    depth + 1,
+                );
+                Self::resolve_method_ref_projection(ty, resolved_inner)
+            }
+            _ => Self::resolve_general_method_refs_depth(
+                registry,
+                context_class,
+                ty,
+                visiting,
+                depth,
+            ),
+        }
+    }
+
+    fn resolve_method_ref_projection(ty: &Type, resolved_inner: Type) -> Type {
+        if Self::type_contains_method_ref(&resolved_inner) {
+            match ty {
+                Type::TruthyProjection(_) => Type::TruthyProjection(Box::new(resolved_inner)),
+                Type::FalsyProjection(_) => Type::FalsyProjection(Box::new(resolved_inner)),
+                Type::NonNilProjection(_) => Type::NonNilProjection(Box::new(resolved_inner)),
+                _ => ty.clone(),
+            }
+        } else {
+            let projected = match ty {
+                Type::TruthyProjection(_) => Type::project_truthy(&resolved_inner),
+                Type::FalsyProjection(_) => Type::project_falsy(&resolved_inner),
+                Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
+                _ => None,
+            };
+            projected.unwrap_or(Type::Bot)
+        }
+    }
+
     pub(super) fn type_contains_method_ref(ty: &Type) -> bool {
         match ty {
-            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) | Type::IvarRef(..) => true,
+            Type::MethodReturnRef(..)
+            | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..)
+            | Type::IvarRef(..) => true,
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::type_contains_method_ref)
             }
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => Self::type_contains_method_ref(inner),
             Type::Array(Some(inner)) => Self::type_contains_method_ref(inner),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_method_ref),
             Type::Hash(Some(k), Some(v)) => {
@@ -761,7 +932,7 @@ impl<'a> InferenceEngine<'a> {
                 }
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
             }
-            Type::Union(parts) => Type::from_type_vec(
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
                 parts
                     .iter()
                     .map(|t| Self::resolve_subclass_refs_in_type(registry, t))
@@ -780,11 +951,70 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn call_site_contains_method_ref(call_site: &CallSite) -> bool {
+        call_site
+            .arg_types
+            .iter()
+            .any(Self::type_contains_method_ref)
+            || call_site
+                .keyword_arg_types
+                .values()
+                .any(Self::type_contains_method_ref)
+            || call_site
+                .keyword_rest_shape
+                .as_deref()
+                .is_some_and(Self::type_contains_method_ref)
+    }
+
+    fn resolve_call_site_method_refs(&self, class_name: &str, call_site: &CallSite) -> CallSite {
+        let context_class = call_site
+            .caller_context
+            .as_deref()
+            .map(|context| context.class_name.as_ref())
+            .unwrap_or(class_name);
+        let mut resolved = call_site.clone();
+        for arg_type in &mut resolved.arg_types {
+            let mut visiting = FxHashSet::default();
+            *arg_type = Self::resolve_general_method_refs(
+                &self.registry,
+                context_class,
+                arg_type,
+                &mut visiting,
+            );
+        }
+        resolved.keyword_arg_types = call_site
+            .keyword_arg_types
+            .iter()
+            .map(|(name, arg_type)| {
+                let mut visiting = FxHashSet::default();
+                (
+                    name.clone(),
+                    Self::resolve_general_method_refs(
+                        &self.registry,
+                        context_class,
+                        arg_type,
+                        &mut visiting,
+                    ),
+                )
+            })
+            .collect();
+        resolved.keyword_rest_shape = call_site.keyword_rest_shape.as_deref().map(|arg_type| {
+            let mut visiting = FxHashSet::default();
+            Box::new(Self::resolve_general_method_refs(
+                &self.registry,
+                context_class,
+                arg_type,
+                &mut visiting,
+            ))
+        });
+        resolved
+    }
+
     fn method_needs_parameter_reference_resolution(method: &MethodDef) -> bool {
         Self::type_contains_param_ref(&method.raw_return_type)
     }
 
-    fn type_contains_param_ref(ty: &Type) -> bool {
+    pub(super) fn type_contains_param_ref(ty: &Type) -> bool {
         match ty {
             Type::ParamRef(_) | Type::KeywordParamRef(_) => true,
             Type::Union(parts) | Type::Intersection(parts) => {
@@ -805,6 +1035,9 @@ impl<'a> InferenceEngine<'a> {
             Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
                 Self::type_contains_param_ref(subject)
             }
+            Type::TruthyProjection(subject)
+            | Type::FalsyProjection(subject)
+            | Type::NonNilProjection(subject) => Self::type_contains_param_ref(subject),
             Type::ReceiverMethodRef(receiver_type, _) => {
                 Self::type_contains_param_ref(receiver_type)
             }
@@ -1094,7 +1327,6 @@ impl<'a> InferenceEngine<'a> {
 
         let mut pending = Vec::new();
         let mut seen = HashSet::new();
-
         for class_name in self.registry.user_defined_class_names_unsorted() {
             let Some(data) = self.registry.class_data_for(&class_name) else {
                 continue;
@@ -1104,6 +1336,10 @@ impl<'a> InferenceEngine<'a> {
                     self.collect_receiver_reference_classes(&method.raw_return_type, &mut pending);
                 }
             }
+            let mut ivar_classes = std::collections::BTreeSet::new();
+            self.registry
+                .collect_ivar_receiver_classes(data, &mut ivar_classes);
+            pending.extend(ivar_classes);
         }
 
         while let Some(class_name) = pending.pop() {
@@ -1151,6 +1387,56 @@ impl<'a> InferenceEngine<'a> {
                 | "TrueClass"
                 | "FalseClass"
         )
+    }
+
+    pub fn preload_callsite_receiver_reference_types(&mut self) -> bool {
+        if self.lazy_loader.is_none() && self.lazy_rbi_loader.is_none() {
+            return false;
+        }
+
+        let target_classes = self.current_file_target_classes();
+        let mut receiver_types = HashSet::new();
+        let class_names: Vec<Sym> = if let Some(targets) = target_classes.as_ref() {
+            let mut names = Self::sorted_class_syms(targets);
+            names.retain(|name| self.registry.is_user_defined_class(name));
+            names
+        } else {
+            self.registry.user_defined_class_names_unsorted()
+        };
+        let mut ivar_classes = std::collections::BTreeSet::new();
+        for class_name in class_names {
+            if let Some(data) = self.registry.class_data_for(class_name.as_ref()) {
+                self.registry
+                    .collect_ivar_receiver_classes(data, &mut ivar_classes);
+            }
+            for call_site in self.registry.get_call_sites(class_name.as_ref()).iter() {
+                for arg_type in &call_site.arg_types {
+                    if let Type::ReceiverMethodRef(receiver_type, _) = arg_type
+                        && Self::type_contains_receiver_resolution_ref(receiver_type)
+                    {
+                        receiver_types.insert(receiver_type.as_ref().clone());
+                    }
+                }
+            }
+        }
+
+        let mut pending: Vec<String> = ivar_classes.into_iter().collect();
+        let found_receiver_types = !receiver_types.is_empty();
+        for receiver_type in receiver_types {
+            let resolved = self.resolve_receiver_method_refs(&receiver_type);
+            if let Some(class_name) = Self::static_type_to_class_name(&resolved) {
+                pending.push(class_name);
+            }
+            Self::collect_receiver_classes(&resolved, &mut pending);
+        }
+
+        // Load order affects later resolution, so it must not follow set iteration order.
+        pending.sort_unstable();
+        pending.dedup();
+        for class_name in pending {
+            self.ensure_class_available(&class_name);
+        }
+        found_receiver_types
     }
 
     pub(super) fn collect_receiver_classes(ty: &Type, classes: &mut Vec<String>) {
@@ -1532,6 +1818,32 @@ impl<'a> InferenceEngine<'a> {
                 );
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
             }
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
+                let resolved_inner =
+                    Self::substitute_param_refs_with_keywords(inner, param_types, keyword_types);
+                if Self::type_contains_param_ref(&resolved_inner) {
+                    match ty {
+                        Type::TruthyProjection(_) => {
+                            Type::TruthyProjection(Box::new(resolved_inner))
+                        }
+                        Type::FalsyProjection(_) => Type::FalsyProjection(Box::new(resolved_inner)),
+                        Type::NonNilProjection(_) => {
+                            Type::NonNilProjection(Box::new(resolved_inner))
+                        }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    let projected = match ty {
+                        Type::TruthyProjection(_) => Type::project_truthy(&resolved_inner),
+                        Type::FalsyProjection(_) => Type::project_falsy(&resolved_inner),
+                        Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
+                        _ => unreachable!(),
+                    };
+                    projected.unwrap_or(Type::Bot)
+                }
+            }
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject =
                     Self::substitute_param_refs_with_keywords(subject, param_types, keyword_types);
@@ -1716,6 +2028,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn non_nil_projection_applies_after_parameter_substitution() {
+        let projection = Type::NonNilProjection(Box::new(Type::ParamRef(0)));
+        let string_or_nil = Type::Union(vec![Type::String, Type::Nil]);
+        assert_eq!(
+            InferenceEngine::substitute_param_refs_with_keywords(
+                &projection,
+                std::slice::from_ref(&string_or_nil),
+                &std::collections::HashMap::new(),
+            ),
+            Type::String
+        );
+
+        let false_or_nil = Type::Union(vec![Type::False, Type::Nil]);
+        assert_eq!(
+            InferenceEngine::substitute_param_refs_with_keywords(
+                &projection,
+                &[false_or_nil],
+                &std::collections::HashMap::new(),
+            ),
+            Type::False
+        );
+
+        let keyword_projection =
+            Type::NonNilProjection(Box::new(Type::KeywordParamRef(Sym::new("value"))));
+        assert_eq!(
+            InferenceEngine::substitute_param_refs_with_keywords(
+                &keyword_projection,
+                &[],
+                &std::collections::HashMap::from([("value".to_string(), string_or_nil,)]),
+            ),
+            Type::String
+        );
+    }
+
+    #[test]
     fn method_needs_parameter_reference_resolution_only_for_param_refs() {
         let concrete = MethodDef {
             name: Sym::new("literal"),
@@ -1790,28 +2137,6 @@ mod tests {
             &mut classes,
         );
         assert!(classes.is_empty());
-    }
-
-    #[test]
-    fn collect_receiver_reference_classes_preloads_object_for_unknown_self_call() {
-        let engine = InferenceEngine::new();
-        let mut classes = Vec::new();
-        engine.collect_receiver_reference_classes(
-            &Type::MethodReturnRef("Meta".into(), "to_s".into()),
-            &mut classes,
-        );
-        assert_eq!(classes, vec!["Object".to_string()]);
-    }
-
-    #[test]
-    fn collect_receiver_reference_classes_keeps_core_owner_for_stdlib_method() {
-        let engine = InferenceEngine::new();
-        let mut classes = Vec::new();
-        engine.collect_receiver_reference_classes(
-            &Type::MethodReturnRef("String".into(), "upcase".into()),
-            &mut classes,
-        );
-        assert_eq!(classes, vec!["String".to_string()]);
     }
 
     #[test]

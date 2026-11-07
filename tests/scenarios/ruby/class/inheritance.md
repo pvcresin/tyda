@@ -143,7 +143,7 @@ end
 ```rbs
 class Base
   def initialize: (untyped detail) -> void
-  def has_detail?: -> bool
+  def has_detail?: -> untyped
 end
 
 class Child < Base

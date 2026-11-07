@@ -41,6 +41,7 @@ end
 class Project < ApplicationRecord
   def title: -> String?
   def title=: (String? title) -> String?
+  def title?: -> bool
 end
 ```
 
@@ -67,9 +68,11 @@ end
 class Project < ApplicationRecord
   def namespace: -> Namespace
   def namespace=: (Namespace namespace) -> Namespace
-  def build_namespace: -> Namespace
-  def create_namespace: -> Namespace
+  def build_namespace: (?Hash[String | Symbol, untyped] attributes) -> Namespace
+  def create_namespace: (?Hash[String | Symbol, untyped] attributes) -> Namespace
+  def create_namespace!: (?Hash[String | Symbol, untyped] attributes) -> Namespace
   def parent_id: -> Integer
   def parent_id=: (Integer parent_id) -> Integer
+  def parent_id?: -> bool
 end
 ```

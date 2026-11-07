@@ -2,10 +2,6 @@
 
 ## Resolve hash accessors
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```rbs

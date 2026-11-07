@@ -52,10 +52,6 @@ end
 
 ## branch-only local is nilable after case
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -79,10 +75,6 @@ end
 ```
 
 ## assignment in an exiting case branch is not reachable afterwards
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -121,6 +113,7 @@ def case_all_paths_return(value)
     return :other
   end
   selected
+  :unreachable
 end
 ```
 
@@ -216,10 +209,6 @@ end
 
 ## case when narrowing changes method return
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -245,10 +234,6 @@ end
 ```
 
 ## case when with multiple conditions
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -359,10 +344,6 @@ end
 
 ## Pattern matching in Ruby 3+
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -386,10 +367,6 @@ end
 ```
 
 ## Use pattern match captured local in return
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -547,7 +524,7 @@ class CaseWhenMatcher
 end
 
 class Object < BasicObject
-  def custom_class_case: (String value) -> (String | :matched)
+  def custom_class_case: (String value) -> :matched
 end
 ```
 
@@ -718,11 +695,11 @@ case_before_equality_override
 
 ```rbs
 class Integer < Numeric
-  def self.===: (untyped _value) -> bool
+  def self.===: (untyped _value) -> true
 end
 
 class Object < BasicObject
-  def case_before_equality_override: -> :matched | :other
+  def case_before_equality_override: -> :matched
 end
 ```
 
@@ -757,20 +734,16 @@ invoke_later_equality_case
 
 ```rbs
 class Integer < Numeric
-  def self.===: (untyped _value) -> bool
+  def self.===: (untyped _value) -> true
 end
 
 class Object < BasicObject
-  def invoke_later_equality_case: -> :matched | :other
-  def later_equality_case: (String value) -> (:matched | :other)
+  def invoke_later_equality_case: -> :matched
+  def later_equality_case: (String value) -> :matched
 end
 ```
 
 ## class case preserves the local subject after a later Module equality override
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -838,5 +811,467 @@ end
 
 class Object < BasicObject
   def module_override_unknown_case: (untyped value) -> (untyped | "other")
+end
+```
+
+## class case avoids narrowing after an aliased Module equality override
+
+### update
+
+```ruby
+class Module
+  def match_any?(_value) = true
+  alias_method :===, :match_any?
+end
+
+def aliased_module_equality_case(value)
+  case value
+  when String
+    value
+  else
+    :other
+  end
+end
+
+aliased_module_equality_case(1)
+```
+
+### result
+
+```rbs
+class Module
+  def match_any?: (untyped _value) -> true
+  alias === match_any?
+end
+
+class Object < BasicObject
+  def aliased_module_equality_case: (Integer value) -> (Integer | :other)
+end
+```
+
+## class case replay follows a custom false equality result
+
+### update
+
+```ruby
+def module_override_concrete_case(value)
+  case value
+  when Integer
+    :matched
+  else
+    :other
+  end
+end
+
+module Module
+  def ===(_value)
+    false
+  end
+end
+
+module_override_concrete_case(42)
+```
+
+### result
+
+```rbs
+module Module
+  def ===: (untyped other) -> bool
+end
+
+class Object < BasicObject
+  def module_override_concrete_case: (Integer value) -> (:matched | :other)
+end
+```
+
+## class case narrows method parameter receivers
+
+```ruby
+class Group
+  def group_name = "group"
+end
+
+class User
+  def email = "user"
+end
+
+class ParticipableService
+  def participant_as_hash(participant)
+    case participant
+    when User
+      { email: participant.email }
+    when Group
+      { name: participant.group_name }
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Group
+  def group_name: -> "group"
+end
+
+class ParticipableService
+  def participant_as_hash: (untyped participant) -> ({ email: "user" } | { name: "group" })?
+end
+
+class User
+  def email: -> "user"
+end
+```
+
+## A qualified class case keeps its namespace
+
+### update
+
+```ruby
+module Accounts
+  class User
+    def account_id = 1
+  end
+end
+
+class User
+  def display_name = "top-level"
+end
+
+def read_account(value)
+  case value
+  when Accounts::User
+    value.account_id
+  else
+    :other
+  end
+end
+```
+
+### result
+
+```rbs
+class Accounts::User
+  def account_id: -> 1
+end
+
+class Object < BasicObject
+  def read_account: (untyped value) -> (1 | :other)
+end
+
+class User
+  def display_name: -> "top-level"
+end
+```
+
+## Narrow a memoized receiver in a class case
+
+```ruby
+class ClusterCaseProject
+  def id = "project"
+end
+
+class ClusterCaseGroup
+  def id = 1
+end
+
+class ClusterCaseService
+  def clusterable = @clusterable ||= nil
+
+  def lookup
+    case clusterable
+    when ClusterCaseProject
+      clusterable.id
+    when ClusterCaseGroup
+      clusterable.id
+    else
+      :other
+    end
+  end
+end
+```
+
+```rbs
+class ClusterCaseService
+  def clusterable: () -> (ClusterCaseProject | ClusterCaseGroup | nil)
+end
+```
+
+### result
+
+```rbs
+class ClusterCaseGroup
+  def id: -> 1
+end
+
+class ClusterCaseProject
+  def id: -> "project"
+end
+
+class ClusterCaseService
+  def clusterable: -> (ClusterCaseGroup | ClusterCaseProject)?
+  def lookup: -> 1 | "project" | :other
+end
+```
+
+## A class object does not match itself as an instance
+
+### update
+
+```ruby
+class User
+  def id = 1
+end
+
+def class_object_case
+  klass = User
+
+  case klass
+  when User
+    :matched
+  else
+    :other
+  end
+end
+
+def class_object_value = User
+
+def class_object_local_value
+  klass = User
+  klass
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def class_object_case: -> :other
+  def class_object_value: -> singleton(User)
+  def class_object_local_value: -> singleton(User)
+end
+
+class User
+  def id: -> 1
+end
+```
+
+## Narrow a class object by its name
+
+### update
+
+```ruby
+class Alpha
+  def self.alpha_value = :alpha
+end
+
+class Beta
+  def self.beta_value = :beta
+end
+
+def value_for_class(klass)
+  case klass.name
+  when "Alpha"
+    klass.alpha_value
+  when "Beta"
+    klass.beta_value
+  else
+    :other
+  end
+end
+
+value_for_class(Alpha)
+value_for_class(Beta)
+```
+
+### result
+
+```rbs
+class Alpha
+  def self.alpha_value: -> :alpha
+end
+
+class Beta
+  def self.beta_value: -> :beta
+end
+
+class Object < BasicObject
+  def value_for_class: ((singleton(Alpha) | singleton(Beta)) klass) -> (:alpha | :beta)
+end
+```
+
+## Stop class-name narrowing after a mixed when clause
+
+### update
+
+```ruby
+class MixedAlpha
+  def self.marker = :alpha
+end
+
+class MixedBeta
+  def self.marker = :beta
+end
+
+def value_after_mixed_class_name(klass)
+  case klass.name
+  when 42, "MixedAlpha"
+    :first
+  when "MixedAlpha"
+    klass.marker
+  else
+    :other
+  end
+end
+
+value_after_mixed_class_name(MixedAlpha)
+value_after_mixed_class_name(MixedBeta)
+```
+
+### result
+
+```rbs
+class MixedAlpha
+  def self.marker: -> :alpha
+end
+
+class MixedBeta
+  def self.marker: -> :beta
+end
+
+class Object < BasicObject
+  def value_after_mixed_class_name: ((singleton(MixedAlpha) | singleton(MixedBeta)) klass) -> (:alpha | :beta | :first | :other)
+end
+```
+
+## Keep branches unknown when class name is overridden
+
+### update
+
+```ruby
+class Renamed
+  def self.name = String.new
+  def self.alpha_value = :alpha
+end
+
+def value_for_overridden_name(klass)
+  case klass.name
+  when "Renamed"
+    klass.alpha_value
+  else
+    :other
+  end
+end
+
+value_for_overridden_name(Renamed)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def value_for_overridden_name: (singleton(Renamed) klass) -> (:alpha | :other)
+end
+
+class Renamed
+  def self.name: -> String
+  def self.alpha_value: -> :alpha
+end
+```
+
+## Record arguments through a singleton receiver chain
+
+### update
+
+```ruby
+class ChainHolder
+  include Singleton
+
+  def accept(value) = value
+end
+
+class Alpha
+end
+
+def chained_accept = ChainHolder.instance.accept(Alpha)
+```
+
+### result
+
+```rbs
+class ChainHolder
+  include Singleton
+
+  def self.instance: -> ChainHolder
+  def accept: (singleton(Alpha) value) -> singleton(Alpha)
+end
+
+class Object < BasicObject
+  def chained_accept: -> singleton(Alpha)
+end
+```
+
+## A reader with a later writer keeps every branch
+
+```ruby
+class ReaderWriters
+  attr_accessor :state
+  attr_reader :name
+
+  def initialize
+    @state = nil
+    @name = nil
+  end
+
+  def by_state
+    case state
+    when :a
+      "a"
+    when :b
+      1
+    end
+  end
+
+  def by_name
+    if name.nil?
+      1
+    else
+      "known"
+    end
+  end
+
+  def rename(arg)
+    @name = arg.to_s
+  end
+end
+
+class OnlyInitialized
+  attr_reader :name
+
+  def initialize
+    @name = nil
+  end
+
+  def label = name.nil? ? 1 : "known"
+end
+```
+
+### result
+
+```rbs
+class OnlyInitialized
+  def name: -> nil
+  def initialize: -> void
+  def label: -> 1
+end
+
+class ReaderWriters
+  def state: -> nil
+  def state=: (nil state) -> nil
+  def name: -> untyped?
+  def initialize: -> void
+  def by_state: -> (1 | "a")?
+  def by_name: -> 1 | "known"
+  def rename: (untyped arg) -> untyped
 end
 ```

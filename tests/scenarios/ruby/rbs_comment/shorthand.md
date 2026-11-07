@@ -515,3 +515,46 @@ class MyList[Elem]
   def first: -> nil
 end
 ```
+
+## A nested unknown argument keeps overload returns open
+
+### update
+
+```ruby
+class ArrayOverloadChoice
+  #: (Array[String]) -> String
+  #: (Array[Integer]) -> Integer
+  def self.pick(values) = values
+
+  #: (Array[String]) -> Integer
+  #: (Array[Integer]) -> Integer
+  def self.count(values) = values.size
+end
+
+class ArrayOverloadCaller
+  #: -> Array[untyped]
+  def unknown_values = []
+
+  def disagreeing = ArrayOverloadChoice.pick(unknown_values)
+  def agreeing = ArrayOverloadChoice.count(unknown_values)
+  def known = ArrayOverloadChoice.pick([1])
+end
+```
+
+### result
+
+```rbs
+class ArrayOverloadCaller
+  def unknown_values: -> Array[untyped]
+  def disagreeing: -> untyped
+  def agreeing: -> Integer
+  def known: -> Integer
+end
+
+class ArrayOverloadChoice
+  def self.pick: (Array[String] values) -> String
+               | (Array[Integer] values) -> Integer
+  def self.count: (Array[String] values) -> Integer
+                | (Array[Integer] values) -> Integer
+end
+```

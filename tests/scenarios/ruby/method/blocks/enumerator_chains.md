@@ -1069,17 +1069,44 @@ end
 
 ```rbs
 class Source
-  def each: { (String) -> untyped } -> untyped | Enumerator["a" | "b", Source]
+  def each: ?{ (String) -> untyped } -> untyped | Enumerator["a" | "b", Source]
   def values: -> Array["A" | "B"]
   def direct_values: -> Array["A" | "B"]
 end
 ```
 
-## User iterator enum substitutes call args
+## User iterator infers a loop-assigned yield value
 
-```yaml
-known_issue: true
+### update
+
+```ruby
+class LocalPopSource
+  def each
+    entries = ["value"]
+    while entry = entries.pop
+      yield entry
+    end
+  end
+end
+
+class LocalPopConsumer
+  def value = LocalPopSource.new.each { |entry| entry.upcase }
+end
 ```
+
+### result
+
+```rbs
+class LocalPopConsumer
+  def value: -> LocalPopSource
+end
+
+class LocalPopSource
+  def each: { (String) -> String } -> nil
+end
+```
+
+## User iterator enum substitutes call args
 
 ### update
 
@@ -1108,7 +1135,7 @@ end
 
 ```rbs
 class PairSource
-  def each_value: (String value) { (String) -> String } -> (String | Enumerator[String, untyped])
+  def each_value: (String value) ?{ (String) -> String } -> (String | Enumerator[String, untyped])
   def block_value: -> String
   def enum_value: -> Array["B"]
   def direct_enum_value: -> Array["C"]
@@ -1140,7 +1167,7 @@ end
 
 ```rbs
 class KeywordSource
-  def each_value: (prefix: String) { (String) -> untyped } -> (untyped | Enumerator[String, untyped])
+  def each_value: (prefix: String) ?{ (String) -> untyped } -> (untyped | Enumerator[String, untyped])
   def values: -> Array[String]
   def direct_values: -> Array[String]
 end
@@ -1170,7 +1197,7 @@ end
 
 ```rbs
 class Source
-  def each: { (Integer) -> untyped } -> untyped | Enumerator[1, Source]
+  def each: ?{ (Integer) -> untyped } -> untyped | Enumerator[1, Source]
 end
 
 class Store
@@ -1203,17 +1230,13 @@ end
 
 ```rbs
 class BlockSource
-  def each: { (String) -> String } -> String | Enumerator["a", BlockSource]
+  def each: ?{ (String) -> String } -> String | Enumerator["a", BlockSource]
   def block_value: -> String
   def enum_value: -> Array["A"]
 end
 ```
 
 ## Infer Enumerator::Lazy.new source and yielder types
-
-```yaml
-known_issue: true
-```
 
 ### update
 

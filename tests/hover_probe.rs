@@ -760,3 +760,45 @@ fn instance_exec_binds_block_params_and_switches_self() {
     // The block param `n` is bound to the argument 10.
     assert_hover(source, 6, 46, "n", "10");
 }
+
+#[test]
+fn attr_reader_of_a_class_from_another_file_resolves_its_deferred_ivar() {
+    use tyda::analysis::{AnalysisOptions, analyze_source_for_display};
+    use tyda::workspace_state::BatchProjectionBuilder;
+
+    let loader = loader();
+    let definition = concat!(
+        "class Gemish\n",
+        "  attr_reader :version\n",
+        "  def initialize(v)\n",
+        "    @version = v.to_s\n",
+        "  end\n",
+        "end\n",
+    );
+    let client = concat!(
+        "class Client\n",
+        "  def run\n",
+        "    v = Gemish.new(\"1.0\")\n",
+        "    v.version\n",
+        "  end\n",
+        "end\n",
+    );
+    let snapshots = [("gemish.rb", definition), ("client.rb", client)].map(|(path, source)| {
+        let (snapshot, _, _) = analyze_source_for_display(
+            source,
+            None,
+            Some(&loader),
+            None,
+            Some(path),
+            AnalysisOptions::default(),
+        );
+        (path.to_string(), snapshot)
+    });
+    let mut builder = BatchProjectionBuilder::new(tyda::registry::TypeRegistry::new());
+    builder.apply_chunk(snapshots);
+    let workspace = builder.finish(Some(&loader), None);
+
+    let got = hover_at(client, Some(workspace.as_ref()), &loader, "client.rb", 4, 6)
+        .map(|h| (h.name, h.ty.to_string()));
+    assert_eq!(got, Some(("version".to_string(), "String".to_string())));
+}

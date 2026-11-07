@@ -109,7 +109,7 @@ end
 
 ```rbs
 class A
-  def f: -> Hash[:k0 | :k1 | :k10 | :k11 | :k12 | :k2 | :k3 | :k4 | :k5 | :k6 | :k7 | :k8 | :k9, Hash[:k0 | :k1 | :k10 | :k11 | :k2 | :k3 | :k4 | :k5 | :k6 | :k7 | :k8 | :k9, untyped]]
+  def f: -> Hash[:k0 | :k1 | :k10 | :k11 | :k12 | :k2 | :k3 | :k4 | :k5 | :k6 | :k7 | :k8 | :k9, untyped]
 end
 ```
 
@@ -136,5 +136,61 @@ end
 ```rbs
 class A
   def f: -> Hash[Hash[untyped, untyped], Hash[untyped, untyped]]
+end
+```
+
+## Conditional Hash writes keep one hash per key set
+
+### update
+
+```ruby
+class ConditionalHashWrites
+  def build(row)
+    attributes = {}
+    if a = row["a"]
+      attributes["a"] = a
+    end
+    if b = row["b"]
+      attributes["b"] = b
+    end
+    if c = row["c"]
+      attributes["c"] = c
+    end
+    attributes
+  end
+end
+```
+
+### result
+
+```rbs
+class ConditionalHashWrites
+  def build: (untyped row) -> (Hash[untyped, untyped] | Hash["a" | "b" | "c", untyped])
+end
+```
+
+## Exclusive Hash writes keep their key and value pairs
+
+### update
+
+```ruby
+class ExclusiveHashWrites
+  def build(flag)
+    headers = {}
+    if flag
+      headers[:range] = :single
+    else
+      headers[:type] = :multiple
+    end
+    headers
+  end
+end
+```
+
+### result
+
+```rbs
+class ExclusiveHashWrites
+  def build: (untyped flag) -> (Hash[:range, :single] | Hash[:type, :multiple])
 end
 ```

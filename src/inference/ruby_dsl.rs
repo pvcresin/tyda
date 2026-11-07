@@ -359,6 +359,32 @@ impl<'a> InferenceEngine<'a> {
         comments: &[RbsComment],
         is_singleton: bool,
     ) {
+        self.collect_attr_methods_with_scope(
+            class_name,
+            call_node,
+            generate_reader,
+            generate_writer,
+            parse_result,
+            comments,
+            is_singleton,
+            None,
+            None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn collect_attr_methods_with_scope(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        generate_reader: bool,
+        generate_writer: bool,
+        parse_result: &ParseResult<'_>,
+        comments: &[RbsComment],
+        is_singleton: bool,
+        scope: Option<&Scope>,
+        visibility: Option<Option<Visibility>>,
+    ) -> bool {
         let attr_start = call_node.location().start_offset();
         let attr_end = call_node.location().end_offset();
         let attr_loc = offset_to_location(parse_result.source(), attr_start);
@@ -389,134 +415,175 @@ impl<'a> InferenceEngine<'a> {
             }
         });
 
-        if let Some(args) = call_node.arguments() {
-            let mut attr_names = Vec::new();
-            for arg in args.arguments().iter() {
-                match &arg {
-                    Node::SymbolNode { .. } => {
-                        let sym = arg.as_symbol_node().expect("must be SymbolNode");
-                        let name = String::from_utf8_lossy(sym.unescaped()).to_string();
-                        let loc = Self::attr_symbol_location(
-                            parse_result.source(),
-                            &arg,
-                            &name,
-                            attr_start,
-                            attr_loc,
-                        );
-                        let hover_range =
-                            Self::literal_definition_offsets(parse_result.source(), &arg, &name);
-                        attr_names.push(AttrMethodName {
+        let Some(args) = call_node.arguments() else {
+            return false;
+        };
+        let mut attr_names = Vec::new();
+        for arg in args.arguments().iter() {
+            match &arg {
+                Node::SymbolNode { .. } => {
+                    let Some(sym) = arg.as_symbol_node() else {
+                        continue;
+                    };
+                    let name = String::from_utf8_lossy(sym.unescaped()).to_string();
+                    let loc = Self::attr_symbol_location(
+                        parse_result.source(),
+                        &arg,
+                        &name,
+                        attr_start,
+                        attr_loc,
+                    );
+                    let hover_range =
+                        Self::literal_definition_offsets(parse_result.source(), &arg, &name);
+                    attr_names.push(AttrMethodName {
+                        name,
+                        loc,
+                        hover_range: Some(hover_range),
+                    });
+                }
+                Node::StringNode { .. } => {
+                    let Some(string) = arg.as_string_node() else {
+                        continue;
+                    };
+                    let name = String::from_utf8_lossy(string.unescaped()).to_string();
+                    let loc = Self::attr_symbol_location(
+                        parse_result.source(),
+                        &arg,
+                        &name,
+                        attr_start,
+                        attr_loc,
+                    );
+                    let hover_range =
+                        Self::literal_definition_offsets(parse_result.source(), &arg, &name);
+                    attr_names.push(AttrMethodName {
+                        name,
+                        loc,
+                        hover_range: Some(hover_range),
+                    });
+                }
+                Node::SplatNode { .. } => {
+                    let Some(splat) = arg.as_splat_node() else {
+                        continue;
+                    };
+                    if let Some(expr) = splat.expression()
+                        && let Some(names) =
+                            self.static_name_sequence_from_node(class_name, &expr, parse_result)
+                    {
+                        attr_names.extend(names.into_iter().map(|name| AttrMethodName {
                             name,
-                            loc,
-                            hover_range: Some(hover_range),
-                        });
+                            loc: attr_loc,
+                            hover_range: None,
+                        }));
                     }
-                    Node::StringNode { .. } => {
-                        let string = arg.as_string_node().expect("must be StringNode");
-                        let name = String::from_utf8_lossy(string.unescaped()).to_string();
-                        let loc = Self::attr_symbol_location(
-                            parse_result.source(),
+                }
+                Node::LocalVariableReadNode { .. } => {
+                    if let Some(scope) = scope
+                        && let Some(names) = self.static_dispatch_names_from_arg(
+                            class_name,
                             &arg,
-                            &name,
-                            attr_start,
-                            attr_loc,
-                        );
-                        let hover_range =
-                            Self::literal_definition_offsets(parse_result.source(), &arg, &name);
-                        attr_names.push(AttrMethodName {
+                            parse_result,
+                            scope,
+                        )
+                    {
+                        attr_names.extend(names.into_iter().map(|name| AttrMethodName {
                             name,
-                            loc,
-                            hover_range: Some(hover_range),
-                        });
+                            loc: attr_loc,
+                            hover_range: None,
+                        }));
                     }
-                    Node::SplatNode { .. } => {
-                        let splat = arg.as_splat_node().expect("must be SplatNode");
-                        if let Some(expr) = splat.expression()
-                            && let Some(names) =
-                                self.static_name_sequence_from_node(class_name, &expr, parse_result)
-                        {
-                            attr_names.extend(names.into_iter().map(|name| AttrMethodName {
-                                name,
-                                loc: attr_loc,
-                                hover_range: None,
-                            }));
-                        }
-                    }
-                    _ => continue,
+                }
+                _ => continue,
+            }
+        }
+        let found_names = !attr_names.is_empty();
+
+        for attr in attr_names {
+            let attr_name = attr.name;
+            let attr_loc = attr.loc;
+            let ivar_name = format!("@{attr_name}");
+            let annotated = attr_type.is_some();
+            let ret_type = attr_type.clone().unwrap_or(Type::Untyped);
+
+            if generate_reader {
+                self.registry.add_method_def(
+                    class_name,
+                    MethodDef {
+                        name: Sym::new(&attr_name),
+                        param_infos: Vec::new(),
+                        raw_return_type: ret_type.clone(),
+                        sorbet_modifier_comments: Vec::new(),
+                        rbs_annotated: annotated,
+                        rbs_inline_annotated: annotated,
+                        sig_annotated: false,
+                        attr_ivar: Some(ivar_name.clone()),
+                        is_singleton,
+                        rbs_file_source: false,
+                        synthetic_dsl_source: false,
+                        rbs_method_types: Default::default(),
+                        extra_overloads: Vec::new(),
+                        loc: Some(attr_loc),
+                    },
+                );
+                if let Some(visibility) = visibility {
+                    self.registry.set_method_visibility(
+                        class_name,
+                        &attr_name,
+                        is_singleton,
+                        visibility,
+                    );
                 }
             }
 
-            for attr in attr_names {
-                let attr_name = attr.name;
-                let attr_loc = attr.loc;
-                let ivar_name = format!("@{attr_name}");
-                let annotated = attr_type.is_some();
-                let ret_type = attr_type.clone().unwrap_or(Type::Untyped);
+            if let Some((start, end)) = attr.hover_range {
+                let hover_method_name = if generate_reader {
+                    attr_name.clone()
+                } else {
+                    format!("{attr_name}=")
+                };
+                self.push_method_definition_lookup_snapshot(
+                    start,
+                    end,
+                    class_name,
+                    &hover_method_name,
+                    is_singleton,
+                );
+            }
 
-                if generate_reader {
-                    self.registry.add_method_def(
-                        class_name,
-                        MethodDef {
-                            name: Sym::new(&attr_name),
-                            param_infos: Vec::new(),
-                            raw_return_type: ret_type.clone(),
-                            sorbet_modifier_comments: Vec::new(),
-                            rbs_annotated: annotated,
-                            rbs_inline_annotated: annotated,
-                            sig_annotated: false,
-                            attr_ivar: Some(ivar_name.clone()),
-                            is_singleton,
-                            rbs_file_source: false,
-                            synthetic_dsl_source: false,
-                            rbs_method_types: Default::default(),
-                            extra_overloads: Vec::new(),
-                            loc: Some(attr_loc),
-                        },
-                    );
-                }
-
-                if let Some((start, end)) = attr.hover_range {
-                    let hover_method_name = if generate_reader {
-                        attr_name.clone()
-                    } else {
-                        format!("{attr_name}=")
-                    };
-                    self.push_method_definition_lookup_snapshot(
-                        start,
-                        end,
-                        class_name,
-                        &hover_method_name,
+            if generate_writer {
+                self.registry.add_method_def(
+                    class_name,
+                    MethodDef {
+                        name: Sym::new(format!("{attr_name}=")),
+                        param_infos: vec![ParamInfo {
+                            name: attr_name.clone(),
+                            kind: ParamKind::Required,
+                            default_type: None,
+                        }],
+                        raw_return_type: ret_type,
+                        sorbet_modifier_comments: Vec::new(),
+                        rbs_annotated: annotated,
+                        rbs_inline_annotated: annotated,
+                        sig_annotated: false,
+                        attr_ivar: Some(ivar_name),
                         is_singleton,
-                    );
-                }
-
-                if generate_writer {
-                    self.registry.add_method_def(
+                        rbs_file_source: false,
+                        synthetic_dsl_source: false,
+                        rbs_method_types: Default::default(),
+                        extra_overloads: Vec::new(),
+                        loc: Some(attr_loc),
+                    },
+                );
+                if let Some(visibility) = visibility {
+                    self.registry.set_method_visibility(
                         class_name,
-                        MethodDef {
-                            name: Sym::new(format!("{attr_name}=")),
-                            param_infos: vec![ParamInfo {
-                                name: attr_name.clone(),
-                                kind: ParamKind::Required,
-                                default_type: None,
-                            }],
-                            raw_return_type: ret_type,
-                            sorbet_modifier_comments: Vec::new(),
-                            rbs_annotated: annotated,
-                            rbs_inline_annotated: annotated,
-                            sig_annotated: false,
-                            attr_ivar: Some(ivar_name),
-                            is_singleton,
-                            rbs_file_source: false,
-                            synthetic_dsl_source: false,
-                            rbs_method_types: Default::default(),
-                            extra_overloads: Vec::new(),
-                            loc: Some(attr_loc),
-                        },
+                        &format!("{attr_name}="),
+                        is_singleton,
+                        visibility,
                     );
                 }
             }
         }
+        found_names
     }
 
     pub(super) fn collect_enum_values(
@@ -1521,6 +1588,7 @@ impl<'a> InferenceEngine<'a> {
         self.static_dispatch_names_from_arg(class_name, &first_arg, parse_result, scope)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn collect_iterator_define_methods(
         &mut self,
         class_name: &str,
@@ -1529,6 +1597,7 @@ impl<'a> InferenceEngine<'a> {
         comments: &[RbsComment],
         class_body_scope: &Scope,
         is_singleton: bool,
+        visibility: &mut Option<Visibility>,
     ) -> bool {
         let Some(receiver) = call_node.receiver() else {
             return false;
@@ -1538,6 +1607,16 @@ impl<'a> InferenceEngine<'a> {
             method_name.as_ref(),
             "each" | "each_key" | "each_value" | "each_pair"
         ) {
+            return false;
+        }
+
+        if let Some(receiver_name) = receiver
+            .as_local_variable_read_node()
+            .map(|receiver| String::from_utf8_lossy(receiver.name().as_slice()).to_string())
+            && class_body_scope
+                .local_singleton_method(&receiver_name, method_name.as_ref())
+                .is_some()
+        {
             return false;
         }
 
@@ -1556,6 +1635,13 @@ impl<'a> InferenceEngine<'a> {
         ) else {
             return false;
         };
+        if self.static_collection_has_source_method_override(
+            &iterator_type,
+            method_name.as_ref(),
+            class_body_scope,
+        ) {
+            return false;
+        }
 
         let block_param_names = Self::extract_block_param_names(&block);
         let iterator_bindings = Self::extract_iterator_bindings(
@@ -1573,21 +1659,19 @@ impl<'a> InferenceEngine<'a> {
         let Some(stmts) = body.as_statements_node() else {
             return false;
         };
-        if Self::find_define_method_calls_in_block(&block).is_empty() {
+        if Self::iterator_block_has_unsupported_side_exit(&body) {
             return false;
         }
 
-        for bindings in iterator_bindings {
+        let mut collected = false;
+        'bindings: for bindings in iterator_bindings {
             let mut captured_scope = class_body_scope.clone();
             captured_scope.singleton_dispatch = is_singleton;
             for binding in bindings {
                 captured_scope.set(&binding.name, binding.ty);
             }
             for node in stmts.body().iter() {
-                if let Node::LocalVariableWriteNode { .. } = &node {
-                    let write = node
-                        .as_local_variable_write_node()
-                        .expect("must be LocalVariableWriteNode");
+                if let Some(write) = node.as_local_variable_write_node() {
                     let var_name = String::from_utf8_lossy(write.name().as_slice()).to_string();
                     let value_type = self.infer_node_type(
                         class_name,
@@ -1598,9 +1682,95 @@ impl<'a> InferenceEngine<'a> {
                     captured_scope.set(&var_name, value_type);
                     continue;
                 }
-                let Some(dm_info) = Self::define_method_call_info(&node) else {
+
+                if matches!(node, Node::NextNode { .. }) {
+                    break;
+                }
+                if matches!(node, Node::IfNode { .. } | Node::UnlessNode { .. }) {
+                    match self.static_iterator_next_action(
+                        class_name,
+                        &node,
+                        parse_result,
+                        &captured_scope,
+                    ) {
+                        Some(true) => break,
+                        Some(false) => continue,
+                        None if !Self::iterator_conditional_may_change_bindings(&node) => continue,
+                        None => break 'bindings,
+                    }
+                }
+
+                let Some(call) = node.as_call_node() else {
                     continue;
                 };
+                let method_name = String::from_utf8_lossy(call.name().as_slice());
+                if call
+                    .receiver()
+                    .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }))
+                    && call.block().is_none()
+                    && call
+                        .arguments()
+                        .is_none_or(|arguments| arguments.arguments().iter().next().is_none())
+                {
+                    match method_name.as_ref() {
+                        "private" => {
+                            *visibility = Some(Visibility::Private);
+                            continue;
+                        }
+                        "protected" => {
+                            *visibility = Some(Visibility::Protected);
+                            continue;
+                        }
+                        "public" => {
+                            *visibility = None;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                if matches!(
+                    method_name.as_ref(),
+                    "attr_reader" | "attr_accessor" | "attr"
+                ) && call.block().is_none()
+                    && call
+                        .receiver()
+                        .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }))
+                {
+                    let Some((generate_reader, generate_writer)) = (match method_name.as_ref() {
+                        "attr_reader" => Some((true, false)),
+                        "attr_accessor" => Some((true, true)),
+                        "attr" => Some((true, Self::attr_generates_writer(&call))),
+                        _ => None,
+                    }) else {
+                        continue;
+                    };
+                    collected |= self.collect_attr_methods_with_scope(
+                        class_name,
+                        &call,
+                        generate_reader,
+                        generate_writer,
+                        parse_result,
+                        comments,
+                        is_singleton,
+                        Some(&captured_scope),
+                        Some(*visibility),
+                    );
+                    continue;
+                }
+
+                let Some(dm_info) = Self::define_method_call_info(&node) else {
+                    collected |= self.collect_iterator_define_methods(
+                        class_name,
+                        &call,
+                        parse_result,
+                        comments,
+                        &captured_scope,
+                        is_singleton,
+                        visibility,
+                    );
+                    continue;
+                };
+                collected = true;
                 let name_type = self.infer_node_type(
                     class_name,
                     &dm_info.first_arg,
@@ -1623,14 +1793,282 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
-        true
+        collected
+    }
+
+    fn iterator_block_has_unsupported_side_exit(node: &Node<'_>) -> bool {
+        struct SideExitVisitor {
+            found: bool,
+        }
+
+        impl SideExitVisitor {
+            fn visit_node(&mut self, node: Node<'_>) {
+                if matches!(
+                    node,
+                    Node::BreakNode { .. }
+                        | Node::ReturnNode { .. }
+                        | Node::RedoNode { .. }
+                        | Node::RetryNode { .. }
+                        | Node::NextNode { .. }
+                ) {
+                    self.found = true;
+                    return;
+                }
+
+                let Some(call) = node.as_call_node() else {
+                    return;
+                };
+                let method_name = call.name().as_slice();
+                if matches!(
+                    method_name,
+                    b"raise" | b"fail" | b"throw" | b"exit" | b"exit!" | b"abort"
+                ) {
+                    self.found = true;
+                    return;
+                }
+
+                let is_visibility_call =
+                    matches!(method_name, b"private" | b"protected" | b"public");
+                if is_visibility_call {
+                    self.found = true;
+                }
+            }
+        }
+
+        impl<'pr> ruby_prism::Visit<'pr> for SideExitVisitor {
+            fn visit_branch_node_enter(&mut self, node: Node<'pr>) {
+                self.visit_node(node);
+            }
+
+            fn visit_leaf_node_enter(&mut self, node: Node<'pr>) {
+                self.visit_node(node);
+            }
+
+            fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+
+            fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
+
+            fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
+
+            fn visit_singleton_class_node(&mut self, _node: &ruby_prism::SingletonClassNode<'pr>) {}
+
+            fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+                let method_name = node.name().as_slice();
+                let is_method_definition =
+                    matches!(method_name, b"define_method" | b"define_singleton_method");
+                if let Some(receiver) = node.receiver() {
+                    ruby_prism::Visit::visit(self, &receiver);
+                }
+                if let Some(arguments) = node.arguments() {
+                    for argument in arguments.arguments().iter() {
+                        ruby_prism::Visit::visit(self, &argument);
+                    }
+                }
+                if !is_method_definition
+                    && let Some(body) = node
+                        .block()
+                        .and_then(|block| block.as_block_node())
+                        .and_then(|block| block.body())
+                    && InferenceEngine::iterator_block_has_unsupported_side_exit(&body)
+                {
+                    self.found = true;
+                }
+            }
+        }
+
+        let mut visitor = SideExitVisitor { found: false };
+        let Some(statements) = node.as_statements_node() else {
+            return false;
+        };
+        for statement in statements.body().iter() {
+            if matches!(statement, Node::NextNode { .. }) {
+                continue;
+            }
+            if Self::is_bare_iterator_visibility_setter(&statement) {
+                continue;
+            }
+            if let Some((predicate, _)) = Self::static_iterator_next_guard(&statement) {
+                ruby_prism::Visit::visit(&mut visitor, &predicate);
+            } else {
+                ruby_prism::Visit::visit(&mut visitor, &statement);
+            }
+            if visitor.found {
+                return true;
+            }
+        }
+        visitor.found
+    }
+
+    fn is_bare_iterator_visibility_setter(node: &Node<'_>) -> bool {
+        let Some(call) = node.as_call_node() else {
+            return false;
+        };
+        if !matches!(
+            call.name().as_slice(),
+            b"private" | b"protected" | b"public"
+        ) || call.block().is_some()
+            || call
+                .arguments()
+                .is_some_and(|arguments| arguments.arguments().iter().next().is_some())
+        {
+            return false;
+        }
+        call.receiver()
+            .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }))
+    }
+
+    fn static_iterator_next_guard<'pr>(node: &Node<'pr>) -> Option<(Node<'pr>, bool)> {
+        match node {
+            Node::IfNode { .. } => {
+                let if_node = node.as_if_node()?;
+                let then_is_next = if_node.statements().is_some_and(|statements| {
+                    let body = statements.body();
+                    body.len() == 1
+                        && body
+                            .iter()
+                            .all(|stmt| matches!(stmt, Node::NextNode { .. }))
+                });
+                if !then_is_next || if_node.subsequent().is_some() {
+                    return None;
+                }
+                Some((if_node.predicate(), true))
+            }
+            Node::UnlessNode { .. } => {
+                let unless_node = node.as_unless_node()?;
+                let then_is_next = unless_node.statements().is_some_and(|statements| {
+                    let body = statements.body();
+                    body.len() == 1
+                        && body
+                            .iter()
+                            .all(|stmt| matches!(stmt, Node::NextNode { .. }))
+                });
+                if !then_is_next || unless_node.else_clause().is_some() {
+                    return None;
+                }
+                Some((unless_node.predicate(), false))
+            }
+            _ => None,
+        }
+    }
+
+    fn static_iterator_next_action(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<bool> {
+        let (predicate, next_when_truthy) = Self::static_iterator_next_guard(node)?;
+        let condition_type = self.infer_node_type(class_name, &predicate, parse_result, scope);
+        let truthy =
+            self.branch_truthiness(class_name, &predicate, &condition_type, parse_result, scope)?;
+        Some(if next_when_truthy { truthy } else { !truthy })
+    }
+
+    fn iterator_conditional_may_change_bindings(node: &Node<'_>) -> bool {
+        struct ConditionalEffectVisitor {
+            found: bool,
+        }
+
+        impl ConditionalEffectVisitor {
+            fn visit_node(&mut self, node: Node<'_>) {
+                if matches!(
+                    node,
+                    Node::LocalVariableWriteNode { .. }
+                        | Node::LocalVariableOrWriteNode { .. }
+                        | Node::LocalVariableAndWriteNode { .. }
+                        | Node::LocalVariableOperatorWriteNode { .. }
+                        | Node::InstanceVariableWriteNode { .. }
+                        | Node::InstanceVariableOrWriteNode { .. }
+                        | Node::InstanceVariableAndWriteNode { .. }
+                        | Node::InstanceVariableOperatorWriteNode { .. }
+                        | Node::ClassVariableWriteNode { .. }
+                        | Node::ClassVariableOrWriteNode { .. }
+                        | Node::ClassVariableAndWriteNode { .. }
+                        | Node::ClassVariableOperatorWriteNode { .. }
+                        | Node::ConstantWriteNode { .. }
+                        | Node::ConstantOrWriteNode { .. }
+                        | Node::ConstantAndWriteNode { .. }
+                        | Node::ConstantOperatorWriteNode { .. }
+                        | Node::ConstantPathWriteNode { .. }
+                        | Node::ConstantPathOrWriteNode { .. }
+                        | Node::ConstantPathAndWriteNode { .. }
+                        | Node::ConstantPathOperatorWriteNode { .. }
+                        | Node::DefNode { .. }
+                        | Node::ClassNode { .. }
+                        | Node::ModuleNode { .. }
+                        | Node::SingletonClassNode { .. }
+                        | Node::AliasMethodNode { .. }
+                        | Node::UndefNode { .. }
+                        | Node::BreakNode { .. }
+                        | Node::ReturnNode { .. }
+                        | Node::RedoNode { .. }
+                        | Node::RetryNode { .. }
+                        | Node::NextNode { .. }
+                ) {
+                    self.found = true;
+                    return;
+                }
+
+                let Some(call) = node.as_call_node() else {
+                    return;
+                };
+                if matches!(
+                    call.name().as_slice(),
+                    b"attr"
+                        | b"attr_reader"
+                        | b"attr_writer"
+                        | b"attr_accessor"
+                        | b"define_method"
+                        | b"define_singleton_method"
+                        | b"alias_method"
+                        | b"remove_method"
+                        | b"undef_method"
+                        | b"include"
+                        | b"prepend"
+                        | b"extend"
+                        | b"module_function"
+                        | b"private"
+                        | b"protected"
+                        | b"public"
+                        | b"private_class_method"
+                        | b"public_class_method"
+                        | b"class_eval"
+                        | b"module_eval"
+                        | b"class_exec"
+                        | b"module_exec"
+                        | b"raise"
+                        | b"fail"
+                        | b"throw"
+                        | b"exit"
+                        | b"exit!"
+                        | b"abort"
+                ) {
+                    self.found = true;
+                }
+            }
+        }
+
+        impl<'pr> ruby_prism::Visit<'pr> for ConditionalEffectVisitor {
+            fn visit_branch_node_enter(&mut self, node: Node<'pr>) {
+                self.visit_node(node);
+            }
+
+            fn visit_leaf_node_enter(&mut self, node: Node<'pr>) {
+                self.visit_node(node);
+            }
+        }
+
+        let mut visitor = ConditionalEffectVisitor { found: false };
+        ruby_prism::Visit::visit(&mut visitor, node);
+        visitor.found
     }
 
     fn define_method_call_info<'b>(node: &Node<'b>) -> Option<DynamicDefineMethodInfo<'b>> {
         let Node::CallNode { .. } = node else {
             return None;
         };
-        let call = node.as_call_node().expect("must be CallNode");
+        let call = node.as_call_node()?;
         let name = String::from_utf8_lossy(call.name().as_slice()).to_string();
         if !matches!(name.as_str(), "define_method" | "define_singleton_method") {
             return None;
@@ -1781,24 +2219,6 @@ impl<'a> InferenceEngine<'a> {
             .iter()
             .filter_map(|param| Self::extract_param_name(&param))
             .collect()
-    }
-
-    fn find_define_method_calls_in_block<'b>(
-        block: &ruby_prism::BlockNode<'b>,
-    ) -> Vec<DynamicDefineMethodInfo<'b>> {
-        let mut results = Vec::new();
-        let Some(body) = block.body() else {
-            return results;
-        };
-        let Some(stmts) = body.as_statements_node() else {
-            return results;
-        };
-        for node in stmts.body().iter() {
-            if let Some(info) = Self::define_method_call_info(&node) {
-                results.push(info);
-            }
-        }
-        results
     }
 
     fn literal_method_names_from_type(ty: &Type) -> Vec<String> {

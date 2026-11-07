@@ -53,3 +53,34 @@ class Probe
   def sym_dup: -> :sym
 end
 ```
+
+## Source-defined `dup` overrides receiver identity
+
+### update
+
+```ruby
+class CopyTarget
+  def dup = :copy
+end
+
+class Holder
+  def initialize
+    @copy = CopyTarget.new.dup
+  end
+
+  def copy = @copy
+end
+```
+
+### result
+
+```rbs
+class CopyTarget
+  def dup: -> :copy
+end
+
+class Holder
+  def initialize: -> void
+  def copy: -> :copy
+end
+```

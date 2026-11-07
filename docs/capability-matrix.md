@@ -13,11 +13,11 @@
 | 分野 | 状態 | 代表的な範囲 |
 | --- | --- | --- |
 | 定義・dispatch・visibility | supported | class / module / mixin / constant / method / `super` |
-| 変数・flow | supported | local / ivar（method 内の再代入・分岐・複合代入） / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入と、閉じた subject の case） / 分岐間のlocal相関 / rescue |
-| block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy |
-| collection shape | supported | Array、Hash、Set、Tuple、Record |
-| pattern matching | partial | version gate、array / hash / find binding、literal / expression subject のcapture型維持、guard 内の capture、`case/in` の不一致は例外経路 |
-| 動的定義 | partial | 静的な名前の `define_method`、`attr_*`、`Struct.new`、`Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） |
+| 変数・flow | supported | local / ivar（method 内の再代入・分岐・複合代入） / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入と、閉じた subject の case） / 分岐間のlocal相関 / rescue。`x = Foo.new` の local が生成 attr 以外に使われない間は、最後の生成 writer の値を reader で読む（形が変わる collection は対象外） |
+| block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy。source method が block を実行しない / 必ず実行する / 実行し得るかを本文の flow から要約し（引数の値には依存しない）、block 内で代入した外側 local を保持 / 置換 / join する（定義順で未解析の callee は join） |
+| collection shape | supported | Array、Hash、Set、Tuple、Record（静的 symbol key を持つキーワード splat の Record union を含む）。local Hash へ書いた key は receiver / 非静的 key の別用途まで存在するものとして読み、`{}` から始まる local は異なる静的 key を不在とする。Hash の union では、key と value の型がどちらも別の Hash メンバーに含まれるメンバーを吸収し、条件付きの `h[k] = v` が続いても union を倍増させない |
+| pattern matching | partial | version gate、array / hash / find binding、閉じた Record union では必須のリテラルキーを持つ hash pattern で枝を絞り込み、hash class pattern は標準 `Class#===` のclass predicateを先に評価（source override・未解決class・不明な継承は枝を保守的に維持）、literal / expression subject のcapture型維持、guard 内の capture、rightward assignment の正常経路で subject local を絞り込み、`case/in` の不一致は例外経路。`&&` / `||` / `!` / 条件式 / guard の捕捉変数はその経路で評価された operand だけから束縛し、未確定 guard の else へも引き継ぐ |
+| 動的定義 | partial | 静的な名前の `define_method`、yield する source method に渡した class-body block 内の `def`、`attr_*`（静的な Record / Tuple iterator 内の束縛名と、判定可能な `next if` / `next unless` を含む）、`Struct.new`、`Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） |
 | runtime-only meta programming | partial | 未知の名前・object identity は `untyped` |
 | 深さ・union・shape の制限 | supported | 上限超過時は安全に `untyped` |
 
@@ -49,7 +49,7 @@ Sorbet は [tests/scenarios/sorbet/](https://github.com/pvcresin/tyda/tree/main/
 | 分野 | 状態 | 備考 |
 | --- | --- | --- |
 | ActiveRecord / ActiveModel | supported | association、scope、enum、attribute、schema |
-| ActiveSupport | supported | Concern、delegate、class attribute、core extension、`try` / `try!` の nil-safe 呼び出し |
+| ActiveSupport | supported | Concern、delegate、class attribute、core extension（`starts_with?` / `ends_with?` など）、Rails 有効時の `String#underscore` / `String#camelize` の戻り型推論と missing-method 診断、`try` / `try!` の nil-safe 呼び出し |
 | ActionController / ActionMailer / ActiveJob | supported | class-body DSL と主要 instance API |
 | routes / structure.sql | supported | Rails project fixture を含む |
 | RSpec structural DSL | supported | `let`、`subject`、`described_class` の lexical scope |

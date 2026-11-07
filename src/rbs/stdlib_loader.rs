@@ -7,7 +7,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::project::RubyVersion;
 use crate::rbs::bounded_file_cache::{BoundedFileCache, DEFAULT_FILE_CACHE_CAP};
-use crate::rbs::import::load_rbs_string_with_dependency_aliases;
+use crate::rbs::import::{
+    RawTypeAlias, load_rbs_signature_with_dependency_aliases, signature_type_aliases,
+};
 use crate::registry::{RegistryDeepBytes, TypeRegistry};
 
 const MAX_ALIAS_DEPENDENCY_DEPTH: usize = 8;
@@ -25,8 +27,17 @@ fn stdlib_file_cache_cap() -> usize {
 
 pub struct LazyRbsLoader {
     class_to_files: FxHashMap<String, Vec<PathBuf>>,
+    feature_to_files: FxHashMap<String, Vec<PathBuf>>,
     file_cache: Mutex<BoundedFileCache<PathBuf, StdlibFileRegistrySlot>>,
     shared_shapes: Mutex<FxHashMap<String, SharedShapeSlot>>,
+    shared_features: Mutex<FxHashMap<String, SharedShapeSlot>>,
+    alias_dependencies: Mutex<FxHashMap<PathBuf, Arc<AliasDependency>>>,
+}
+
+/// What a file contributes when another file depends on its type aliases.
+struct AliasDependency {
+    paths: Vec<PathBuf>,
+    aliases: std::collections::HashMap<String, RawTypeAlias>,
 }
 
 impl LazyRbsLoader {
@@ -40,6 +51,7 @@ impl LazyRbsLoader {
 
     pub fn from_rbs_roots(roots: Vec<PathBuf>) -> Self {
         let mut class_to_files = FxHashMap::default();
+        let mut feature_to_files: FxHashMap<String, Vec<PathBuf>> = FxHashMap::default();
 
         for root in roots {
             if !root.exists() {
@@ -53,8 +65,14 @@ impl LazyRbsLoader {
                     .parent()
                     .and_then(|p| p.file_name())
                     .is_some_and(|n| n == "stdlib");
-            let rbs_files = collect_rbs_files(&[root]);
+            let rbs_files = collect_rbs_files(std::slice::from_ref(&root));
             for path in rbs_files {
+                if is_stdlib_root && let Some(feature) = stdlib_feature_for_path(&root, &path) {
+                    let feature_paths = feature_to_files.entry(feature).or_default();
+                    if !feature_paths.contains(&path) {
+                        feature_paths.push(path.clone());
+                    }
+                }
                 if let Some(stem) = path.file_stem().and_then(|segment| segment.to_str()) {
                     let class_name = stem_to_class_name(stem);
                     insert_class_file(&mut class_to_files, class_name, path.clone());
@@ -139,8 +157,11 @@ impl LazyRbsLoader {
 
         Self {
             class_to_files,
+            feature_to_files,
             file_cache: Mutex::new(BoundedFileCache::with_cap(stdlib_file_cache_cap())),
             shared_shapes: Mutex::new(FxHashMap::default()),
+            shared_features: Mutex::new(FxHashMap::default()),
+            alias_dependencies: Mutex::new(FxHashMap::default()),
         }
     }
 
@@ -157,18 +178,20 @@ impl LazyRbsLoader {
         let slot = self.file_slot(path);
         Arc::clone(slot.get_or_init(|| {
             let mut registry = TypeRegistry::new();
-            if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(content) = std::fs::read_to_string(path)
+                && let Ok(sig) = rbs_sys::parse_signature(&content)
+            {
                 let mut visited = HashSet::from([path.to_path_buf()]);
-                let mut dependency_contents = Vec::new();
-                self.collect_alias_dependency_contents(
-                    &content,
+                let mut dependencies = Vec::new();
+                self.collect_alias_dependencies(
+                    self.signature_dependency_paths(&sig),
                     &mut visited,
                     0,
-                    &mut dependency_contents,
+                    &mut dependencies,
                 );
-                load_rbs_string_with_dependency_aliases(
-                    &content,
-                    &dependency_contents,
+                load_rbs_signature_with_dependency_aliases(
+                    &sig,
+                    dependencies.iter().map(|dependency| &dependency.aliases),
                     &mut registry,
                 );
             }
@@ -178,35 +201,60 @@ impl LazyRbsLoader {
         }))
     }
 
-    fn collect_alias_dependency_contents(
+    /// Dependencies come before the file that needs them, so a later alias wins as before.
+    fn collect_alias_dependencies(
         &self,
-        content: &str,
+        paths: Vec<PathBuf>,
         visited: &mut HashSet<PathBuf>,
         depth: usize,
-        out: &mut Vec<String>,
+        out: &mut Vec<Arc<AliasDependency>>,
     ) {
         if depth >= MAX_ALIAS_DEPENDENCY_DEPTH {
             return;
         }
-
-        for path in self.alias_dependency_paths(content) {
+        for path in paths {
             if !visited.insert(path.clone()) {
                 continue;
             }
-            let Ok(dependency_content) = std::fs::read_to_string(&path) else {
+            let Some(dependency) = self.alias_dependency(&path) else {
                 continue;
             };
-            self.collect_alias_dependency_contents(&dependency_content, visited, depth + 1, out);
-            out.push(dependency_content);
+            self.collect_alias_dependencies(dependency.paths.clone(), visited, depth + 1, out);
+            out.push(dependency);
         }
     }
 
-    fn alias_dependency_paths(&self, content: &str) -> Vec<PathBuf> {
-        let Ok(sig) = rbs_sys::parse_signature(content) else {
-            return Vec::new();
-        };
+    /// Many files share the same dependency, so each one is read and parsed once.
+    fn alias_dependency(&self, path: &Path) -> Option<Arc<AliasDependency>> {
+        if let Some(cached) = self
+            .alias_dependencies
+            .lock()
+            .expect("alias dependency cache poisoned")
+            .get(path)
+        {
+            return Some(Arc::clone(cached));
+        }
+        let content = std::fs::read_to_string(path).ok()?;
+        let dependency = Arc::new(match rbs_sys::parse_signature(&content) {
+            Ok(sig) => AliasDependency {
+                paths: self.signature_dependency_paths(&sig),
+                aliases: signature_type_aliases(&sig),
+            },
+            Err(_) => AliasDependency {
+                paths: Vec::new(),
+                aliases: Default::default(),
+            },
+        });
+        self.alias_dependencies
+            .lock()
+            .expect("alias dependency cache poisoned")
+            .insert(path.to_path_buf(), Arc::clone(&dependency));
+        Some(dependency)
+    }
+
+    fn signature_dependency_paths(&self, sig: &rbs_sys::Signature) -> Vec<PathBuf> {
         let mut names = HashSet::new();
-        collect_signature_type_names(&sig, &mut names);
+        collect_signature_type_names(sig, &mut names);
         let mut paths: Vec<PathBuf> = names
             .into_iter()
             .filter_map(|name| self.dependency_path_for_type_name(&name))
@@ -245,6 +293,21 @@ impl LazyRbsLoader {
         true
     }
 
+    pub fn merge_feature_into(&self, feature: &str, target: &mut TypeRegistry) -> bool {
+        let shape = self.shared_feature_shape(feature).or_else(|| {
+            feature
+                .contains('/')
+                .then(|| feature.replace('/', "-"))
+                .and_then(|normalized| self.shared_feature_shape(&normalized))
+        });
+        let Some(shape) = shape else {
+            return false;
+        };
+        target.merge_stdlib_rbs_registry(&shape);
+        crate::rbs::import::finalize_pending_method_aliases(target);
+        true
+    }
+
     fn shared_class_shape(&self, class_name: &str) -> Option<Arc<TypeRegistry>> {
         if !self.class_to_files.contains_key(class_name) {
             return None;
@@ -263,6 +326,27 @@ impl LazyRbsLoader {
             }
         };
         slot.get_or_init(|| self.build_class_shape(class_name))
+            .clone()
+    }
+
+    fn shared_feature_shape(&self, feature: &str) -> Option<Arc<TypeRegistry>> {
+        if !self.feature_to_files.contains_key(feature) {
+            return None;
+        }
+        let slot: SharedShapeSlot = {
+            let mut features = self
+                .shared_features
+                .lock()
+                .expect("stdlib shared features poisoned");
+            if let Some(existing) = features.get(feature) {
+                Arc::clone(existing)
+            } else {
+                let fresh: SharedShapeSlot = Arc::new(OnceLock::new());
+                features.insert(feature.to_string(), Arc::clone(&fresh));
+                fresh
+            }
+        };
+        slot.get_or_init(|| self.build_feature_shape(feature))
             .clone()
     }
 
@@ -286,6 +370,22 @@ impl LazyRbsLoader {
         }
         if !merged {
             return None;
+        }
+        crate::rbs::import::finalize_pending_method_aliases(&mut shape);
+        shape.shrink_to_fit_after_compact();
+        Some(Arc::new(shape))
+    }
+
+    fn build_feature_shape(&self, feature: &str) -> Option<Arc<TypeRegistry>> {
+        let paths = self.feature_to_files.get(feature)?;
+        let mut shape = TypeRegistry::new();
+        for path in paths {
+            // Classes new to the feature load on demand; only a reopened core class needs merging.
+            if !reopens_core_class(path) {
+                continue;
+            }
+            let registry = self.load_file_registry(path);
+            shape.merge_stdlib_rbs_registry(&registry);
         }
         crate::rbs::import::finalize_pending_method_aliases(&mut shape);
         shape.shrink_to_fit_after_compact();
@@ -361,6 +461,21 @@ impl LazyRbsLoader {
             }
         }
         {
+            let features = self
+                .shared_features
+                .lock()
+                .expect("stdlib shared features poisoned");
+            for (feature, slot) in features.iter() {
+                out.index_bytes += feature.capacity()
+                    + std::mem::size_of::<String>()
+                    + std::mem::size_of::<SharedShapeSlot>();
+                if let Some(Some(registry)) = slot.get() {
+                    out.shape_count += 1;
+                    out.shapes.accumulate(&registry.deep_breakdown(seen));
+                }
+            }
+        }
+        {
             let cache = self.file_cache.lock().expect("stdlib file cache poisoned");
             for slot in cache.values() {
                 if let Some(registry) = slot.get() {
@@ -371,6 +486,16 @@ impl LazyRbsLoader {
         }
         for (class_name, paths) in &self.class_to_files {
             out.index_bytes += class_name.capacity()
+                + std::mem::size_of::<String>()
+                + std::mem::size_of::<Vec<PathBuf>>()
+                + paths.capacity() * std::mem::size_of::<PathBuf>()
+                + paths
+                    .iter()
+                    .map(|path| path.as_os_str().len())
+                    .sum::<usize>();
+        }
+        for (feature, paths) in &self.feature_to_files {
+            out.index_bytes += feature.capacity()
                 + std::mem::size_of::<String>()
                 + std::mem::size_of::<Vec<PathBuf>>()
                 + paths.capacity() * std::mem::size_of::<PathBuf>()
@@ -638,6 +763,14 @@ fn collect_rbs_type_names(rbs_type: &rbs_sys::RbsType, names: &mut HashSet<Strin
     }
 }
 
+fn stdlib_feature_for_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut components = relative.components();
+    let feature = components.next()?.as_os_str().to_str()?;
+    components.next()?;
+    Some(feature.to_string())
+}
+
 fn resolve_versioned_rbs_roots(vendor_rbs_root: &Path, ruby_version: RubyVersion) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let mut push = |path: PathBuf| {
@@ -702,6 +835,25 @@ const CORE_OWNED_CLASSES: &[&str] = &[
 ];
 
 /// Lightweight scan for top-level class/module names (defers parsing, excludes core reopens).
+fn reopens_core_class(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    content.lines().any(|line| {
+        let Some(rest) = line
+            .strip_prefix("class ")
+            .or_else(|| line.strip_prefix("module "))
+        else {
+            return false;
+        };
+        let name = rest
+            .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+            .next()
+            .unwrap_or_default();
+        CORE_OWNED_CLASSES.contains(&name.trim_start_matches("::"))
+    })
+}
+
 fn scan_top_level_declarations(path: &Path) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -802,11 +954,11 @@ fn classify_rbs_path_to_class_name(path_str: &str) -> Option<String> {
     if path_str.ends_with("/rbs/unnamed/env_class.rbs") {
         return Some("RBS::Unnamed::ENVClass".to_string());
     }
-    if path_str.ends_with("/rbs/unnamed/argf_class.rbs") {
+    if path_str.ends_with("/rbs/unnamed/argf.rbs") {
         return Some("RBS::Unnamed::ARGFClass".to_string());
     }
-    if path_str.ends_with("/rbs/unnamed/random_class.rbs") {
-        return Some("RBS::Unnamed::Random_class".to_string());
+    if path_str.ends_with("/rbs/unnamed/random.rbs") {
+        return Some("RBS::Unnamed::Random_Base".to_string());
     }
     if path_str.ends_with("/stdlib/cgi/0/core.rbs")
         || path_str.ends_with("/stdlib/cgi-escape/0/escape.rbs")
@@ -1170,6 +1322,64 @@ mod tests {
         assert_eq!(
             registry.lookup_method_return_type("String", "size"),
             Some(crate::types::Type::Integer)
+        );
+    }
+
+    #[test]
+    fn merges_stdlib_feature_rbs_by_literal_feature_name() {
+        let dir = tempdir().expect("tempdir");
+        let stdlib = dir.path().join("stdlib");
+        let feature_dir = stdlib.join("shellwords").join("0");
+        std::fs::create_dir_all(&feature_dir).expect("mkdir feature directory");
+        std::fs::write(
+            feature_dir.join("shellwords.rbs"),
+            "module Shellwords\nend\nclass String\n  def shellescape: () -> String\nend\n",
+        )
+        .expect("write feature rbs");
+
+        let loader = LazyRbsLoader::new(stdlib);
+        let mut registry = TypeRegistry::new();
+        assert!(!loader.merge_feature_into("not_a_feature", &mut registry));
+        assert!(loader.merge_feature_into("shellwords", &mut registry));
+        assert_eq!(
+            registry.lookup_method_return_type("String", "shellescape"),
+            Some(crate::types::Type::String)
+        );
+    }
+
+    #[test]
+    fn slash_separated_require_features_match_hyphenated_stdlib_dirs() {
+        let dir = tempdir().expect("tempdir");
+        let stdlib = dir.path().join("stdlib");
+        let io_feature_dir = stdlib.join("io-console").join("0");
+        let http_feature_dir = stdlib.join("net-http").join("0");
+        std::fs::create_dir_all(&io_feature_dir).expect("mkdir io-console feature directory");
+        std::fs::create_dir_all(&http_feature_dir).expect("mkdir net-http feature directory");
+        std::fs::write(
+            io_feature_dir.join("io-console.rbs"),
+            "class IO\n  def console: -> String\nend\n",
+        )
+        .expect("write io-console rbs");
+        std::fs::write(
+            http_feature_dir.join("net-http.rbs"),
+            "module Net\n  class HTTP\n    def start: -> String\n  end\nend\n",
+        )
+        .expect("write net-http rbs");
+
+        let loader = LazyRbsLoader::new(stdlib);
+        let mut registry = TypeRegistry::new();
+        assert!(loader.merge_feature_into("io/console", &mut registry));
+        assert!(loader.merge_feature_into("net/http", &mut registry));
+        assert!(
+            registry
+                .lookup_method_return_type("IO", "console")
+                .is_some()
+        );
+        // A class new to the feature loads on demand instead of with the feature.
+        assert!(
+            registry
+                .lookup_method_return_type("Net::HTTP", "start")
+                .is_none()
         );
     }
 

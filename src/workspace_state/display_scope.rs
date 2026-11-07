@@ -246,10 +246,15 @@ impl WorkspaceState {
 
         let mut registry = TypeRegistry::new_pooled();
         registry.merge_rbs_registry(user_rbs);
+        let mut invalidate_resolved_params = false;
         for file_id in &base_key.file_ids {
             if let Some(entry) = self.files.get(file_id) {
-                entry.analysis.apply_to_registry(&mut registry);
+                invalidate_resolved_params |=
+                    entry.analysis.apply_to_registry_deferred(&mut registry);
             }
+        }
+        if invalidate_resolved_params {
+            registry.invalidate_resolve_cache();
         }
         registry.build_subclass_index();
         registry.shrink_to_fit_after_compact();

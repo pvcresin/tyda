@@ -6,6 +6,24 @@ use std::sync::Arc;
 
 const ACTIVE_RECORD_RELATION_CLASS: &str = "ActiveRecord::Relation";
 const ACTIVE_RECORD_COLLECTION_PROXY_CLASS: &str = "ActiveRecord::Associations::CollectionProxy";
+struct EnumConstantInitializerScan<'pr> {
+    location: SourceLocation,
+    initializer: Option<ruby_prism::Node<'pr>>,
+}
+
+impl<'pr> ruby_prism::Visit<'pr> for EnumConstantInitializerScan<'pr> {
+    fn visit_constant_write_node(&mut self, node: &ruby_prism::ConstantWriteNode<'pr>) {
+        let name_location = node.name_loc();
+        if i32::try_from(self.location.line) == Ok(name_location.start_line())
+            && self.location.column == name_location.start_column()
+        {
+            self.initializer = Some(node.value());
+            return;
+        }
+        ruby_prism::visit_constant_write_node(self, node);
+    }
+}
+
 const ACTIVE_RECORD_RELATION_METHODS: &[&str] = &[
     "all",
     "none",
@@ -280,6 +298,31 @@ impl<'a> InferenceEngine<'a> {
     ) {
         if !self.rails_feature_enabled() {
             return;
+        }
+
+        if self.class_matches_or_inherits(class_name, &["ActionCable::Channel::Base"]) {
+            self.registry.add_method_def_if_missing(
+                class_name,
+                MethodDef {
+                    name: Sym::new("params"),
+                    param_infos: Vec::new(),
+                    raw_return_type: Type::Hash(
+                        Some(Box::new(Type::Untyped)),
+                        Some(Box::new(Type::Untyped)),
+                    ),
+                    sorbet_modifier_comments: Vec::new(),
+                    rbs_annotated: true,
+                    rbs_inline_annotated: false,
+                    sig_annotated: false,
+                    attr_ivar: None,
+                    is_singleton: false,
+                    rbs_file_source: true,
+                    synthetic_dsl_source: true,
+                    rbs_method_types: Default::default(),
+                    extra_overloads: Vec::new(),
+                    loc: Some(loc),
+                },
+            );
         }
 
         if self.is_action_controller_class(class_name) {
@@ -908,7 +951,7 @@ impl<'a> InferenceEngine<'a> {
             "values" | "values_at" => Some(Type::Array(Some(Box::new(Type::Untyped)))),
             "any?" | "all?" | "empty?" | "none?" | "has_key?" | "include?" | "key?" | "member?"
             | "present?" | "blank?" => Some(Type::Bool),
-            "[]" | "fetch" | "dig" | "each_value" => Some(Type::Untyped),
+            "[]" | "fetch" | "dig" | "delete" | "each_value" => Some(Type::Untyped),
             _ => None,
         }
     }
@@ -1104,6 +1147,27 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => None,
         }
+    }
+
+    pub(super) fn synthetic_action_mailer_method_return(
+        &self,
+        receiver_type: &Type,
+        method_name: &str,
+    ) -> Option<Type> {
+        let Type::Class(class_name) = receiver_type else {
+            return None;
+        };
+        if !self.rails_feature_enabled()
+            || method_name != "params"
+            || !self.is_action_mailer_class(class_name)
+        {
+            return None;
+        }
+
+        Some(Type::Hash(
+            Some(Box::new(Type::Untyped)),
+            Some(Box::new(Type::Untyped)),
+        ))
     }
 
     pub(super) fn synthetic_action_dispatch_request_method_return(
@@ -2158,6 +2222,15 @@ impl<'a> InferenceEngine<'a> {
                     if array_like || range_like {
                         return Some(array_return);
                     }
+                    if matches!(
+                        arg_ty,
+                        Type::Integer
+                            | Type::LiteralInteger(_)
+                            | Type::String
+                            | Type::LiteralString(_)
+                    ) {
+                        return Some(elem_type);
+                    }
                 }
                 None
             }
@@ -2925,49 +2998,11 @@ impl<'a> InferenceEngine<'a> {
     }
 
     pub(super) fn extract_enum_value_names(
+        &mut self,
+        class_name: &str,
         call_node: &ruby_prism::CallNode<'_>,
         parse_result: &ParseResult<'_>,
     ) -> Vec<String> {
-        fn hash_keys_from_elements<'a>(
-            elements: impl Iterator<Item = ruby_prism::Node<'a>>,
-            parse_result: &ParseResult<'_>,
-        ) -> Vec<String> {
-            let mut keys = Vec::new();
-            for elem in elements {
-                if let Node::AssocNode { .. } = &elem {
-                    let assoc = elem.as_assoc_node().expect("must be AssocNode");
-                    if let Some(name) =
-                        InferenceEngine::node_to_string_or_symbol(&assoc.key(), parse_result)
-                    {
-                        keys.push(name);
-                    }
-                }
-            }
-            keys
-        }
-
-        // An `enum` value definition can be either a Hash (`{ pending: 0 }`) or an Array (`[:pending, :done]`). For a Hash, the keys are the value names; for an Array, the elements are the value names.
-        // To avoid mistaking option assocs like `prefix:` / `suffix:` for values, only look at the value-definition node (the enum attribute's value, or the positional argument right after the attribute).
-        fn value_names_from_node(node: &Node<'_>, parse_result: &ParseResult<'_>) -> Vec<String> {
-            match node {
-                Node::HashNode { .. } => {
-                    let hash = node.as_hash_node().expect("must be HashNode");
-                    hash_keys_from_elements(hash.elements().iter(), parse_result)
-                }
-                Node::ArrayNode { .. } => {
-                    let array = node.as_array_node().expect("must be ArrayNode");
-                    array
-                        .elements()
-                        .iter()
-                        .filter_map(|elem| {
-                            InferenceEngine::node_to_string_or_symbol(&elem, parse_result)
-                        })
-                        .collect()
-                }
-                _ => Vec::new(),
-            }
-        }
-
         let Some(args) = call_node.arguments() else {
             return Vec::new();
         };
@@ -2977,7 +3012,7 @@ impl<'a> InferenceEngine<'a> {
             && matches!(first, Node::SymbolNode { .. } | Node::StringNode { .. })
             && let Some(second) = arg_nodes.get(1)
         {
-            return value_names_from_node(second, parse_result);
+            return self.enum_value_names_from_node(class_name, second, parse_result);
         }
 
         for arg in &arg_nodes {
@@ -2999,13 +3034,176 @@ impl<'a> InferenceEngine<'a> {
                 if let Node::AssocNode { .. } = &elem {
                     let assoc = elem.as_assoc_node().expect("must be AssocNode");
                     let value = assoc.value();
-                    if matches!(&value, Node::HashNode { .. } | Node::ArrayNode { .. }) {
-                        return value_names_from_node(&value, parse_result);
+                    if matches!(
+                        &value,
+                        Node::HashNode { .. }
+                            | Node::ArrayNode { .. }
+                            | Node::ConstantReadNode { .. }
+                            | Node::ConstantPathNode { .. }
+                    ) {
+                        return self.enum_value_names_from_node(class_name, &value, parse_result);
                     }
                 }
             }
         }
         Vec::new()
+    }
+
+    fn enum_value_names_from_node(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+    ) -> Vec<String> {
+        fn hash_keys_from_elements<'a>(
+            elements: impl Iterator<Item = ruby_prism::Node<'a>>,
+            parse_result: &ParseResult<'_>,
+        ) -> Vec<String> {
+            let mut keys = Vec::new();
+            for elem in elements {
+                if let Node::AssocNode { .. } = &elem {
+                    let assoc = elem.as_assoc_node().expect("must be AssocNode");
+                    if let Some(name) =
+                        InferenceEngine::node_to_string_or_symbol(&assoc.key(), parse_result)
+                    {
+                        keys.push(name);
+                    }
+                }
+            }
+            keys
+        }
+
+        match node {
+            Node::HashNode { .. } => {
+                let hash = node.as_hash_node().expect("must be HashNode");
+                hash_keys_from_elements(hash.elements().iter(), parse_result)
+            }
+            Node::ArrayNode { .. } => {
+                let array = node.as_array_node().expect("must be ArrayNode");
+                array
+                    .elements()
+                    .iter()
+                    .filter_map(|elem| Self::node_to_string_or_symbol(&elem, parse_result))
+                    .collect()
+            }
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
+                let path = self.resolve_constant_path(node, parse_result);
+                match self.resolve_constant_type_in_scope(&path, class_name) {
+                    Type::Record(fields) => fields
+                        .iter()
+                        .filter(|field| !field.optional)
+                        .map(|field| match &field.key {
+                            RecordKey::Symbol(name) | RecordKey::String(name) => name.clone(),
+                        })
+                        .collect(),
+                    _ => self
+                        .enum_value_names_from_constant_initializer(class_name, &path, parse_result)
+                        .unwrap_or_default(),
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn static_enum_hash_keys(
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+    ) -> Option<Vec<String>> {
+        let elements = match node {
+            Node::HashNode { .. } => node.as_hash_node()?.elements(),
+            Node::KeywordHashNode { .. } => node.as_keyword_hash_node()?.elements(),
+            _ => return None,
+        };
+        let mut names = Vec::new();
+        for element in elements.iter() {
+            let assoc = element.as_assoc_node()?;
+            names.push(Self::node_to_string_or_symbol(&assoc.key(), parse_result)?);
+        }
+        Some(names)
+    }
+
+    fn enum_value_names_from_constant_initializer(
+        &mut self,
+        class_name: &str,
+        constant_path: &str,
+        parse_result: &ParseResult<'_>,
+    ) -> Option<Vec<String>> {
+        let bare_path = constant_path.strip_prefix("::").unwrap_or(constant_path);
+        let (owner, name) = bare_path
+            .rsplit_once("::")
+            .unwrap_or((class_name, bare_path));
+        let (file_path, location) = self
+            .registry
+            .lookup_constant_definition_location_through_ancestors(owner, name)?;
+        if self.file_path.as_deref() != Some(file_path.as_str()) {
+            return None;
+        }
+        let constant_is_defined_on_owner = self
+            .registry
+            .lookup_constant_definition_location(owner, name)
+            .is_some_and(|(definition_file, definition_location)| {
+                definition_file == file_path && definition_location == location
+            });
+
+        use ruby_prism::Visit;
+
+        let mut scan = EnumConstantInitializerScan {
+            location,
+            initializer: None,
+        };
+        let root = parse_result.node();
+        scan.visit(&root);
+        let initializer = scan.initializer?;
+        let mut current = initializer;
+
+        loop {
+            if let Node::ArrayNode { .. } = &current {
+                let array = current.as_array_node()?;
+                return array
+                    .elements()
+                    .iter()
+                    .map(|element| Self::node_to_string_or_symbol(&element, parse_result))
+                    .collect();
+            }
+            if matches!(
+                current,
+                Node::HashNode { .. } | Node::KeywordHashNode { .. }
+            ) {
+                return Self::static_enum_hash_keys(&current, parse_result);
+            }
+            let call = current.as_call_node()?;
+            let method_name = String::from_utf8_lossy(call.name().as_slice());
+            if matches!(method_name.as_ref(), "freeze" | "with_indifferent_access")
+                && call.arguments().is_none()
+            {
+                current = call.receiver()?;
+                continue;
+            }
+            if method_name != "new" {
+                return None;
+            }
+            let receiver = call.receiver()?;
+            let receiver_path = self.resolve_constant_path(&receiver, parse_result);
+            let has_hia_constructor = match receiver_path.as_str() {
+                "::HashWithIndifferentAccess" | "::ActiveSupport::HashWithIndifferentAccess" => {
+                    true
+                }
+                "HashWithIndifferentAccess" | "ActiveSupport::HashWithIndifferentAccess" => {
+                    constant_is_defined_on_owner && !owner.contains("::")
+                }
+                _ => false,
+            };
+            if !has_hia_constructor {
+                return None;
+            }
+            let arguments = call.arguments()?;
+            let mut args = arguments.arguments().iter();
+            let hash = args.next()?;
+            if args.next().is_some() {
+                return None;
+            }
+            return Self::static_enum_hash_keys(&hash, parse_result);
+        }
     }
 
     pub(super) fn node_to_symbol_or_label(
@@ -3135,7 +3333,7 @@ impl<'a> InferenceEngine<'a> {
         ty: Type,
         loc: SourceLocation,
     ) {
-        self.register_typed_attribute_accessors_inner(class_name, attr_name, ty, loc, None);
+        self.register_typed_attribute_accessors_inner(class_name, attr_name, ty, loc, None, false);
     }
 
     pub(in crate::inference) fn register_typed_attribute_accessors_inner(
@@ -3145,8 +3343,20 @@ impl<'a> InferenceEngine<'a> {
         ty: Type,
         loc: SourceLocation,
         attr_ivar: Option<String>,
+        preserve_explicit_methods: bool,
     ) {
         let is_virtual_attribute = attr_ivar.is_none();
+        let getter_is_explicit = preserve_explicit_methods
+            && self
+                .registry
+                .lookup_method_def(class_name, attr_name, false)
+                .is_some_and(|method| {
+                    !method.synthetic_dsl_source
+                        && (method.rbs_file_source
+                            || method.rbs_inline_annotated
+                            || method.sig_annotated
+                            || !method.rbs_annotated)
+                });
         if !self
             .registry
             .has_method_variant(class_name, attr_name, false)
@@ -3170,12 +3380,13 @@ impl<'a> InferenceEngine<'a> {
                     loc: Some(loc),
                 },
             );
-        } else {
+        } else if !getter_is_explicit {
             let widened = if is_virtual_attribute {
+                let getter_type = ty.clone().widen_arg_for_param();
                 self.registry
                     .lookup_method_return_type(class_name, attr_name)
-                    .map(|current| current.union_with(ty.clone()))
-                    .unwrap_or_else(|| ty.clone())
+                    .map(|current| current.union_with(getter_type.clone()))
+                    .unwrap_or(getter_type)
             } else {
                 ty.clone()
             };
@@ -3184,6 +3395,17 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let setter_name = format!("{attr_name}=");
+        let setter_is_explicit = preserve_explicit_methods
+            && self
+                .registry
+                .lookup_method_def(class_name, &setter_name, false)
+                .is_some_and(|method| {
+                    !method.synthetic_dsl_source
+                        && (method.rbs_file_source
+                            || method.rbs_inline_annotated
+                            || method.sig_annotated
+                            || !method.rbs_annotated)
+                });
         if !self
             .registry
             .has_method_variant(class_name, &setter_name, false)
@@ -3211,7 +3433,7 @@ impl<'a> InferenceEngine<'a> {
                     loc: Some(loc),
                 },
             );
-        } else {
+        } else if !setter_is_explicit {
             let widened = if is_virtual_attribute {
                 self.registry
                     .lookup_method_return_type(class_name, &setter_name)

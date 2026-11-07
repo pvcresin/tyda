@@ -451,6 +451,32 @@ class Sentinel
 end
 ```
 
+## Class instance variable guard narrows a cached return
+
+### update
+
+```ruby
+class LazyClassCache
+  def self.reset
+    @value = nil
+  end
+
+  def self.value
+    return @value if @value
+    @value ||= "cached"
+  end
+end
+```
+
+### result
+
+```rbs
+class LazyClassCache
+  def self.reset: -> nil
+  def self.value: -> "cached"
+end
+```
+
 ## Self-referential lvar nil check is true
 
 ### update
@@ -467,5 +493,86 @@ end
 ```rbs
 class Object < BasicObject
   def foo: -> true
+end
+```
+
+## Dynamic ivar names preserve name-value correlation
+
+### update
+
+```ruby
+class ReflectedAttributes
+  def initialize(flag)
+    @items = []
+    @name = "item"
+
+    ivar = flag ? :@items : :@name
+    value = flag ? [] : "item"
+    instance_variable_set(ivar, value)
+  end
+
+  def items = @items
+  def name = @name
+end
+```
+
+### result
+
+```rbs
+class ReflectedAttributes
+  def initialize: (untyped flag) -> void
+  def items: -> [ ]
+  def name: -> "item"
+end
+```
+
+## Singleton and instance variables keep separate types
+
+### update
+
+```ruby
+class SeparateIvarScopes
+  @value = "class"
+
+  def initialize
+    @value = nil
+  end
+
+  def self.singleton_value = @value
+  def instance_value = @value
+end
+```
+
+### result
+
+```rbs
+class SeparateIvarScopes
+  def initialize: -> void
+  def self.singleton_value: -> "class"
+  def instance_value: -> nil
+end
+```
+
+## A duplicated singleton ivar stays concrete within its method
+
+### update
+
+```ruby
+class SingletonConfigFlow
+  @defaults = Hash.new
+  @config = nil
+
+  def self.load
+    @config = @defaults.dup
+    @config.merge!({})
+  end
+end
+```
+
+### result
+
+```rbs
+class SingletonConfigFlow
+  def self.load: -> Hash[untyped, untyped]
 end
 ```

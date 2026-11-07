@@ -171,9 +171,295 @@ end
 
 ```rbs
 class A
-  def foo: { (A) -> A } -> A?
+  def foo: ?{ (A) -> A } -> A?
   def bar: -> A?
 end
+```
+
+## block_given? override does not make yields optional
+
+### update
+
+```ruby
+class BlockGivenOverride
+  def block_given? = true
+
+  def run
+    yield :value if block_given?
+  end
+end
+
+BlockGivenOverride.new.run
+```
+
+### result
+
+```rbs
+class BlockGivenOverride
+  def block_given?: -> true
+  def run: { (Symbol) -> untyped } -> nil | untyped
+end
+```
+
+## Inherited block_given? overrides invalidate block guards
+
+### update
+
+```ruby
+class Object
+  def block_given? = true
+end
+
+class InheritedBlockGivenOverride
+  def run
+    yield :value if block_given?
+  end
+end
+```
+
+### result
+
+```rbs
+class InheritedBlockGivenOverride
+  def run: { (Symbol) -> untyped } -> nil | untyped
+end
+
+class Object < BasicObject
+  def block_given?: -> true
+end
+```
+
+## unrelated block_given? overrides preserve trusted guards
+
+### update
+
+```ruby
+class UnrelatedBlockGivenOverride
+  def block_given? = true
+end
+
+class GuardedYield
+  def run
+    yield :value if block_given?
+  end
+end
+```
+
+### result
+
+```rbs
+class GuardedYield
+  def run: ?{ (Symbol) -> untyped } -> nil | untyped
+end
+
+class UnrelatedBlockGivenOverride
+  def block_given?: -> true
+end
+```
+
+## conditional yield inside call blocks preserves block requiredness
+
+### update
+
+```ruby
+class NestedGuardedYield
+  def run
+    [1].each { yield if block_given? }
+  end
+end
+
+class ExplicitRequiredGuardedBlock
+  # @rbs { () -> nil } -> nil
+  def run
+    yield if block_given?
+  end
+end
+
+class CaseGuardedYield
+  def run
+    case block_given?
+    when true
+      yield :value
+    end
+  end
+end
+
+class ShortCircuitGuardedYield
+  def run
+    block_given? && yield(:value)
+  end
+end
+
+class LaterBlockGivenOverride
+  def run
+    yield :value if block_given?
+  end
+
+  def block_given? = true
+end
+```
+
+### result
+
+```rbs
+class CaseGuardedYield
+  def run: ?{ (Symbol) -> untyped } -> nil | untyped
+end
+
+class ExplicitRequiredGuardedBlock
+  def run: { () -> nil } -> nil
+end
+
+class LaterBlockGivenOverride
+  def run: { (Symbol) -> untyped } -> nil | untyped
+  def block_given?: -> true
+end
+
+class NestedGuardedYield
+  def run: ?{ () -> untyped } -> [1]
+end
+
+class ShortCircuitGuardedYield
+  def run: ?{ (Symbol) -> untyped } -> false | untyped
+end
+```
+
+## singleton block_given? overrides follow method dispatch
+
+### update
+
+```ruby
+class SingletonBlockGivenOverride
+  def self.run
+    yield :value if block_given?
+  end
+
+  def self.block_given? = true
+end
+
+class InstanceBlockGivenOverrideDoesNotAffectSingleton
+  def block_given? = true
+
+  def self.run
+    yield if block_given?
+  end
+end
+```
+
+### result
+
+```rbs
+class InstanceBlockGivenOverrideDoesNotAffectSingleton
+  def block_given?: -> true
+  def self.run: ?{ () -> untyped } -> nil | untyped
+end
+
+class SingletonBlockGivenOverride
+  def self.run: { (Symbol) -> untyped } -> nil | untyped
+  def self.block_given?: -> true
+end
+```
+
+## a nested block parameter shadows the method block
+
+### update
+
+```ruby
+class NestedBlockParameterShadow
+  def run(&blk)
+    [1].each { |&blk| blk.call(:value) }
+  end
+end
+
+class BlockLocalParameterShadow
+  def run(&blk)
+    [1].each { |x; blk| blk = -> { :local }; blk.call(:value) }
+    yield if block_given?
+  end
+end
+```
+
+### result
+
+```rbs
+class BlockLocalParameterShadow
+  def run: (?untyped &blk) -> (nil | untyped)
+end
+
+class NestedBlockParameterShadow
+  def run: (?untyped &blk) -> [1]
+end
+```
+
+## an unreachable rescue yield does not require a block
+
+### update
+
+```ruby
+class RescueYield
+  def run
+    begin
+      yield :normal if block_given?
+    rescue
+      yield :rescued
+    end
+  end
+end
+
+RescueYield.new.run
+
+class RescueAfterRaise
+  def run
+    begin
+      raise "failure"
+    rescue
+      yield
+    end
+  end
+end
+
+RescueAfterRaise.new.run {}
+
+class RescueAfterArrayLiteral
+  def run
+    begin
+      []
+    rescue ArgumentError
+      yield
+    end
+  end
+end
+
+class RescueAfterHashLiteral
+  def run
+    begin
+      {}
+    rescue ArgumentError
+      yield
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class RescueAfterArrayLiteral
+  def run: -> untyped | [ ]
+end
+
+class RescueAfterHashLiteral
+  def run: -> untyped | Hash[untyped, untyped]
+end
+
+class RescueAfterRaise
+  def run: { () -> nil } -> nil
+end
+
+class RescueYield
+  def run: ?{ (Symbol) -> untyped } -> nil | untyped
+end
+
 ```
 
 ## Proc.new lambda and arrow syntax

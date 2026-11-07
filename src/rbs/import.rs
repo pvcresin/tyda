@@ -10,7 +10,7 @@ use crate::registry::{MethodDef, MixinKind as RegistryMixinKind, ParamInfo, Type
 use crate::types::{ParamKind, RecordField, RecordKey, Type};
 
 #[derive(Debug, Clone)]
-struct RawTypeAlias {
+pub(crate) struct RawTypeAlias {
     type_params: Vec<String>,
     type_param_bounds: Vec<(String, rbs_ir::RbsType)>,
     type_param_defaults: Vec<(String, rbs_ir::RbsType)>,
@@ -101,20 +101,39 @@ pub(crate) fn load_rbs_string_with_dependency_aliases(
         Ok(sig) => sig,
         Err(_) => return,
     };
+    let dependency_aliases: Vec<HashMap<String, RawTypeAlias>> = dependency_contents
+        .iter()
+        .filter_map(|content| rbs_sys::parse_signature(content).ok())
+        .map(|dependency_sig| extract_type_aliases(&dependency_sig))
+        .collect();
+    load_rbs_signature_with_dependency_aliases(&sig, dependency_aliases.iter(), registry);
+}
 
+pub(crate) fn signature_type_aliases(sig: &rbs_sys::Signature) -> HashMap<String, RawTypeAlias> {
+    extract_type_aliases(sig)
+}
+
+/// Later dependencies and then the signature itself win on a repeated alias name.
+pub(crate) fn load_rbs_signature_with_dependency_aliases<'a>(
+    sig: &rbs_sys::Signature,
+    dependency_aliases: impl IntoIterator<Item = &'a HashMap<String, RawTypeAlias>>,
+    registry: &mut TypeRegistry,
+) {
     let mut aliases = HashMap::new();
-    for dependency_content in dependency_contents {
-        if let Ok(dependency_sig) = rbs_sys::parse_signature(dependency_content) {
-            aliases.extend(extract_type_aliases(&dependency_sig));
-        }
+    for dependency in dependency_aliases {
+        aliases.extend(
+            dependency
+                .iter()
+                .map(|(name, alias)| (name.clone(), alias.clone())),
+        );
     }
-    aliases.extend(extract_type_aliases(&sig));
+    aliases.extend(extract_type_aliases(sig));
     let resolved_aliases = resolve_rbs_type_aliases(&aliases, registry.type_aliases());
     for (alias_name, ty) in resolved_aliases {
         registry.set_type_alias(&alias_name, ty);
     }
     let alias_snapshot = registry.type_aliases().clone();
-    merge_signature_into_registry(&sig, &alias_snapshot, &aliases, registry);
+    merge_signature_into_registry(sig, &alias_snapshot, &aliases, registry);
 }
 
 fn merge_signature_into_registry(

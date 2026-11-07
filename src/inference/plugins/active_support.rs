@@ -191,7 +191,25 @@ pub(in crate::inference) fn synthetic_method_return(
     if !engine.dsl_enabled(DslLibrary::ActiveSupportTimeExt) {
         return None;
     }
+    if method_name == "to_json" {
+        return Some(Type::String);
+    }
     match receiver_type {
+        Type::Integer | Type::LiteralInteger(_) => match method_name {
+            "bytes" => Some(receiver_type.clone()),
+            "kilobyte" | "kilobytes" | "megabyte" | "megabytes" | "gigabyte" | "gigabytes" => {
+                Some(Type::Integer)
+            }
+            "ordinalize" => Some(Type::String),
+            _ => None,
+        },
+        Type::Float | Type::LiteralFloat(_) if method_name == "ordinalize" => Some(Type::String),
+        Type::String | Type::LiteralString(_) => match method_name {
+            "constantize" | "safe_constantize" => Some(Type::Untyped),
+            "truncate" => Some(Type::String),
+            "ends_with?" | "starts_with?" => Some(Type::Bool),
+            _ => None,
+        },
         Type::Singleton(name) if name.as_str() == "Time" => match method_name {
             "current" => Some(time_with_zone()),
             "zone" => Some(Type::Class(Sym::new("ActiveSupport::TimeZone"))),

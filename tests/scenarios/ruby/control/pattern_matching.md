@@ -156,10 +156,6 @@ end
 
 ## Keep type with right assignment pattern
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -184,10 +180,6 @@ end
 ```
 
 ## Use array pattern as condition
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -225,10 +217,6 @@ end
 
 ## Use hash pattern as condition
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -263,10 +251,6 @@ end
 
 ## Use numeric literal pattern as condition
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -296,11 +280,83 @@ class Object < BasicObject
 end
 ```
 
-## Use string and symbol literal pattern as condition
+## Non-literal numeric subjects can match numeric literal patterns of another class
 
 ```yaml
 known_issue: true
 ```
+
+### update
+
+```ruby
+class CrossClassNumericPattern
+  #: () -> Integer
+  def int = 1
+
+  #: () -> Float
+  def float = 1.0
+
+  def integer_against_float
+    case int
+    in 1.0
+      :float
+    else
+      :other
+    end
+  end
+
+  def float_against_integer
+    case float
+    in 1
+      :int
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class CrossClassNumericPattern
+  def int: -> Integer
+  def float: -> Float
+  def integer_against_float: -> :float | :other
+  def float_against_integer: -> :int | :other
+end
+```
+
+## Integer subject cannot equal a fractional float pattern
+
+### update
+
+```ruby
+class FractionalFloatPattern
+  #: () -> Integer
+  def int = 1
+
+  def integer_against_fractional
+    case int
+    in 1.5
+      :fraction
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class FractionalFloatPattern
+  def int: -> Integer
+  def integer_against_fractional: -> :other
+end
+```
+
+## Use string and symbol literal pattern as condition
 
 ### update
 
@@ -331,15 +387,38 @@ check_text(:AAA)
 ```rbs
 class Object < BasicObject
   def check_interpolation: (untyped x) -> nil
-  def check_text: (Symbol x) -> (:interpolated_symbol | :zzz)
+  def check_text: (Symbol x) -> (:interpolated_symbol | :symbol | :zzz)
+end
+```
+
+## Keep open symbols in literal symbol patterns
+
+### update
+
+```ruby
+def check_open_symbol(value)
+  case value
+  in "foo"
+    :string
+  in :foo
+    :symbol
+  else
+    :zzz
+  end
+end
+
+check_open_symbol(:AAA)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def check_open_symbol: (Symbol value) -> (:symbol | :zzz)
 end
 ```
 
 ## Use nil bool and special literal pattern as condition
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -376,6 +455,85 @@ class Object < BasicObject
 end
 ```
 
+## Preserve unmatched nil and boolean pattern branches
+
+### update
+
+```ruby
+def check_nil_or_string(value)
+  case value
+  in nil
+    :nil
+  else
+    :other
+  end
+end
+
+check_nil_or_string(nil)
+check_nil_or_string("text")
+
+def check_integer_against_nil(value)
+  case value
+  in nil
+    :nil
+  else
+    :other
+  end
+end
+
+check_integer_against_nil(1)
+
+def check_boolean(value)
+  case value
+  in false
+    :false
+  in true
+    :true
+  end
+end
+
+check_boolean(false)
+check_boolean(true)
+
+def check_wildcard_before_nil(value)
+  case value
+  in _
+    :first
+  in nil
+    :second
+  else
+    :third
+  end
+end
+
+check_wildcard_before_nil(nil)
+
+def check_variable_before_nil(value)
+  case value
+  in captured
+    :first
+  in nil
+    :second
+  else
+    :third
+  end
+end
+
+check_variable_before_nil(nil)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def check_nil_or_string: (String? value) -> (:nil | :other)
+  def check_integer_against_nil: (Integer value) -> :other
+  def check_boolean: (bool value) -> (:false | :true)
+  def check_wildcard_before_nil: (nil value) -> :first
+  def check_variable_before_nil: (nil value) -> :first
+end
+```
+
 ## Branch with constant pattern
 
 ### update
@@ -403,10 +561,6 @@ end
 ```
 
 ## Use find pattern as condition
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -712,10 +866,6 @@ end
 
 ## Narrow a Hash capture pattern within a Record union
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -757,10 +907,6 @@ end
 
 ## Include failed predicate paths in captured locals
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -793,38 +939,12 @@ class MatchPredicateFailurePaths
 end
 ```
 
-## Bind captures in pattern predicate expressions
-
-```yaml
-known_issue: true
-```
+## Bind captures in short-circuit pattern predicate expressions
 
 ### update
 
 ```ruby
 class PatternMatchExpressionBindings
-  def assigned(value)
-    matched = (value in Integer => number)
-    number
-  end
-
-  def assigned_hash(value)
-    matched = (value in { payload: Integer => payload })
-    payload
-  end
-
-  def parenthesized_if(value)
-    if (value in Integer => number)
-      number
-    else
-      nil
-    end
-  end
-
-  def parenthesized_ternary(value)
-    (value in [Integer => number]) ? number : nil
-  end
-
   def short_circuit_and(value)
     (value in Integer => number) && number
   end
@@ -843,11 +963,6 @@ class PatternMatchExpressionBindings
     else
       nil
     end
-  end
-
-  def parenthesized_assignment_sequence(value)
-    matched = (value in Integer => number; true)
-    number
   end
 
   def short_circuit_and_after(value)
@@ -870,19 +985,142 @@ class PatternMatchExpressionBindings
     number
   end
 
-  def capture_after_parenthesized_if(value)
-    if (value in Integer => number)
-      :matched
-    end
-    number
-  end
-
   def capture_in_or_condition(value, flag)
     if flag || (value in Integer => number)
       number
     else
       nil
     end
+  end
+
+  def capture_in_guard_else(value, flag)
+    case value
+    in Integer => number if flag
+      :matched
+    else
+      number
+    end
+  end
+
+  def capture_in_unless_guard_else(value, flag)
+    case value
+    in Integer => number unless flag
+      :matched
+    else
+      number
+    end
+  end
+
+  def capture_kept_for_later_arm(value, flag)
+    case value
+    in Integer => number if flag
+      :matched
+    in String
+      number
+    end
+  end
+
+  def capture_in_negated_statement(value)
+    !(value in Integer => number)
+    number
+  end
+
+  def assignment_in_short_circuit_rhs(flag)
+    flag && (number = 1)
+    number
+  end
+
+  def assignment_in_or_rhs(flag)
+    flag || number = 1
+    number
+  end
+
+  def partial_capture_on_failed_match(value)
+    if (value in [Integer => first, String])
+      :matched
+    else
+      first
+    end
+  end
+
+  def capture_in_loop_condition(value)
+    while (value in Integer => number)
+      return number
+    end
+  end
+
+  def parenthesized_local_assignment
+    result = (number = 1)
+    number
+  end
+
+  def assignment_keeps_statically_matched_literal
+    value = [1, "x"]
+    matched = (value in [first, second])
+    second
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchExpressionBindings
+  def short_circuit_and: (untyped value) -> (Integer | false)
+  def negated_else: (untyped value) -> Integer?
+  def and_condition: (untyped value, untyped flag) -> Integer?
+  def short_circuit_and_after: (untyped value) -> Integer?
+  def short_circuit_and_rhs: (untyped value, untyped flag) -> Integer?
+  def short_circuit_or: (untyped value) -> Integer?
+  def short_circuit_or_rhs: (untyped value, untyped flag) -> Integer?
+  def capture_in_or_condition: (untyped value, untyped flag) -> Integer?
+  def capture_in_guard_else: (untyped value, untyped flag) -> (Integer | :matched)?
+  def capture_in_unless_guard_else: (untyped value, untyped flag) -> (Integer | :matched)?
+  def capture_kept_for_later_arm: (untyped value, untyped flag) -> (Integer | :matched)?
+  def capture_in_negated_statement: (untyped value) -> Integer?
+  def assignment_in_short_circuit_rhs: (untyped flag) -> 1?
+  def assignment_in_or_rhs: (untyped flag) -> 1?
+  def partial_capture_on_failed_match: (untyped value) -> (Integer | :matched)?
+  def capture_in_loop_condition: (untyped value) -> Integer?
+  def parenthesized_local_assignment: -> 1
+  def assignment_keeps_statically_matched_literal: -> "x"
+end
+```
+
+## Keep both case arms because the literal guard is not evaluated
+
+### update
+
+```ruby
+class PatternMatchLiteralGuard
+  def capture_in_statically_matched_guard_else
+    value = -1
+    case value
+    in Integer => number if value.positive?
+      :matched
+    else
+      number
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchLiteralGuard
+  def capture_in_statically_matched_guard_else: -> -1 | :matched
+end
+```
+
+## Preserve captures across successful case patterns
+
+### update
+
+```ruby
+class PatternMatchExpressionBindings
+  def parenthesized_ternary(value)
+    (value in [Integer => number]) ? number : nil
   end
 
   def capture_after_case_match(value)
@@ -896,16 +1134,6 @@ class PatternMatchExpressionBindings
   def capture_in_case_else(value)
     case value
     in Integer => number
-      :matched
-    else
-      number
-    end
-  end
-
-  def capture_in_statically_matched_guard_else
-    value = -1
-    case value
-    in Integer => number if value.positive?
       :matched
     else
       number
@@ -930,22 +1158,33 @@ class PatternMatchExpressionBindings
     end
     [integer, string]
   end
+end
+```
 
-  def parenthesized_local_assignment
-    result = (number = 1)
-    number
-  end
+### result
 
-  def assignment_preserves_existing(value)
-    number = :before
-    matched = (value in Integer => number)
-    number
-  end
+```rbs
+class PatternMatchExpressionBindings
+  def parenthesized_ternary: (untyped value) -> Integer?
+  def capture_after_case_match: (untyped value) -> Integer
+  def capture_in_case_else: (untyped value) -> :matched?
+  def case_match_preserves_existing: (untyped value) -> Integer
+  def capture_after_case_alternatives: (untyped value) -> ([Integer, nil] | [nil, String])
+end
+```
 
-  def assignment_keeps_statically_matched_literal
-    value = [1, "x"]
-    matched = (value in [first, second])
-    second
+## Bind captures in a parenthesized pattern condition
+
+### update
+
+```ruby
+class PatternMatchExpressionBindings
+  def parenthesized_if(value)
+    if (value in Integer => number)
+      number
+    else
+      nil
+    end
   end
 end
 ```
@@ -954,36 +1193,34 @@ end
 
 ```rbs
 class PatternMatchExpressionBindings
-  def assigned: (untyped value) -> Integer?
-  def assigned_hash: (untyped value) -> Integer?
   def parenthesized_if: (untyped value) -> Integer?
-  def parenthesized_ternary: (untyped value) -> Integer?
-  def short_circuit_and: (untyped value) -> (Integer | false)
-  def negated_else: (untyped value) -> Integer?
-  def and_condition: (untyped value, untyped flag) -> Integer?
-  def parenthesized_assignment_sequence: (untyped value) -> Integer?
-  def short_circuit_and_after: (untyped value) -> Integer?
-  def short_circuit_and_rhs: (untyped value, untyped flag) -> Integer?
-  def short_circuit_or: (untyped value) -> Integer?
-  def short_circuit_or_rhs: (untyped value, untyped flag) -> Integer?
+end
+```
+
+## Preserve captures after a parenthesized pattern condition
+
+### update
+
+```ruby
+class PatternMatchExpressionBindings
+  def capture_after_parenthesized_if(value)
+    if (value in Integer => number)
+      :matched
+    end
+    number
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchExpressionBindings
   def capture_after_parenthesized_if: (untyped value) -> Integer?
-  def capture_in_or_condition: (untyped value, untyped flag) -> Integer?
-  def capture_after_case_match: (untyped value) -> Integer
-  def capture_in_case_else: (untyped value) -> :matched?
-  def capture_in_statically_matched_guard_else: -> -1
-  def case_match_preserves_existing: (untyped value) -> Integer
-  def capture_after_case_alternatives: (untyped value) -> ([Integer, nil] | [nil, String])
-  def parenthesized_local_assignment: -> 1
-  def assignment_preserves_existing: (untyped value) -> (Integer | :before)
-  def assignment_keeps_statically_matched_literal: -> "x"
 end
 ```
 
 ## Do not merge locals from an exiting case/in branch
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1023,6 +1260,7 @@ def case_match_all_paths_return(value)
     return :text
   end
   selected
+  :unreachable
 end
 ```
 
@@ -1031,5 +1269,276 @@ end
 ```rbs
 class Object < BasicObject
   def case_match_all_paths_return: (untyped value) -> (:number | :text)
+end
+```
+
+## Bind captures from an assigned pattern predicate
+
+### update
+
+```ruby
+class PatternMatchAssignmentBindings
+  def assigned(value)
+    matched = (value in Integer => number)
+    number
+  end
+
+  def assigned_hash(value)
+    matched = (value in { payload: Integer => payload })
+    payload
+  end
+
+  def assigned_sequence(value)
+    matched = ((value in Integer => number); true)
+    number
+  end
+
+  def assigned_sequence_after_prefix(value)
+    matched = (true; (value in Integer => number); true)
+    number
+  end
+
+  def assigned_sequence_after_overwrite(value)
+    matched = ((value in Integer => number); number = :after; true)
+    number
+  end
+
+  def preserve_existing_on_failure(value)
+    number = :before
+    matched = (value in Integer => number)
+    number
+  end
+
+  def assignment_target_overwrites_capture(value)
+    number = (value in Integer => number)
+    number
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchAssignmentBindings
+  def assigned: (untyped value) -> Integer?
+  def assigned_hash: (untyped value) -> Integer?
+  def assigned_sequence: (untyped value) -> Integer?
+  def assigned_sequence_after_prefix: (untyped value) -> Integer?
+  def assigned_sequence_after_overwrite: (untyped value) -> :after
+  def preserve_existing_on_failure: (untyped value) -> (Integer | :before)
+  def assignment_target_overwrites_capture: (untyped value) -> bool
+end
+```
+
+## Do not bind captures from expressions that may not run
+
+### update
+
+```ruby
+class PatternMatchAssignmentEvaluation
+  def skipped_short_circuit(value)
+    number = :before
+    false && (value in Integer => number)
+    number
+  end
+
+  def skipped_assignment_short_circuit(value)
+    matched = (false && (value in Integer => number))
+    number
+  end
+
+  def deferred_block(value)
+    number = :before
+    callback = -> { value in Integer => number }
+    number
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternMatchAssignmentEvaluation
+  def skipped_short_circuit: (untyped value) -> :before
+  def skipped_assignment_short_circuit: (untyped value) -> nil
+  def deferred_block: (untyped value) -> :before
+end
+```
+
+## Check the class before narrowing a hash pattern
+
+### update
+
+```ruby
+class PatternHashBase < Hash
+end
+
+class PatternHashChild < PatternHashBase
+  def deconstruct_keys(_keys) = {}
+end
+
+class PatternHashUnrelated
+end
+
+class PatternHashAlwaysMiss
+  def self.===(_value) = false
+end
+
+class PatternHashClassPatterns
+  def self.hash_base
+    case { a: 42 }
+    in Hash[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.unrelated_class
+    case { a: 42 }
+    in PatternHashUnrelated[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.hash_subclass
+    case { a: 42 }
+    in PatternHashChild[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.nested_unrelated_class
+    case { outer: { a: 42 } }
+    in { outer: PatternHashUnrelated[a: Integer] }
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.class_equality_override
+    case { a: 42 }
+    in PatternHashAlwaysMiss[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.unresolved_constant
+    case { a: 42 }
+    in MissingHashPattern[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+
+  def self.hash_subclass_deconstruction
+    value = PatternHashChild.new
+    value[:a] = 42
+    case value
+    in { a: Integer }
+      :matched
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class PatternHashAlwaysMiss
+  def self.===: (untyped _value) -> false
+end
+
+class PatternHashChild < PatternHashBase
+  def deconstruct_keys: (untyped _keys) -> Hash[untyped, untyped]
+end
+
+class PatternHashClassPatterns
+  def self.hash_base: -> :matched
+  def self.unrelated_class: -> :other
+  def self.hash_subclass: -> :matched | :other
+  def self.nested_unrelated_class: -> :other
+  def self.class_equality_override: -> :matched | :other
+  def self.unresolved_constant: -> :matched | :other
+  def self.hash_subclass_deconstruction: -> :matched | :other
+end
+```
+
+## Keep class pattern branches open under an active equality refinement
+
+### update
+
+```ruby
+class RefinedHashPatternTarget
+end
+
+module AlwaysMatchModuleCase
+  refine Module do
+    def ===(_value) = true
+  end
+end
+
+class RefinedHashPatternProbe
+  using AlwaysMatchModuleCase
+
+  def self.classify
+    case { a: 42 }
+    in RefinedHashPatternTarget[a: Integer]
+      :matched
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class RefinedHashPatternProbe
+  def self.classify: -> :matched | :other
+end
+```
+
+## Match integer and float literal patterns through numeric equality
+
+### update
+
+```ruby
+def integer_matches_float_pattern
+  case 1
+  in 1.0
+    :matched
+  else
+    :unmatched
+  end
+end
+
+def float_matches_integer_pattern
+  case 1.0
+  in 1
+    :matched
+  else
+    :unmatched
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def integer_matches_float_pattern: -> :matched
+  def float_matches_integer_pattern: -> :matched
 end
 ```

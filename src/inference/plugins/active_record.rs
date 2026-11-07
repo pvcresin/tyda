@@ -2,8 +2,8 @@ use super::super::InferenceEngine;
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
 use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
-use crate::registry::IncluderBoundDsl;
-use crate::types::Type;
+use crate::registry::{IncluderBoundDsl, ParamInfo};
+use crate::types::{ParamKind, Type};
 use ruby_prism::{CallNode, ParseResult};
 
 const CLASS_BODY_METHODS: &[&str] = &[
@@ -13,6 +13,7 @@ const CLASS_BODY_METHODS: &[&str] = &[
     "has_and_belongs_to_many",
     "composed_of",
     "scope",
+    "serialize",
     "enum",
     "store_accessor",
     "store",
@@ -32,6 +33,17 @@ const STORE_LIBRARIES: &[DslLibrary] = &[
     DslLibrary::ActiveRecordStore,
     DslLibrary::ActiveRecordTypedStore,
 ];
+
+fn association_attributes_param() -> ParamInfo {
+    ParamInfo {
+        name: "attributes".to_string(),
+        kind: ParamKind::Optional,
+        default_type: Some(Type::Hash(
+            Some(Box::new(Type::Union(vec![Type::Symbol, Type::String]))),
+            Some(Box::new(Type::Untyped)),
+        )),
+    }
+}
 
 pub(super) struct ActiveRecord;
 
@@ -147,6 +159,10 @@ impl Plugin for ActiveRecord {
                 }
                 true
             }
+            "serialize" if cx.rails_feature_enabled() => {
+                cx.collect_serialized_attribute_dsl(class_name, call_node, parse_result);
+                true
+            }
             "enum" if cx.dsl_enabled(DslLibrary::ActiveRecordEnum) => {
                 cx.collect_enum_dsl(class_name, call_node, parse_result);
                 true
@@ -260,6 +276,7 @@ fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Typ
         | "restore_attributes"
         | "attribute_before_last_save"
         | "run_callbacks"
+        | "readonly!"
         | "connection"
         | "transaction"
         | "read_attribute"
@@ -272,6 +289,9 @@ fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Typ
 
 fn dynamic_finder_return(model_name: &str, method_name: &str) -> Option<Type> {
     let model = || Type::Class(crate::types::Sym::new(model_name));
+    if matches!(method_name, "reflections" | "base_class") {
+        return Some(Type::Untyped);
+    }
     if matches!(
         method_name,
         "connection"
@@ -496,6 +516,56 @@ impl<'a> InferenceEngine<'a> {
                 loc: Some(loc),
             },
         );
+
+        self.add_simple_method_if_missing(
+            class_name,
+            &format!("{new_name}?"),
+            Type::Bool,
+            false,
+            loc,
+        );
+    }
+
+    pub(in crate::inference) fn collect_serialized_attribute_dsl(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+    ) {
+        if !self.rails_feature_enabled() {
+            return;
+        }
+        let Some(attr_name) = Self::extract_symbol_args(call_node).first().cloned() else {
+            return;
+        };
+        let ty = self
+            .hash_option_type(call_node, "type", parse_result)
+            .unwrap_or(Type::Untyped);
+        let ty_is_unknown = matches!(ty, Type::Untyped);
+        let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
+        if self.is_active_record_model_class(class_name) {
+            self.register_typed_attribute_accessors_inner(
+                class_name,
+                &attr_name,
+                ty,
+                loc,
+                Some(format!("@{attr_name}")),
+                true,
+            );
+            if ty_is_unknown {
+                self.registry
+                    .mark_column_accessor_replaced(class_name, &attr_name);
+            }
+        } else if self.is_collecting_concern_included() {
+            self.registry.push_includer_bound_dsl(
+                class_name,
+                IncluderBoundDsl::ActiveRecordSerializedAttribute {
+                    name: attr_name,
+                    ty,
+                    loc,
+                },
+            );
+        }
     }
     pub(super) fn collect_belongs_to(
         &mut self,
@@ -645,12 +715,16 @@ impl<'a> InferenceEngine<'a> {
             },
         );
 
-        for prefix in ["build_", "create_"] {
+        for method_name in [
+            format!("build_{assoc_name}"),
+            format!("create_{assoc_name}"),
+            format!("create_{assoc_name}!"),
+        ] {
             self.registry.add_method_def(
                 class_name,
                 MethodDef {
-                    name: Sym::new(format!("{prefix}{assoc_name}")),
-                    param_infos: Vec::new(),
+                    name: Sym::new(method_name),
+                    param_infos: vec![association_attributes_param()],
                     raw_return_type: Type::Class(Sym::new(&target_class)),
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
@@ -856,12 +930,16 @@ impl<'a> InferenceEngine<'a> {
             },
         );
 
-        for prefix in ["build_", "create_"] {
+        for method_name in [
+            format!("build_{assoc_name}"),
+            format!("create_{assoc_name}"),
+            format!("create_{assoc_name}!"),
+        ] {
             self.registry.add_method_def(
                 class_name,
                 MethodDef {
-                    name: Sym::new(format!("{prefix}{assoc_name}")),
-                    param_infos: Vec::new(),
+                    name: Sym::new(method_name),
+                    param_infos: vec![association_attributes_param()],
                     raw_return_type: Type::Class(Sym::new(&target_class)),
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
@@ -1008,7 +1086,7 @@ impl<'a> InferenceEngine<'a> {
         call_node: &ruby_prism::CallNode<'_>,
         parse_result: &ParseResult<'_>,
     ) {
-        let value_names = Self::extract_enum_value_names(call_node, parse_result);
+        let value_names = self.extract_enum_value_names(class_name, call_node, parse_result);
         let enum_attr_name = Self::extract_enum_attribute_name(call_node, parse_result);
         let prefix = enum_attr_name
             .as_deref()
@@ -1023,9 +1101,36 @@ impl<'a> InferenceEngine<'a> {
             if self.is_collecting_concern_included() {
                 self.registry.push_includer_bound_dsl(
                     class_name,
+                    IncluderBoundDsl::ActiveRecordEnumAttribute {
+                        name: attr_name.to_string(),
+                        loc,
+                    },
+                );
+                self.registry.push_includer_bound_dsl(
+                    class_name,
                     IncluderBoundDsl::ActiveRecordEnumStatuses { name, loc },
                 );
             } else {
+                self.registry
+                    .add_method_def_overriding_synthetic_if_missing(
+                        class_name,
+                        MethodDef {
+                            name: Sym::new(attr_name),
+                            param_infos: Vec::new(),
+                            raw_return_type: Type::String,
+                            sorbet_modifier_comments: Vec::new(),
+                            rbs_annotated: false,
+                            rbs_inline_annotated: false,
+                            sig_annotated: false,
+                            attr_ivar: None,
+                            is_singleton: false,
+                            rbs_file_source: false,
+                            synthetic_dsl_source: true,
+                            rbs_method_types: Default::default(),
+                            extra_overloads: Vec::new(),
+                            loc: Some(loc),
+                        },
+                    );
                 self.registry.add_method_def(
                     class_name,
                     MethodDef {

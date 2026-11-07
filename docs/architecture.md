@@ -96,6 +96,12 @@ Ruby の method lookup ではその配列を mixin 種別ごとに後ろから�
 `include` / `prepend` / `extend` を先に解決する。`extend` はクラスオブジェクト側だけに
 現れ、インスタンス側の `ancestors` には含めない。
 
+`super` はこの順序で現在の定義の次にある定義を解決する。module の `super` は受け手で変わるため、
+同じ解析単位で mixin するクラスごとに次の定義を求め、戻り値と block 型を join する。module が
+includer より先に定義されていても、本体を再推論して解決する。implicit `super` の `*rest` と `**rest`
+は caller の位置・keyword に展開し、bare `super` の既定値には束縛済みの値、自身と後続の optional には
+`nil`、後続 keyword には caller が渡した値だけを渡す。別ファイルの includer は対象外。
+
 静的に解決できる mixin edge には、Ruby が実行時に呼ぶ `included` / `extended` /
 `prepended` callback の call site も対応付ける。callback の第一引数には mixin の適用先を
 `singleton(...)` として渡し、既存の call site ベースの引数型推論で同じ hook の複数の適用先を
@@ -108,8 +114,15 @@ union にまとめる。適用先や hook の定義を解決できない場合�
 ### 外部型
 
 stdlib RBS と project の RBS / RBI は必要な file / class を lazy に読み込む。parse 結果は
-共有可能な形に変換し、file 固有の推論状態と混ぜない。外部定義の変更は LSP の reload で
-関連 cache を無効化する。
+共有可能な形に変換し、file 固有の推論状態と混ぜない。stdlib の file が別 file の型 alias に
+依存するときは、依存先ごとに参照先の path と alias 定義を一度だけ読んで共有する。外部定義の
+変更は LSP の reload で関連 cache を無効化する。
+
+call site の代入で初めて判明する receiver（`@v = x.to_s` の `x` が別ファイルの呼び出しから
+`String` になる場合など）は file 単位の解析では読み込めない。batch 解決は未解決の参照が
+必要とする class の宣言を読み込み、増えなくなるまで解決し直す。引数を持たない遅延参照では
+overload を選べないので、戻り型が一致する RBS overload だけを採用し、一致しなければ `untyped`
+のままにする。
 
 ## CLI batch
 
@@ -150,6 +163,10 @@ unify し、`Array` / `Hash` / tuple / record / union / intersection などの�
 hover 専用の block shape 絞り込みと implicit-self の追加 generic block 解決は、hover snapshot を記録する
 `Record` profile だけで有効にする。既存の receiver 付き block 推論は通常解析にも必要なため維持し、
 表示用の推論を広げても、CLI batch / coverage の facts-only profile の RBS 結果と基準値を変えない。
+RBS の block 付き呼び出しは、宣言の型なしと型ありの 2 回 block を走査する。ネストした呼び出しは外側の走査と
+同じ種類だけを行い、走査回数がネストの深さに対して指数的に増えないようにする。
+引数なしの self 呼び出しへの nil ガードは、後続の文が self facts を無効化するまで同じ呼び出しに効く。定義が後方にある
+メソッドも遅延参照のまま絞り込む。
 引数型と block の戻り値は既存の scan site を共有して hover snapshot に複製せず、scan で得た戻り値を
 再計算しないため、通常の hover は候補数と型構造に比例する bounded な query になる。候補を一意に
 確定できない場合は情報を捨てず、元の overload 群を表示する。Playground は Ruby / RBS の編集ごとに

@@ -32,11 +32,7 @@ class Parent
 end
 ```
 
-## Bare super in defaults forwards nil while super() uses the parent default
-
-```yaml
-known_issue: true
-```
+## Bare super in a positional default forwards the current nil argument
 
 ### update
 
@@ -44,26 +40,15 @@ known_issue: true
 class DefaultSuperParent
   def implicit(value = :parent) = value
   def explicit(value = :parent) = value
-  def pair(first, second = :parent) = [first, second]
-  def keyword(optional: :parent) = optional
 end
 
 class DefaultSuperChild < DefaultSuperParent
   def implicit(value = super) = value
   def explicit(value = super()) = value
-  def pair(first, second = super) = second
-  def keyword(optional: super) = optional
 end
 
 class DefaultSuperCallSite
-  def call
-    [
-      DefaultSuperChild.new.implicit,
-      DefaultSuperChild.new.explicit,
-      DefaultSuperChild.new.pair("first"),
-      DefaultSuperChild.new.keyword,
-    ]
-  end
+  def call = [DefaultSuperChild.new.implicit, DefaultSuperChild.new.explicit]
 end
 ```
 
@@ -71,29 +56,59 @@ end
 
 ```rbs
 class DefaultSuperCallSite
-  def call: -> [nil, Symbol, [String, nil], nil]
+  def call: -> [nil, Symbol]
 end
 
 class DefaultSuperChild < DefaultSuperParent
   def implicit: (?nil value) -> nil
   def explicit: (?Symbol value) -> Symbol
-  def pair: (String first, ?[String, nil] second) -> [String, nil]
-  def keyword: (?optional: nil) -> nil
 end
 
 class DefaultSuperParent
   def implicit: (?Symbol? value) -> :parent?
   def explicit: (?Symbol value) -> Symbol
+end
+```
+
+## Bare super in later and keyword defaults forwards current values
+
+### update
+
+```ruby
+class DefaultSuperParent
+  def pair(first, second = :parent) = [first, second]
+  def keyword(optional: :parent) = optional
+end
+
+class DefaultSuperChild < DefaultSuperParent
+  def pair(first, second = super) = second
+  def keyword(optional: super) = optional
+end
+
+class DefaultSuperCallSite
+  def call = [DefaultSuperChild.new.pair("first"), DefaultSuperChild.new.keyword]
+end
+```
+
+### result
+
+```rbs
+class DefaultSuperCallSite
+  def call: -> [[String, nil], nil]
+end
+
+class DefaultSuperChild < DefaultSuperParent
+  def pair: (String first, ?[String, nil] second) -> [String, nil]
+  def keyword: (?optional: nil) -> nil
+end
+
+class DefaultSuperParent
   def pair: (String first, ?Symbol? second) -> [String, :parent?]
   def keyword: (?optional: Symbol?) -> :parent?
 end
 ```
 
 ## Bare super defaults use prior and supplied arguments
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -205,10 +220,6 @@ end
 
 ## Rest arguments forwarded by implicit super keep positional boundaries
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -241,10 +252,6 @@ end
 
 ## Rest arguments and the caller block pass through implicit super
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -269,7 +276,7 @@ class BlockChild < BlockParent
 end
 
 class BlockParent
-  def render: (String item) { (String) -> :value } -> :value?
+  def render: (String item) ?{ (String) -> :value } -> :value?
 end
 
 class Object < BasicObject
@@ -310,10 +317,6 @@ end
 ```
 
 ## `super` inside an included module continues after the module
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -373,10 +376,6 @@ end
 
 ## Bare super preserves post-required argument positions
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -410,10 +409,6 @@ end
 ```
 
 ## Bare super expands rest arguments and keeps trailing required arguments
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -455,10 +450,6 @@ end
 
 ## Keyword defaults forward positional and keyword rest values
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -479,11 +470,11 @@ end
 
 ```rbs
 class KeywordRestDefaultCallSite
-  def value: -> [Array[Symbol], nil, Hash[Symbol, Integer]]
+  def value: -> [Array[Symbol], nil, Hash[Symbol, untyped]]
 end
 
 class KeywordRestDefaultChild < KeywordRestDefaultParent
-  def value: (*Symbol values, ?option: [Array[Symbol], nil, Hash[Symbol, Integer]], **Integer others) -> [Array[Symbol], nil, Hash[Symbol, Integer]]
+  def value: (*Symbol values, ?option: [Array[Symbol], nil, Hash[Symbol, untyped]], **Integer others) -> [Array[Symbol], nil, Hash[Symbol, untyped]]
 end
 
 class KeywordRestDefaultParent
@@ -492,10 +483,6 @@ end
 ```
 
 ## A concrete prepend call keeps the nested `super` result
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -549,10 +536,6 @@ end
 
 ## A nested expression keeps an included module `super` result
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -592,10 +575,6 @@ end
 ```
 
 ## Nested returns resolve across a chain of included modules
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -647,10 +626,6 @@ end
 
 ## Separate `super` expressions resolve inside records and arrays
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -691,10 +666,6 @@ end
 
 ## A deferred `super` result resolves inside a Proc
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -734,10 +705,6 @@ end
 ```
 
 ## `super` follows an included method before the superclass
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -782,10 +749,6 @@ end
 
 ## `super` in an extended module follows the singleton chain
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -826,10 +789,6 @@ end
 
 ## An included module forwards keyword rest through `super`
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -856,7 +815,7 @@ class KeywordSuperChild < KeywordSuperParent
 end
 
 module KeywordSuperMethods
-  def render: (String item, **(Integer | Symbol) kwargs) -> [String, Symbol, Hash[Symbol, untyped]]
+  def render: (String item, **(Integer | Symbol) kwargs) -> [String, Symbol, { extra: 1 }]
 end
 
 class KeywordSuperParent
@@ -864,15 +823,11 @@ class KeywordSuperParent
 end
 
 class Object < BasicObject
-  def call_keyword_super: -> [String, Symbol, Hash[Symbol, untyped]]
+  def call_keyword_super: -> [String, Symbol, { extra: 1 }]
 end
 ```
 
 ## An included module forwards a block through `super`
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -906,7 +861,7 @@ module BlockSuperMethods
 end
 
 class BlockSuperParent
-  def render: (String item) { (String) -> Symbol } -> Symbol?
+  def render: (String item) ?{ (String) -> Symbol } -> Symbol?
 end
 
 class Object < BasicObject
@@ -915,10 +870,6 @@ end
 ```
 
 ## An included module joins block types from every `super` target
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -960,7 +911,7 @@ class MultiBlockStringChild < MultiBlockStringParent
 end
 
 class MultiBlockStringParent
-  def render: (String item) { (String) -> String } -> String?
+  def render: (String item) ?{ (String) -> String } -> String?
 end
 
 module MultiBlockSuperMethods
@@ -973,7 +924,7 @@ class MultiBlockSymbolChild < MultiBlockSymbolParent
 end
 
 class MultiBlockSymbolParent
-  def render: (String item) { (Symbol) -> String } -> String?
+  def render: (String item) ?{ (Symbol) -> String } -> String?
 end
 
 class Object < BasicObject
@@ -983,10 +934,6 @@ end
 ```
 
 ## A method call supplies yielded argument types to its block
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1004,7 +951,7 @@ def call_direct_render = DirectBlockParent.new.render("value") { |item| item.to_
 
 ```rbs
 class DirectBlockParent
-  def render: (String item) { (String) -> :value } -> :value?
+  def render: (String item) ?{ (String) -> :value } -> :value?
 end
 
 class Object < BasicObject
@@ -1013,10 +960,6 @@ end
 ```
 
 ## Yield types resolve positional and keyword method parameters
-
-```yaml
-known_issue: true
-```
 
 ### update
 
