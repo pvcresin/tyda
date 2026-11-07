@@ -1275,3 +1275,57 @@ end
         assert!(found.is_empty(), "compact={compact}: {found:?}");
     }
 }
+
+#[test]
+fn template_method_defined_by_a_subclass_is_not_missing_on_self() {
+    let source = r#"
+class TemplateBase
+  def run
+    step
+  end
+end
+
+class TemplateChild < TemplateBase
+  def step
+    1
+  end
+end
+
+"#;
+    for compact in [true, false] {
+        let found = diagnostics(source, compact);
+        assert!(
+            !found.iter().any(|d| d.message.contains("`step`")),
+            "compact={compact}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn method_absent_from_every_subclass_stays_missing() {
+    let source = r#"
+class ClosedBase
+end
+
+class ClosedChild < ClosedBase
+  def other
+    1
+  end
+end
+
+class ClosedCaller
+  def go
+    ClosedBase.new.missing_everywhere
+  end
+end
+"#;
+    for compact in [true, false] {
+        let found = diagnostics(source, compact);
+        assert!(
+            found
+                .iter()
+                .any(|d| d.message.contains("missing_everywhere")),
+            "compact={compact}: {found:?}"
+        );
+    }
+}

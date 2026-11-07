@@ -21280,25 +21280,30 @@ impl<'a> InferenceEngine<'a> {
             self.arg_check_site_index.clear();
             self.arg_check_site_index_len = 0;
         }
-        for (index, site) in self
-            .arg_check_sites
-            .iter()
-            .enumerate()
-            .skip(self.arg_check_site_index_len)
-        {
-            self.arg_check_site_index
-                .entry((site.call_start, site.call_end))
-                .or_default()
-                .push(index);
+        // Sites with the same coalescing key merge later, so only the newest of them holds the value.
+        for index in self.arg_check_site_index_len..self.arg_check_sites.len() {
+            let span = (
+                self.arg_check_sites[index].call_start,
+                self.arg_check_sites[index].call_end,
+            );
+            let holders = self.arg_check_site_index.entry(span).or_default();
+            let same_key = holders.iter().position(|&holder| {
+                self.arg_check_sites[holder].has_same_coalescing_key(&self.arg_check_sites[index])
+            });
+            if let Some(position) = same_key {
+                let previous = std::mem::replace(&mut holders[position], index);
+                let value = self.arg_check_sites[previous].block_return_type.take();
+                self.arg_check_sites[index].block_return_type = value;
+            } else {
+                holders.push(index);
+            }
         }
         self.arg_check_site_index_len = self.arg_check_sites.len();
-        let Some(indices) = self.arg_check_site_index.get(&(call_start, call_end)) else {
+        let Some(holders) = self.arg_check_site_index.get(&(call_start, call_end)) else {
             return;
         };
-        for &index in indices {
-            if let Some(site) = self.arg_check_sites.get_mut(index) {
-                site.block_return_type = Some(block_return_type.clone());
-            }
+        for &index in holders {
+            self.arg_check_sites[index].block_return_type = Some(block_return_type.clone());
         }
     }
 

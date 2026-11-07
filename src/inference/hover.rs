@@ -161,6 +161,16 @@ pub(crate) struct ArgCheckSite {
     pub(crate) call_end: usize,
 }
 
+impl ArgCheckSite {
+    pub(super) fn has_same_coalescing_key(&self, other: &Self) -> bool {
+        self.class_context == other.class_context
+            && self.method_context == other.method_context
+            && self.method_name == other.method_name
+            && self.is_singleton == other.is_singleton
+            && self.method_context_singleton_dispatch == other.method_context_singleton_dispatch
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct HoverBlockShape {
     pub(crate) required_positionals: usize,
@@ -400,6 +410,14 @@ impl<'a> InferenceEngine<'a> {
                     );
                     continue;
                 }
+            }
+            // `self` may be an instance of any subclass, as in a template method.
+            if let Some((owner, _)) = unresolved_method.rsplit_once('#')
+                && owner == snap.class_context
+                && !matches!(resolved_receiver, Type::Singleton(_))
+                && self.any_subclass_defines_method(owner, &snap.name)
+            {
+                continue;
             }
             let key = (
                 snap.start,
@@ -1518,6 +1536,9 @@ impl<'a> InferenceEngine<'a> {
                 || self.module_call_resolvable_via_includers(&unresolved_method, &snap.name)
                 || self.dsl_plugin_method_return(member, &snap.name).is_some()
                 || !self.member_surface_provably_complete_cached(&class, surface_cache)
+                || (!prefer_singleton
+                    && class == snap.class_context
+                    && self.any_subclass_defines_method(&class, &snap.name))
             {
                 continue;
             }
@@ -4035,6 +4056,14 @@ impl<'a> InferenceEngine<'a> {
         self.registry
             .constructor_base_class(class_name)
             .is_some_and(|base| self.class_declares_method(base, method_name))
+    }
+
+    fn any_subclass_defines_method(&self, class_name: &str, method_name: &str) -> bool {
+        self.registry
+            .subclass_defines_method(class_name, method_name)
+            || self
+                .external_rbs
+                .is_some_and(|registry| registry.subclass_defines_method(class_name, method_name))
     }
 
     fn class_declares_method(&mut self, class_name: &str, method_name: &str) -> bool {

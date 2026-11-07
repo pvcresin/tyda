@@ -3529,6 +3529,63 @@ impl TypeRegistry {
         data.user_defined = true;
     }
 
+    /// A value of a class may be an instance of a subclass, so a method defined there is not
+    /// provably missing on the class itself.
+    pub(crate) fn subclass_defines_method(&self, class_name: &str, method_name: &str) -> bool {
+        let class_name = class_name.trim_scope_prefix();
+        if let Some(index) = &self.tail().subclass_index {
+            let mut pending: Vec<&SharedName> = index
+                .get(class_name)
+                .map(|subclasses| subclasses.iter().collect())
+                .unwrap_or_default();
+            let mut visited = FxHashSet::default();
+            while let Some(candidate) = pending.pop() {
+                if !visited.insert(candidate.as_ref()) {
+                    continue;
+                }
+                if self
+                    .first_method_call_owner_cached(candidate, method_name, false)
+                    .is_some()
+                {
+                    return true;
+                }
+                if let Some(subclasses) = index.get(candidate.as_ref()) {
+                    pending.extend(subclasses);
+                }
+            }
+            return false;
+        }
+        self.class_data.iter().any(|(candidate, data)| {
+            data.superclass.is_some()
+                && candidate.as_ref() != class_name
+                && self.class_is_descendant_of(candidate, class_name)
+                && self
+                    .first_method_call_owner_cached(candidate, method_name, false)
+                    .is_some()
+        })
+    }
+
+    fn class_is_descendant_of(&self, class_name: &str, ancestor: &str) -> bool {
+        let mut current = class_name.to_string();
+        for _ in 0..MAX_RESOLVE_DEPTH {
+            let Some(superclass) = self
+                .class_data
+                .get(current.as_str())
+                .and_then(|data| data.superclass.as_ref())
+            else {
+                return false;
+            };
+            let superclass = self
+                .resolve_superclass_ref_borrow(&current, superclass.as_ref())
+                .to_string();
+            if superclass == ancestor {
+                return true;
+            }
+            current = superclass;
+        }
+        false
+    }
+
     /// The stdlib class that a `Struct.new` or `Data.define` class inherits its methods from.
     pub(crate) fn constructor_base_class(&self, class_name: &str) -> Option<&'static str> {
         let cold = self.class_data_for(class_name)?.cold();
