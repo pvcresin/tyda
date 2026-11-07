@@ -1923,7 +1923,9 @@ fn source_case_equality_overrides_in_root(root: &Node<'_>) -> SourceCaseEquality
 
 pub fn source_case_equality_overrides(source: &str) -> SourceCaseEqualityOverrides {
     let mut candidates = source_override_candidates(source);
-    candidates.equality &= source_reopens_equality_dispatch_class(source);
+    if candidates.equality {
+        candidates.equality = source_reopens_equality_dispatch_class(source);
+    }
     if candidates.is_empty() {
         return SourceCaseEqualityOverrides::default();
     }
