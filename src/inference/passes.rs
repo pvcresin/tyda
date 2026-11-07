@@ -1,4 +1,5 @@
 use super::*;
+use crate::registry::CallerCtxMemoScope;
 
 impl<'a> InferenceEngine<'a> {
     fn class_needs_parameter_reference_resolution(data: &ClassData) -> bool {
@@ -209,6 +210,7 @@ impl<'a> InferenceEngine<'a> {
             };
             let grouped_call_sites = Self::group_call_sites_by_method(&data.call_sites);
             let mut all_param_types: Vec<Vec<Type>> = Vec::with_capacity(data.methods.len());
+            let caller_ctx_memo = CallerCtxMemoScope::enter();
             for method in &data.methods {
                 let empty: [&CallSite; 0] = [];
                 let method_call_sites = grouped_call_sites
@@ -254,6 +256,7 @@ impl<'a> InferenceEngine<'a> {
                         .collect(),
                 );
             }
+            drop(caller_ctx_memo);
 
             let init_updates = data
                 .methods

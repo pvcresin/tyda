@@ -262,12 +262,12 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-struct CallerCtxMemoScope {
+pub(crate) struct CallerCtxMemoScope {
     installed: bool,
 }
 
 impl CallerCtxMemoScope {
-    fn enter() -> Self {
+    pub(crate) fn enter() -> Self {
         let installed = CALLER_CTX_MEMO.with(|cell| {
             let mut slot = cell.borrow_mut();
             if slot.is_none() {
