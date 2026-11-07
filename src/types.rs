@@ -306,6 +306,13 @@ impl Type {
         }
     }
 
+    fn union_members(&self) -> Vec<&Type> {
+        match self {
+            Type::Union(parts) => parts.iter().collect(),
+            other => vec![other],
+        }
+    }
+
     pub(crate) fn contains_nil(ty: &Type) -> bool {
         match ty {
             Type::Nil => true,
@@ -923,7 +930,52 @@ impl Type {
         } else {
             others.extend(array_like);
         }
-        others
+        Self::merge_hash_union(others)
+    }
+
+    // Drops a `Hash[K1, V1]` member when another `Hash[K2, V2]` member has every key
+    // and value type of it. Each conditional `h[k] = v` otherwise doubles the union
+    // with hashes that only hold a subset of the keys, while hashes with unrelated
+    // keys keep their key/value pairing.
+    fn merge_hash_union(mut types: Vec<Type>) -> Vec<Type> {
+        fn hash_parts(ty: &Type) -> Option<(Vec<&Type>, Vec<&Type>)> {
+            match ty {
+                Type::Hash(Some(key), Some(value)) => {
+                    Some((key.union_members(), value.union_members()))
+                }
+                _ => None,
+            }
+        }
+        if types
+            .iter()
+            .filter(|ty| matches!(ty, Type::Hash(Some(_), Some(_))))
+            .count()
+            < 2
+        {
+            return types;
+        }
+        let parts: Vec<_> = types.iter().map(hash_parts).collect();
+        let within = |inner: usize, outer: usize| match (&parts[inner], &parts[outer]) {
+            (Some((keys, values)), Some((outer_keys, outer_values))) => {
+                keys.iter().all(|key| outer_keys.contains(key))
+                    && values.iter().all(|value| outer_values.contains(value))
+            }
+            _ => false,
+        };
+        // Equal sets in a different member order keep only the first.
+        let subsumed = |index: usize| {
+            (0..parts.len()).any(|other| {
+                other != index && within(index, other) && (other < index || !within(other, index))
+            })
+        };
+        let keep: Vec<bool> = (0..types.len()).map(|index| !subsumed(index)).collect();
+        let mut index = 0;
+        types.retain(|_| {
+            let kept = keep[index];
+            index += 1;
+            kept
+        });
+        types
     }
 
     pub fn simple_array() -> Type {
