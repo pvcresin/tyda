@@ -7,7 +7,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::project::RubyVersion;
 use crate::rbs::bounded_file_cache::{BoundedFileCache, DEFAULT_FILE_CACHE_CAP};
-use crate::rbs::import::load_rbs_string_with_dependency_aliases;
+use crate::rbs::import::{
+    RawTypeAlias, load_rbs_signature_with_dependency_aliases, signature_type_aliases,
+};
 use crate::registry::{RegistryDeepBytes, TypeRegistry};
 
 const MAX_ALIAS_DEPENDENCY_DEPTH: usize = 8;
@@ -29,6 +31,13 @@ pub struct LazyRbsLoader {
     file_cache: Mutex<BoundedFileCache<PathBuf, StdlibFileRegistrySlot>>,
     shared_shapes: Mutex<FxHashMap<String, SharedShapeSlot>>,
     shared_features: Mutex<FxHashMap<String, SharedShapeSlot>>,
+    alias_dependencies: Mutex<FxHashMap<PathBuf, Arc<AliasDependency>>>,
+}
+
+/// What a file contributes when another file depends on its type aliases.
+struct AliasDependency {
+    paths: Vec<PathBuf>,
+    aliases: std::collections::HashMap<String, RawTypeAlias>,
 }
 
 impl LazyRbsLoader {
@@ -152,6 +161,7 @@ impl LazyRbsLoader {
             file_cache: Mutex::new(BoundedFileCache::with_cap(stdlib_file_cache_cap())),
             shared_shapes: Mutex::new(FxHashMap::default()),
             shared_features: Mutex::new(FxHashMap::default()),
+            alias_dependencies: Mutex::new(FxHashMap::default()),
         }
     }
 
@@ -168,18 +178,20 @@ impl LazyRbsLoader {
         let slot = self.file_slot(path);
         Arc::clone(slot.get_or_init(|| {
             let mut registry = TypeRegistry::new();
-            if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(content) = std::fs::read_to_string(path)
+                && let Ok(sig) = rbs_sys::parse_signature(&content)
+            {
                 let mut visited = HashSet::from([path.to_path_buf()]);
-                let mut dependency_contents = Vec::new();
-                self.collect_alias_dependency_contents(
-                    &content,
+                let mut dependencies = Vec::new();
+                self.collect_alias_dependencies(
+                    self.signature_dependency_paths(&sig),
                     &mut visited,
                     0,
-                    &mut dependency_contents,
+                    &mut dependencies,
                 );
-                load_rbs_string_with_dependency_aliases(
-                    &content,
-                    &dependency_contents,
+                load_rbs_signature_with_dependency_aliases(
+                    &sig,
+                    dependencies.iter().map(|dependency| &dependency.aliases),
                     &mut registry,
                 );
             }
@@ -189,35 +201,60 @@ impl LazyRbsLoader {
         }))
     }
 
-    fn collect_alias_dependency_contents(
+    /// Dependencies come before the file that needs them, so a later alias wins as before.
+    fn collect_alias_dependencies(
         &self,
-        content: &str,
+        paths: Vec<PathBuf>,
         visited: &mut HashSet<PathBuf>,
         depth: usize,
-        out: &mut Vec<String>,
+        out: &mut Vec<Arc<AliasDependency>>,
     ) {
         if depth >= MAX_ALIAS_DEPENDENCY_DEPTH {
             return;
         }
-
-        for path in self.alias_dependency_paths(content) {
+        for path in paths {
             if !visited.insert(path.clone()) {
                 continue;
             }
-            let Ok(dependency_content) = std::fs::read_to_string(&path) else {
+            let Some(dependency) = self.alias_dependency(&path) else {
                 continue;
             };
-            self.collect_alias_dependency_contents(&dependency_content, visited, depth + 1, out);
-            out.push(dependency_content);
+            self.collect_alias_dependencies(dependency.paths.clone(), visited, depth + 1, out);
+            out.push(dependency);
         }
     }
 
-    fn alias_dependency_paths(&self, content: &str) -> Vec<PathBuf> {
-        let Ok(sig) = rbs_sys::parse_signature(content) else {
-            return Vec::new();
-        };
+    /// Many files share the same dependency, so each one is read and parsed once.
+    fn alias_dependency(&self, path: &Path) -> Option<Arc<AliasDependency>> {
+        if let Some(cached) = self
+            .alias_dependencies
+            .lock()
+            .expect("alias dependency cache poisoned")
+            .get(path)
+        {
+            return Some(Arc::clone(cached));
+        }
+        let content = std::fs::read_to_string(path).ok()?;
+        let dependency = Arc::new(match rbs_sys::parse_signature(&content) {
+            Ok(sig) => AliasDependency {
+                paths: self.signature_dependency_paths(&sig),
+                aliases: signature_type_aliases(&sig),
+            },
+            Err(_) => AliasDependency {
+                paths: Vec::new(),
+                aliases: Default::default(),
+            },
+        });
+        self.alias_dependencies
+            .lock()
+            .expect("alias dependency cache poisoned")
+            .insert(path.to_path_buf(), Arc::clone(&dependency));
+        Some(dependency)
+    }
+
+    fn signature_dependency_paths(&self, sig: &rbs_sys::Signature) -> Vec<PathBuf> {
         let mut names = HashSet::new();
-        collect_signature_type_names(&sig, &mut names);
+        collect_signature_type_names(sig, &mut names);
         let mut paths: Vec<PathBuf> = names
             .into_iter()
             .filter_map(|name| self.dependency_path_for_type_name(&name))
