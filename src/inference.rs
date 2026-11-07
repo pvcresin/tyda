@@ -24231,10 +24231,19 @@ impl<'a> InferenceEngine<'a> {
                 let ty = block_param_types.first().cloned().unwrap_or(Type::Untyped);
                 block_scope.set("it", ty);
             } else if has_only_simple_positional_params {
+                // Without a declared signature the yielded values are unknown, not missing.
+                let unknown_param_types;
+                let bound_param_types = if block_param_types.is_empty() {
+                    unknown_param_types =
+                        vec![Type::Untyped; Self::block_positional_param_count(&block)];
+                    &unknown_param_types
+                } else {
+                    &block_param_types
+                };
                 self.bind_block_param_types(
                     class_name,
                     &params_node,
-                    &block_param_types,
+                    bound_param_types,
                     parse_result,
                     &mut block_scope,
                 );

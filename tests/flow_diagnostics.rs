@@ -1350,3 +1350,26 @@ end
         assert!(found.is_empty(), "compact={compact}: {found:?}");
     }
 }
+
+#[test]
+fn unknown_block_values_are_not_nil_in_a_body_with_rescue() {
+    let source = r#"
+class RescuingBlock
+  def run(items)
+    items.each do |item|
+      Integer(item)
+    rescue ArgumentError
+      item.start_with?("x")
+    end
+  end
+
+  def call_run
+    run(["a"])
+  end
+end
+"#;
+    for compact in [true, false] {
+        let found = diagnostics(source, compact);
+        assert!(found.is_empty(), "compact={compact}: {found:?}");
+    }
+}
