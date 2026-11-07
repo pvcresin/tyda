@@ -2428,3 +2428,19 @@ class Object < BasicObject
   def compact_nilable_tuple: (untyped flag) -> Array[1 | "right"]
 end
 ```
+
+## Freezing a shape keeps it when an element is deferred
+
+```ruby
+class FrozenOperators
+  OPERATORS = { "=" => lambda { |value, other| value == other } }.freeze
+end
+```
+
+### result
+
+```rbs
+class FrozenOperators
+  OPERATORS: { "=" => Proc }
+end
+```

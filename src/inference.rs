@@ -30882,6 +30882,17 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(enum_result) = user_defined_no_block_enumerator_result {
                             break 'recv wrap(enum_result);
                         }
+                        // `freeze` returns the receiver whatever a deferred element resolves to.
+                        if method_name == "freeze"
+                            && call_node.arguments().is_none()
+                            && call_node.block().is_none()
+                            && matches!(
+                                safe_nav_receiver_type,
+                                Type::Record(_) | Type::Tuple(_) | Type::Hash(..) | Type::Array(_)
+                            )
+                        {
+                            break 'recv wrap(safe_nav_receiver_type.clone());
+                        }
 
                         if call_node.block().is_none()
                             && matches!(method_name.as_str(), "find" | "first" | "last" | "take")

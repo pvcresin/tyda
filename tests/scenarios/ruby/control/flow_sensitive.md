@@ -2913,3 +2913,33 @@ class TypeProf::Core::AST::LoopNode
   def value: -> String?
 end
 ```
+
+## A self-recursive predicate returns only its boolean arms
+
+```yaml
+known_issue: true
+```
+
+```ruby
+class RecursivePredicate
+  def top?(depth)
+    return false unless depth
+    return true if depth == 1
+
+    top?(depth - 1)
+  end
+
+  def call_top
+    top?(3)
+  end
+end
+```
+
+### result
+
+```rbs
+class RecursivePredicate
+  def top?: (Integer depth) -> bool
+  def call_top: -> bool
+end
+```
