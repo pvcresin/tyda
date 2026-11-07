@@ -541,6 +541,7 @@ impl<'a> InferenceEngine<'a> {
         let ty = self
             .hash_option_type(call_node, "type", parse_result)
             .unwrap_or(Type::Untyped);
+        let ty_is_unknown = matches!(ty, Type::Untyped);
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
         if self.is_active_record_model_class(class_name) {
             self.register_typed_attribute_accessors_inner(
@@ -551,6 +552,10 @@ impl<'a> InferenceEngine<'a> {
                 Some(format!("@{attr_name}")),
                 true,
             );
+            if ty_is_unknown {
+                self.registry
+                    .mark_column_accessor_replaced(class_name, &attr_name);
+            }
         } else if self.is_collecting_concern_included() {
             self.registry.push_includer_bound_dsl(
                 class_name,

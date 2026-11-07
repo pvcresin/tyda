@@ -1245,7 +1245,38 @@ impl<'a> InferenceEngine<'a> {
                 return true;
             }
         }
+        self.mark_column_replaced_by_unknown_macro(class_name, method_name, call_node);
         false
+    }
+
+    /// An unknown class macro naming a column may replace its accessor, as uploaders do, so the
+    /// schema type no longer proves what the accessor returns.
+    fn mark_column_replaced_by_unknown_macro(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        call_node: &CallNode<'_>,
+    ) {
+        if call_node.receiver().is_some()
+            || self
+                .registry
+                .first_method_call_owner_cached(class_name, method_name, true)
+                .is_some()
+        {
+            return;
+        }
+        let Some(column) = Self::extract_symbol_args(call_node).first().cloned() else {
+            return;
+        };
+        if self
+            .registry
+            .schema_column_accessor_type(class_name, &column)
+            .is_none()
+        {
+            return;
+        }
+        self.registry
+            .mark_column_accessor_replaced(class_name, &column);
     }
 
     pub(super) fn dsl_plugin_consumes_class_body_call(

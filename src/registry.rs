@@ -3812,6 +3812,28 @@ impl TypeRegistry {
         None
     }
 
+    /// A DSL replaced this column's accessor, so the schema type no longer describes its value.
+    pub(crate) fn mark_column_accessor_replaced(&mut self, class_name: &str, column: &str) {
+        let ivar = format!("@{column}");
+        if self.has_method_variant(class_name, column, false) {
+            if let Some(data) = self.class_data.get_mut(class_name)
+                && let Some(method) = data
+                    .methods
+                    .iter_mut()
+                    .find(|method| method.name.as_str() == column && !method.is_singleton)
+                && method.synthetic_dsl_source
+            {
+                let method = Arc::make_mut(method);
+                method.raw_return_type = Type::Untyped;
+                method.attr_ivar = Some(ivar);
+            }
+            return;
+        }
+        let mut method = DirtyPattern::build_method_def(column, Type::Untyped);
+        method.attr_ivar = Some(ivar);
+        self.add_method_def(class_name, method);
+    }
+
     pub fn register_dirty_pattern_columns(&mut self, class_name: &str, columns: Vec<(Sym, Type)>) {
         if columns.is_empty() {
             return;
@@ -5280,7 +5302,8 @@ impl TypeRegistry {
                     Self::method_for_lookup_kind(data, method_name, Some(is_singleton))
                 })
             })
-            .is_some_and(|method| method.synthetic_dsl_source)
+            // An accessor backed by its own ivar replaces the column value, as `serialize` does.
+            .is_some_and(|method| method.synthetic_dsl_source && method.attr_ivar.is_none())
     }
 
     fn lookup_method_return_type_resolved(
