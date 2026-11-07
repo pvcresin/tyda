@@ -2436,6 +2436,7 @@ impl CallSiteIndexCache {
 }
 
 type FirstOwnerEntry = Option<(SharedName, bool)>;
+type OwnerWalkMemo = FxHashMap<(Sym, Sym, bool), Option<(Sym, bool)>>;
 
 /// first-owner memo: without it, re-running ancestor DFS dominates prewarm cost (only while `owner_lookup_cache_enabled`).
 type FirstOwnerShard =
@@ -2625,6 +2626,8 @@ pub struct TypeRegistry {
     attr_reader_return_cache: AttrReaderReturnCache,
     attr_reader_return_cache_enabled: std::sync::atomic::AtomicBool,
     first_owner_cache: FirstOwnerCache,
+    /// Ancestor walks during inference; every change to methods, mixins or classes clears it.
+    owner_walk_memo: std::sync::RwLock<OwnerWalkMemo>,
     call_site_index: CallSiteIndexCache,
     /// method aliases unresolved during merge are re-resolved by `finalize_pending_method_aliases` after full load.
     pending_method_aliases: Vec<PendingMethodAlias>,
@@ -2711,6 +2714,7 @@ impl Clone for TypeRegistry {
             attr_reader_return_cache: AttrReaderReturnCache::default(),
             attr_reader_return_cache_enabled: std::sync::atomic::AtomicBool::new(false),
             first_owner_cache: FirstOwnerCache::default(),
+            owner_walk_memo: Default::default(),
             call_site_index: CallSiteIndexCache::default(),
             pending_method_aliases: self.pending_method_aliases.clone(),
             pending_scoped_type_refs: self.pending_scoped_type_refs.clone(),
@@ -3342,6 +3346,7 @@ impl TypeRegistry {
 
     #[inline]
     fn invalidate_reverse_indexes(&mut self) {
+        self.invalidate_owner_walks();
         if let Some(tail) = self.tail_opt_mut() {
             tail.subclass_index = None;
             tail.module_includer_index = None;
@@ -3577,6 +3582,7 @@ impl TypeRegistry {
         mut method: MethodDef,
         file_path: Option<&str>,
     ) {
+        self.invalidate_owner_walks();
         method.shrink_to_fit_after_collect();
         if Self::method_needs_mixin_hook_call_site(&method) {
             self.has_mixin_hook_methods = true;
@@ -3931,6 +3937,7 @@ impl TypeRegistry {
         method_name: &str,
         is_singleton: bool,
     ) {
+        self.invalidate_owner_walks();
         self.remove_method_variant(class_name, method_name, is_singleton);
         let method_name = self.intern_name(method_name);
         let cold = self.class_data_mut(class_name).cold_mut();
@@ -6279,14 +6286,37 @@ impl TypeRegistry {
         method_name: &str,
         method_is_singleton: bool,
     ) -> Option<(&'a str, bool)> {
+        let key = (
+            Sym::new(class_name),
+            Sym::new(method_name),
+            method_is_singleton,
+        );
+        if let Ok(memo) = self.owner_walk_memo.read()
+            && let Some(entry) = memo.get(&key)
+        {
+            return entry.map(|(owner, singleton)| (owner.as_str(), singleton));
+        }
         // Sized for a typical ancestor chain so the walk doesn't regrow.
         let mut seen = Vec::with_capacity(16);
-        self.resolve_method_call_owners_inner_refs(
+        let owner = self.resolve_method_call_owners_inner_refs(
             class_name,
             method_name,
             method_is_singleton,
             &mut seen,
-        )
+        );
+        if let Ok(mut memo) = self.owner_walk_memo.write() {
+            memo.insert(
+                key,
+                owner.map(|(owner, singleton)| (Sym::new(owner), singleton)),
+            );
+        }
+        owner
+    }
+
+    fn invalidate_owner_walks(&mut self) {
+        if let Ok(memo) = self.owner_walk_memo.get_mut() {
+            memo.clear();
+        }
     }
 
     /// first-owner lookup memo (walks the ancestor chain directly when the cache is disabled).
@@ -10912,6 +10942,7 @@ impl TypeRegistry {
         is_absolute: bool,
     ) {
         let superclass = self.intern_name(superclass.trim_scope_prefix());
+        self.invalidate_owner_walks();
         let data = self.class_data_mut(class_name);
         data.superclass = Some(superclass);
         data.superclass_is_absolute = is_absolute;
@@ -11324,6 +11355,9 @@ impl TypeRegistry {
 
     fn class_data_mut(&mut self, class_name: &str) -> &mut ClassData {
         self.intern_name(class_name);
+        if !self.class_data.contains_key(class_name) {
+            self.invalidate_owner_walks();
+        }
         self.class_data.entry(Sym::new(class_name)).or_default()
     }
 

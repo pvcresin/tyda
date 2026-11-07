@@ -140,6 +140,7 @@ impl TypeRegistry {
         from_user_source: bool,
         constants_external: bool,
     ) {
+        self.invalidate_owner_walks();
         if rbs_data
             .methods
             .iter()
@@ -580,6 +581,7 @@ impl TypeRegistry {
     }
 
     pub fn remove_external_methods_for_class(&mut self, class_name: &str) -> bool {
+        self.invalidate_owner_walks();
         let removed = if let Some(data) = self.class_data.get_mut(class_name) {
             let before = data.methods.len();
             data.methods.retain(|m| !m.is_external_rbs_source());
