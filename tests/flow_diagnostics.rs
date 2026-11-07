@@ -1373,3 +1373,83 @@ end
         assert!(found.is_empty(), "compact={compact}: {found:?}");
     }
 }
+
+// Known issues: each source is correct Ruby, but a nil diagnostic is still
+// reported. When a case stops reporting it, move it to a regular test that
+// asserts no diagnostic.
+#[test]
+fn known_issue_nil_false_positives_still_reported() {
+    let cases = [
+        (
+            "an ivar assigned in the method keeps its value across a self call",
+            concat!(
+                "class IvarAfterCall\n",
+                "  def initialize = @items = nil\n",
+                "  def run\n",
+                "    @items = [1]\n",
+                "    helper\n",
+                "    @items.empty?\n",
+                "  end\n",
+                "  def helper = 1\n",
+                "end\n",
+            ),
+            "NilClass#empty?",
+        ),
+        (
+            "an ivar truthy guard reaches a nested modifier if",
+            concat!(
+                "class IvarNestedGuard\n",
+                "  def run(flag)\n",
+                "    if @buffer\n",
+                "      @buffer << \"x\" if flag\n",
+                "    end\n",
+                "    @buffer = nil\n",
+                "  end\n",
+                "  def start = @buffer = +\",\"\n",
+                "end\n",
+            ),
+            "NilClass#<<",
+        ),
+        (
+            "a reader nil guard reaches a block in the same method",
+            concat!(
+                "class ReaderGuardInBlock\n",
+                "  attr_reader :mime\n",
+                "  def initialize(mime) = @mime = mime\n",
+                "  def run\n",
+                "    return false unless mime\n",
+                "    [\"a\"].any? { |prefix| mime.start_with?(prefix) }\n",
+                "  end\n",
+                "end\n",
+                "ReaderGuardInBlock.new(nil)\n",
+                "ReaderGuardInBlock.new(\"x\")\n",
+            ),
+            "NilClass#start_with?",
+        ),
+        (
+            "a splatted partition assigns both arrays",
+            concat!(
+                "class SplatPartition\n",
+                "  def run(xs)\n",
+                "    ok, bad = *xs.partition(&:odd?)\n",
+                "    ok.empty? || bad.empty?\n",
+                "  end\n",
+                "  def go = run([1, 2])\n",
+                "end\n",
+            ),
+            "NilClass#empty?",
+        ),
+    ];
+
+    for (name, source, method) in cases {
+        let reported = [false, true].into_iter().any(|compact| {
+            diagnostics(source, compact)
+                .iter()
+                .any(|diagnostic| diagnostic.unresolved_method == method)
+        });
+        assert!(
+            reported,
+            "known issue fixed ({name}); move it to a regular test that asserts no {method}"
+        );
+    }
+}
