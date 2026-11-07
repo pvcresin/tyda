@@ -917,11 +917,11 @@ fn classify_rbs_path_to_class_name(path_str: &str) -> Option<String> {
     if path_str.ends_with("/rbs/unnamed/env_class.rbs") {
         return Some("RBS::Unnamed::ENVClass".to_string());
     }
-    if path_str.ends_with("/rbs/unnamed/argf_class.rbs") {
+    if path_str.ends_with("/rbs/unnamed/argf.rbs") {
         return Some("RBS::Unnamed::ARGFClass".to_string());
     }
-    if path_str.ends_with("/rbs/unnamed/random_class.rbs") {
-        return Some("RBS::Unnamed::Random_class".to_string());
+    if path_str.ends_with("/rbs/unnamed/random.rbs") {
+        return Some("RBS::Unnamed::Random_Base".to_string());
     }
     if path_str.ends_with("/stdlib/cgi/0/core.rbs")
         || path_str.ends_with("/stdlib/cgi-escape/0/escape.rbs")
