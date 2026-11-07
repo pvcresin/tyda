@@ -3019,6 +3019,19 @@ impl<'a> InferenceEngine<'a> {
         self.effective_rails_version() >= RailsVersion::new(major, minor, 0)
     }
 
+    /// An ivar holding the writing method's parameter means something else in a reading method,
+    /// where the same index or name refers to that method's own parameter.
+    fn ivar_value_names_writer_param(ty: &Type) -> bool {
+        match ty {
+            Type::ParamRef(_) | Type::KeywordParamRef(_) => true,
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => Self::ivar_value_names_writer_param(inner),
+            Type::Union(parts) => parts.iter().any(Self::ivar_value_names_writer_param),
+            _ => false,
+        }
+    }
+
     fn resolve_alias_assignment_source(
         &self,
         class_name: &str,
@@ -3037,6 +3050,11 @@ impl<'a> InferenceEngine<'a> {
                 let read = node.as_instance_variable_read_node()?;
                 let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
                 let ty = self.current_ivar_type(class_name, scope, &name)?;
+                let ty = if Self::ivar_value_names_writer_param(&ty) {
+                    Type::IvarRef(Sym::new(&name))
+                } else {
+                    ty
+                };
                 Some((AliasTarget::Ivar(name), ty))
             }
             Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
@@ -30592,6 +30610,8 @@ impl<'a> InferenceEngine<'a> {
                         let mut call_kw_arg_types_for_generic: HashMap<String, Type> =
                             HashMap::new();
                         let mut user_defined_block_call_result: Option<Type> = None;
+                        let mut block_uses_rbs_signature = false;
+                        let mut first_pass_block_return: Option<Type> = None;
                         let mut user_defined_no_block_enumerator_result: Option<Type> = None;
                         let mut scoped_call_args = None;
                         if self.record_hover_snapshots
@@ -30610,8 +30630,6 @@ impl<'a> InferenceEngine<'a> {
                                 &method_name,
                                 Self::receiver_is_singleton_dispatch(
                                     &receiver,
-                        let mut block_uses_rbs_signature = false;
-                        let mut first_pass_block_return: Option<Type> = None;
                                     scope.singleton_dispatch,
                                 ),
                                 class_name,
@@ -30691,6 +30709,14 @@ impl<'a> InferenceEngine<'a> {
                                         &kw_types,
                                     );
                             }
+                            block_uses_rbs_signature = self.block_call_uses_rbs_signature(
+                                &target_class,
+                                &method_name,
+                                method_is_singleton,
+                                &safe_nav_receiver_type,
+                                (&arg_types, &kw_types),
+                                &call_node,
+                            );
                             let block = if matches!(
                                 method_name.as_str(),
                                 "instance_eval" | "instance_exec" | "class_eval" | "module_eval"
@@ -30699,6 +30725,10 @@ impl<'a> InferenceEngine<'a> {
                             {
                                 None
                             } else {
+                                let outer_chain = self.block_pass_chain;
+                                if block_uses_rbs_signature {
+                                    self.block_pass_chain = BlockPassChain::Unbound;
+                                }
                                 let mut block_scope = scope.fork_for_block();
                                 let block = self.infer_user_defined_call_block(
                                     &target_class,
@@ -30709,26 +30739,18 @@ impl<'a> InferenceEngine<'a> {
                                     &call_node,
                                     parse_result,
                                     &mut block_scope,
-                                )
+                                );
+                                self.block_pass_chain = outer_chain;
+                                block
                             };
-                            block_uses_rbs_signature = self.block_call_uses_rbs_signature(
-                                &target_class,
-                                &method_name,
-                                method_is_singleton,
-                                &safe_nav_receiver_type,
-                                (&arg_types, &kw_types),
-                                &call_node,
-                            );
+                            first_pass_block_return =
+                                block.as_ref().map(|block| block.return_type.clone());
                             if let Some(block) = block.as_ref() {
                                 self.record_hover_block_return(
                                     &call_node,
                                     block.return_type.clone(),
                                 );
                             }
-                                let outer_chain = self.block_pass_chain;
-                                if block_uses_rbs_signature {
-                                    self.block_pass_chain = BlockPassChain::Unbound;
-                                }
                             user_defined_block_call_result = block.as_ref().and_then(|block| {
                                 self.resolve_user_defined_block_call_return(
                                     &target_class,
@@ -30737,14 +30759,10 @@ impl<'a> InferenceEngine<'a> {
                                     &arg_types,
                                     &kw_types,
                                     block,
-                                );
-                                self.block_pass_chain = outer_chain;
-                                block
+                                )
                             });
                             self.record_inferred_call_site(&target_class, {
                                 let caller_context = self.call_site_caller_context_for_attr_writer(
-                            first_pass_block_return =
-                                block.as_ref().map(|block| block.return_type.clone());
                                     AttrWriterCallSite {
                                         target_class: &target_class,
                                         method_name: &method_name,
@@ -41080,24 +41098,6 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn resolve_block_call_generic(
-        &mut self,
-        class_name: &str,
-        call_node: &ruby_prism::CallNode<'_>,
-        receiver_type: &Type,
-        method_name: &str,
-        parse_result: &ParseResult<'_>,
-        scope: &Scope,
-    ) -> Option<Type> {
-        if method_name == "times"
-            && !self.integer_times_has_source_override()
-            && matches!(receiver_type, Type::LiteralInteger(count) if *count <= 0)
-        {
-            return Some(receiver_type.clone());
-        }
-        let block_node_raw = call_node.block()?;
-        let block = block_node_raw.as_block_node()?;
-        let normalized = Self::normalize_union_receiver(receiver_type);
     /// A block call whose arguments fit an RBS overload infers its block from that signature.
     /// When the declaration alone gives no parameter type, a first pass would see only
     /// `untyped` and multiply the work at each nesting level.
@@ -41156,6 +41156,24 @@ impl<'a> InferenceEngine<'a> {
         })
     }
 
+    fn resolve_block_call_generic(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        receiver_type: &Type,
+        method_name: &str,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<Type> {
+        if method_name == "times"
+            && !self.integer_times_has_source_override()
+            && matches!(receiver_type, Type::LiteralInteger(count) if *count <= 0)
+        {
+            return Some(receiver_type.clone());
+        }
+        let block_node_raw = call_node.block()?;
+        let block = block_node_raw.as_block_node()?;
+        let normalized = Self::normalize_union_receiver(receiver_type);
         // Block-iterating methods (`map`/`select`/...) need the receiver's concrete element type to thread through the block.
         // A deferred instance-variable or method-return receiver (e.g.
         let receiver_type = &self.try_resolve_receiver_inline(class_name, &normalized);
@@ -53167,6 +53185,7 @@ impl<'a> InferenceEngine<'a> {
                         .infer_attr_type_from_initialize(class_name, ivar_name)
                         .unwrap_or_else(|| receiver.clone()),
                     Some(ref ty) if Self::is_concrete(ty) => ty.clone(),
+                    Some(ref ty) if Self::ivar_value_names_writer_param(ty) => receiver.clone(),
                     Some(ty) => self.try_resolve_receiver_inline_depth(class_name, &ty, depth + 1),
                 }
             }
@@ -53259,8 +53278,11 @@ impl<'a> InferenceEngine<'a> {
         let saved_override =
             self.receiver_type_override
                 .replace((start, end, receiver_type.clone()));
-        // Hover, diagnostics, and call sites keep seeing the whole union.
-        self.infer_node_type_inner(class_name, node, parse_result, scope);
+        // Hover, diagnostics, and call sites keep seeing the whole union. A walk that is already
+        // dispatching an arm has its enclosing whole-union walk for that.
+        if !self.dispatching_typed_receiver_arm {
+            self.infer_node_type_inner(class_name, node, parse_result, scope);
+        }
         self.receiver_type_override = Some((start, end, Type::from_type_vec(typed_arms)));
         let saved_snapshots = std::mem::replace(&mut self.record_hover_snapshots, false);
         let saved_dispatching = std::mem::replace(&mut self.dispatching_typed_receiver_arm, true);
@@ -54135,38 +54157,6 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn resolve_receiver_method_refs_depth(
-        &mut self,
-        ty: &Type,
-        depth: usize,
-        memo: &mut FxHashMap<(Type, bool), Type>,
-        visiting: &mut FxHashSet<(Type, bool)>,
-        preserve_untyped: bool,
-    ) -> Type {
-        const MAX_DEPTH: usize = 32;
-        if depth >= MAX_DEPTH {
-            return ty.clone();
-        }
-        if Self::is_unknown_receiver_chain(ty) || Self::receiver_resolution_is_identity(ty) {
-            return ty.clone();
-        }
-        // Only a reference can reach itself again or repeat costly lookups, and hashing whole
-        // containers at every level would dominate large unions.
-        let key = matches!(
-            ty,
-            Type::MethodReturnRef(..)
-                | Type::ReceiverMethodRef(..)
-                | Type::DeferredSafeNavigation(..)
-        )
-        .then(|| (ty.clone(), preserve_untyped));
-        if let Some(key) = &key {
-            if let Some(cached) = memo.get(key) {
-                return cached.clone();
-            }
-            if !visiting.insert(key.clone()) {
-                return ty.clone();
-            }
-        }
     /// Resolution rebuilds a type unchanged unless it holds a reference, a projection, or a
     /// union whose `untyped` member is subject to normalization.
     fn receiver_resolution_is_identity(ty: &Type) -> bool {
@@ -54205,6 +54195,38 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn resolve_receiver_method_refs_depth(
+        &mut self,
+        ty: &Type,
+        depth: usize,
+        memo: &mut FxHashMap<(Type, bool), Type>,
+        visiting: &mut FxHashSet<(Type, bool)>,
+        preserve_untyped: bool,
+    ) -> Type {
+        const MAX_DEPTH: usize = 32;
+        if depth >= MAX_DEPTH {
+            return ty.clone();
+        }
+        if Self::is_unknown_receiver_chain(ty) || Self::receiver_resolution_is_identity(ty) {
+            return ty.clone();
+        }
+        // Only a reference can reach itself again or repeat costly lookups, and hashing whole
+        // containers at every level would dominate large unions.
+        let key = matches!(
+            ty,
+            Type::MethodReturnRef(..)
+                | Type::ReceiverMethodRef(..)
+                | Type::DeferredSafeNavigation(..)
+        )
+        .then(|| (ty.clone(), preserve_untyped));
+        if let Some(key) = &key {
+            if let Some(cached) = memo.get(key) {
+                return cached.clone();
+            }
+            if !visiting.insert(key.clone()) {
+                return ty.clone();
+            }
+        }
         let resolved = match ty {
             Type::MethodReturnRef(class_name, method_name) => {
                 self.ensure_class_available(class_name);

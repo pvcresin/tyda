@@ -1155,3 +1155,47 @@ end
         assert!(found.is_empty(), "compact={compact}: {found:?}");
     }
 }
+
+#[test]
+fn ivar_from_initialize_param_does_not_read_as_the_callers_param() {
+    let source = r#"
+class LocalAlias
+  def initialize(app)
+    @app = app
+  end
+
+  def request(method)
+    app = @app
+    app.call(method)
+  end
+
+  def run
+    request("GET")
+  end
+end
+
+class DefaultedIvar
+  def initialize(root, app = nil)
+    @app = app || Object.new
+  end
+
+  def list(env, path)
+    return @app.call(env) if path
+  end
+
+  def run(env)
+    list(env, "path")
+  end
+end
+"#;
+
+    for compact in [true, false] {
+        let found = diagnostics(source, compact);
+        assert!(
+            !found
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("not found for `String`")),
+            "compact={compact}: {found:?}"
+        );
+    }
+}
