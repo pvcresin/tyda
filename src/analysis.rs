@@ -1837,6 +1837,36 @@ impl SourceOverrideCandidates {
     }
 }
 
+/// Equality overrides only change dispatch when they reopen one of these classes.
+fn source_reopens_equality_dispatch_class(source: &str) -> bool {
+    const CLASSES: [&str; 10] = [
+        "Class",
+        "Module",
+        "Integer",
+        "Float",
+        "Numeric",
+        "Rational",
+        "Complex",
+        "Object",
+        "Kernel",
+        "BasicObject",
+    ];
+    ["class", "module"].iter().any(|keyword| {
+        source.match_indices(keyword).any(|(start, _)| {
+            let rest = source[start + keyword.len()..].trim_start();
+            let rest = rest.strip_prefix("::").unwrap_or(rest);
+            CLASSES.iter().any(|class| {
+                rest.strip_prefix(class).is_some_and(|after| {
+                    !after
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+                })
+            })
+        })
+    })
+}
+
 fn source_override_candidates(source: &str) -> SourceOverrideCandidates {
     let has_equality_operator = source.contains("==");
     let has_block_given = source.contains("block_given?");
@@ -1892,7 +1922,9 @@ fn source_case_equality_overrides_in_root(root: &Node<'_>) -> SourceCaseEquality
 }
 
 pub fn source_case_equality_overrides(source: &str) -> SourceCaseEqualityOverrides {
-    if source_override_candidates(source).is_empty() {
+    let mut candidates = source_override_candidates(source);
+    candidates.equality &= source_reopens_equality_dispatch_class(source);
+    if candidates.is_empty() {
         return SourceCaseEqualityOverrides::default();
     }
     let parse_result = prism::parse(source.as_bytes());
