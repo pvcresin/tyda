@@ -2511,6 +2511,9 @@ fn statically_required_stdlib_feature_loads(
 ) {
     let (mut file_loads, mut class_body_loads, mut method_loads) =
         collect_required_stdlib_feature_loads(root);
+    if file_loads.is_empty() && class_body_loads.is_empty() && method_loads.is_empty() {
+        return (file_loads, method_loads);
+    }
     let (global_override, any_override, class_body_singleton_override) =
         if source_may_define_require_override(source) {
             source_defines_require_override(root)
