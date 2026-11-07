@@ -1050,6 +1050,8 @@ pub struct InferenceEngine<'a> {
     definition_snapshots: Vec<DefinitionSnapshot>,
     pending_constant_definition_snapshots: Vec<PendingConstantDefinitionSnapshot>,
     arg_check_sites: Vec<ArgCheckSite>,
+    arg_check_site_index: FxHashMap<(usize, usize), Vec<usize>>,
+    arg_check_site_index_len: usize,
     method_return_sites: Vec<MethodReturnSite>,
     unresolved_constant_sites: Vec<UnresolvedConstantSite>,
     missing_record_key_sites: Vec<MissingRecordKeySite>,
@@ -2464,6 +2466,8 @@ impl<'a> InferenceEngine<'a> {
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: hover_index.arg_check_sites,
+            arg_check_site_index: FxHashMap::default(),
+            arg_check_site_index_len: 0,
             method_return_sites: hover_index.method_return_sites,
             unresolved_constant_sites: hover_index.unresolved_constant_sites,
             missing_record_key_sites: hover_index.missing_record_key_sites,
@@ -2544,6 +2548,8 @@ impl<'a> InferenceEngine<'a> {
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: Vec::new(),
+            arg_check_site_index: FxHashMap::default(),
+            arg_check_site_index_len: 0,
             method_return_sites: Vec::new(),
             unresolved_constant_sites: Vec::new(),
             missing_record_key_sites: Vec::new(),
@@ -21246,12 +21252,29 @@ impl<'a> InferenceEngine<'a> {
         };
         let call_start = msg_loc.start_offset();
         let call_end = msg_loc.end_offset();
-        for site in self
+        if self.arg_check_site_index_len > self.arg_check_sites.len() {
+            self.arg_check_site_index.clear();
+            self.arg_check_site_index_len = 0;
+        }
+        for (index, site) in self
             .arg_check_sites
-            .iter_mut()
-            .filter(|site| site.call_start == call_start && site.call_end == call_end)
+            .iter()
+            .enumerate()
+            .skip(self.arg_check_site_index_len)
         {
-            site.block_return_type = Some(block_return_type.clone());
+            self.arg_check_site_index
+                .entry((site.call_start, site.call_end))
+                .or_default()
+                .push(index);
+        }
+        self.arg_check_site_index_len = self.arg_check_sites.len();
+        let Some(indices) = self.arg_check_site_index.get(&(call_start, call_end)) else {
+            return;
+        };
+        for &index in indices {
+            if let Some(site) = self.arg_check_sites.get_mut(index) {
+                site.block_return_type = Some(block_return_type.clone());
+            }
         }
     }
 
@@ -41135,7 +41158,7 @@ impl<'a> InferenceEngine<'a> {
             target_class,
             method_name,
             matches!(receiver_type, Type::Singleton(_)),
-            true,
+            false,
         );
         let block_shape = Self::hover_block_shape(&block);
         let mut relation_cache = HashMap::new();
