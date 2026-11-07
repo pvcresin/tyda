@@ -2222,6 +2222,15 @@ impl<'a> InferenceEngine<'a> {
                     if array_like || range_like {
                         return Some(array_return);
                     }
+                    if matches!(
+                        arg_ty,
+                        Type::Integer
+                            | Type::LiteralInteger(_)
+                            | Type::String
+                            | Type::LiteralString(_)
+                    ) {
+                        return Some(elem_type);
+                    }
                 }
                 None
             }

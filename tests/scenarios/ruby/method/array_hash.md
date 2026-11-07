@@ -2444,3 +2444,30 @@ class FrozenOperators
   OPERATORS: { "=" => Proc }
 end
 ```
+
+## A dig through an unknown first key keeps the nested values
+
+```ruby
+class UnknownKeyDig
+  DEFAULTS = { foo: { title: "a" } }.freeze
+
+  def extract(attribute)
+    DEFAULTS.dig(unknown_key, attribute)
+  end
+
+  def call_extract
+    extract(:title)
+  end
+end
+```
+
+### result
+
+```rbs
+class UnknownKeyDig
+  DEFAULTS: { foo: { title: "a" } }
+
+  def extract: (Symbol attribute) -> "a"?
+  def call_extract: -> "a"?
+end
+```

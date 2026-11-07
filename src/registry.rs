@@ -7001,11 +7001,12 @@ impl TypeRegistry {
                     }
                     // if any argument position is untyped, treat the whole thing as Untyped (a partially-untyped union would get incorrectly narrowed to e.g. `nil` downstream).
                     let finalize = |ty: Type| -> Type {
-                        if Self::type_contains_untyped_member(&ty) {
-                            Type::Untyped
-                        } else {
-                            ty
-                        }
+                        let unknown_member = match &ty {
+                            Type::Untyped => true,
+                            Type::Union(parts) => parts.contains(&Type::Untyped),
+                            _ => false,
+                        };
+                        if unknown_member { Type::Untyped } else { ty }
                     };
                     let resolved_params: Vec<Type> = param_types
                         .into_iter()

@@ -38307,6 +38307,8 @@ impl<'a> InferenceEngine<'a> {
                                         Type::Untyped
                                             | Type::ParamRef(_)
                                             | Type::KeywordParamRef(_)
+                                            | Type::MethodReturnRef(..)
+                                            | Type::ReceiverMethodRef(..)
                                     )
                             )
                         })

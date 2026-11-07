@@ -1083,3 +1083,34 @@ class DraftNote < ApplicationRecord
   def self.change_position_complete: -> true
 end
 ```
+
+## A scalar find on a model from another file returns the model
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: app/models/entry.rb
+
+```ruby
+class Entry < ApplicationRecord
+end
+```
+
+```ruby
+class EntryLookup
+  def first_entry
+    Entry.find(1)
+  end
+end
+```
+
+### result
+
+```rbs
+class EntryLookup
+  def first_entry: -> Entry
+end
+```
