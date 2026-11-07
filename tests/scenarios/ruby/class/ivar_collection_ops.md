@@ -57,10 +57,6 @@ end
 
 ## Clearing an instance variable preserves its shared element summary
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -97,6 +93,32 @@ class Resettable
   def return_clear_items: -> [ ]
   def assign_clear_items: -> [ ]
   def items: -> Array[1]
+end
+```
+
+## Source-defined Array#clear keeps its return type
+
+### update
+
+```ruby
+class Array
+  def clear = :custom
+end
+
+class ClearOverride
+  def clear_items = [1].clear
+end
+```
+
+### result
+
+```rbs
+class Array[E]
+  def clear: -> :custom
+end
+
+class ClearOverride
+  def clear_items: -> :custom
 end
 ```
 

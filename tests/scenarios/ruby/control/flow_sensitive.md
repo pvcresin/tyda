@@ -169,6 +169,108 @@ class Object < BasicObject
 end
 ```
 
+## Five branches keep correlation at 32 worlds and six join values at 64
+
+### update
+
+```ruby
+class CorrelatedWorldLimit
+  def branches_5(c)
+    if c[0]
+      a0 = 1
+      b0 = 'x'
+    else
+      a0 = 'y'
+      b0 = 2
+    end
+    if c[1]
+      a1 = 1
+      b1 = 'x'
+    else
+      a1 = 'y'
+      b1 = 2
+    end
+    if c[2]
+      a2 = 1
+      b2 = 'x'
+    else
+      a2 = 'y'
+      b2 = 2
+    end
+    if c[3]
+      a3 = 1
+      b3 = 'x'
+    else
+      a3 = 'y'
+      b3 = 2
+    end
+    if c[4]
+      a4 = 1
+      b4 = 'x'
+    else
+      a4 = 'y'
+      b4 = 2
+    end
+    a0.is_a?(Integer) ? b0 : :other
+  end
+
+  def branches_6(c)
+    if c[0]
+      a0 = 1
+      b0 = 'x'
+    else
+      a0 = 'y'
+      b0 = 2
+    end
+    if c[1]
+      a1 = 1
+      b1 = 'x'
+    else
+      a1 = 'y'
+      b1 = 2
+    end
+    if c[2]
+      a2 = 1
+      b2 = 'x'
+    else
+      a2 = 'y'
+      b2 = 2
+    end
+    if c[3]
+      a3 = 1
+      b3 = 'x'
+    else
+      a3 = 'y'
+      b3 = 2
+    end
+    if c[4]
+      a4 = 1
+      b4 = 'x'
+    else
+      a4 = 'y'
+      b4 = 2
+    end
+    if c[5]
+      a5 = 1
+      b5 = 'x'
+    else
+      a5 = 'y'
+      b5 = 2
+    end
+    a0.is_a?(Integer) ? b0 : :other
+  end
+end
+```
+
+### result
+
+```rbs
+class CorrelatedWorldLimit
+  def branches_5: (untyped c) -> ("x" | :other)
+  def branches_6: (untyped c) -> (2 | "x" | :other)
+end
+```
+
 ## Narrow type with class case equality
 
 ### update
@@ -191,6 +293,203 @@ end
 ```rbs
 class ClassCaseEqualityChecker
   def convert: ((Integer | String) x) -> (String | 1)
+end
+```
+
+## Resolve unqualified class constants in is_a? narrowing
+
+### update
+
+```ruby
+module ScopedClassNarrowing
+  class Base; end
+  class LocalRead < Base
+    def value = :value
+  end
+  class Other < Base; end
+
+  class Checker
+    def value(flag)
+      node = flag ? LocalRead.new : Other.new
+      return unless node.is_a?(LocalRead)
+      node.value
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class ScopedClassNarrowing::Checker
+  def value: (untyped flag) -> :value?
+end
+
+class ScopedClassNarrowing::LocalRead < Base
+  def value: -> :value
+end
+```
+
+## Resolve type-test targets across project files
+
+### update
+
+`app/models/narrowing.rb`
+
+```ruby
+module TypeProf::Core
+  class Narrowing
+    class Constraint
+      def marker = :ok
+    end
+  end
+end
+```
+
+`app/models/local_env.rb`
+
+```ruby
+module TypeProf::Core
+  class LocalEnv
+    def initialize
+      @ivar_narrowings = {}
+    end
+
+    def push_ivar_narrowing(name, narrowing)
+      raise unless narrowing.is_a?(Narrowing::Constraint)
+      (@ivar_narrowings[name] ||= []) << narrowing
+    end
+  end
+end
+```
+
+```ruby
+def read_ivar_narrowing
+  TypeProf::Core::LocalEnv.new.push_ivar_narrowing(
+    :value,
+    TypeProf::Core::Narrowing::Constraint.new,
+  )
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def read_ivar_narrowing: -> [Narrowing::Constraint]
+end
+```
+
+## Narrow a parent type to a checked subclass
+
+### update
+
+```ruby
+class ParentTypePredicate
+  class Base; end
+  class Child < Base
+    def child_only = :child
+  end
+
+  #: (Base) -> :child?
+  def child_value(value)
+    return unless value.is_a?(Child)
+    value.child_only
+  end
+
+  #: (Base) -> :child?
+  def class_case_child_value(value)
+    return unless Child === value
+    value.child_only
+  end
+end
+```
+
+### result
+
+```rbs
+class ParentTypePredicate
+  def child_value: (Base value) -> :child?
+  def class_case_child_value: (Base value) -> :child?
+end
+
+class ParentTypePredicate::Child < Base
+  def child_only: -> :child
+end
+```
+
+## Ignore generic arguments when excluding unrelated classes
+
+### update
+
+```ruby
+class GenericTypeGuard
+end
+
+def value_after_generic_type_guard(value)
+  result = {}
+  if value.is_a?(GenericTypeGuard)
+    result[value] = true
+  end
+  result
+end
+
+def hash_after_generic_type_guard(value)
+  result = {}
+  if value.is_a?(GenericTypeGuard)
+    result[value] = true
+  end
+  result
+end
+
+value_after_generic_type_guard({})
+value_after_generic_type_guard(GenericTypeGuard.new)
+hash_after_generic_type_guard({})
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def value_after_generic_type_guard: ((Hash[untyped, untyped] | GenericTypeGuard) value) -> (Hash[untyped, untyped] | Hash[GenericTypeGuard, true])
+  def hash_after_generic_type_guard: (Hash[untyped, untyped] value) -> Hash[untyped, untyped]
+end
+```
+
+## Keep a subclass check open when its parent is unknown
+
+### update
+
+```ruby
+class UnknownTargetBase
+  def base_value = :base
+end
+
+parent_class = UnknownTargetBase
+UnknownTargetChild = Class.new(parent_class)
+
+def unknown_target_value(value)
+  return unless value.is_a?(UnknownTargetChild)
+  value.base_value
+end
+
+def inferred_unknown_target_value
+  unknown_target_value(UnknownTargetBase.new)
+end
+```
+
+### result
+
+```rbs
+UnknownTargetChild: singleton(Object)
+
+class Object < BasicObject
+  def unknown_target_value: (UnknownTargetBase value) -> (nil | untyped)
+  def inferred_unknown_target_value: -> nil | untyped
+end
+
+class UnknownTargetBase
+  def base_value: -> :base
 end
 ```
 
@@ -378,7 +677,7 @@ end
 ```ruby
 class BoolTruthinessSplit
   def split(x)
-    value = x.nil?
+    value = "#{x}".empty?
     if value
       { truthy: value }
     else
@@ -1115,7 +1414,7 @@ end
 ```ruby
 class BoolEqualitySplit
   def split(x)
-    flag = x.nil?
+    flag = "#{x}".empty?
     if flag == true
       { yes: flag }
     else
@@ -1278,16 +1577,52 @@ end
 
 ## Regexp named capture binds local in the matched branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
 class C
   def check
     if /(?<a>foo)/ =~ "foo"
+      a
+    else
+      1
+    end
+  end
+
+  def check_nonmatch
+    if /(?<a>foo)/ =~ "bar"
+      a
+    else
+      :not_matched
+    end
+  end
+
+  def check_dynamic(s)
+    if /(?<a>foo)/ =~ s
+      a
+    else
+      :not_matched
+    end
+  end
+
+  def check_options
+    if /(?<a>foo)/i =~ "FOO"
+      a
+    else
+      1
+    end
+  end
+
+  def check_metacharacter
+    if /(?<a>f.o)/ =~ "foo"
+      a
+    else
+      1
+    end
+  end
+
+  def check_multiple_captures
+    if /(?<a>foo)(?<b>bar)/ =~ "foobar"
       a
     else
       1
@@ -1306,6 +1641,11 @@ end
 ```rbs
 class C
   def check: -> String
+  def check_nonmatch: -> :not_matched
+  def check_dynamic: (untyped s) -> (String | :not_matched)
+  def check_options: -> String | 1
+  def check_metacharacter: -> String | 1
+  def check_multiple_captures: -> String | 1
   def after_match: (untyped s) -> String?
 end
 ```
@@ -1609,5 +1949,997 @@ class Object < BasicObject
   def accept_str: (String x) -> nil
   def accept_any: ((Integer | Float | String) x) -> nil
   def foo: ((Integer | Float | String) x) -> nil
+end
+```
+
+## respond_to? distinguishes known missing and dynamic methods
+
+### update
+
+```ruby
+class DynamicReceiver
+  def respond_to_missing?(name, include_private = false)
+    name == :virtual
+  end
+
+  def method_missing(name, *args)
+    "dynamic"
+  end
+end
+
+def read_known_missing(x)
+  if x.respond_to?(:full_messages)
+    x.full_messages
+  else
+    :unavailable
+  end
+end
+
+def read_dynamic(x)
+  if x.respond_to?(:virtual)
+    x.virtual
+  else
+    :unavailable
+  end
+end
+
+read_known_missing("error")
+read_dynamic(DynamicReceiver.new)
+```
+
+### result
+
+```rbs
+class DynamicReceiver
+  def respond_to_missing?: (untyped name, ?bool include_private) -> untyped
+  def method_missing: (untyped name, *untyped args) -> "dynamic"
+end
+
+class Object < BasicObject
+  def read_known_missing: (String x) -> :unavailable
+  def read_dynamic: (DynamicReceiver x) -> (untyped | :unavailable)
+end
+```
+
+## A pure reader stays narrowed through short-circuit conditions
+
+### update
+
+```ruby
+class OptionalReader
+  attr_reader :value
+
+  def initialize(flag)
+    @value = flag ? "value" : nil
+  end
+
+  def read = value && value.length
+end
+
+def read_optional = OptionalReader.new(true).read
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def read_optional: -> 5?
+end
+
+class OptionalReader
+  def value: -> "value"?
+  def initialize: (bool flag) -> void
+  def read: -> 5?
+end
+```
+
+## A memoized reader stays narrowed after a nil guard
+
+### update
+
+```ruby
+module Gitlab; end
+
+class MemoizedUser
+  def id = 1
+end
+
+class MemoizedReader
+  def initialize(enabled)
+    @enabled = enabled
+  end
+
+  def current_user = @enabled ? MemoizedUser.new : nil
+  strong_memoize_attr :current_user
+
+  def read
+    return nil unless current_user
+
+    current_user.id
+  end
+end
+
+def read_memoized_user(enabled) = MemoizedReader.new(enabled).read
+```
+
+### result
+
+```rbs
+class MemoizedReader
+  def initialize: (untyped enabled) -> void
+  def current_user: -> MemoizedUser?
+  def read: -> 1?
+end
+
+class MemoizedUser
+  def id: -> 1
+end
+
+class Object < BasicObject
+  def read_memoized_user: (untyped enabled) -> 1?
+end
+```
+
+## A memoized reader stays narrowed through case branches
+
+### update
+
+```ruby
+module Gitlab; end
+
+class ProjectNode
+  def project_value = 1
+end
+
+class GroupNode
+  def group_value = "group"
+end
+
+class MemoizedTargetReader
+  def initialize(project)
+    @project = project
+  end
+
+  def target = @project ? ProjectNode.new : GroupNode.new
+  strong_memoize_attr :target
+
+  def read
+    case target
+    when ProjectNode
+      target.project_value
+    when GroupNode
+      target.group_value
+    end
+  end
+end
+
+def read_memoized_target(project) = MemoizedTargetReader.new(project).read
+```
+
+### result
+
+```rbs
+class GroupNode
+  def group_value: -> "group"
+end
+
+class MemoizedTargetReader
+  def initialize: (untyped project) -> void
+  def target: -> GroupNode | ProjectNode
+  def read: -> (1 | "group")?
+end
+
+class Object < BasicObject
+  def read_memoized_target: (untyped project) -> (1 | "group")?
+end
+
+class ProjectNode
+  def project_value: -> 1
+end
+```
+
+## A later definition overrides memoized reader stability
+
+### update
+
+```ruby
+module Gitlab; end
+
+class DynamicMemoizedReader
+  def initialize(enabled)
+    @enabled = false
+  end
+
+  strong_memoize_attr :value
+  def value
+    @enabled = !@enabled
+    @enabled ? "text" : nil
+  end
+
+  def read
+    return nil unless value
+
+    value.upcase
+  end
+end
+
+def read_dynamic_memoized_value(enabled) = DynamicMemoizedReader.new(enabled).read
+```
+
+### result
+
+```rbs
+class DynamicMemoizedReader
+  def initialize: (untyped enabled) -> void
+  def value: -> "text"?
+  def read: -> String?
+end
+
+class Object < BasicObject
+  def read_dynamic_memoized_value: (untyped enabled) -> String?
+end
+```
+
+## Class equality excludes a known disjoint type
+
+### update
+
+```ruby
+class ClassEqualityTarget; end
+
+class ClassEqualityGuard
+  #: (String) -> String
+  def read(value)
+    return "other" unless ClassEqualityTarget === value
+
+    value.missing
+  end
+end
+```
+
+### result
+
+```rbs
+class ClassEqualityGuard
+  def read: (String value) -> String
+end
+```
+
+## Standard type predicates exclude a known disjoint type
+
+### update
+
+```ruby
+class TypePredicateTarget; end
+class TypePredicateBase; end
+class TypePredicateChild < TypePredicateBase; end
+
+class TypePredicateGuard
+  #: (String) -> String
+  def read_with_is_a(value)
+    return "other" unless value.is_a?(TypePredicateTarget)
+
+    value.missing
+  end
+
+  #: (String) -> String
+  def read_with_instance_of(value)
+    return "other" unless value.instance_of?(TypePredicateTarget)
+
+    value.missing
+  end
+
+  #: (TypePredicateChild) -> nil
+  def read_with_instance_of_parent(value)
+    return nil unless value.instance_of?(TypePredicateBase)
+
+    value.missing
+  end
+end
+```
+
+### result
+
+```rbs
+class TypePredicateGuard
+  def read_with_is_a: (String value) -> String
+  def read_with_instance_of: (String value) -> String
+  def read_with_instance_of_parent: (TypePredicateChild value) -> nil
+end
+```
+
+## A closed hash key check removes an impossible branch
+
+### update
+
+```ruby
+def guarded_missing_hash_key
+  settings = { available: :handler }.freeze
+  if settings.include?(:missing)
+    :unreachable
+  else
+    :present
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def guarded_missing_hash_key: -> :present
+end
+```
+
+## A return guard narrows an optional parameter
+
+### update
+
+```ruby
+class GuardedUser
+  def name = "user"
+end
+
+def guarded_user_name(user)
+  return nil unless user
+
+  user.name.upcase
+end
+
+def read_guarded_user_name = guarded_user_name(GuardedUser.new)
+def read_guarded_user_name_without_user = guarded_user_name(nil)
+```
+
+### result
+
+```rbs
+class GuardedUser
+  def name: -> "user"
+end
+
+class Object < BasicObject
+  def guarded_user_name: (GuardedUser? user) -> String?
+  def read_guarded_user_name: -> String?
+  def read_guarded_user_name_without_user: -> String?
+end
+```
+
+## Unknown class ancestry keeps type-test branches open
+
+### update
+
+```ruby
+class AncestryBase; end
+
+parent_class = AncestryBase
+UnknownAncestryChild = Class.new(parent_class) do
+end
+
+#: (UnknownAncestryChild) -> untyped
+def read_unknown_is_a(value)
+  return :other unless value.is_a?(AncestryBase)
+
+  value.missing
+end
+
+#: (AncestryBase) -> untyped
+def read_unknown_instance_of(value)
+  return :other unless value.instance_of?(UnknownAncestryChild)
+
+  value.missing
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def read_unknown_is_a: (UnknownAncestryChild value) -> untyped
+  def read_unknown_instance_of: (AncestryBase value) -> untyped
+end
+```
+
+## Source overrides remain authoritative for closed hash predicates
+
+### update
+
+```ruby
+class Hash
+  #: (Symbol) -> bool
+  def key?(_key) = true
+end
+
+def overridden_hash_key_predicate
+  values = { present: "value" }.freeze
+  values.key?(:missing) ? :present : :absent
+end
+```
+
+### result
+
+```rbs
+class Hash[K, V]
+  def key?: (Symbol _key) -> bool
+end
+
+class Object < BasicObject
+  def overridden_hash_key_predicate: -> :absent | :present
+end
+```
+
+## Active refinements keep type-test branches open
+
+### update
+
+```ruby
+class RefinedTarget; end
+
+module AlwaysMatchString
+  refine String do
+    def is_a?(_target) = true
+  end
+end
+
+module AlwaysMatchClass
+  refine Class do
+    def ===(_value) = true
+  end
+end
+
+using AlwaysMatchString
+using AlwaysMatchClass
+
+#: (String) -> untyped
+def read_refined_is_a(value)
+  return :other unless value.is_a?(RefinedTarget)
+
+  value.missing
+end
+
+#: (String) -> untyped
+def read_refined_case_equality(value)
+  return :other unless RefinedTarget === value
+
+  value.missing
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def read_refined_is_a: (String value) -> untyped
+  def read_refined_case_equality: (String value) -> untyped
+end
+```
+
+## Class equality narrows an untyped input on its true branch
+
+### update
+
+```ruby
+class UnknownCaseEqualityTarget
+  #: -> String
+  def version = "1.0"
+end
+
+class UnknownCaseEqualityGuard
+  #: (untyped value) -> String?
+  def read(value)
+    return unless UnknownCaseEqualityTarget === value
+
+    value.version
+  end
+
+  def inferred_case_equality_return(value)
+    return :other unless UnknownCaseEqualityTarget === value
+
+    value.version
+  end
+
+  #: (untyped value) -> String?
+  def read_with_is_a(value)
+    return unless value.is_a?(UnknownCaseEqualityTarget)
+
+    value.version
+  end
+end
+```
+
+### result
+
+```rbs
+class UnknownCaseEqualityGuard
+  def read: (untyped value) -> String?
+  def inferred_case_equality_return: (untyped value) -> (String | :other)
+  def read_with_is_a: (untyped value) -> String?
+end
+
+class UnknownCaseEqualityTarget
+  def version: -> String
+end
+```
+
+## Keep unknown instance_of? open when its method can be overridden
+
+### update
+
+```ruby
+class UnknownInstanceOfTarget
+  #: -> String
+  def version = "1.0"
+end
+
+module AlwaysMatchStringInstanceOf
+  refine String do
+    def instance_of?(_target) = true
+  end
+end
+
+using AlwaysMatchStringInstanceOf
+
+def inferred_instance_of_return(value = eval("String.new"))
+  return :other unless value.instance_of?(UnknownInstanceOfTarget)
+
+  value.version
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def inferred_instance_of_return: (?untyped value) -> (untyped | :other)
+end
+
+class UnknownInstanceOfTarget
+  def version: -> String
+end
+```
+
+## Do not treat a mutable instance variable as a constant
+
+### update
+
+```ruby
+class MutableInstanceVariableTruthiness
+  def initialize
+    @out_active = false
+    @out_shifter = 0
+    @out_dac = 0
+    @out_buffer = 0
+    @dma_length_counter = 0
+    @buffered = false
+  end
+
+  def do_dma
+    @buffered = true
+    @dma_length_counter -= 1
+  end
+
+  #: (Integer dac, Integer buffer) -> Integer
+  def set_output(dac, buffer)
+    @out_dac = dac
+    @out_buffer = buffer
+  end
+
+  def clock_dac
+    if @out_active
+      n = @out_dac + ((@out_buffer & 1) << 2) - 2
+      @out_buffer >>= 1
+      if 0 <= n && n <= 0x7f && n != @out_dac
+        @out_dac = n
+        return true
+      end
+    end
+    return false
+  end
+
+  def false_after_same_method_write
+    @out_active = false
+    return true if @out_active
+
+    false
+  end
+
+  def clock_dma
+    if @out_shifter == 0
+      @out_shifter = 7
+      @out_active = @buffered
+      if @out_active
+        @buffered = false
+        @out_buffer = 0
+        do_dma if @dma_length_counter != 0
+      end
+    else
+      @out_shifter -= 1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class MutableInstanceVariableTruthiness
+  def initialize: -> void
+  def do_dma: -> Integer
+  def set_output: (Integer dac, Integer buffer) -> Integer
+  def clock_dac: -> bool
+  def false_after_same_method_write: -> false
+  def clock_dma: -> Integer?
+end
+```
+
+## Narrow a parent type with a subclass from another file
+
+### update
+
+### file: parent.rb
+
+```ruby
+class Parent
+end
+```
+
+### file: child.rb
+
+```ruby
+class Child < Parent
+  def child_only = "child".upcase
+end
+```
+
+### file: checker.rb
+
+```ruby
+class Checker
+  def child_value
+    value = Parent.new
+    return nil unless value.is_a?(Child)
+    value.child_only
+  end
+end
+```
+
+### result
+
+```rbs
+class Child < Parent
+  def child_only: -> String
+end
+
+class Checker
+  def child_value: -> String?
+end
+
+class Parent
+end
+```
+
+## Preserve an overlapping predicate and literal intersection
+
+### update
+
+```ruby
+class CompoundConditionPredicate
+  def present?(value)
+    return false unless value
+    true
+  end
+
+  #: (String?) -> String?
+  def with_literal_condition(value)
+    return nil unless present?(value) && value == "present"
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class CompoundConditionPredicate
+  def present?: (untyped value) -> bool
+  def with_literal_condition: (String? value) -> String?
+end
+```
+
+## Narrow an assignment before the right side of &&
+
+```ruby
+class ConditionAssignmentResource
+  def readable? = true
+  def value = "value"
+end
+
+class ConditionAssignmentFlow
+  #: (bool) -> ConditionAssignmentResource?
+  def maybe_resource(flag)
+    if flag
+      ConditionAssignmentResource.new
+    end
+  end
+
+  def value_if_present(flag)
+    if (resource = maybe_resource(flag)) && resource.readable?
+      resource.value
+    end
+  end
+
+  def value_unless_missing(flag)
+    unless (resource = maybe_resource(flag)) && resource.readable?
+      nil
+    else
+      resource.value
+    end
+  end
+
+  def value_from_unless_expression(flag)
+    result = unless (resource = maybe_resource(flag)) && resource.readable?
+      nil
+    else
+      resource.value
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class ConditionAssignmentFlow
+  def maybe_resource: (bool flag) -> ConditionAssignmentResource?
+  def value_if_present: (untyped flag) -> "value"?
+  def value_unless_missing: (untyped flag) -> "value"?
+  def value_from_unless_expression: (untyped flag) -> "value"?
+end
+
+class ConditionAssignmentResource
+  def readable?: -> true
+  def value: -> "value"
+end
+```
+
+## Apply Array refinements to tuple unions
+
+### update
+
+```ruby
+module AlwaysEmptyArray
+  refine Array do
+    def empty? = true
+  end
+end
+using AlwaysEmptyArray
+
+def refined_array_empty(flag)
+  values = flag ? [] : ["item"]
+  if values.empty?
+    :reachable
+  else
+    :unreachable
+  end
+end
+refined_array_empty(true)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def refined_array_empty: (bool flag) -> :reachable
+end
+```
+
+## Apply inherited Array refinements to subclasses
+
+### update
+
+```ruby
+module AlwaysEmptyArray
+  refine Array do
+    def empty? = true
+  end
+end
+using AlwaysEmptyArray
+
+class MyArray < Array; end
+
+def refined_array_subclass_empty
+  if MyArray.new.empty?
+    :reachable
+  else
+    :unreachable
+  end
+end
+refined_array_subclass_empty
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def refined_array_subclass_empty: -> :reachable
+end
+```
+
+## Let an ancestor refinement precede an Object fallback
+
+### update
+
+```ruby
+class Object
+  def refined_addition = :object
+end
+
+module ArrayAdditionRefinement
+  refine Array do
+    def refined_addition = :array
+  end
+end
+using ArrayAdditionRefinement
+
+class MyArray < Array; end
+
+def refined_array_addition
+  MyArray.new.refined_addition
+end
+refined_array_addition
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def refined_addition: -> :object
+  def refined_array_addition: -> :array
+end
+```
+
+## A subclass method wins over an ancestor refinement
+
+### update
+
+```ruby
+module AlwaysEmptyArray
+  refine Array do
+    def empty? = true
+  end
+end
+using AlwaysEmptyArray
+
+class NeverEmptyArray < Array
+  def empty? = false
+end
+
+def subclass_method_wins
+  if NeverEmptyArray.new.empty?
+    :refined
+  else
+    :subclass
+  end
+end
+subclass_method_wins
+```
+
+### result
+
+```rbs
+class NeverEmptyArray < Array
+  def empty?: -> false
+end
+
+class Object < BasicObject
+  def subclass_method_wins: -> :subclass
+end
+```
+
+## An active String#=~ refinement replaces literal regexp folding
+
+### update
+
+```ruby
+module NeverMatchStringRegexp
+  refine String do
+    def =~(_regexp) = false
+  end
+end
+using NeverMatchStringRegexp
+
+def refined_regexp
+  if "haystack" =~ /hay/
+    :matched
+  else
+    :unmatched
+  end
+end
+refined_regexp
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def refined_regexp: -> :unmatched
+end
+```
+
+## Narrow an ivar inside a modifier if across files
+
+### update
+
+```ruby
+module TypeProf
+  module Core
+    module AST
+      class Node
+      end
+
+      class LoopNode
+        #: (Node) -> void
+        def initialize(cond)
+          @cond = cond
+        end
+
+        def value
+          @cond.var if @cond.is_a?(LocalVariableReadNode)
+        end
+      end
+    end
+  end
+end
+```
+
+### file: ast/variable.rb
+
+```ruby
+module TypeProf
+  module Core
+    module AST
+      class LocalVariableReadNode < Node
+        def var = "var".upcase
+      end
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class TypeProf::Core::AST::LoopNode
+  def initialize: (Node cond) -> void
+  def value: -> String?
+end
+```
+
+## A self-recursive predicate returns only its boolean arms
+
+```yaml
+known_issue: true
+```
+
+```ruby
+class RecursivePredicate
+  def top?(depth)
+    return false unless depth
+    return true if depth == 1
+
+    top?(depth - 1)
+  end
+
+  def call_top
+    top?(3)
+  end
+end
+```
+
+### result
+
+```rbs
+class RecursivePredicate
+  def top?: (Integer depth) -> bool
+  def call_top: -> bool
 end
 ```

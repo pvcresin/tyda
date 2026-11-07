@@ -35,10 +35,6 @@ end
 
 ## Resolve Rails application helpers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

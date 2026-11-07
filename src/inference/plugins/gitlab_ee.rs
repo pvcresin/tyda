@@ -1,8 +1,11 @@
 //! ! GitLab's in-tree runtime utilities with no gem marker: ! ! - The EE extension-loading mechanism (`prepend_mod` family): GitLab FOSS !   monkey-patches `Module` with `prepend_mod`, `prepend_mod_with('EE::Foo')`, !   `include_mod(_with)` and `extend_mod(_with)` — each loads the EE !   counterpart module when present and is a no-op otherwise.
 //! The patch !   lives in a Rails initializer outside the analyzed app code, and !   singleton-method lookup does not walk the `Class`/`Module` metaclass !   chain, so every `Foo.prepend_mod` shows up unresolved.
 
-use super::{Plugin, PluginCx, PluginManifest};
+use super::{Plugin, PluginCx, PluginManifest, RbsComment};
 use crate::types::Type;
+use ruby_prism::{CallNode, ParseResult};
+
+const CLASS_BODY_METHODS: &[&str] = &["strong_memoize_attr"];
 
 pub(super) struct GitlabEe;
 
@@ -27,6 +30,25 @@ impl Plugin for GitlabEe {
         synthetic_method_return(cx, receiver_type, method_name)
     }
 
+    fn collect_class_body_call(
+        &self,
+        cx: &mut PluginCx<'_, '_>,
+        class_name: &str,
+        method_name: &str,
+        call_node: &CallNode<'_>,
+        _parse_result: &ParseResult<'_>,
+        _comments: &[RbsComment],
+    ) -> bool {
+        if method_name != "strong_memoize_attr" || !is_gitlab_project(cx) {
+            return false;
+        }
+        for reader in cx.symbol_or_string_args(call_node) {
+            cx.registry_mut()
+                .mark_memoized_reader(class_name, &reader, false);
+        }
+        true
+    }
+
     fn consumes_class_body_call(
         &self,
         cx: &mut PluginCx<'_, '_>,
@@ -34,6 +56,10 @@ impl Plugin for GitlabEe {
         method_name: &str,
     ) -> bool {
         consumes_class_body_call(cx, class_name, method_name)
+    }
+
+    fn class_body_method_names(&self) -> &'static [&'static str] {
+        CLASS_BODY_METHODS
     }
 }
 

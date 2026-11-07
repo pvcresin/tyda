@@ -16,8 +16,9 @@ end
 class Comment
   def post: -> Post
   def post=: (Post post) -> Post
-  def build_post: -> Post
-  def create_post: -> Post
+  def build_post: (?Hash[String | Symbol, untyped] attributes) -> Post
+  def create_post: (?Hash[String | Symbol, untyped] attributes) -> Post
+  def create_post!: (?Hash[String | Symbol, untyped] attributes) -> Post
 end
 ```
 
@@ -37,8 +38,9 @@ end
 class Order
   def coupon: -> Coupon?
   def coupon=: (Coupon coupon) -> Coupon
-  def build_coupon: -> Coupon
-  def create_coupon: -> Coupon
+  def build_coupon: (?Hash[String | Symbol, untyped] attributes) -> Coupon
+  def create_coupon: (?Hash[String | Symbol, untyped] attributes) -> Coupon
+  def create_coupon!: (?Hash[String | Symbol, untyped] attributes) -> Coupon
 end
 ```
 
@@ -58,8 +60,9 @@ end
 class Comment
   def author: -> User
   def author=: (User author) -> User
-  def build_author: -> User
-  def create_author: -> User
+  def build_author: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_author: (?Hash[String | Symbol, untyped] attributes) -> User
+  def create_author!: (?Hash[String | Symbol, untyped] attributes) -> User
 end
 ```
 
@@ -114,8 +117,9 @@ end
 class A < ApplicationRecord
   def b: -> B?
   def b=: (B? b) -> B
-  def build_b: -> B
-  def create_b: -> B
+  def build_b: (?Hash[String | Symbol, untyped] attributes) -> B
+  def create_b: (?Hash[String | Symbol, untyped] attributes) -> B
+  def create_b!: (?Hash[String | Symbol, untyped] attributes) -> B
   def foo=: (untyped x) -> B
 end
 

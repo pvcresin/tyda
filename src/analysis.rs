@@ -1,6 +1,6 @@
 use crate::prism_compat::LocationExt;
 use ruby_prism::{self as prism, Node};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -1658,6 +1658,883 @@ fn compact_file_snapshot(mut analysis: FileAnalysisSnapshot) -> FileAnalysisSnap
     analysis
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SourceCaseEqualityOverrides {
+    pub base_class_dispatch: bool,
+    pub numeric_dispatch: bool,
+    pub block_given_override: bool,
+}
+
+#[derive(Clone, Copy)]
+enum CaseEqualityOwner {
+    Other,
+    BaseClass,
+    Numeric,
+}
+
+struct CaseEqualityOverrideScan {
+    namespace_stack: Vec<CaseEqualityOwner>,
+    global_block_given_owner_stack: Vec<bool>,
+    overrides: SourceCaseEqualityOverrides,
+}
+
+impl CaseEqualityOverrideScan {
+    fn record_alias(&mut self, name: &Node<'_>) {
+        let name = match name {
+            Node::SymbolNode { .. } => String::from_utf8_lossy(
+                name.as_symbol_node()
+                    .expect("must be SymbolNode")
+                    .unescaped(),
+            )
+            .into_owned(),
+            Node::StringNode { .. } => String::from_utf8_lossy(
+                name.as_string_node()
+                    .expect("must be StringNode")
+                    .unescaped(),
+            )
+            .into_owned(),
+            _ => return,
+        };
+        let owner = self
+            .namespace_stack
+            .last()
+            .copied()
+            .unwrap_or(CaseEqualityOwner::Other);
+        match (owner, name.as_str()) {
+            (CaseEqualityOwner::BaseClass, "===") => {
+                self.overrides.base_class_dispatch = true;
+            }
+            (CaseEqualityOwner::Numeric, "===" | "==") => {
+                self.overrides.numeric_dispatch = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn push_namespace(&mut self, path: &[u8]) {
+        let top_level = self.namespace_stack.is_empty();
+        self.global_block_given_owner_stack.push(
+            [b"::Object".as_slice(), b"::Kernel", b"::BasicObject"].contains(&path)
+                || (top_level && [b"Object".as_slice(), b"Kernel", b"BasicObject"].contains(&path)),
+        );
+        let owner = if path == b"::Class"
+            || path == b"::Module"
+            || (top_level && (path == b"Class" || path == b"Module"))
+        {
+            CaseEqualityOwner::BaseClass
+        } else if [
+            b"::Integer".as_slice(),
+            b"::Float",
+            b"::Numeric",
+            b"::Rational",
+            b"::Complex",
+            b"::Object",
+            b"::Kernel",
+            b"::BasicObject",
+        ]
+        .contains(&path)
+            || (top_level
+                && [
+                    b"Integer".as_slice(),
+                    b"Float",
+                    b"Numeric",
+                    b"Rational",
+                    b"Complex",
+                    b"Object",
+                    b"Kernel",
+                    b"BasicObject",
+                ]
+                .contains(&path))
+        {
+            CaseEqualityOwner::Numeric
+        } else {
+            CaseEqualityOwner::Other
+        };
+        self.namespace_stack.push(owner);
+    }
+}
+
+impl<'pr> prism::Visit<'pr> for CaseEqualityOverrideScan {
+    fn visit_class_node(&mut self, node: &prism::ClassNode<'pr>) {
+        let path = node.constant_path().location().as_slice();
+        self.push_namespace(path);
+        if let Some(body) = node.body() {
+            prism::Visit::visit(self, &body);
+        }
+        self.namespace_stack.pop();
+        self.global_block_given_owner_stack.pop();
+    }
+
+    fn visit_module_node(&mut self, node: &prism::ModuleNode<'pr>) {
+        let path = node.constant_path().location().as_slice();
+        self.push_namespace(path);
+        if let Some(body) = node.body() {
+            prism::Visit::visit(self, &body);
+        }
+        self.namespace_stack.pop();
+        self.global_block_given_owner_stack.pop();
+    }
+
+    fn visit_def_node(&mut self, node: &prism::DefNode<'pr>) {
+        if node.receiver().is_some() {
+            return;
+        }
+        if node.name().as_slice() == b"block_given?" {
+            if self.namespace_stack.is_empty()
+                || self.global_block_given_owner_stack.last() == Some(&true)
+            {
+                self.overrides.block_given_override = true;
+            }
+            return;
+        }
+        let owner = self
+            .namespace_stack
+            .last()
+            .copied()
+            .unwrap_or(CaseEqualityOwner::Other);
+        match (owner, node.name().as_slice()) {
+            (CaseEqualityOwner::BaseClass, b"===") => {
+                self.overrides.base_class_dispatch = true;
+            }
+            (CaseEqualityOwner::Numeric, b"===" | b"==") => {
+                self.overrides.numeric_dispatch = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn visit_alias_method_node(&mut self, node: &prism::AliasMethodNode<'pr>) {
+        let new_name = node.new_name();
+        self.record_alias(&new_name);
+        prism::visit_alias_method_node(self, node);
+    }
+
+    fn visit_call_node(&mut self, node: &prism::CallNode<'pr>) {
+        if node.name().as_slice() == b"alias_method"
+            && node
+                .receiver()
+                .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }))
+            && let Some(arguments) = node.arguments()
+            && let Some(new_name) = arguments.arguments().first()
+        {
+            self.record_alias(&new_name);
+        }
+        prism::visit_call_node(self, node);
+    }
+
+    fn visit_singleton_class_node(&mut self, _node: &prism::SingletonClassNode<'pr>) {}
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SourceOverrideCandidates {
+    equality: bool,
+    block_given: bool,
+}
+
+impl SourceOverrideCandidates {
+    fn is_empty(self) -> bool {
+        !self.equality && !self.block_given
+    }
+}
+
+/// Equality overrides only change dispatch when they reopen one of these classes.
+fn source_reopens_equality_dispatch_class(source: &str) -> bool {
+    const CLASSES: [&str; 10] = [
+        "Class",
+        "Module",
+        "Integer",
+        "Float",
+        "Numeric",
+        "Rational",
+        "Complex",
+        "Object",
+        "Kernel",
+        "BasicObject",
+    ];
+    ["class", "module"].iter().any(|keyword| {
+        source.match_indices(keyword).any(|(start, _)| {
+            let rest = source[start + keyword.len()..].trim_start();
+            let rest = rest.strip_prefix("::").unwrap_or(rest);
+            CLASSES.iter().any(|class| {
+                rest.strip_prefix(class).is_some_and(|after| {
+                    !after
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+                })
+            })
+        })
+    })
+}
+
+fn source_override_candidates(source: &str) -> SourceOverrideCandidates {
+    let has_equality_operator = source.contains("==");
+    let has_block_given = source.contains("block_given?");
+    if !has_block_given
+        && !(has_equality_operator && (source.contains("def") || source.contains("alias")))
+    {
+        return SourceOverrideCandidates::default();
+    }
+
+    let mut candidates = SourceOverrideCandidates {
+        equality: source.contains("alias") && has_equality_operator,
+        block_given: false,
+    };
+    let bytes = source.as_bytes();
+    let mut offset = 0;
+    while let Some(relative) = source[offset..].find("def") {
+        let start = offset + relative;
+        let before_is_identifier =
+            start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        let mut cursor = start + 3;
+        let has_keyword_boundary = cursor == bytes.len()
+            || !(bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_');
+        if before_is_identifier || !has_keyword_boundary {
+            offset = cursor;
+            continue;
+        }
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        let method = &bytes[cursor..];
+        if method.starts_with(b"===")
+            || (method.starts_with(b"==") && method.get(2).is_none_or(|byte| *byte != b'='))
+        {
+            candidates.equality = true;
+        }
+        candidates.block_given |= method.starts_with(b"block_given?");
+        offset = cursor;
+        if candidates.equality && candidates.block_given {
+            break;
+        }
+    }
+    candidates
+}
+
+fn source_case_equality_overrides_in_root(root: &Node<'_>) -> SourceCaseEqualityOverrides {
+    let mut scan = CaseEqualityOverrideScan {
+        namespace_stack: Vec::new(),
+        global_block_given_owner_stack: Vec::new(),
+        overrides: SourceCaseEqualityOverrides::default(),
+    };
+    prism::Visit::visit(&mut scan, root);
+    scan.overrides
+}
+
+pub fn source_case_equality_overrides(source: &str) -> SourceCaseEqualityOverrides {
+    let mut candidates = source_override_candidates(source);
+    candidates.equality &= source_reopens_equality_dispatch_class(source);
+    if candidates.is_empty() {
+        return SourceCaseEqualityOverrides::default();
+    }
+    let parse_result = prism::parse(source.as_bytes());
+    let root = parse_result.node();
+    source_case_equality_overrides_in_root(&root)
+}
+
+// Conditional and deferred bodies are excluded because their require may never run.
+type RequiredStdlibFeatureLoad = (String, usize);
+type MethodRequiredStdlibFeatureLoad = (usize, usize, String, usize);
+
+#[derive(Default)]
+struct RequiredStdlibFeatureCollector {
+    loads: Vec<RequiredStdlibFeatureLoad>,
+    class_body_loads: Vec<RequiredStdlibFeatureLoad>,
+    method_loads: Vec<MethodRequiredStdlibFeatureLoad>,
+    method_body: bool,
+    class_body_depth: usize,
+}
+
+impl<'pr> prism::Visit<'pr> for RequiredStdlibFeatureCollector {
+    fn visit_call_node(&mut self, node: &prism::CallNode<'pr>) {
+        if node.name().as_slice() == b"require"
+            && node.receiver().is_none()
+            && node.block().is_none()
+            && let Some(arguments) = node.arguments()
+        {
+            let mut arguments = arguments.arguments().iter();
+            if let Some(Node::StringNode { .. }) = arguments.next()
+                && arguments.next().is_none()
+                && let Some(string) = node
+                    .arguments()
+                    .and_then(|arguments| arguments.arguments().iter().next())
+                    .and_then(|argument| argument.as_string_node())
+            {
+                let feature = String::from_utf8_lossy(string.unescaped());
+                let feature = feature.strip_suffix(".rb").unwrap_or(&feature);
+                if !feature.is_empty() {
+                    let load = (feature.to_string(), node.location().start_offset());
+                    if self.class_body_depth == 0 {
+                        self.loads.push(load);
+                    } else {
+                        self.class_body_loads.push(load);
+                    }
+                }
+            }
+        }
+        if let Some(receiver) = node.receiver() {
+            self.visit(&receiver);
+        }
+        if let Some(arguments) = node.arguments() {
+            self.visit_arguments_node(&arguments);
+        }
+    }
+
+    fn visit_class_node(&mut self, node: &prism::ClassNode<'pr>) {
+        self.visit(&node.constant_path());
+        if let Some(superclass) = node.superclass() {
+            self.visit(&superclass);
+        }
+        self.class_body_depth += 1;
+        if let Some(body) = node.body() {
+            self.visit(&body);
+        }
+        self.class_body_depth -= 1;
+    }
+
+    fn visit_module_node(&mut self, node: &prism::ModuleNode<'pr>) {
+        self.visit(&node.constant_path());
+        self.class_body_depth += 1;
+        if let Some(body) = node.body() {
+            self.visit(&body);
+        }
+        self.class_body_depth -= 1;
+    }
+
+    fn visit_singleton_class_node(&mut self, node: &prism::SingletonClassNode<'pr>) {
+        self.visit(&node.expression());
+        self.class_body_depth += 1;
+        if let Some(body) = node.body() {
+            self.visit(&body);
+        }
+        self.class_body_depth -= 1;
+    }
+
+    fn visit_def_node(&mut self, node: &prism::DefNode<'pr>) {
+        let Some(body) = node.body() else {
+            return;
+        };
+        let mut collector = Self {
+            method_body: true,
+            ..Self::default()
+        };
+        prism::Visit::visit(&mut collector, &body);
+        self.method_loads
+            .extend(collector.loads.into_iter().map(|(feature, offset)| {
+                (
+                    node.location().start_offset(),
+                    node.location().end_offset(),
+                    feature,
+                    offset,
+                )
+            }));
+    }
+
+    fn visit_block_node(&mut self, _node: &prism::BlockNode<'pr>) {}
+
+    fn visit_lambda_node(&mut self, _node: &prism::LambdaNode<'pr>) {}
+
+    fn visit_if_node(&mut self, node: &prism::IfNode<'pr>) {
+        prism::Visit::visit(self, &node.predicate());
+    }
+
+    fn visit_unless_node(&mut self, node: &prism::UnlessNode<'pr>) {
+        prism::Visit::visit(self, &node.predicate());
+    }
+
+    fn visit_case_node(&mut self, node: &prism::CaseNode<'pr>) {
+        if let Some(predicate) = node.predicate() {
+            prism::Visit::visit(self, &predicate);
+        }
+        if let Some(when) = node.conditions().iter().next()
+            && let Some(when) = when.as_when_node()
+            && let Some(condition) = when.conditions().iter().next()
+        {
+            prism::Visit::visit(self, &condition);
+        }
+    }
+
+    fn visit_case_match_node(&mut self, node: &prism::CaseMatchNode<'pr>) {
+        if let Some(predicate) = node.predicate() {
+            prism::Visit::visit(self, &predicate);
+        }
+    }
+
+    fn visit_while_node(&mut self, node: &prism::WhileNode<'pr>) {
+        prism::Visit::visit(self, &node.predicate());
+    }
+
+    fn visit_until_node(&mut self, node: &prism::UntilNode<'pr>) {
+        prism::Visit::visit(self, &node.predicate());
+    }
+
+    fn visit_for_node(&mut self, node: &prism::ForNode<'pr>) {
+        prism::Visit::visit(self, &node.collection());
+    }
+
+    fn visit_and_node(&mut self, node: &prism::AndNode<'pr>) {
+        prism::Visit::visit(self, &node.left());
+    }
+
+    fn visit_or_node(&mut self, node: &prism::OrNode<'pr>) {
+        prism::Visit::visit(self, &node.left());
+    }
+
+    fn visit_rescue_node(&mut self, _node: &prism::RescueNode<'pr>) {}
+
+    fn visit_rescue_modifier_node(&mut self, _node: &prism::RescueModifierNode<'pr>) {}
+
+    fn visit_begin_node(&mut self, node: &prism::BeginNode<'pr>) {
+        if self.method_body || node.rescue_clause().is_some() || node.ensure_clause().is_some() {
+            return;
+        }
+        if let Some(statements) = node.statements() {
+            self.visit_statements_node(&statements);
+        }
+    }
+}
+
+// Conditional and deferred bodies are excluded because their require may never run.
+fn collect_required_stdlib_feature_loads(
+    node: &Node<'_>,
+) -> (
+    Vec<RequiredStdlibFeatureLoad>,
+    Vec<RequiredStdlibFeatureLoad>,
+    Vec<MethodRequiredStdlibFeatureLoad>,
+) {
+    let mut collector = RequiredStdlibFeatureCollector::default();
+    prism::Visit::visit(&mut collector, node);
+    collector.loads.sort_unstable_by_key(|(_, offset)| *offset);
+    collector
+        .class_body_loads
+        .sort_unstable_by_key(|(_, offset)| *offset);
+    collector
+        .method_loads
+        .sort_unstable_by_key(|(_, _, _, offset)| *offset);
+    (
+        collector.loads,
+        collector.class_body_loads,
+        collector.method_loads,
+    )
+}
+
+fn source_defines_require_override(root: &Node<'_>) -> (bool, bool, bool) {
+    struct RequireOverrideVisitor {
+        scope_depth: usize,
+        class_body_depth: usize,
+        singleton_class_depth: usize,
+        scope_stack: Vec<(bool, bool, bool, Option<usize>)>,
+        global_require_owner_scope: Option<usize>,
+        found: bool,
+        found_any: bool,
+        found_class_body_singleton_override: bool,
+    }
+
+    impl RequireOverrideVisitor {
+        fn is_global_require_owner(node: &Node<'_>) -> bool {
+            let path = if let Some(class_node) = node.as_class_node() {
+                class_node.constant_path().location().as_slice()
+            } else if let Some(module_node) = node.as_module_node() {
+                module_node.constant_path().location().as_slice()
+            } else {
+                return false;
+            };
+            matches!(
+                path.strip_prefix(b"::").unwrap_or(path),
+                b"Kernel" | b"Object"
+            )
+        }
+
+        fn alias_may_define_require(node: &Node<'_>) -> bool {
+            if let Some(alias) = node.as_alias_method_node() {
+                let new_name = alias.new_name();
+                return match &new_name {
+                    Node::SymbolNode { .. } => new_name
+                        .as_symbol_node()
+                        .is_some_and(|name| name.unescaped() == b"require"),
+                    Node::StringNode { .. } => new_name
+                        .as_string_node()
+                        .is_some_and(|name| name.unescaped() == b"require"),
+                    _ => true,
+                };
+            }
+            let Some(call) = node.as_call_node() else {
+                return false;
+            };
+            if call.name().as_slice() != b"alias_method"
+                || call
+                    .receiver()
+                    .is_some_and(|receiver| !matches!(receiver, Node::SelfNode { .. }))
+            {
+                return false;
+            }
+            let Some(new_name) = call
+                .arguments()
+                .and_then(|arguments| arguments.arguments().iter().next())
+            else {
+                return true;
+            };
+            match &new_name {
+                Node::SymbolNode { .. } => new_name
+                    .as_symbol_node()
+                    .is_some_and(|name| name.unescaped() == b"require"),
+                Node::StringNode { .. } => new_name
+                    .as_string_node()
+                    .is_some_and(|name| name.unescaped() == b"require"),
+                _ => true,
+            }
+        }
+
+        fn method_name_may_be_require(node: &Node<'_>) -> bool {
+            match node {
+                Node::SymbolNode { .. } => node
+                    .as_symbol_node()
+                    .is_some_and(|name| name.unescaped() == b"require"),
+                Node::StringNode { .. } => node
+                    .as_string_node()
+                    .is_some_and(|name| name.unescaped() == b"require"),
+                _ => true,
+            }
+        }
+
+        fn literal_method_name(node: &Node<'_>) -> Option<Vec<u8>> {
+            match node {
+                Node::SymbolNode { .. } => {
+                    node.as_symbol_node().map(|name| name.unescaped().to_vec())
+                }
+                Node::StringNode { .. } => {
+                    node.as_string_node().map(|name| name.unescaped().to_vec())
+                }
+                _ => None,
+            }
+        }
+
+        fn method_table_mutator(method_name: &[u8]) -> bool {
+            matches!(
+                method_name,
+                b"alias_method"
+                    | b"define_method"
+                    | b"define_singleton_method"
+                    | b"remove_method"
+                    | b"undef_method"
+            )
+        }
+
+        fn evaluator(method_name: &[u8]) -> bool {
+            matches!(
+                method_name,
+                b"eval" | b"class_eval" | b"module_eval" | b"instance_eval"
+            )
+        }
+
+        fn call_may_change_require(call: &prism::CallNode<'_>) -> bool {
+            let arguments = call
+                .arguments()
+                .map(|arguments| arguments.arguments().iter());
+            match call.name().as_slice() {
+                b"alias_method"
+                | b"define_method"
+                | b"define_singleton_method"
+                | b"remove_method"
+                | b"undef_method" => arguments
+                    .and_then(|mut arguments| arguments.next())
+                    .is_none_or(|name| Self::method_name_may_be_require(&name)),
+                b"send" | b"__send__" | b"public_send" => {
+                    let Some(mut arguments) = arguments else {
+                        return true;
+                    };
+                    let Some(selector) = arguments.next() else {
+                        return true;
+                    };
+                    let Some(selector) = Self::literal_method_name(&selector) else {
+                        return true;
+                    };
+                    if Self::method_table_mutator(&selector) {
+                        arguments
+                            .next()
+                            .is_none_or(|name| Self::method_name_may_be_require(&name))
+                    } else {
+                        Self::evaluator(&selector)
+                    }
+                }
+                name if Self::evaluator(name) => true,
+                _ => false,
+            }
+        }
+
+        fn call_may_change_class_body_require(call: &prism::CallNode<'_>) -> bool {
+            let method_name = call.name().as_slice();
+            Self::call_may_change_require(call)
+                && (method_name == b"define_singleton_method"
+                    || Self::evaluator(method_name)
+                    || matches!(method_name, b"send" | b"__send__" | b"public_send"))
+        }
+
+        fn undef_may_remove_require(node: &Node<'_>) -> bool {
+            node.as_undef_node().is_some_and(|undef| {
+                undef
+                    .names()
+                    .iter()
+                    .any(|name| Self::method_name_may_be_require(&name))
+            })
+        }
+
+        fn receiver_may_target_global_require_owner(call: &prism::CallNode<'_>) -> bool {
+            call.receiver()
+                .is_some_and(|receiver| !matches!(receiver, Node::SelfNode { .. }))
+        }
+    }
+
+    impl<'pr> ruby_prism::Visit<'pr> for RequireOverrideVisitor {
+        fn visit_branch_node_enter(&mut self, node: Node<'pr>) {
+            if let Some(definition) = node.as_def_node()
+                && definition.name().as_slice() == b"require"
+            {
+                self.found_any = true;
+                if self.class_body_depth > 0
+                    && (definition.receiver().is_some() || self.singleton_class_depth > 0)
+                {
+                    self.found_class_body_singleton_override = true;
+                }
+                if self.scope_depth == 0
+                    || (definition.receiver().is_none()
+                        && self.global_require_owner_scope == Some(self.scope_depth))
+                {
+                    self.found = true;
+                }
+            }
+            if Self::alias_may_define_require(&node) {
+                self.found_any = true;
+                if self.class_body_depth > 0 && self.singleton_class_depth > 0 {
+                    self.found_class_body_singleton_override = true;
+                }
+                if self.scope_depth == 0
+                    || self.global_require_owner_scope == Some(self.scope_depth)
+                {
+                    self.found = true;
+                }
+            }
+
+            if let Some(call) = node.as_call_node() {
+                let changes_require = Self::call_may_change_require(&call);
+                let changes_method_lookup =
+                    matches!(call.name().as_slice(), b"include" | b"prepend");
+                if changes_require || changes_method_lookup {
+                    self.found_any = true;
+                    if self.class_body_depth > 0 && Self::call_may_change_class_body_require(&call)
+                    {
+                        self.found_class_body_singleton_override = true;
+                    }
+                    if self.scope_depth == 0
+                        || self.global_require_owner_scope == Some(self.scope_depth)
+                        || Self::receiver_may_target_global_require_owner(&call)
+                    {
+                        self.found = true;
+                    }
+                }
+            }
+
+            if Self::undef_may_remove_require(&node) {
+                self.found_any = true;
+                if self.class_body_depth > 0 && self.singleton_class_depth > 0 {
+                    self.found_class_body_singleton_override = true;
+                }
+                if self.scope_depth == 0
+                    || self.global_require_owner_scope == Some(self.scope_depth)
+                {
+                    self.found = true;
+                }
+            }
+
+            let is_global_require_owner =
+                self.scope_depth == 0 && Self::is_global_require_owner(&node);
+            let root_singleton_class = self.scope_depth == 0
+                && node
+                    .as_singleton_class_node()
+                    .is_some_and(|singleton_class| {
+                        singleton_class.expression().as_self_node().is_some()
+                    });
+            let opens_scope = (node.as_def_node().is_some()
+                || node.as_class_node().is_some()
+                || node.as_module_node().is_some()
+                || node.as_singleton_class_node().is_some())
+                && !root_singleton_class;
+            let opens_class_body = (node.as_class_node().is_some()
+                || node.as_module_node().is_some()
+                || node.as_singleton_class_node().is_some())
+                && !root_singleton_class;
+            let opens_singleton_class =
+                node.as_singleton_class_node().is_some() && !root_singleton_class;
+            self.scope_stack.push((
+                opens_scope,
+                opens_class_body,
+                opens_singleton_class,
+                self.global_require_owner_scope,
+            ));
+            self.scope_depth += usize::from(opens_scope);
+            self.class_body_depth += usize::from(opens_class_body);
+            self.singleton_class_depth += usize::from(opens_singleton_class);
+            if is_global_require_owner {
+                self.global_require_owner_scope = Some(self.scope_depth);
+            }
+        }
+
+        fn visit_branch_node_leave(&mut self) {
+            if let Some((
+                opens_scope,
+                opens_class_body,
+                opens_singleton_class,
+                previous_global_require_owner_scope,
+            )) = self.scope_stack.pop()
+            {
+                if opens_scope {
+                    self.scope_depth -= 1;
+                }
+                self.class_body_depth -= usize::from(opens_class_body);
+                self.singleton_class_depth -= usize::from(opens_singleton_class);
+                self.global_require_owner_scope = previous_global_require_owner_scope;
+            }
+        }
+    }
+
+    let mut visitor = RequireOverrideVisitor {
+        scope_depth: 0,
+        class_body_depth: 0,
+        singleton_class_depth: 0,
+        scope_stack: Vec::new(),
+        global_require_owner_scope: None,
+        found: false,
+        found_any: false,
+        found_class_body_singleton_override: false,
+    };
+    ruby_prism::Visit::visit(&mut visitor, root);
+    (
+        visitor.found,
+        visitor.found_any,
+        visitor.found_class_body_singleton_override,
+    )
+}
+
+fn source_may_define_require_override(source: &str) -> bool {
+    if [
+        "alias",
+        "define_method",
+        "define_singleton_method",
+        "undef_method",
+        "remove_method",
+        "prepend",
+        "include",
+        "undef ",
+    ]
+    .iter()
+    .any(|marker| source.contains(marker))
+        || [
+            "send",
+            "__send__",
+            "public_send",
+            "eval",
+            "class_eval",
+            "module_eval",
+            "instance_eval",
+        ]
+        .iter()
+        .any(|method| contains_exact_method_name(source, method))
+    {
+        return true;
+    }
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        let line = line.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some(definition) = line.find("def") else {
+            continue;
+        };
+        let after_def = line[definition + "def".len()..].trim();
+        if contains_exact_require_name(after_def)
+            || after_def.is_empty()
+            || after_def.starts_with('#')
+            || after_def == "self"
+            || after_def.starts_with('(')
+            || after_def.ends_with('.')
+            || after_def.ends_with("::")
+            || after_def.ends_with('\\')
+            || lines
+                .clone()
+                .find(|line| {
+                    let line = line.trim_start();
+                    !line.is_empty() && !line.starts_with('#')
+                })
+                .is_some_and(|line| {
+                    let line = line.trim_start();
+                    line.starts_with('.') || line.starts_with("::")
+                })
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn contains_exact_require_name(source: &str) -> bool {
+    contains_exact_method_name(source, "require")
+}
+
+fn contains_exact_method_name(source: &str, method: &str) -> bool {
+    source.match_indices(method).any(|(start, _)| {
+        let end = start + method.len();
+        let before_is_identifier =
+            start > 0 && is_ruby_identifier_byte(source.as_bytes()[start - 1]);
+        let after_is_method_suffix = source.as_bytes().get(end).is_some_and(|byte| {
+            is_ruby_identifier_byte(*byte) || matches!(*byte, b'?' | b'!' | b'=')
+        });
+        !before_is_identifier && !after_is_method_suffix
+    })
+}
+
+#[cfg(test)]
+fn statically_required_stdlib_features(root: &Node<'_>, source: &str) -> BTreeSet<String> {
+    statically_required_stdlib_feature_loads(root, source)
+        .0
+        .into_iter()
+        .map(|(feature, _)| feature)
+        .collect()
+}
+
+fn statically_required_stdlib_feature_loads(
+    root: &Node<'_>,
+    source: &str,
+) -> (
+    Vec<RequiredStdlibFeatureLoad>,
+    Vec<MethodRequiredStdlibFeatureLoad>,
+) {
+    let (mut file_loads, mut class_body_loads, mut method_loads) =
+        collect_required_stdlib_feature_loads(root);
+    let (global_override, any_override, class_body_singleton_override) =
+        if source_may_define_require_override(source) {
+            source_defines_require_override(root)
+        } else {
+            (false, false, false)
+        };
+    if global_override {
+        file_loads.clear();
+        class_body_loads.clear();
+    } else if class_body_singleton_override {
+        class_body_loads.clear();
+    }
+    if global_override || any_override {
+        method_loads.clear();
+    }
+    file_loads.extend(class_body_loads);
+    file_loads.sort_unstable_by_key(|(_, offset)| *offset);
+    (file_loads, method_loads)
+}
+
+fn is_ruby_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || !byte.is_ascii()
+}
+
 fn build_engine_with_timings<'a>(
     request: AnalysisRequest<'a>,
 ) -> (InferenceEngine<'a>, AnalysisTimings) {
@@ -1686,6 +2563,17 @@ fn build_engine_with_timings<'a>(
     let root = parse_result.node();
 
     let mut engine = InferenceEngine::new();
+    if !source_override_candidates(source).is_empty() {
+        let overrides = source_case_equality_overrides_in_root(&root);
+        engine.record_source_case_equality_overrides(
+            overrides.base_class_dispatch,
+            overrides.numeric_dispatch,
+            overrides.block_given_override,
+        );
+        engine.set_source_base_case_equality_override(
+            resolution_depth.keeps_only_exported_facts() && overrides.base_class_dispatch,
+        );
+    }
     engine.set_record_hover_snapshots(hover_snapshot_mode.should_record());
     engine.set_record_coverage(hover_snapshot_mode.should_record_coverage());
     engine.set_record_annotated_method_body_hover_snapshots(
@@ -1721,6 +2609,24 @@ fn build_engine_with_timings<'a>(
 
     if let Some(loader) = lazy_loader {
         engine.set_lazy_loader(loader);
+        if source.contains("require") {
+            let feature_load_started = Instant::now();
+            let (feature_loads, method_feature_loads) =
+                statically_required_stdlib_feature_loads(&root, source);
+            engine.set_required_stdlib_feature_loads(feature_loads.clone());
+            engine.set_method_required_stdlib_feature_loads(method_feature_loads.clone());
+            let features = feature_loads
+                .iter()
+                .map(|(feature, _)| feature.clone())
+                .chain(
+                    method_feature_loads
+                        .iter()
+                        .map(|(_, _, feature, _)| feature.clone()),
+                )
+                .collect::<BTreeSet<_>>();
+            engine.merge_required_stdlib_features(features);
+            timings.preload += feature_load_started.elapsed();
+        }
     }
 
     if let Some(loader) = lazy_rbi_loader {
@@ -1795,6 +2701,17 @@ fn build_engine_with_timings<'a>(
             let backward_propagate_started = Instant::now();
             engine.replay_deferred_block_receiver_bodies(&program, &parse_result);
             timings.backward_propagate = backward_propagate_started.elapsed();
+
+            let receiver_reference_preload_started = Instant::now();
+            let receiver_references_preloaded = engine.preload_callsite_receiver_reference_types();
+            timings.receiver_reference_preload = receiver_reference_preload_started.elapsed();
+
+            if receiver_references_preloaded {
+                let parameter_reference_resolution_started = Instant::now();
+                engine.resolve_parameter_references_from_calls();
+                timings.parameter_reference_resolution +=
+                    parameter_reference_resolution_started.elapsed();
+            }
         }
 
         if !resolution_depth.keeps_only_exported_facts() {
@@ -1805,6 +2722,17 @@ fn build_engine_with_timings<'a>(
             let backward_propagate_started = Instant::now();
             engine.backward_propagate(&program, &parse_result);
             timings.backward_propagate = backward_propagate_started.elapsed();
+
+            let receiver_reference_preload_started = Instant::now();
+            let receiver_references_preloaded = engine.preload_callsite_receiver_reference_types();
+            timings.receiver_reference_preload += receiver_reference_preload_started.elapsed();
+
+            if receiver_references_preloaded {
+                let parameter_reference_resolution_started = Instant::now();
+                engine.resolve_parameter_references_from_calls();
+                timings.parameter_reference_resolution +=
+                    parameter_reference_resolution_started.elapsed();
+            }
 
             let sync_module_function_mirrors_started = Instant::now();
             engine.sync_module_function_mirrors();
@@ -1900,6 +2828,447 @@ mod tests {
             dependency_collection,
         );
         deps
+    }
+
+    #[test]
+    fn literal_top_level_requires_load_only_matching_stdlib_features() {
+        let source = concat!(
+            "require \"shellwords\"\n",
+            "consume([require(\"date\")])\n",
+            "require(feature)\n",
+            "def load_later\n",
+            "  require \"date\"\n",
+            "end\n",
+            "if enabled?\n",
+            "  require \"yaml\"\n",
+            "end\n",
+            "module LoadAtFileTime\n",
+            "  require \"set\"\n",
+            "end\n",
+        );
+        let parse_result = prism::parse(source.as_bytes());
+        let features = statically_required_stdlib_features(&parse_result.node(), source);
+
+        assert_eq!(
+            features,
+            BTreeSet::from([
+                "date".to_string(),
+                "set".to_string(),
+                "shellwords".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn literal_requires_in_eager_conditions_are_collected_but_short_circuit_rhs_is_not() {
+        let source = concat!(
+            "if require \"shellwords\"\n",
+            "end\n",
+            "require(\"date\") && enabled?\n",
+            "enabled? || require(\"yaml\")\n",
+            "case require(\"set\")\n",
+            "when true\n",
+            "end\n",
+            "case true\n",
+            "when require(\"pp\")\n",
+            "when require(\"yaml\")\n",
+            "end\n",
+        );
+        let parse_result = prism::parse(source.as_bytes());
+        assert_eq!(
+            statically_required_stdlib_features(&parse_result.node(), source),
+            BTreeSet::from([
+                "date".to_string(),
+                "pp".to_string(),
+                "set".to_string(),
+                "shellwords".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn literal_requires_are_not_assumed_when_top_level_require_is_redefined() {
+        assert!(!source_may_define_require_override(
+            "def require_feature = true\n"
+        ));
+        assert!(!source_may_define_require_override("def require? = true\n"));
+
+        let source = "def require(feature) = false\nrequire \"shellwords\"\n";
+        let parse_result = prism::parse(source.as_bytes());
+        assert!(statically_required_stdlib_features(&parse_result.node(), source).is_empty());
+
+        for source in [
+            "module Kernel\n  def require(feature) = false\nend\nrequire \"shellwords\"\n",
+            "class Object\n  def require(feature) = false\nend\nrequire \"shellwords\"\n",
+        ] {
+            let parse_result = prism::parse(source.as_bytes());
+            assert!(
+                statically_required_stdlib_features(&parse_result.node(), source).is_empty(),
+                "global require owners must prevent static feature loading: {source}"
+            );
+        }
+
+        let source =
+            "class LocalLoader\n  def require(feature) = false\nend\nrequire \"shellwords\"\n";
+        let parse_result = prism::parse(source.as_bytes());
+        assert_eq!(
+            statically_required_stdlib_features(&parse_result.node(), source),
+            BTreeSet::from(["shellwords".to_string()])
+        );
+
+        let source = "def\n  require(feature) = false\nrequire \"shellwords\"\n";
+        let parse_result = prism::parse(source.as_bytes());
+        assert!(statically_required_stdlib_features(&parse_result.node(), source).is_empty());
+
+        let source = "def Object\n  .require(feature) = false\nrequire \"shellwords\"\n";
+        let parse_result = prism::parse(source.as_bytes());
+        assert!(statically_required_stdlib_features(&parse_result.node(), source).is_empty());
+
+        assert!(source_may_define_require_override(
+            "def\n  require(feature) = false\n"
+        ));
+        assert!(source_may_define_require_override(
+            "def Kernel\n  .require(feature)\n"
+        ));
+    }
+
+    #[test]
+    fn literal_requires_are_not_assumed_when_require_is_aliased() {
+        for source in [
+            "def fake_require(feature) = false\nalias require fake_require\nrequire \"shellwords\"\n",
+            "def fake_require(feature) = false\nalias_method :require, :fake_require\nrequire \"shellwords\"\n",
+        ] {
+            let parse_result = prism::parse(source.as_bytes());
+            assert!(
+                statically_required_stdlib_features(&parse_result.node(), source).is_empty(),
+                "an aliased require must not load a feature statically: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn shellwords_string_extensions_follow_literal_require() {
+        let vendor_rbs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs");
+        let loader =
+            LazyRbsLoader::from_rbs_roots(vec![vendor_rbs.join("core"), vendor_rbs.join("stdlib")]);
+        let source = r#"
+require "shellwords"
+
+def shellwords_escape = "tool name".shellescape
+def shellwords_split = "tool name".shellsplit
+def shellwords_module_escape = Shellwords.shellescape("tool name")
+def shellwords_module_split = Shellwords.shellsplit("tool name")
+"#;
+        let loaded = analyze_source_with_lazy_rbs(source, None, &loader);
+        assert_eq!(
+            loaded.lookup_method_return_type("Object", "shellwords_escape"),
+            Some(Type::String)
+        );
+        assert_eq!(
+            loaded.lookup_method_return_type("Object", "shellwords_split"),
+            Some(Type::Array(Some(Box::new(Type::String))))
+        );
+        assert_eq!(
+            loaded.lookup_method_return_type("Object", "shellwords_module_escape"),
+            Some(Type::String)
+        );
+        assert_eq!(
+            loaded.lookup_method_return_type("Object", "shellwords_module_split"),
+            Some(Type::Array(Some(Box::new(Type::String))))
+        );
+    }
+
+    #[test]
+    fn shellwords_plugin_works_without_an_rbs_stdlib_root() {
+        let core_rbs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs/core");
+        let loader = LazyRbsLoader::new(core_rbs);
+        let source = r#"
+require "shellwords"
+
+def shellwords_escape = "tool name".shellescape
+def shellwords_split = "tool name".shellsplit
+"#;
+        let loaded = analyze_source_with_lazy_rbs(source, None, &loader);
+        assert_eq!(
+            loaded.lookup_method_return_type("Object", "shellwords_escape"),
+            Some(Type::String)
+        );
+        assert_eq!(
+            loaded.lookup_method_return_type("Object", "shellwords_split"),
+            Some(Type::Array(Some(Box::new(Type::String))))
+        );
+    }
+
+    #[test]
+    fn cli_diagnostic_replay_retains_required_stdlib_features() {
+        let vendor_rbs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs");
+        let loader =
+            LazyRbsLoader::from_rbs_roots(vec![vendor_rbs.join("core"), vendor_rbs.join("stdlib")]);
+        let source = concat!(
+            "require \"shellwords\"\n",
+            "class ShellwordsProbe\n",
+            "  def self.escape = \"tool name\".shellescape\n",
+            "  def self.split = \"tool name\".shellsplit\n",
+            "end\n",
+        );
+        let (snapshot, _) = analyze_cli_diagnostic_target_snapshot_timed(
+            source,
+            None,
+            &loader,
+            None,
+            "shellwords.rb",
+            AnalysisOptions::default(),
+            true,
+        );
+        assert_eq!(
+            snapshot
+                .registry()
+                .lookup_method_return_type("String", "shellescape"),
+            None,
+            "compacted snapshots should not retain external feature shapes"
+        );
+
+        let diagnostics =
+            cli_diagnostics_from_snapshot(&snapshot, source, "shellwords.rb", &loader, None, None);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+
+        let diagnostics = cli_diagnostics_from_snapshot_owned(
+            snapshot,
+            source,
+            "shellwords.rb",
+            &loader,
+            None,
+            None,
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn method_local_literal_require_collection_skips_conditional_and_deferred_calls() {
+        let source = r#"
+def local_before
+  require "shellwords"
+  "tool name".shellescape
+end
+
+def local_conditional(flag)
+  require "shellwords" if flag
+end
+
+def local_block
+  proc { require "shellwords" }
+end
+
+def local_rescue
+  begin
+    require "shellwords"
+  rescue LoadError
+  end
+end
+
+def local_dynamic(feature)
+  require feature
+end
+"#;
+        let parse_result = prism::parse(source.as_bytes());
+        let root = parse_result.node();
+        let (file_loads, method_loads) = statically_required_stdlib_feature_loads(&root, source);
+
+        assert!(file_loads.is_empty());
+        assert_eq!(
+            method_loads
+                .iter()
+                .map(|(_, _, feature, offset)| (feature.as_str(), *offset))
+                .collect::<Vec<_>>(),
+            vec![("shellwords", source.find("require \"shellwords\"").unwrap())]
+        );
+    }
+
+    #[test]
+    fn method_local_feature_loads_are_suppressed_when_require_is_overridden() {
+        let source = r#"
+class FakeLoader
+  def require(feature) = false
+
+  def escape
+    require "shellwords"
+    "tool name".shellescape
+  end
+end
+"#;
+        let parse_result = prism::parse(source.as_bytes());
+        let root = parse_result.node();
+        let (_, method_loads) = statically_required_stdlib_feature_loads(&root, source);
+        assert!(method_loads.is_empty());
+    }
+
+    #[test]
+    fn method_local_feature_loads_are_suppressed_after_dynamic_override_or_undef() {
+        let source = r#"
+class DynamicLoader
+  define_method(:require) { |feature| false }
+
+  def escape
+    require "shellwords"
+    "tool name".shellescape
+  end
+end
+
+class UndefinedLoader
+  undef_method :require
+
+  def escape
+    require "shellwords"
+    "tool name".shellescape
+  end
+end
+"#;
+        let parse_result = prism::parse(source.as_bytes());
+        let root = parse_result.node();
+        let (_, method_loads) = statically_required_stdlib_feature_loads(&root, source);
+        assert!(method_loads.is_empty());
+    }
+
+    #[test]
+    fn file_feature_loads_skip_overrides_and_unreachable_requires() {
+        let cases = [
+            (
+                "object_prepend",
+                r#"
+module FakeRequire
+  def require(feature) = false
+end
+Object.prepend(FakeRequire)
+require "shellwords"
+"tool name".shellescape
+"#,
+            ),
+            (
+                "kernel_define_method",
+                r#"
+Kernel.define_method(:require) { |feature| false }
+require "shellwords"
+"tool name".shellescape
+"#,
+            ),
+            (
+                "kernel_send_define_method",
+                r#"
+Kernel.send(:define_method, :require) { |feature| false }
+require "shellwords"
+"tool name".shellescape
+"#,
+            ),
+            (
+                "dynamic_send_selector",
+                r#"
+selector = ENV["PATCH_METHOD"]
+Kernel.send(selector, :require) { |feature| false }
+require "shellwords"
+"tool name".shellescape
+"#,
+            ),
+            (
+                "eval_define_require",
+                r#"
+eval(%q{def require(feature); false; end})
+require "shellwords"
+"tool name".shellescape
+"#,
+            ),
+            (
+                "eval_dynamic_code",
+                r#"
+script = ENV["PATCH_SCRIPT"]
+eval(script)
+require "shellwords"
+"tool name".shellescape
+"#,
+            ),
+            (
+                "aliased_kernel_define_method",
+                r#"
+class RequirePatcher
+  target = Kernel
+  target.define_method(:require) { |feature| false }
+end
+require "shellwords"
+"tool name".shellescape
+"#,
+            ),
+            (
+                "rescued_unreachable_require",
+                r#"
+begin
+  raise "stop"
+  require "shellwords"
+rescue RuntimeError
+end
+"tool name".shellescape
+"#,
+            ),
+            (
+                "kernel_undef_method",
+                r#"
+module Kernel
+  undef_method :require
+end
+begin
+  require "shellwords"
+rescue NoMethodError
+end
+"tool name".shellescape
+"#,
+            ),
+            (
+                "kernel_undef_keyword",
+                r#"
+module Kernel
+  undef require
+end
+begin
+  require "shellwords"
+rescue NoMethodError
+end
+"tool name".shellescape
+"#,
+            ),
+            (
+                "class_body_singleton_require_override",
+                r#"
+class ClassBodyRequire
+  def self.require(feature) = false
+  require "shellwords"
+  "tool name".shellescape
+end
+"#,
+            ),
+            (
+                "class_body_dynamic_singleton_require_override",
+                r#"
+class DynamicClassBodyRequire
+  define_singleton_method(:require) { |feature| false }
+  require "shellwords"
+  "tool name".shellescape
+end
+"#,
+            ),
+        ];
+        for (case_name, source) in cases {
+            let parse_result = prism::parse(source.as_bytes());
+            let root = parse_result.node();
+            let (file_loads, _) = statically_required_stdlib_feature_loads(&root, source);
+            assert!(
+                file_loads.is_empty(),
+                "unsafe or unreachable require was collected for {case_name}: {file_loads:?}"
+            );
+        }
     }
 
     #[test]
@@ -2062,6 +3431,407 @@ box.value
     }
 
     #[test]
+    fn compact_case_class_dispatch_narrows_method_branch_receivers() {
+        let source = r#"
+class Group
+  def group_name = "group"
+end
+
+class User
+  def email = "user"
+end
+
+class ParticipableService
+  def participant_as_hash(participant)
+    case participant
+    when User
+      { email: participant.email }
+    when Group
+      { name: participant.group_name }
+    end
+  end
+end
+"#;
+        let loader = playground_loader();
+        let snapshot = analyze_cli_diagnostic_target_snapshot_timed(
+            source,
+            None,
+            &loader,
+            None,
+            "case_when_compact.rb",
+            AnalysisOptions::default(),
+            false,
+        )
+        .0;
+
+        let rendered =
+            crate::rbs::render::render_rbs_for_file(snapshot.registry(), "case_when_compact.rb");
+        assert!(
+            rendered.contains(
+                "def participant_as_hash: (untyped participant) -> ({ email: \"user\" } | { name: \"group\" })?"
+            ),
+            "compact case analysis should infer the class-specific branch receivers:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn source_case_equality_preflight_detects_relevant_instance_overrides() {
+        assert_eq!(
+            source_case_equality_overrides(
+                "module Wrapper\n  class ::Module\n    def ===(value) = true\n  end\nend"
+            ),
+            SourceCaseEqualityOverrides {
+                base_class_dispatch: true,
+                numeric_dispatch: false,
+                block_given_override: false,
+            }
+        );
+        assert_eq!(
+            source_case_equality_overrides(
+                "class Integer\n  def ===(value) = true\n  def ==(value) = true\nend"
+            ),
+            SourceCaseEqualityOverrides {
+                base_class_dispatch: false,
+                numeric_dispatch: true,
+                block_given_override: false,
+            }
+        );
+        assert_eq!(
+            source_case_equality_overrides(
+                "class Module\n  def match_any?(_value) = true\n  alias_method :===, :match_any?\nend"
+            ),
+            SourceCaseEqualityOverrides {
+                base_class_dispatch: true,
+                numeric_dispatch: false,
+                block_given_override: false,
+            }
+        );
+        assert_eq!(
+            source_case_equality_overrides(
+                "class Module\n  def match_any?(_value) = true\n  alias :===, :match_any?\nend"
+            ),
+            SourceCaseEqualityOverrides {
+                base_class_dispatch: true,
+                numeric_dispatch: false,
+                block_given_override: false,
+            }
+        );
+        assert_eq!(
+            source_case_equality_overrides("class Widget\n  def ===(value) = true\nend"),
+            SourceCaseEqualityOverrides::default()
+        );
+        assert_eq!(
+            source_case_equality_overrides(
+                "class BlockGivenOverride\n  def block_given? = true\nend"
+            ),
+            SourceCaseEqualityOverrides::default()
+        );
+    }
+
+    #[test]
+    fn compact_scan_records_block_given_override_without_equality_override() {
+        let source = r#"
+class Object
+  def block_given? = true
+end
+
+class Sample
+  def run
+    yield :value if block_given?
+  end
+end
+"#;
+        let loader = playground_loader();
+        let snapshot = analyze_compact_file_snapshot_timed(
+            source,
+            None,
+            &loader,
+            None,
+            "block_given_override.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+
+        assert!(snapshot.registry().has_source_block_given_override());
+    }
+
+    #[test]
+    fn compact_source_overrides_are_visible_across_files() {
+        let override_source = r#"
+class Array
+  def self.new(size) = :custom
+  def clear = :custom
+end
+
+class CustomDateConversion
+  def to_date = :custom
+end
+"#;
+        let target_source = r#"
+class OverrideCalls
+  def custom_array_new = Array.new(1)
+
+  def clear_array_override
+    values = [1]
+    values.clear
+    values[0]
+  end
+
+  def unresolved_to_date(value) = value.to_date
+end
+"#;
+        let loader = playground_loader();
+        let override_snapshot = analyze_compact_file_snapshot_timed(
+            override_source,
+            None,
+            &loader,
+            None,
+            "source_overrides.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+        let target_snapshot = analyze_cli_diagnostic_target_snapshot_timed(
+            target_source,
+            Some(override_snapshot.registry()),
+            &loader,
+            None,
+            "override_calls.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+        let rendered = crate::rbs::render::render_rbs_for_file(
+            target_snapshot.registry(),
+            "override_calls.rb",
+        );
+
+        assert!(
+            rendered.contains("def custom_array_new: -> :custom"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("def clear_array_override: -> 1"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("def unresolved_to_date: (untyped value) -> untyped"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn compact_case_class_dispatch_does_not_seed_through_later_base_equality_overrides() {
+        for override_source in [
+            "module Module\n  def ===(_value) = true\nend",
+            "class Class\n  def ===(_value) = true\nend",
+        ] {
+            let source = format!(
+                r#"
+class User
+  def email = "user"
+end
+
+class Service
+  def participant_email(value)
+    case value
+    when User
+      value.email
+    else
+      :other
+    end
+  end
+end
+
+{override_source}
+"#
+            );
+            let loader = playground_loader();
+            let snapshot = analyze_cli_diagnostic_target_snapshot_timed(
+                &source,
+                None,
+                &loader,
+                None,
+                "case_when_override.rb",
+                AnalysisOptions::default(),
+                false,
+            )
+            .0;
+
+            let rendered = crate::rbs::render::render_rbs_for_file(
+                snapshot.registry(),
+                "case_when_override.rb",
+            );
+            assert!(
+                rendered.contains("def participant_email: (untyped value) -> (untyped | :other)"),
+                "a later base equality override must keep the branch receiver unknown:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_case_class_dispatch_sees_base_equality_overrides_from_external_registry() {
+        let override_source = "class Module\n  def ===(_value) = true\nend";
+        let target_source = r#"
+class User
+  def email = "user"
+end
+
+class Service
+  def participant_email(value)
+    case value
+    when User
+      value.email
+    else
+      :other
+    end
+  end
+end
+"#;
+        let loader = playground_loader();
+        let mut external_registry = TypeRegistry::new();
+        assert!(loader.merge_class_into("Module", &mut external_registry));
+        assert!(
+            external_registry
+                .get_methods("Module")
+                .iter()
+                .any(|method| method.name.as_str() == "===" && method.rbs_file_source),
+            "the fixture must preload the standard RBS Module#==="
+        );
+        let override_snapshot = analyze_definitions_only_snapshot_timed(
+            override_source,
+            Some(&external_registry),
+            &loader,
+            None,
+            "case_when_external_override.rb",
+            AnalysisOptions::default(),
+        )
+        .0;
+        let mut builder = crate::workspace_state::BatchProjectionBuilder::new(external_registry);
+        builder.apply_chunk([(
+            "case_when_external_override.rb".to_owned(),
+            override_snapshot,
+        )]);
+        let external_registry = builder.finish(None, None);
+        assert!(external_registry.has_source_base_case_equality_override());
+        assert!(
+            external_registry
+                .get_methods("Module")
+                .iter()
+                .any(|method| method.name.as_str() == "===" && method.rbs_file_source),
+            "the RBS Module#=== slot should remain after snapshot merge"
+        );
+        assert!(
+            !external_registry
+                .get_methods("Module")
+                .iter()
+                .any(|method| method.name.as_str() == "===" && !method.rbs_file_source),
+            "the source override should be hidden by the same-owner RBS slot"
+        );
+
+        // The CLI scans candidate sources and records their metadata on the base registry
+        // before it starts the regular compact target pass.
+        let mut preflight_registry = TypeRegistry::new();
+        assert!(loader.merge_class_into("Module", &mut preflight_registry));
+        let mut preflight_overrides = SourceCaseEqualityOverrides::default();
+        for source in [override_source, target_source] {
+            let scanned = source_case_equality_overrides(source);
+            preflight_overrides.base_class_dispatch |= scanned.base_class_dispatch;
+            preflight_overrides.numeric_dispatch |= scanned.numeric_dispatch;
+        }
+        preflight_registry.record_source_case_equality_overrides(
+            preflight_overrides.base_class_dispatch,
+            preflight_overrides.numeric_dispatch,
+            preflight_overrides.block_given_override,
+        );
+        assert!(preflight_registry.has_source_base_case_equality_override());
+
+        let preflight_snapshot = analyze_compact_file_snapshot_timed(
+            target_source,
+            Some(&preflight_registry),
+            &loader,
+            None,
+            "case_when_target.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+        let builder_snapshot = analyze_compact_file_snapshot_timed(
+            target_source,
+            Some(&external_registry),
+            &loader,
+            None,
+            "case_when_target.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+
+        let preflight_rendered = crate::rbs::render::render_rbs_for_file(
+            preflight_snapshot.registry(),
+            "case_when_target.rb",
+        );
+        let builder_rendered = crate::rbs::render::render_rbs_for_file(
+            builder_snapshot.registry(),
+            "case_when_target.rb",
+        );
+        assert!(
+            preflight_rendered
+                .contains("def participant_email: (untyped value) -> (untyped | :other)"),
+            "CLI source preflight must prevent class narrowing:\n{preflight_rendered}"
+        );
+        assert_eq!(builder_rendered, preflight_rendered);
+    }
+
+    #[test]
+    fn compact_numeric_case_cache_sees_hidden_external_equality_override() {
+        let override_source = "class Integer\n  def ==(_value) = true\nend";
+        let loader = playground_loader();
+        let mut external_registry = TypeRegistry::new();
+        assert!(loader.merge_class_into("Integer", &mut external_registry));
+        assert!(
+            external_registry
+                .get_methods("Integer")
+                .iter()
+                .any(|method| method.name.as_str() == "==" && method.rbs_file_source),
+            "the fixture must preload the standard RBS Integer#== slot"
+        );
+
+        let override_snapshot = analyze_definitions_only_snapshot_timed(
+            override_source,
+            Some(&external_registry),
+            &loader,
+            None,
+            "case_when_integer_override.rb",
+            AnalysisOptions::default(),
+        )
+        .0;
+        let mut builder = crate::workspace_state::BatchProjectionBuilder::new(external_registry);
+        builder.apply_chunk([(
+            "case_when_integer_override.rb".to_owned(),
+            override_snapshot,
+        )]);
+        let external_registry = builder.finish(None, None);
+
+        assert!(external_registry.has_source_numeric_case_equality_override());
+        assert!(
+            external_registry
+                .get_methods("Integer")
+                .iter()
+                .any(|method| method.name.as_str() == "==" && method.rbs_file_source),
+            "the standard RBS Integer#== slot should remain after snapshot merge"
+        );
+        assert!(
+            !external_registry
+                .get_methods("Integer")
+                .iter()
+                .any(|method| method.name.as_str() == "==" && !method.rbs_file_source),
+            "the source Integer#== override should be hidden by the same-owner RBS slot"
+        );
+    }
+
+    #[test]
     fn compact_scan_preserves_receiver_block_inference() {
         let source = r#"
 class Sample
@@ -2115,6 +3885,58 @@ end
             ]))))),
             "compact scans must replay a block body after its source receiver resolves"
         );
+    }
+
+    #[test]
+    fn compact_scan_preloads_receiver_types_from_stored_lambda_callsites() {
+        let source = r#"
+class DirectoryBody < Struct.new(:files)
+  def each
+    files.call("entry")
+  end
+end
+
+class CompactDirectory
+  def filesize_format(size)
+    size.to_f
+  end
+
+  def stat(path)
+    File.stat(path)
+  rescue
+    nil
+  end
+
+  def list_directory(path)
+    DirectoryBody.new(->(basename) do
+      stat_path = File.join(path, basename)
+      entry_stat = stat(stat_path)
+      next unless entry_stat
+      filesize_format(entry_stat.size)
+    end)
+  end
+end
+"#;
+        let loader = playground_loader();
+        let snapshot = analyze_compact_file_snapshot_timed(
+            source,
+            None,
+            &loader,
+            None,
+            "directory.rb",
+            AnalysisOptions::default(),
+            true,
+        )
+        .0;
+
+        let mut registry = TypeRegistry::new();
+        snapshot.apply_to_registry(&mut registry);
+        registry.apply_cli_resolution();
+        let signature = registry
+            .lookup_method_sig_exact("CompactDirectory", "filesize_format", false)
+            .expect("filesize formatter signature");
+
+        assert_eq!(signature.params[0].param_type.to_string(), "Integer");
     }
 
     #[test]
@@ -2313,7 +4135,7 @@ end
             "      matches = scopes.grep(SCOPED_USER_REGEX)\n",
             "      return unless matches.length == 1\n",
             "\n",
-            "      matches[0][SCOPED_USER_REGEX, 1].to_i\n",
+            "      Integer(matches[0])\n",
             "    end\n",
             "  end\n",
             "end\n",
@@ -2455,15 +4277,15 @@ end
         assert_eq!(attrs.params[0].param_type.to_string(), "Alert");
         assert_eq!(
             build.return_type.to_string(),
-            "{ title: \"critical\", count: Integer }"
+            "{ title: \"critical\", count: 1 }"
         );
         assert_eq!(
             attrs.return_type.to_string(),
-            "{ title: \"critical\", count: Integer }"
+            "{ title: \"critical\", count: 1 }"
         );
         assert_eq!(
             payload.return_type.to_string(),
-            "{ title: \"critical\", count: Integer }"
+            "{ title: \"critical\", count: 1 }"
         );
     }
 
@@ -2604,6 +4426,275 @@ end
     }
 
     #[test]
+    fn rails_tag_hover_snapshot_uses_call_arguments() {
+        let loader = playground_loader();
+        let source = concat!(
+            "module TagsHelper\n",
+            "  def with_arguments\n",
+            "    tag(\"p\", \"content\")\n",
+            "  end\n",
+            "\n",
+            "  def without_arguments\n",
+            "    tag\n",
+            "  end\n",
+            "end\n",
+        );
+        let options = AnalysisOptions {
+            rails_mode: true,
+            dsl_activation: DslActivation::with_rails_mode(true),
+            ..AnalysisOptions::default()
+        };
+        let (snapshot, _, _) = analyze_source_for_display(
+            source,
+            None,
+            Some(&loader),
+            None,
+            Some("tags_helper.rb"),
+            options,
+        );
+        let result = playground_result_from_snapshot(
+            source,
+            None,
+            &loader,
+            "tags_helper.rb",
+            &snapshot,
+            false,
+            false,
+        );
+        let tag_hovers: Vec<_> = result
+            .hovers
+            .iter()
+            .filter(|hover| hover.name == "tag")
+            .collect();
+
+        assert_eq!(tag_hovers.len(), 2, "{:?}", result.hovers);
+        assert_eq!(tag_hovers[0].display, "[Tyda] String");
+        assert_eq!(
+            tag_hovers[1].display,
+            "[Tyda] ActionView::Helpers::TagHelper::TagBuilder"
+        );
+    }
+
+    #[test]
+    fn rails_extensions_and_tag_builder_do_not_hide_unknown_methods() {
+        let loader = playground_loader();
+        let source = concat!(
+            "module Helpers\n",
+            "  def tags = tag.strong(\"bold\")\n",
+            "  def extensions = [\"title\".truncate(4), \"Rails\".ends_with?(\"ils\"), 2.megabytes]\n",
+            "  def unknown = \"value\".not_a_method\n",
+            "end\n",
+        );
+        let options = AnalysisOptions {
+            rails_mode: true,
+            dsl_activation: DslActivation::with_rails_mode(true),
+            ..AnalysisOptions::default()
+        };
+        let (snapshot, _, _) = analyze_source_for_display(
+            source,
+            None,
+            Some(&loader),
+            None,
+            Some("helpers.rb"),
+            options,
+        );
+        let result = playground_result_from_snapshot(
+            source,
+            None,
+            &loader,
+            "helpers.rb",
+            &snapshot,
+            false,
+            false,
+        );
+        let missing_methods: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .collect();
+
+        assert_eq!(missing_methods.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(missing_methods[0].line, 4);
+    }
+
+    #[test]
+    fn respond_to_guards_narrow_if_and_modifier_if_diagnostic_snapshots() {
+        let loader = playground_loader();
+        let source = concat!(
+            "def stringify_with_modifier(value)\n",
+            "  value = value.to_str if value.respond_to?(:to_str)\n",
+            "  value\n",
+            "end\n",
+            "\n",
+            "def stringify_with_if(value)\n",
+            "  if value.respond_to?(:to_str)\n",
+            "    value = value.to_str\n",
+            "  end\n",
+            "  value\n",
+            "end\n",
+            "\n",
+            "#: (untyped value) -> untyped\n",
+            "def stringify_unknown(value)\n",
+            "  value = value.to_str if value.respond_to?(:to_str)\n",
+            "  value\n",
+            "end\n",
+            "\n",
+            "class CustomRespondTo\n",
+            "  def respond_to?(name, include_private = false) = name == :to_str\n",
+            "  def method_missing(name, *args) = \"dynamic\"\n",
+            "end\n",
+            "\n",
+            "class CustomRespondToMissing\n",
+            "  def respond_to_missing?(name, include_private = false) = name == :to_str\n",
+            "  def method_missing(name, *args) = \"dynamic\"\n",
+            "end\n",
+            "\n",
+            "stringify_with_modifier(nil)\n",
+            "stringify_with_modifier(\"name\")\n",
+            "stringify_with_if(nil)\n",
+            "stringify_with_if(\"name\")\n",
+            "stringify_with_modifier(CustomRespondTo.new)\n",
+            "stringify_with_modifier(CustomRespondToMissing.new)\n",
+            "stringify_unknown(Object.new)\n",
+        );
+        let result = playground_analyze(source, "", &loader, "respond_to_guard.rb");
+        let missing_methods: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .collect();
+
+        assert!(missing_methods.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn respond_to_guard_keeps_custom_responder_types_unknown() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class CustomRespondTo\n",
+            "  def respond_to?(name, include_private = false) = name == :upcase\n",
+            "end\n",
+            "\n",
+            "class CustomRespondToMissing\n",
+            "  def respond_to_missing?(name, include_private = false) = name == :upcase\n",
+            "end\n",
+            "\n",
+            "def guarded_upcase(value)\n",
+            "  value.upcase if value.respond_to?(:upcase)\n",
+            "end\n",
+            "\n",
+            "guarded_upcase(nil)\n",
+            "guarded_upcase(\"name\")\n",
+            "guarded_upcase(CustomRespondTo.new)\n",
+            "guarded_upcase(CustomRespondToMissing.new)\n",
+        );
+        let result = playground_analyze(source, "", &loader, "respond_to_custom_guard.rb");
+        let missing_methods: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| diagnostic.unresolved_method.as_str())
+            .collect();
+
+        assert!(
+            missing_methods.contains(&"CustomRespondTo#upcase"),
+            "{missing_methods:?}"
+        );
+        assert!(
+            missing_methods.contains(&"CustomRespondToMissing#upcase"),
+            "{missing_methods:?}"
+        );
+        assert!(
+            !missing_methods.contains(&"NilClass#upcase"),
+            "{missing_methods:?}"
+        );
+    }
+
+    #[test]
+    fn respond_to_guard_is_cleared_after_local_reassignment() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class NoStringConversion; end\n",
+            "\n",
+            "def stringify_after_reassignment(value)\n",
+            "  if value.respond_to?(:to_str)\n",
+            "    value = NoStringConversion.new\n",
+            "    value.to_str\n",
+            "  end\n",
+            "end\n",
+            "\n",
+            "stringify_after_reassignment(nil)\n",
+            "stringify_after_reassignment(\"name\")\n",
+        );
+        let result = playground_analyze(source, "", &loader, "respond_to_reassignment.rb");
+
+        assert!(
+            result.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "missing_method"
+                    && diagnostic.unresolved_method == "NoStringConversion#to_str"
+            }),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn nested_rescue_keeps_pathname_read_string_return() {
+        let loader = playground_loader();
+        let source = concat!(
+            "module Rails\n",
+            "  def self.root = Pathname.new(\".\")\n",
+            "end\n",
+            "\n",
+            "class AppRevision\n",
+            "  def self.version\n",
+            "    @version ||= revision_or_fallback\n",
+            "  end\n",
+            "\n",
+            "  def self.revision_or_fallback\n",
+            "    begin\n",
+            "      revision_file.read\n",
+            "    rescue Errno::ENOENT\n",
+            "      begin\n",
+            "        git_revision\n",
+            "      rescue Errno::ENOENT\n",
+            "        \"UNKNOWN\"\n",
+            "      end\n",
+            "    end.strip\n",
+            "  end\n",
+            "\n",
+            "  def self.revision_file = Rails.root.join(\"REVISION\")\n",
+            "  def self.git_revision = `git rev-parse HEAD`\n",
+            "end\n",
+        );
+        let rbs = concat!("module Rails\n", "  def self.root: -> Pathname\n", "end\n",);
+        let mut rbs_registry = TypeRegistry::new();
+        crate::rbs::import::load_rbs_string(rbs, &mut rbs_registry);
+        let (snapshot, _) = analyze_compact_file_snapshot_timed(
+            source,
+            Some(&rbs_registry),
+            &loader,
+            None,
+            "app_revision.rb",
+            AnalysisOptions::default(),
+            true,
+        );
+        let mut builder = crate::workspace_state::BatchProjectionBuilder::new(rbs_registry);
+        builder.apply_chunk([("app_revision.rb".to_owned(), snapshot)]);
+        let registry = builder.finish(None, None);
+        let rendered = crate::rbs::render::render_rbs_for_file(&registry, "app_revision.rb");
+
+        assert!(
+            rendered.contains("def self.version: -> String"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("def self.revision_or_fallback: -> String"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn playground_mixin_dispatch_and_ancestors_keep_ruby_order() {
         let loader = playground_loader();
         let source = concat!(
@@ -2702,6 +4793,59 @@ end
         assert_eq!(result.diagnostics[0].line, 10);
         assert_eq!(result.diagnostics[1].code, "argument_type_mismatch");
         assert_eq!(result.diagnostics[1].line, 11);
+    }
+
+    #[test]
+    fn playground_hash_record_lookup_is_required_only_after_key_guard() {
+        let loader = playground_loader();
+        let keys = ":configured, :missing";
+        let source = format!(
+            "class Probe\n\
+             KEYS = [{keys}].freeze\n\
+             UPLOAD_KEYS = [:missing].freeze\n\
+             SETTINGS = {{ configured: :handler }}.freeze\n\
+             NULLABLE_SETTINGS = {{ configured: nil }}.freeze\n\
+             \n\
+             #: (Symbol) -> void\n\
+             def accept(value) = nil\n\
+             def handler = true\n\
+             \n\
+             KEYS.each do |key|\n\
+               define_method(key) do\n\
+                 stored_value = if UPLOAD_KEYS.include?(key)\n\
+                                  :upload\n\
+                                elsif SETTINGS.include?(key)\n\
+                                  public_send(SETTINGS[key])\n\
+                                else\n\
+                                  nil\n\
+                                end\n\
+               end\n\
+             end\n\
+             \n\
+             def check_missing_key = accept(SETTINGS[:missing])\n\
+             \n\
+             #: (Symbol) -> void\n\
+             def check_nullable_value(key)\n\
+               accept(NULLABLE_SETTINGS[key]) if NULLABLE_SETTINGS.include?(key)\n\
+             end\n\
+             end\n"
+        );
+        let result = playground_analyze(&source, "", &loader, "hash_lookup_guard.rb");
+        let mismatches: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "argument_type_mismatch")
+            .map(|diagnostic| diagnostic.line)
+            .collect();
+
+        assert_eq!(
+            mismatches,
+            vec![23, 27],
+            "only unguarded missing keys and present nil values should mismatch: {:?}\n{}\n{:?}",
+            result.diagnostics,
+            result.rbs,
+            result.hovers
+        );
     }
 
     #[test]

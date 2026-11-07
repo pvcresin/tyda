@@ -77,9 +77,6 @@ end
 
 ## `self.class` and value `.class`
 
-```yaml
-known_issue: true
-```
 
 ### update
 

@@ -70,6 +70,28 @@ fn no_args_exits_with_error() {
 }
 
 #[test]
+fn batch_resolution_keeps_untyped_right_side_of_short_circuit() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("list.rb");
+    fs::write(
+        &file,
+        "class Node\n  def initialize(tail)\n    @tail = tail\n  end\n  attr_reader :tail\n  \
+         def empty? = false\n  def same_end(other)\n    current = self\n    \
+         current = current.tail if other\n    current.empty? && other.empty?\n  end\nend\n\
+         class Empty < Node\n  def initialize; end\n  def empty? = true\nend\n\
+         Node.new(Empty.new)\n",
+    )
+    .unwrap();
+    let output = tyda_bin().arg(&file).output().expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("def same_end: (untyped other) -> (false | untyped)"),
+        "got: {stdout}"
+    );
+}
+
+#[test]
 fn analyze_single_file() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("a.rb");
@@ -197,6 +219,51 @@ fn analyze_renders_struct_in_default_compact_scan() {
         stdout.contains("class Measure"),
         "missing Data class: {stdout}"
     );
+}
+
+#[test]
+fn deferred_receivers_resolve_across_files_through_declarations() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        r#"class Holder
+  attr_reader :label, :sum, :unknown
+  def initialize(n, other)
+    @label = n.to_s
+    @sum = n + 1.5
+    @unknown = other.to_s
+  end
+  def self.build(a, b) = new(b, a)
+end
+"#,
+    )
+    .expect("failed to write");
+    fs::write(
+        dir.path().join("b.rb"),
+        r#"class Client
+  def direct(q) = Holder.new(1, q).label
+  def forwarded(q) = Holder.build(q, 1).label
+end
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "def label: -> String",
+        // `+` keeps no argument here and its overloads disagree.
+        "def sum: -> untyped",
+        "def unknown: -> untyped",
+        "def direct: (untyped q) -> String",
+        "def forwarded: (untyped q) -> String",
+    ] {
+        assert!(stdout.contains(expected), "missing {expected}: {stdout}");
+    }
 }
 
 #[test]
@@ -384,6 +451,30 @@ fn coverage_flag_outputs_deterministic_json_report() {
 }
 
 #[test]
+fn coverage_includes_arguments_of_unresolved_receiver_calls() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("unknown_receiver.rb");
+    fs::write(
+        &rb_file,
+        "def invoke(receiver)\n  receiver.call(\"value\".length)\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["references"]["total"], 3);
+    assert_eq!(report["by_kind"]["method_call"]["total"], 2);
+    assert_eq!(report["by_kind"]["method_call"]["typed"], 1);
+    assert_eq!(report["by_kind"]["method_call"]["unknown"], 1);
+}
+
+#[test]
 fn coverage_resolves_cross_file_references_after_workspace_merge() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
@@ -481,6 +572,210 @@ fn diagnostics_flag_outputs_json_lines() {
             .as_str()
             .is_some_and(|message| message.contains("missing")),
         "diagnostic message should name missing method: {diagnostic:?}"
+    );
+}
+
+#[test]
+fn diagnostics_replay_truthiness_for_optional_parameters() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("optional_truthiness.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class GuardedReceiver\n",
+            "  def text = \"value\"\n",
+            "  #: () -> untyped\n",
+            "  def self.dynamic_value = nil\n",
+            "  def self.default_only(value = nil)\n",
+            "    value.missing if value\n",
+            "  end\n",
+            "  def self.existing(value = nil)\n",
+            "    value.text if value\n",
+            "  end\n",
+            "  def self.known_missing(value = nil)\n",
+            "    value.missing if value\n",
+            "  end\n",
+            "  def self.explicit_nil(value = nil)\n",
+            "    value.missing if value\n",
+            "  end\n",
+            "  def self.dynamic(value = nil)\n",
+            "    value.missing if value\n",
+            "  end\n",
+            "end\n",
+            "GuardedReceiver.default_only\n",
+            "GuardedReceiver.existing(GuardedReceiver.new)\n",
+            "GuardedReceiver.known_missing(GuardedReceiver.new)\n",
+            "GuardedReceiver.explicit_nil(nil)\n",
+            "GuardedReceiver.dynamic(GuardedReceiver.dynamic_value)\n",
+        ),
+    )
+    .expect("failed to write Ruby source");
+
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("--diagnostics")
+        .arg(&rb_file)
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    let missing: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic["code"] == "missing_method" && diagnostic["method_name"] == "missing"
+        })
+        .collect();
+    assert_eq!(
+        missing.len(),
+        1,
+        "only the known receiver should report a missing method: {diagnostics:?}"
+    );
+    assert_eq!(missing[0]["unresolved_method"], "GuardedReceiver#missing");
+    assert!(
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "missing_method" && diagnostic["method_name"] == "text"
+        }),
+        "a known method on the narrowed receiver must remain resolved: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn diagnostics_class_body_blocks_destructure_a_single_yield() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let sig_dir = dir.path().join("sig");
+    fs::create_dir_all(&sig_dir).expect("failed to create sig dir");
+    fs::write(
+        sig_dir.join("pair_source.rbs"),
+        "class PairSource\n  def self.each: () { (untyped pair) -> void } -> void\nend\n",
+    )
+    .expect("failed to write RBS");
+    let rb_file = dir.path().join("pair_consumer.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class PairConsumer\n",
+            "  PairSource.each do |name, params|\n",
+            "    opt = params.last.is_a?(Hash) ? params.pop : {}\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write Ruby source");
+
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("--diagnostics")
+        .arg(&rb_file)
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    assert!(
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "missing_method"
+                && matches!(diagnostic["method_name"].as_str(), Some("last" | "pop"))
+        }),
+        "a single untyped yield destructured into two block parameters must not make the second parameter nil: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn diagnostics_do_not_treat_yield_text_as_a_real_yield() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("yield_text.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class YieldTextOnly\n",
+            "  def render\n",
+            "    # yield appears only in this comment\n",
+            "    \"yield appears only in this string\"\n",
+            "  end\n",
+            "end\n",
+            "YieldTextOnly.new.render { |item| item.missing }\n",
+        ),
+    )
+    .expect("failed to write Ruby source");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(&rb_file)
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    assert!(
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "missing_method" && diagnostic["method_name"] == "missing"
+        }),
+        "yield text in a string must not make the block parameter nil: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn diagnostics_suppress_calls_with_unreachable_arguments() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let sig_dir = dir.path().join("sig");
+    fs::create_dir_all(&sig_dir).expect("failed to create sig dir");
+    fs::write(
+        sig_dir.join("models.rbs"),
+        concat!(
+            "class Namespace\n",
+            "  def self.find: (Integer id) -> Namespace\n",
+            "    | (String id) -> Namespace\n",
+            "end\n",
+            "class Group < Namespace\n",
+            "  def require_dpop_for_manage_api_endpoints: -> bool\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write RBS");
+    let rb_file = dir.path().join("dpop.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class Namespace; end\n",
+            "class Group < Namespace; end\n",
+            "class DpopAuth\n",
+            "  def enabled?\n",
+            "    group_id = nil\n",
+            "    return false if group_id.nil?\n",
+            "    Group.find(group_id)&.require_dpop_for_manage_api_endpoints\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write Ruby source");
+
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("--diagnostics")
+        .arg(&rb_file)
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    assert!(
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic["unresolved_method"] == "Namespace#require_dpop_for_manage_api_endpoints"
+        }),
+        "an unreachable Group.find argument must not infer Namespace for the safe-navigation receiver: {diagnostics:?}"
     );
 }
 
@@ -2974,6 +3269,52 @@ end
     );
 }
 
+#[test]
+fn diagnostics_resolve_active_support_concern_class_methods_on_includer() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+    let concerns = dir.path().join("app").join("models").join("concerns");
+    fs::create_dir_all(&concerns).expect("create dirs");
+    fs::write(
+        concerns.join("scopes.rb"),
+        r#"module Scopes
+  extend ActiveSupport::Concern
+
+  class_methods do
+    def roots
+      all
+    end
+  end
+end
+"#,
+    )
+    .expect("write concern");
+    fs::write(
+        dir.path().join("app").join("models").join("model.rb"),
+        r#"class Model
+  include Scopes
+
+  def self.all = []
+end
+
+Model.roots
+"#,
+    )
+    .expect("write model");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Scopes#all"),
+        "Concern class methods must resolve against includer singletons: {stdout}"
+    );
+}
+
 /// `sig` (and other `sorbet-runtime` markers) must resolve only where `T::Sig`
 /// is actually mixed in — per-class `extend T::Sig` or a global
 /// `class Module; include T::Sig` — and otherwise be reported as undefined.
@@ -4080,5 +4421,267 @@ fn diagnostics_output_is_deterministic() {
     assert!(
         special_diags[0]["line"].as_u64().unwrap() < special_diags[1]["line"].as_u64().unwrap(),
         "special file diagnostics must be in position order: {special_diags:?}"
+    );
+}
+
+// `post_while_bare` retains an existing dynamic-reference diagnostic gap and is
+// deliberately kept outside this pre-test loop regression assertion.
+#[test]
+fn diagnostics_loop_assignment_narrowing_respects_evaluation_order() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("loop_assignment.rb");
+    let source = r#"class LoopAssignmentEntry
+  def name = "entry"
+end
+
+class LoopAssignmentSource
+  #: (bool) -> LoopAssignmentEntry?
+  def next_entry(flag)
+    @calls = (@calls || 0) + 1
+    flag ? LoopAssignmentEntry.new : nil
+  end
+
+  def always_entry
+    @calls = (@calls || 0) + 1
+    LoopAssignmentEntry.new
+  end
+end
+
+class LoopAssignmentDiagnostics
+  def while_single(source, flag)
+    entry = nil
+    while (entry = source.next_entry(flag))
+      entry.name
+    end
+  end
+
+  def while_nested(source, flag)
+    entry = nil
+    while ((entry = source.next_entry(flag)))
+      entry.name
+    end
+  end
+
+  def while_bare(source, flag)
+    entry = nil
+    while entry = source.next_entry(flag)
+      entry.name
+    end
+  end
+
+  def while_body_reentry(source, flag)
+    entry = nil
+    while (entry = source.next_entry(flag))
+      entry.name
+      entry = nil
+      entry.name
+    end
+  end
+
+  def while_unreachable_body()
+    while (entry = nil)
+      entry.name
+    end
+    entry.name
+  end
+
+  def until_single()
+    until (entry = nil)
+      entry.name
+      break
+    end
+  end
+
+  def until_bare()
+    until entry = nil
+      entry.name
+      break
+    end
+  end
+
+  def until_dynamic(source, flag)
+    until (entry = source.next_entry(flag))
+      entry.name
+      break
+    end
+  end
+
+  def sequence_unrelated()
+    while (entry = nil; true)
+      entry.name
+      break
+    end
+  end
+
+  def post_while_single(source, flag)
+    entry = nil
+    begin
+      entry.name
+    end while (entry = source.next_entry(flag))
+  end
+
+  def post_while_bare(source, flag)
+    entry = nil
+    begin
+      entry.name
+    end while entry = source.next_entry(flag)
+  end
+
+  def post_while_keeps_existing_value(source)
+    entry = LoopAssignmentEntry.new
+    begin
+      entry.name
+    end while (entry = source.always_entry)
+  end
+
+  def post_until_single()
+    entry = nil
+    begin
+      entry.name
+    end until (entry = nil)
+  end
+
+  def post_until_truthy()
+    entry = nil
+    begin
+      entry.name
+    end until (entry = LoopAssignmentEntry.new)
+  end
+
+  def post_until_bare()
+    entry = nil
+    begin
+      entry.name
+    end until entry = nil
+  end
+end
+
+probe = LoopAssignmentDiagnostics.new
+source = LoopAssignmentSource.new
+probe.while_single(source, true)
+probe.while_nested(source, true)
+probe.while_bare(source, true)
+probe.while_body_reentry(source, true)
+probe.while_unreachable_body
+probe.until_single
+probe.until_bare
+probe.until_dynamic(source, false)
+probe.sequence_unrelated
+probe.post_while_single(source, true)
+probe.post_while_bare(source, true)
+probe.post_while_keeps_existing_value(source)
+probe.post_until_single
+probe.post_until_bare
+probe.post_until_truthy
+"#;
+    fs::write(&rb_file, source).expect("failed to write Ruby source");
+
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("--diagnostics")
+        .arg(&rb_file)
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic should be JSON"))
+        .collect();
+    let nil_name_lines: Vec<usize> = diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic["code"] == "missing_method"
+                && diagnostic["unresolved_method"] == "NilClass#name"
+        })
+        .map(|diagnostic| {
+            usize::try_from(
+                diagnostic["line"]
+                    .as_u64()
+                    .expect("line should be an integer"),
+            )
+            .expect("line should fit usize")
+        })
+        .collect();
+    let call_line = |method_name: &str, call_index: usize| {
+        let marker = format!("  def {method_name}(");
+        let method_start = source
+            .find(&marker)
+            .expect("method definition should exist");
+        let call_offset = source[method_start..]
+            .match_indices("entry.name")
+            .nth(call_index)
+            .map(|(offset, _)| method_start + offset)
+            .expect("method body should call entry.name");
+        source[..call_offset]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1
+    };
+    let expected_warning_lines = [
+        ("until_single", 0),
+        ("until_bare", 0),
+        ("until_dynamic", 0),
+        ("sequence_unrelated", 0),
+        ("post_while_single", 0),
+        ("post_until_single", 0),
+        ("post_until_bare", 0),
+        ("post_until_truthy", 0),
+        ("while_body_reentry", 1),
+        ("while_unreachable_body", 1),
+    ]
+    .map(|(method_name, call_index)| call_line(method_name, call_index));
+
+    for expected_line in expected_warning_lines {
+        assert!(
+            nil_name_lines.contains(&expected_line),
+            "expected NilClass#name at line {expected_line}: {diagnostics:?}"
+        );
+    }
+
+    for method_name in [
+        "while_single",
+        "while_nested",
+        "while_bare",
+        "while_body_reentry",
+        "while_unreachable_body",
+        "post_while_keeps_existing_value",
+    ] {
+        let line = call_line(method_name, 0);
+        assert!(
+            !nil_name_lines.contains(&line),
+            "did not expect NilClass#name at line {line}: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn when_with_class_from_later_file_does_not_leak_other_arguments() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a_formatter.rb"),
+        "module Formatter\n  def link(project)\n    project.archived?\n  end\n\n  def format_object(object)\n    case object\n    when Integer\n      1\n    when LaterModel\n      link(object)\n    end\n  end\n\n  def calls\n    format_object(1)\n    format_object(LaterModel.new)\n  end\nend\n",
+    )
+    .expect("failed to write formatter");
+    fs::write(
+        dir.path().join("b_later_model.rb"),
+        "class LaterModel\n  def archived? = false\nend\n",
+    )
+    .expect("failed to write model");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let link = stdout
+        .lines()
+        .find(|line| line.contains("def link:"))
+        .unwrap_or_else(|| panic!("expected link signature, got: {stdout}"));
+    assert!(
+        !link.contains("Integer"),
+        "the `when Integer` branch must not reach link: {link}"
     );
 }

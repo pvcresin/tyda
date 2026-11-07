@@ -1,7 +1,7 @@
 //! ! Hardcoded method return type tables.
 //! ! ! These tables capture knowledge about Ruby stdlib and Rails methods ! that cannot yet be resolved through RBS definitions alone (because ! the receiver type is `Untyped`, or the class is a Rails-specific ! virtual class like `ActionController::Parameters`).
 
-pub const UNIVERSAL_BOOL_METHODS: &[&str] = &[
+pub const RBS_CORE_BOOL_METHODS: &[&str] = &[
     "nil?",
     "is_a?",
     "kind_of?",
@@ -10,39 +10,9 @@ pub const UNIVERSAL_BOOL_METHODS: &[&str] = &[
     "equal?",
     "eql?",
     "frozen?",
-    "tainted?",
-    "untrusted?",
     "==",
     "!=",
     "===",
-    "<",
-    ">",
-    "<=",
-    ">=",
-    "between?",
-    "match?",
-    "include?",
-    "empty?",
-    "any?",
-    "all?",
-    "none?",
-    "one?",
-    "key?",
-    "has_key?",
-    "value?",
-    "has_value?",
-    "member?",
-    "start_with?",
-    "end_with?",
-    "valid?",
-    "zero?",
-    "positive?",
-    "negative?",
-    "finite?",
-    "integer?",
-    "real?",
-    "even?",
-    "odd?",
 ];
 
 pub const IDENTITY_METHODS: &[&str] = &["dup", "clone", "itself", "tap"];
@@ -80,6 +50,8 @@ pub const RAILS_STRING_RETURNING_METHODS: &[&str] = &[
     "pluralize",
     "singularize",
     "html_safe",
+    "first",
+    "last",
     "truncate",
     "truncate_bytes",
     "truncate_words",

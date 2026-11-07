@@ -152,7 +152,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def hash_or_write: -> "ruby"?
+  def hash_or_write: -> "ruby"
   def hash_and_write: -> "yes"
   def hash_operator_write: -> Integer
 end

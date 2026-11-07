@@ -682,3 +682,426 @@ class ProjectTarget
   def name: -> "project"
 end
 ```
+
+## Resolve type-test constants in the current namespace
+
+### update
+
+```ruby
+module FirstNamespace
+  class Foo
+    def first_only = :first
+  end
+
+  def self.narrow(value)
+    if value.is_a?(Foo)
+      value.first_only
+    else
+      :other
+    end
+  end
+end
+
+module SecondNamespace
+  class Foo
+    def second_only = :second
+  end
+end
+
+FirstNamespace.narrow(FirstNamespace::Foo.new)
+FirstNamespace.narrow(SecondNamespace::Foo.new)
+```
+
+### result
+
+```rbs
+module FirstNamespace
+  def self.narrow: ((FirstNamespace::Foo | SecondNamespace::Foo) value) -> (:first | :other)
+end
+
+class FirstNamespace::Foo
+  def first_only: -> :first
+end
+
+class SecondNamespace::Foo
+  def second_only: -> :second
+end
+```
+
+## Resolve nested type-test constant paths in the current namespace
+
+### update
+
+```ruby
+module NamespacePath
+  module Nested
+    class Child
+      def nested_only = :nested
+    end
+  end
+
+  def self.narrow(value)
+    if value.is_a?(Nested::Child)
+      value.nested_only
+    else
+      :other
+    end
+  end
+end
+
+module Nested
+  class Child
+    def root_only = :root
+  end
+end
+
+NamespacePath.narrow(NamespacePath::Nested::Child.new)
+NamespacePath.narrow(Nested::Child.new)
+```
+
+### result
+
+```rbs
+module NamespacePath
+  def self.narrow: ((NamespacePath::Nested::Child | Nested::Child) value) -> (:nested | :other)
+end
+
+class NamespacePath::Nested::Child
+  def nested_only: -> :nested
+end
+
+class Nested::Child
+  def root_only: -> :root
+end
+```
+
+## Keep unresolved nested type-test paths open when a top-level class collides
+
+### update
+
+```ruby
+class CollisionTarget::Child
+  def root_only = :root
+end
+
+module CollisionScope
+  module CollisionTarget
+  end
+
+  def self.narrow(value)
+    return :other unless value.is_a?(CollisionTarget::Child)
+
+    value.root_only
+  end
+end
+
+CollisionScope.narrow(eval("CollisionTarget::Child.new"))
+```
+
+### result
+
+```rbs
+module CollisionScope
+  def self.narrow: (untyped value) -> (untyped | :other)
+end
+
+class CollisionTarget::Child
+  def root_only: -> :root
+end
+```
+
+## Narrow an unknown value after a class predicate
+
+### update
+
+```ruby
+class DynamicNarrowTarget
+  def marker = :narrowed
+end
+
+def narrow_dynamic_value(value)
+  return :other unless value.is_a?(DynamicNarrowTarget)
+
+  value.marker
+end
+
+narrow_dynamic_value(eval("DynamicNarrowTarget.new"))
+```
+
+### result
+
+```rbs
+class DynamicNarrowTarget
+  def marker: -> :narrowed
+end
+
+class Object < BasicObject
+  def narrow_dynamic_value: (untyped value) -> (:narrowed | :other)
+end
+```
+
+## Keep unknown receivers open when is_a is overridden
+
+### update
+
+```ruby
+class OverriddenIsATarget
+  def is_a?(_target) = true
+  def marker = :narrowed
+end
+
+def narrow_with_overridden_is_a(value)
+  return :other unless value.is_a?(OverriddenIsATarget)
+
+  value.marker
+end
+
+narrow_with_overridden_is_a(eval("OverriddenIsATarget.new"))
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def narrow_with_overridden_is_a: (untyped value) -> (untyped | :other)
+end
+
+class OverriddenIsATarget
+  def is_a?: (untyped _target) -> true
+  def marker: -> :narrowed
+end
+```
+
+## Keep unknown receivers open under an active type-test refinement
+
+### update
+
+```ruby
+class RefinedIsATarget
+  def marker = :narrowed
+end
+
+module AlwaysMatchString
+  refine String do
+    def is_a?(_target) = true
+  end
+end
+
+using AlwaysMatchString
+
+def narrow_with_refined_is_a(value)
+  return :other unless value.is_a?(RefinedIsATarget)
+
+  value.marker
+end
+
+narrow_with_refined_is_a(eval("RefinedIsATarget.new"))
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def narrow_with_refined_is_a: (untyped value) -> (untyped | :other)
+end
+
+class RefinedIsATarget
+  def marker: -> :narrowed
+end
+```
+
+## An or condition proves nothing for the taken branch when one side is opaque
+
+### update
+
+```ruby
+class OrConditionNarrowing
+  def left_guard(flag)
+    value = flag ? 1 : "value"
+    if value.is_a?(Integer) || value.frozen?
+      value
+    else
+      :other
+    end
+  end
+
+  def right_guard(flag)
+    value = flag ? 1 : "value"
+    if value.frozen? || value.is_a?(Integer)
+      value
+    else
+      :other
+    end
+  end
+
+  def falsy_side_still_narrows(flag)
+    value = flag ? 1 : "value"
+    return :early if value.frozen? || value.is_a?(Integer)
+    value
+  end
+
+  def and_keeps_taken_branch(flag)
+    value = flag ? 1 : "value"
+    if value.is_a?(Integer) && value.frozen?
+      value
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class OrConditionNarrowing
+  def left_guard: (untyped flag) -> (1 | "value" | :other)
+  def right_guard: (untyped flag) -> (1 | "value" | :other)
+  def falsy_side_still_narrows: (untyped flag) -> ("value" | :early)
+  def and_keeps_taken_branch: (untyped flag) -> (1 | :other)
+end
+```
+
+## Source predicates narrow guarded positional arguments
+
+### update
+
+```rbs
+class SourcePredicateNarrowing
+  def maybe_string: -> String?
+end
+```
+
+```ruby
+class SourcePredicateNarrowing
+  def both_present?(left, right)
+    return false unless left
+    return nil unless right
+    true
+  end
+
+  def always_true?(_value)
+    true
+  end
+
+  def reassigned_guard?(value)
+    return false unless value
+    value = nil
+    true
+  end
+
+  def expression_guard?(value)
+    unless value
+      false
+    end
+    true
+  end
+
+  def truthy_exit_guard?(value)
+    return :early unless value
+    true
+  end
+
+  def guarded_arguments
+    left = maybe_string
+    right = maybe_string
+    return unless both_present?(left, right)
+
+    left.upcase
+    right.upcase
+  end
+
+  def nil_actual_control
+    value = maybe_string
+    return unless both_present?(nil, value)
+
+    value.upcase
+  end
+
+  def unconditional_true_control
+    value = maybe_string
+    return unless always_true?(value)
+
+    value.upcase
+  end
+
+  def reassignment_control
+    value = maybe_string
+    return unless reassigned_guard?(value)
+
+    value.upcase
+  end
+
+  def expression_exit_control
+    value = maybe_string
+    return unless expression_guard?(value)
+
+    value.upcase
+  end
+
+  def truthy_exit_control
+    value = maybe_string
+    return unless truthy_exit_guard?(value)
+
+    value.upcase
+  end
+end
+```
+
+### result
+
+```rbs
+class SourcePredicateNarrowing
+  def both_present?: (String? left, String? right) -> bool?
+  def always_true?: (String? _value) -> true
+  def reassigned_guard?: (String? value) -> bool
+  def expression_guard?: (String? value) -> true
+  def truthy_exit_guard?: (String? value) -> (true | :early)
+  def guarded_arguments: -> String?
+  def nil_actual_control: -> String?
+  def unconditional_true_control: -> String?
+  def reassignment_control: -> String?
+  def expression_exit_control: -> String?
+  def truthy_exit_control: -> String?
+end
+```
+
+## Numeric equality keeps the subject's numeric class
+
+### update
+
+```rbs
+class NumericEqualityNarrowing
+  def maybe_integer: -> Integer?
+  def maybe_float: -> Float?
+end
+```
+
+```ruby
+class NumericEqualityNarrowing
+  def integer_against_integral_float
+    value = maybe_integer
+    value if value == 1.0
+  end
+
+  def integer_against_fractional_float
+    value = maybe_integer
+    value if value == 1.5
+  end
+
+  def float_against_integer
+    value = maybe_float
+    value if value == 1
+  end
+end
+```
+
+### result
+
+```rbs
+class NumericEqualityNarrowing
+  def integer_against_integral_float: -> Integer?
+  def integer_against_fractional_float: -> nil
+  def float_against_integer: -> Float?
+end
+```

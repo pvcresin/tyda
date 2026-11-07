@@ -113,3 +113,35 @@ class Object < BasicObject
   def f: -> :module
 end
 ```
+
+## Prepended date conversion overrides the built-in fallback
+
+### update
+
+```ruby
+module DateConversion
+  def to_date = :custom
+end
+
+class DateConversionReceiver
+  prepend DateConversion
+end
+
+def converted_date = DateConversionReceiver.new.to_date
+```
+
+### result
+
+```rbs
+module DateConversion
+  def to_date: -> :custom
+end
+
+class DateConversionReceiver
+  prepend DateConversion
+end
+
+class Object < BasicObject
+  def converted_date: -> :custom
+end
+```

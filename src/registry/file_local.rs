@@ -76,6 +76,17 @@ impl MethodBodySummary {
 
 impl TypeRegistry {
     pub fn apply_method_body_summary(&mut self, summary: &MethodBodySummary) {
+        if self.apply_method_body_summary_deferred(summary) {
+            // Summary facts can arrive after a lookup cached default-only parameters.
+            self.invalidate_resolve_cache();
+        }
+    }
+
+    pub(crate) fn apply_method_body_summary_deferred(
+        &mut self,
+        summary: &MethodBodySummary,
+    ) -> bool {
+        let mut invalidate_resolved_params = false;
         for (class_name, call_sites) in &summary.call_sites_by_class {
             if call_sites.is_empty() {
                 continue;
@@ -84,6 +95,7 @@ impl TypeRegistry {
             let data = self.class_data_mut(class_name.as_ref());
             data.call_sites.push_chunk(Arc::clone(call_sites));
             data.call_sites_revision = data.call_sites_revision.wrapping_add(1);
+            invalidate_resolved_params = true;
         }
         for (class_name, ivar_types) in &summary.ivar_types_by_class {
             let data = self.class_data_mut(class_name.as_ref());
@@ -92,6 +104,7 @@ impl TypeRegistry {
                 for ty in types {
                     if !entry.contains(ty) {
                         entry.push(ty.clone());
+                        invalidate_resolved_params = true;
                     }
                 }
             }
@@ -128,6 +141,7 @@ impl TypeRegistry {
                 target.get_or_insert(method_name, true, meta);
             }
         }
+        invalidate_resolved_params
     }
 
     // a per-file snapshot references the external registry for accuracy, while keeping retained facts scoped to the file.

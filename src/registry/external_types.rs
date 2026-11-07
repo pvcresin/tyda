@@ -22,6 +22,11 @@ impl TypeRegistry {
         propagate_user_defined: bool,
         constants_external: bool,
     ) {
+        self.has_source_base_case_equality_override |=
+            rbs_registry.has_source_base_case_equality_override;
+        self.has_source_numeric_case_equality_override |=
+            rbs_registry.has_source_numeric_case_equality_override;
+        self.has_source_block_given_override |= rbs_registry.has_source_block_given_override;
         // carry over unresolved method aliases; finalize once ancestors are complete.
         for pending in &rbs_registry.pending_method_aliases {
             self.push_pending_method_alias(pending.clone());
@@ -92,6 +97,11 @@ impl TypeRegistry {
     }
 
     pub fn merge_user_rbs_registry(&mut self, rbs_registry: &TypeRegistry) {
+        self.has_source_base_case_equality_override |=
+            rbs_registry.has_source_base_case_equality_override;
+        self.has_source_numeric_case_equality_override |=
+            rbs_registry.has_source_numeric_case_equality_override;
+        self.has_source_block_given_override |= rbs_registry.has_source_block_given_override;
         for (alias_name, ty) in &rbs_registry.tail().type_aliases {
             self.tail_mut()
                 .type_aliases
@@ -130,6 +140,7 @@ impl TypeRegistry {
         from_user_source: bool,
         constants_external: bool,
     ) {
+        self.invalidate_owner_walks();
         if rbs_data
             .methods
             .iter()
@@ -232,6 +243,7 @@ impl TypeRegistry {
                 call_site
             })
             .collect();
+        let method_aliases = rbs_data.cold().method_aliases.clone();
         let is_user_defined = self
             .class_data
             .get(class_name)
@@ -239,6 +251,15 @@ impl TypeRegistry {
         if !rbs_data.cold().includer_bound_dsl.is_empty() {
             self.has_includer_bound_dsl = true;
             self.includer_bound_dsl_applied = false;
+        }
+        for alias in method_aliases {
+            self.record_method_alias(
+                class_name,
+                alias.new_name,
+                alias.old_name,
+                alias.is_singleton,
+                alias.loc,
+            );
         }
         let data = self.class_data_mut(class_name);
         if data.loc.is_none() {
@@ -560,6 +581,7 @@ impl TypeRegistry {
     }
 
     pub fn remove_external_methods_for_class(&mut self, class_name: &str) -> bool {
+        self.invalidate_owner_walks();
         let removed = if let Some(data) = self.class_data.get_mut(class_name) {
             let before = data.methods.len();
             data.methods.retain(|m| !m.is_external_rbs_source());

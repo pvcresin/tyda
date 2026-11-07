@@ -57,6 +57,20 @@ def queue_aliases
   queue.enq("ready")
   queue.deq
 end
+
+#: (Array[untyped]) -> untyped
+def queue_unknown_items(values)
+  queue = Queue.new
+  values.each { |value| queue << value }
+  queue << :stop
+
+  result = nil
+  while value = queue.pop
+    break if value == :stop
+    result = value
+  end
+  result
+end
 ```
 
 ### result
@@ -65,5 +79,6 @@ end
 class Object < BasicObject
   def queue_value: -> Symbol?
   def queue_aliases: -> (Integer | String)?
+  def queue_unknown_items: (Array[untyped] values) -> untyped
 end
 ```

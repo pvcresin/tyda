@@ -203,10 +203,6 @@ end
 
 ## Resolve static method objects from variables
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -237,10 +233,6 @@ end
 ```
 
 ## Resolve static unbound method objects
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -283,10 +275,6 @@ end
 ```
 
 ## Resolve cached unbound method objects
-
-```yaml
-known_issue: true
-```
 
 ### update
 

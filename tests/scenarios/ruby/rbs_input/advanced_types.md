@@ -239,7 +239,7 @@ end
 class App
   def proc_untyped
     e = ProcUntypedExecutor.new
-    e.run_block(->(value) { value.to_s })
+    e.run_block(->(value) { String(value) })
   end
 end
 ```

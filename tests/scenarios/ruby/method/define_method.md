@@ -147,10 +147,6 @@ end
 
 ## define_method from unbound method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -174,10 +170,6 @@ end
 
 ## define_method from project unbound method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 `lib/source.rb`
@@ -200,7 +192,7 @@ end
 
 ```rbs
 class Copy < Source
-  def name: (untyped value) -> untyped
+  def name: (untyped value) -> String
   def call: -> String
 end
 ```
@@ -638,10 +630,6 @@ end
 ```
 
 ## Register send define_method on static receiver
-
-```yaml
-known_issue: true
-```
 
 ### update
 

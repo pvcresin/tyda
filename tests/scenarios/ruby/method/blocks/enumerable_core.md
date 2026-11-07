@@ -16,6 +16,67 @@ class Object < BasicObject
 end
 ```
 
+## Integer array repetition remains an array
+
+### update
+
+```ruby
+def join_repeated_values = (["entry"] * [1, 2].size).join(" ")
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def join_repeated_values: -> String
+end
+```
+
+## Untyped repetition count does not choose the String overload
+
+### update
+
+```ruby
+def join_repeated_values_with_untyped_count(tokens) = (["entry"] * tokens.size).join(" ")
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def join_repeated_values_with_untyped_count: (untyped tokens) -> untyped
+end
+```
+
+## Deferred repetition counts do not choose the String overload
+
+### update
+
+```ruby
+class DeferredRepeatCount
+  def from_param(n) = ["entry"] * n
+  def from_method(n) = ["entry"] * n.size
+  def local_result(n)
+    repeated = ["entry"] * n.to_i
+    repeated.join(",")
+  end
+  def literal_count = ["entry"] * 2
+  def literal_separator = ["entry"] * ","
+end
+```
+
+### result
+
+```rbs
+class DeferredRepeatCount
+  def from_param: (untyped n) -> untyped
+  def from_method: (untyped n) -> untyped
+  def local_result: (untyped n) -> untyped
+  def literal_count: -> Array["entry"]
+  def literal_separator: -> "entry"
+end
+```
+
 ## Re-infer a block call after its receiver's source return is resolved
 
 ### update
@@ -44,10 +105,6 @@ end
 
 ## Preserve the array result when a block return is deferred
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -73,10 +130,6 @@ end
 ```
 
 ## Source methods distinguish yielded blocks from unused blocks
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -201,33 +254,84 @@ class ExplicitBlockInvocation
     value
   end
 
-  def maybe_overwritten_block_alias_updates_outer_local
+  def maybe_overwritten_block_alias_updates_outer_local(flag)
     value = :before
-    conditionally_overwrite_alias(:unknown) { value = :after }
+    conditionally_overwrite_alias(flag) { value = :after }
     value
   end
 
-  def case_block_alias_updates_outer_local
+  def case_block_alias_updates_outer_local(flag)
     value = :before
-    invoke_from_case(:invoke) { value = :after }
+    invoke_from_case(flag) { value = :after }
     value
   end
 
-  def loop_block_alias_updates_outer_local
+  def loop_block_alias_updates_outer_local(flag)
     value = :before
-    invoke_after_loop(:unknown) { value = :after }
+    invoke_after_loop(flag) { value = :after }
     value
   end
 
-  def rescue_block_alias_updates_outer_local
+  def rescue_block_alias_updates_outer_local(flag)
     value = :before
-    invoke_from_rescue(:unknown) { value = :after }
+    invoke_from_rescue(flag) { value = :after }
     value
   end
 
-  def short_circuit_block_alias_updates_outer_local
+  def short_circuit_block_alias_updates_outer_local(flag)
     value = :before
-    invoke_after_short_circuit(:unknown) { value = :after }
+    invoke_after_short_circuit(flag) { value = :after }
+    value
+  end
+
+  def mutation_in_repeated_block_widens
+    items = []
+    ExplicitBlockReceiver.new.repeat { items << 1 }
+    items
+  end
+
+  def guarded_yield(&block)
+    yield if block_given?
+    :done
+  end
+
+  def guarded_yield_updates_outer_local
+    value = :before
+    guarded_yield { value = :after }
+    value
+  end
+
+  def early_return_before_yield(flag)
+    return :early if flag
+    yield
+  end
+
+  def early_return_joins_outer_local(flag)
+    value = :before
+    early_return_before_yield(flag) { value = :after }
+    value
+  end
+
+  def escaped_block(&block)
+    @callback = block
+    :stored
+  end
+
+  def escaped_block_joins_outer_local
+    value = :before
+    escaped_block { value = :after }
+    value
+  end
+
+  def receiver_ignored_block
+    value = :before
+    ExplicitBlockReceiver.new.ignore { value = :after }
+    value
+  end
+
+  def receiver_yielded_block
+    value = :before
+    ExplicitBlockReceiver.new.run { value = :after }
     value
   end
 
@@ -235,6 +339,16 @@ class ExplicitBlockInvocation
     value = :before
     invoke_before_overwrite { value = :after }
     value
+  end
+end
+
+class ExplicitBlockReceiver
+  def ignore(&block) = :ignored
+  def run = yield
+
+  def repeat
+    yield
+    yield
   end
 end
 ```
@@ -248,11 +362,11 @@ class ExplicitBlockInvocation
   def run_via_alias: (?untyped &block) -> :after
   def alias_and_ignore: (?untyped &block) -> :ignored
   def overwrite_alias: (?untyped &block) -> :ignored
-  def conditionally_overwrite_alias: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_from_case: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_after_loop: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_from_rescue: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_after_short_circuit: (Symbol flag, ?untyped &block) -> :ignored
+  def conditionally_overwrite_alias: (untyped flag, ?untyped &block) -> :ignored
+  def invoke_from_case: (untyped flag, ?untyped &block) -> :ignored
+  def invoke_after_loop: (untyped flag, ?untyped &block) -> :ignored
+  def invoke_from_rescue: (untyped flag, ?untyped &block) -> :ignored
+  def invoke_after_short_circuit: (untyped flag, ?untyped &block) -> :ignored
   def invoke_before_overwrite: (?untyped &block) -> :ignored
   def ignore: (?untyped &block) -> :ignored
   def block_call_updates_outer_local: -> :after
@@ -261,12 +375,351 @@ class ExplicitBlockInvocation
   def unused_block_alias_keeps_outer_local: -> :before
   def unused_block_keeps_outer_local: -> :before
   def overwritten_block_alias_keeps_outer_local: -> :before
-  def maybe_overwritten_block_alias_updates_outer_local: -> :before
-  def case_block_alias_updates_outer_local: -> :after
-  def loop_block_alias_updates_outer_local: -> :before
-  def rescue_block_alias_updates_outer_local: -> :after
-  def short_circuit_block_alias_updates_outer_local: -> :after
+  def maybe_overwritten_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
+  def case_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
+  def loop_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
+  def rescue_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
+  def short_circuit_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
+  def mutation_in_repeated_block_widens: -> Array[1]
+  def guarded_yield: (?untyped &block) -> :done
+  def guarded_yield_updates_outer_local: -> :after
+  def early_return_before_yield: (untyped flag) { () -> untyped } -> (untyped | :early)
+  def early_return_joins_outer_local: (untyped flag) -> (:after | :before)
+  def escaped_block: (?untyped &block) -> :stored
+  def escaped_block_joins_outer_local: -> :after | :before
+  def receiver_ignored_block: -> :before
+  def receiver_yielded_block: -> :after
   def block_alias_runs_before_overwrite: -> :after
+end
+
+class ExplicitBlockReceiver
+  def ignore: (?untyped &block) -> :ignored
+  def run: { () -> :after } -> :after
+  def repeat: { () -> [1] } -> [1]
+end
+```
+
+## Literal arguments select the block path through a source method
+
+### update
+
+```ruby
+class LiteralArgumentBlockPath
+  def conditionally_overwrite_alias(flag, &block)
+    callback = block
+    if flag
+      callback = -> { :other }
+    end
+    callback.call
+    :ignored
+  end
+
+  def invoke_from_case(flag, &block)
+    callback = block
+    case flag
+    when :overwrite
+      callback = -> { :other }
+    when :invoke
+      callback.call
+    end
+    :ignored
+  end
+
+  def invoke_after_loop(flag, &block)
+    callback = block
+    while flag
+      callback = -> { :other }
+      break
+    end
+    callback.call
+    :ignored
+  end
+
+  def invoke_from_rescue(flag, &block)
+    callback = block
+    begin
+      raise if flag
+      callback = -> { :other }
+    rescue
+      callback.call
+    end
+    :ignored
+  end
+
+  def invoke_after_short_circuit(flag, &block)
+    callback = block
+    flag || callback = -> { :other }
+    callback.call
+    :ignored
+  end
+
+  def maybe_overwritten
+    value = :before
+    conditionally_overwrite_alias(:unknown) { value = :after }
+    value
+  end
+
+  def from_case
+    value = :before
+    invoke_from_case(:invoke) { value = :after }
+    value
+  end
+
+  def after_loop
+    value = :before
+    invoke_after_loop(:unknown) { value = :after }
+    value
+  end
+
+  def from_rescue
+    value = :before
+    invoke_from_rescue(:unknown) { value = :after }
+    value
+  end
+
+  def after_short_circuit
+    value = :before
+    invoke_after_short_circuit(:unknown) { value = :after }
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class LiteralArgumentBlockPath
+  def conditionally_overwrite_alias: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_from_case: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_after_loop: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_from_rescue: (Symbol flag, ?untyped &block) -> :ignored
+  def invoke_after_short_circuit: (Symbol flag, ?untyped &block) -> :ignored
+  def maybe_overwritten: -> :before
+  def from_case: -> :after
+  def after_loop: -> :before
+  def from_rescue: -> :after
+  def after_short_circuit: -> :after
+end
+```
+
+## Literal arguments decide only what the callee reads unchanged
+
+### update
+
+```ruby
+class LiteralBlockEdges
+  def yield_if(flag)
+    yield if flag
+    :done
+  end
+
+  def yield_unless_not(flag)
+    yield unless !flag
+    :done
+  end
+
+  def overwritten_flag(flag)
+    flag = !flag
+    yield if flag
+    :done
+  end
+
+  def shadowed_in_closure(flag)
+    [1].each { |flag| yield if flag }
+    :done
+  end
+
+  def case_undecided(flag)
+    case flag
+    when Integer then yield
+    when :other then :no
+    end
+    :done
+  end
+
+  def case_multi(flag)
+    case flag
+    when :a, :b then yield
+    else :no
+    end
+    :done
+  end
+
+  def case_float(flag)
+    case flag
+    when 1.0 then yield
+    end
+    :done
+  end
+
+  def do_while(flag)
+    begin
+      yield
+    end while flag
+    :done
+  end
+
+  def until_loop(flag)
+    until flag
+      yield
+      break
+    end
+    :done
+  end
+
+  def optional(flag = nil)
+    yield if flag
+    :done
+  end
+
+  def trailing(first = 1, flag)
+    yield if flag
+    :done
+  end
+
+  def retried(flag, &block)
+    callback = block
+    begin
+      raise if flag
+    rescue
+      callback.call
+      callback = -> { :other }
+      retry if false
+    end
+    :done
+  end
+
+  def forwarded(flag, &block)
+    return :none unless flag
+    target(&block)
+  end
+
+  def target = yield
+
+  def nil_skips = (v = :before; yield_if(nil) { v = :after }; v)
+  def symbol_runs = (v = :before; yield_if(:x) { v = :after }; v)
+  def negated_runs = (v = :before; yield_unless_not(:x) { v = :after }; v)
+  def overwritten_is_unknown = (v = :before; overwritten_flag(true) { v = :after }; v)
+  def shadowed_is_unknown = (v = :before; shadowed_in_closure(nil) { v = :after }; v)
+  def undecided_pattern_is_unknown = (v = :before; case_undecided(:other) { v = :after }; v)
+  def multi_pattern_runs = (v = :before; case_multi(:b) { v = :after }; v)
+  def no_pattern_skips = (v = :before; case_multi(:c) { v = :after }; v)
+  def float_pattern_is_unknown = (v = :before; case_float(1) { v = :after }; v)
+  def do_while_is_unknown = (v = :before; do_while(false) { v = :after }; v)
+  def until_enters = (v = :before; until_loop(nil) { v = :after }; v)
+  def until_skips = (v = :before; until_loop(true) { v = :after }; v)
+  def optional_given_runs = (v = :before; optional(true) { v = :after }; v)
+  def optional_omitted_is_unknown = (v = :before; optional { v = :after }; v)
+  def trailing_is_unknown = (v = :before; trailing(nil, 1) { v = :after }; v)
+  def retry_is_unknown = (v = :before; retried(true) { v = :after }; v)
+  def forward_runs = (v = :before; forwarded(1) { v = :after }; v)
+  def forward_skips = (v = :before; forwarded(nil) { v = :after }; v)
+  def splat_is_unknown = (v = :before; yield_if(*[nil]) { v = :after }; v)
+  def non_literal_is_unknown(flag) = (v = :before; yield_if(flag) { v = :after }; v)
+end
+```
+
+### result
+
+```rbs
+class LiteralBlockEdges
+  def yield_if: (Symbol? flag) { () -> :after } -> :done
+  def yield_unless_not: (Symbol flag) { () -> :after } -> :done
+  def overwritten_flag: (bool flag) { () -> :after } -> :done
+  def shadowed_in_closure: (nil flag) { () -> :after } -> :done
+  def case_undecided: (Symbol flag) { () -> :after } -> :done
+  def case_multi: (Symbol flag) { () -> :after } -> :done
+  def case_float: (Integer flag) { () -> :after } -> :done
+  def do_while: (bool flag) { () -> :after } -> :done
+  def until_loop: (bool? flag) { () -> :after } -> :done
+  def optional: (?bool? flag) { () -> :after } -> :done
+  def trailing: (?Integer? first, Integer flag) { () -> :after } -> :done
+  def retried: (bool flag, ?untyped &block) -> :done
+  def forwarded: (Integer? flag) { () -> untyped } -> (untyped | :none)
+  def target: { () -> untyped } -> untyped
+  def nil_skips: -> :before
+  def symbol_runs: -> :after
+  def negated_runs: -> :after
+  def overwritten_is_unknown: -> :after | :before
+  def shadowed_is_unknown: -> :after | :before
+  def undecided_pattern_is_unknown: -> :after | :before
+  def multi_pattern_runs: -> :after
+  def no_pattern_skips: -> :before
+  def float_pattern_is_unknown: -> :after | :before
+  def do_while_is_unknown: -> :after | :before
+  def until_enters: -> :after
+  def until_skips: -> :before
+  def optional_given_runs: -> :after
+  def optional_omitted_is_unknown: -> :after | :before
+  def trailing_is_unknown: -> :after | :before
+  def retry_is_unknown: -> :after | :before
+  def forward_runs: -> :after
+  def forward_skips: -> :before
+  def splat_is_unknown: -> :after | :before
+  def non_literal_is_unknown: (untyped flag) -> (:after | :before)
+end
+```
+
+## A redefined literal case equality keeps every when arm
+
+### update
+
+```ruby
+class Symbol
+  def ===(_other) = true
+end
+
+class RedefinedLiteralCase
+  def run(flag)
+    case flag
+    when :a then yield
+    end
+    :done
+  end
+
+  def still_unknown
+    value = :before
+    run(:b) { value = :after }
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class RedefinedLiteralCase
+  def run: (Symbol flag) { () -> :after } -> :done
+  def still_unknown: -> :after | :before
+end
+
+class Symbol
+  def ===: (untyped _other) -> true
+end
+```
+
+## Record direct block calls without changing unused block returns
+
+### update
+
+```ruby
+class DirectBlockCall
+  def invoke(&block)
+    block.call
+  end
+
+  def ignore(&block)
+    :ignored
+  end
+end
+```
+
+### result
+
+```rbs
+class DirectBlockCall
+  def invoke: (?untyped &block) -> untyped
+  def ignore: (?untyped &block) -> :ignored
 end
 ```
 
@@ -321,10 +774,6 @@ end
 ```
 
 ## Chained array transformations keep the result of symbol-proc sort_by
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -852,6 +1301,30 @@ class Object < BasicObject
 end
 ```
 
+## Keep nested block control flow out of a Hash accumulator
+
+### update
+
+```ruby
+def map_hashes_after_next
+  [1, 2].map do |value|
+    next if value.zero?
+    [value].inject({}) do |hash, item|
+      hash[item.to_s] = item.to_s
+      hash
+    end.merge("value" => value.to_s)
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def map_hashes_after_next: -> Array[Hash[String, String]?]
+end
+```
+
 ## Update existing accumulator alias in inject
 
 ### update
@@ -1375,16 +1848,12 @@ end
 
 ```rbs
 class Object < BasicObject
-  def bar: -> nil
+  def bar: { () -> :a } -> nil
   def foo: -> nil
 end
 ```
 
 ## Unknown reverse_each receivers keep block arguments untyped
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1425,5 +1894,57 @@ class Object < BasicObject
   def inspect_split_header: (untyped value) -> :done
   def split_header: (untyped value) -> (untyped | [ ])
   def observed_split_header: (untyped address) -> untyped
+end
+```
+
+## Nested block calls bind the declared parameter at each level
+
+```ruby
+class NestedBlockSink
+  def take(value)
+    value
+  end
+end
+
+class NestedBlockCaller
+  def run
+    lines = File.readlines("input")
+    lines.select { |outer| lines.select { |inner| NestedBlockSink.new.take(outer) } }
+  end
+end
+```
+
+### result
+
+```rbs
+class NestedBlockCaller
+  def run: -> Array[String]
+end
+
+class NestedBlockSink
+  def take: (String value) -> String
+end
+```
+
+## A yield in a loop reads the value assigned earlier in the iteration
+
+```ruby
+class LoopYieldReader
+  def each_part(path)
+    file = File.open(path)
+    while true
+      part = file.read(1)
+      break unless part
+      yield part
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class LoopYieldReader
+  def each_part: (untyped path) { (String) -> untyped } -> nil
 end
 ```

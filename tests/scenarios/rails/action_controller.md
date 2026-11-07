@@ -46,10 +46,6 @@ end
 
 ## Resolve params accessors
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -92,10 +88,6 @@ end
 ```
 
 ## Resolve controller request helpers
-
-```yaml
-known_issue: true
-```
 
 ### update
 

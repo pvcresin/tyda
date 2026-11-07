@@ -9,6 +9,7 @@ use rustc_hash::FxHashMap;
 
 use crate::dep_graph::{DependencyGraph, FileDeps};
 use crate::inference::FileAnalysisSnapshot;
+use crate::rbs::stdlib_loader::LazyRbsLoader;
 use crate::registry::TypeRegistry;
 
 type FileId = u32;
@@ -445,13 +446,17 @@ impl WorkspaceState {
         let t0 = Instant::now();
         let mut registry = TypeRegistry::new_pooled();
         registry.merge_rbs_registry(user_rbs);
+        let mut invalidate_resolved_params = false;
         for entry in self.files.values() {
-            entry.analysis.apply_to_registry(&mut registry);
+            invalidate_resolved_params |= entry.analysis.apply_to_registry_deferred(&mut registry);
+        }
+        if invalidate_resolved_params {
+            registry.invalidate_resolve_cache();
         }
         let t_merge = t0.elapsed();
 
         let t1 = Instant::now();
-        Self::resolve_with_profile(&mut registry, ResolutionProfile::Interactive, None);
+        Self::resolve_with_profile(&mut registry, ResolutionProfile::Interactive, None, None);
         let t_resolve = t1.elapsed();
 
         self.last_timings.registry_build = t_merge + t_resolve;
@@ -522,15 +527,21 @@ impl WorkspaceState {
     pub fn batch_projection(
         &self,
         base: &TypeRegistry,
+        stdlib_loader: Option<&LazyRbsLoader>,
         pool: Option<&rayon::ThreadPool>,
     ) -> Arc<TypeRegistry> {
         let mut registry = base.clone();
+        let mut invalidate_resolved_params = false;
         for file_id in 0..self.paths_by_id.len() as FileId {
             if let Some(entry) = self.files.get(&file_id) {
-                entry.analysis.apply_to_registry(&mut registry);
+                invalidate_resolved_params |=
+                    entry.analysis.apply_to_registry_deferred(&mut registry);
             }
         }
-        Self::resolve_with_profile(&mut registry, ResolutionProfile::Batch, pool);
+        if invalidate_resolved_params {
+            registry.invalidate_resolve_cache();
+        }
+        Self::resolve_with_profile(&mut registry, ResolutionProfile::Batch, stdlib_loader, pool);
         Arc::new(registry)
     }
 
@@ -540,27 +551,56 @@ impl WorkspaceState {
     pub fn project_borrowed_snapshots<'a>(
         mut base: TypeRegistry,
         snapshots: impl IntoIterator<Item = &'a FileAnalysisSnapshot>,
+        stdlib_loader: Option<&LazyRbsLoader>,
         pool: Option<&rayon::ThreadPool>,
     ) -> Arc<TypeRegistry> {
+        let mut invalidate_resolved_params = false;
         for snapshot in snapshots {
             let mut overlay = snapshot.clone();
             overlay.compact_file_local_facts();
             overlay.strip_base_context();
-            overlay.apply_to_registry(&mut base);
+            invalidate_resolved_params |= overlay.apply_to_registry_deferred(&mut base);
         }
-        Self::resolve_with_profile(&mut base, ResolutionProfile::Batch, pool);
+        if invalidate_resolved_params {
+            base.invalidate_resolve_cache();
+        }
+        Self::resolve_with_profile(&mut base, ResolutionProfile::Batch, stdlib_loader, pool);
         Arc::new(base)
+    }
+
+    /// Call-site substitution reveals receivers no single file saw, so their declarations load here. Each round only adds classes, which ends the loop.
+    fn resolve_with_stdlib_declarations(registry: &mut TypeRegistry, loader: &LazyRbsLoader) {
+        let mut attempted: HashSet<String> = HashSet::new();
+        loop {
+            let mut pending = registry.deferred_receiver_classes();
+            let mut merged = false;
+            while let Some(class_name) = pending.pop() {
+                if !attempted.insert(class_name.clone()) {
+                    continue;
+                }
+                merged |= loader.merge_class_into(&class_name, registry);
+                pending.extend(registry.declared_ancestor_names(&class_name));
+            }
+            if !merged {
+                return;
+            }
+            registry.resolve_with_new_declarations();
+        }
     }
 
     fn resolve_with_profile(
         registry: &mut TypeRegistry,
         profile: ResolutionProfile,
+        stdlib_loader: Option<&LazyRbsLoader>,
         pool: Option<&rayon::ThreadPool>,
     ) {
         match profile {
             ResolutionProfile::Batch => {
                 let run = |registry: &mut TypeRegistry| {
                     registry.apply_cli_resolution();
+                    if let Some(loader) = stdlib_loader {
+                        Self::resolve_with_stdlib_declarations(registry, loader);
+                    }
                     registry.prewarm_and_freeze_resolve_params();
                     registry.compact_after_batch_freeze();
                 };
@@ -628,6 +668,7 @@ impl WorkspaceState {
 pub struct BatchProjectionBuilder {
     registry: TypeRegistry,
     applied: usize,
+    invalidate_resolved_params: bool,
 }
 
 impl BatchProjectionBuilder {
@@ -635,6 +676,7 @@ impl BatchProjectionBuilder {
         Self {
             registry: base,
             applied: 0,
+            invalidate_resolved_params: false,
         }
     }
 
@@ -644,7 +686,8 @@ impl BatchProjectionBuilder {
         I: IntoIterator<Item = (String, FileAnalysisSnapshot)>,
     {
         for (_file_path, analysis) in chunk {
-            analysis.apply_to_registry(&mut self.registry);
+            self.invalidate_resolved_params |=
+                analysis.apply_to_registry_deferred(&mut self.registry);
             self.applied += 1;
         }
     }
@@ -653,8 +696,20 @@ impl BatchProjectionBuilder {
         self.applied
     }
 
-    pub fn finish(mut self, pool: Option<&rayon::ThreadPool>) -> Arc<TypeRegistry> {
-        WorkspaceState::resolve_with_profile(&mut self.registry, ResolutionProfile::Batch, pool);
+    pub fn finish(
+        mut self,
+        stdlib_loader: Option<&LazyRbsLoader>,
+        pool: Option<&rayon::ThreadPool>,
+    ) -> Arc<TypeRegistry> {
+        if self.invalidate_resolved_params {
+            self.registry.invalidate_resolve_cache();
+        }
+        WorkspaceState::resolve_with_profile(
+            &mut self.registry,
+            ResolutionProfile::Batch,
+            stdlib_loader,
+            pool,
+        );
         Arc::new(self.registry)
     }
 }
@@ -867,7 +922,7 @@ mod tests {
                 .map(|(_, method)| method.return_type)
         };
 
-        let reg1 = db.batch_projection(&base, None);
+        let reg1 = db.batch_projection(&base, None, None);
         let ty1 = value_return(&reg1);
         assert!(
             matches!(ty1, Some(Type::LiteralInteger(1)) | Some(Type::Integer)),
@@ -880,7 +935,7 @@ mod tests {
 
         // Same inputs → identical resolved return type (determinism guard for
         // the chunk-parallel CLI render that reads this projection).
-        let reg2 = db.batch_projection(&base, None);
+        let reg2 = db.batch_projection(&base, None, None);
         assert_eq!(ty1, value_return(&reg2));
     }
 
@@ -930,7 +985,7 @@ mod tests {
         let mut db = WorkspaceState::new();
         db.push_batch_file("sample.rb".into(), batch_snapshot(source, "sample.rb"));
         let base = TypeRegistry::new();
-        let registry = db.batch_projection(&base, None);
+        let registry = db.batch_projection(&base, None, None);
 
         assert_eq!(
             [
@@ -972,7 +1027,7 @@ mod tests {
             batch_snapshot(caller_source, "caller.rb"),
         );
         let base = TypeRegistry::new();
-        let registry = db.batch_projection(&base, None);
+        let registry = db.batch_projection(&base, None, None);
 
         assert_eq!(
             [
@@ -1004,7 +1059,7 @@ mod tests {
         let report_snapshot = batch_snapshot(report_source, "report.rb");
         db.push_batch_file("report.rb".into(), report_snapshot);
 
-        let registry = db.batch_projection(&TypeRegistry::new(), None);
+        let registry = db.batch_projection(&TypeRegistry::new(), None, None);
 
         assert_eq!(
             batch_return_type(&registry, "Report", "statuses"),
@@ -1033,7 +1088,7 @@ mod tests {
         let mut db = WorkspaceState::new();
         db.push_batch_file("sample.rb".into(), batch_snapshot(source, "sample.rb"));
         let base = TypeRegistry::new();
-        let registry = db.batch_projection(&base, None);
+        let registry = db.batch_projection(&base, None, None);
 
         // Mutual recursion can't be concretized, so it degrades to untyped (no divergence or incorrect concretization).
         assert_eq!(batch_return_type(&registry, "A", "a"), "untyped");
@@ -2016,7 +2071,7 @@ end
                 let (file_path, snapshot) = &snapshots[index];
                 db.push_batch_file(file_path.clone(), snapshot.clone());
             }
-            let registry = db.batch_projection(&base, None);
+            let registry = db.batch_projection(&base, None, None);
             render_rbs(&registry)
         };
 

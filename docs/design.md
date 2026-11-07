@@ -47,10 +47,11 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
 - **解析コアを共有する。** CLI、LSP、MCP、WASM / playground、scenario test の意味論を別々に実装しない。
 
 分岐 join では、互いに重ならない組み込みprimitive型が識別子として存在するとき、厳密なscope mergeで
-変更されたlocalの分岐値を一つずつ一時保持する。追跡対象は通常の厳密なmergeが受け持つlocal集合
-（現在は最大64個）に従い、相関専用の件数上限は重ねない。追加状態は変更local数に比例し、分岐の直積は
-作らない。後続のnarrowingで一致する枝が一つに定まった場合だけ、関連localにもその枝の型を反映する。
-候補が重なる、または追跡中のlocalが再代入された場合は相関を捨て、既存のunionを維持する。
+変更されたlocalの組を経路（world）として一時保持する。分岐内のworldは親のjoinへそのまま持ち上げるため、
+ネストや連続した分岐でも経路ごとの組が残る。後続のnarrowingは一致するworldだけを残し、関連localにも
+残ったworldのjoinを反映する。localへの代入は全worldの値を置き換え、alias化や判別できないnarrowingでは
+相関を捨てて既存のunionを維持する。分岐の連続でworldは積で増えるため、病的入力への安全弁として
+32 world を超えたら相関を捨てる（値はunionのままで健全）。
 遅延参照をtruthy/falsy projectionの内側で解決するときは、union中の `untyped` を保持し、不明な分岐の到達可能性を失わない。
 
 ## semantic backend

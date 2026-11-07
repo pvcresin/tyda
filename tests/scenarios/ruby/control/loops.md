@@ -287,10 +287,6 @@ end
 
 ## While-loop multiply widens a constant accumulator
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -404,10 +400,6 @@ end
 
 ## Multi-value break in times
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -426,11 +418,23 @@ class Object < BasicObject
 end
 ```
 
-## Ignore code after loop returns from the method
+## A zero times call skips its block break
 
-```yaml
-known_issue: true
+### update
+
+```ruby
+def zero_times_break = 0.times { break :unreachable }
 ```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def zero_times_break: -> 0
+end
+```
+
+## Ignore code after loop returns from the method
 
 ### update
 
@@ -979,11 +983,186 @@ class Object < BasicObject
 end
 ```
 
-## for uses source-defined Array#each
+## Keep code after a loop that can still finish
 
-```yaml
-known_issue: true
+### update
+
+```ruby
+def expression_break(flag)
+  while true
+    value = flag || break
+    return value
+  end
+  :after
+end
+
+def expression_next(flag)
+  for item in [1]
+    value = flag || next
+    return value
+  end
+  :after
+end
+
+def branch_pruned_by_inferred_type
+  items = [1]
+  while true
+    items.shift
+    break if items.empty?
+  end
+  :after
+end
+
+def kernel_loop_stop_iteration(enumerator)
+  loop do
+    return enumerator.next
+  end
+  :after
+end
+
+def non_literal_predicate(node)
+  current = 1
+  while current
+    current = node.parent
+    return :returned
+  end
+  :after
+end
 ```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def expression_break: (untyped flag) -> (nil | untyped | :after)
+  def expression_next: (untyped flag) -> (nil | untyped | :after)
+  def branch_pruned_by_inferred_type: -> :after
+  def kernel_loop_stop_iteration: (untyped enumerator) -> (untyped | :after)
+  def non_literal_predicate: (untyped node) -> (:after | :returned)
+end
+```
+
+## Loop exits bind to the innermost loop
+
+### update
+
+```ruby
+def inner_break_stays_inside
+  while true
+    while true
+      break 1
+    end
+    return :returned
+  end
+  :unreachable
+end
+
+def inner_next_stays_inside
+  [1].map do |item|
+    while item
+      next 5
+    end
+    item
+  end
+end
+
+def block_break_stays_inside
+  while true
+    [1].each { break }
+    return :returned
+  end
+  :unreachable
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def inner_break_stays_inside: -> :returned
+  def inner_next_stays_inside: -> Array[1]
+  def block_break_stays_inside: -> :returned
+end
+```
+
+## Endless loops leave only through their exits
+
+### update
+
+```ruby
+def conditional_break_value(flag)
+  while true
+    break 1 if flag
+  end
+end
+
+def conditional_return(flag)
+  while true
+    return 1 if flag
+  end
+  :unreachable
+end
+
+def next_keeps_looping(flag)
+  while true
+    next if flag
+    return :returned
+  end
+  :unreachable
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def conditional_break_value: (untyped flag) -> 1
+  def conditional_return: (untyped flag) -> 1
+  def next_keeps_looping: (untyped flag) -> :returned
+end
+```
+
+## Short-circuit exits reach their targets
+
+### update
+
+```ruby
+def and_return(flag)
+  flag && return(:early)
+  :late
+end
+
+def or_return(flag)
+  flag or return :early
+  :late
+end
+
+def and_break_value(flag)
+  while true
+    flag && break(:broken)
+  end
+end
+
+def or_next_value(values)
+  values.map do |value|
+    value || next
+    :kept
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def and_return: (untyped flag) -> (:early | :late)
+  def or_return: (untyped flag) -> (:early | :late)
+  def and_break_value: (untyped flag) -> :broken
+  def or_next_value: (untyped values) -> Array[:kept?]
+end
+```
+
+## for uses source-defined Array#each
 
 ```ruby
 class Array
@@ -1016,10 +1195,6 @@ end
 
 ## for uses source-defined Hash#each
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class Hash
   def each
@@ -1050,10 +1225,6 @@ end
 ```
 
 ## for uses prepended source-defined Array#each
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 module ForEachPrepend
@@ -1087,5 +1258,113 @@ end
 
 class ForEachPrepended
   def result: -> :item
+end
+```
+
+## for preserves the zero-yield path for conditional source-defined each
+
+```ruby
+class Array
+  def each
+    if @should_yield
+      yield :item
+    end
+  end
+end
+
+class ForEachConditional
+  def result
+    for value in []
+      return value
+    end
+    :after
+  end
+end
+```
+
+### result
+
+```rbs
+class Array
+  def each: { (Symbol) -> untyped } -> nil | untyped
+end
+
+class ForEachConditional
+  def result: -> :after | :item
+end
+```
+
+## for break continues after source-defined each
+
+```ruby
+class Array
+  def each
+    yield :item
+  end
+end
+
+class ForEachBreakAfter
+  def result
+    for value in []
+      break :done
+    end
+    :after
+  end
+end
+```
+
+### result
+
+```rbs
+class Array
+  def each: { (Symbol) -> untyped } -> untyped
+end
+
+class ForEachBreakAfter
+  def result: -> :after
+end
+```
+
+## Parenthesized while assignment narrows the body
+
+### update
+
+```ruby
+class WhileAssignmentEntry
+  def name = "entry"
+end
+
+class WhileAssignmentSource
+  #: (bool) -> WhileAssignmentEntry?
+  def next_entry(flag)
+    @calls = (@calls || 0) + 1
+    flag ? WhileAssignmentEntry.new : nil
+  end
+end
+
+class WhileAssignmentProbe
+  def first_name(source, flag)
+    while ((entry = source.next_entry(flag)))
+      break entry.name
+    end
+  end
+end
+
+WhileAssignmentProbe.new.first_name(WhileAssignmentSource.new, true)
+```
+
+### result
+
+```rbs
+class WhileAssignmentEntry
+  def name: -> "entry"
+end
+
+class WhileAssignmentProbe
+  def first_name: (WhileAssignmentSource source, bool flag) -> "entry"?
+end
+
+class WhileAssignmentSource
+  def next_entry: (bool flag) -> WhileAssignmentEntry?
 end
 ```

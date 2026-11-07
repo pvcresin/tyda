@@ -41,8 +41,8 @@ end
 ```rbs
 class Object < BasicObject
   def minus_eq: -> Integer
-  def mul_eq: -> Float
-  def mod_eq: -> Float
+  def mul_eq: -> Integer
+  def mod_eq: -> Integer
   def div_eq: -> Integer
   def pow_eq: -> Numeric
 end

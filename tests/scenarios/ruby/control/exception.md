@@ -77,10 +77,6 @@ end
 
 ## rescue => e
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -98,7 +94,93 @@ end
 
 ```rbs
 class Object < BasicObject
-  def rescue_var: -> (:normal | ZeroDivisionError)
+  def rescue_var: -> :normal | ZeroDivisionError
+end
+```
+
+## rescue => e keeps StandardError for a dynamic raise
+
+### update
+
+```ruby
+def rescue_dynamic(error_class)
+  begin
+    raise error_class if [true, false].sample
+    :normal
+  rescue => e
+    e
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def rescue_dynamic: (untyped error_class) -> (:normal | StandardError)
+end
+```
+
+## fail class argument narrows bare rescue
+
+### update
+
+```ruby
+def fail_rescue_var
+  begin
+    fail TypeError if [true, false].sample
+    :normal
+  rescue => error
+    error
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def fail_rescue_var: -> :normal | TypeError
+end
+```
+
+## Source-defined raise and fail calls do not narrow rescue types
+
+### update
+
+```ruby
+class SourceDefinedRaiseMethods
+  def raise(_error_class) = :returned
+  def fail(_error_class) = :returned
+
+  def after_raise
+    begin
+      raise ArgumentError
+      :after_raise
+    rescue => error
+      error
+    end
+  end
+
+  def after_fail
+    begin
+      fail TypeError
+      :after_fail
+    rescue => error
+      error
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class SourceDefinedRaiseMethods
+  def raise: (singleton(ArgumentError) _error_class) -> :returned
+  def fail: (singleton(TypeError) _error_class) -> :returned
+  def after_raise: -> :after_raise | StandardError
+  def after_fail: -> :after_fail | StandardError
 end
 ```
 
@@ -391,10 +473,6 @@ end
 
 ## retry
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -416,6 +494,73 @@ end
 ```rbs
 class Object < BasicObject
   def with_retry: -> "success"
+end
+```
+
+## retry only hides the fallback when the guard holds on every rescue entry
+
+### update
+
+```ruby
+def another_call_may_raise
+  attempts = 0
+  begin
+    attempts += 1
+    risky(attempts)
+    raise "fail" if attempts < 3
+    :success
+  rescue
+    retry if attempts < 3
+    :failed
+  end
+end
+
+def different_guard
+  attempts = 0
+  limit = 0
+  begin
+    attempts += 1
+    raise "fail" if attempts < 3
+    :success
+  rescue
+    retry if limit < 3
+    :failed
+  end
+end
+
+def guard_changes_in_rescue
+  attempts = 0
+  begin
+    attempts += 1
+    raise "fail" if attempts < 3
+    :success
+  rescue
+    attempts = 5
+    retry if attempts < 3
+    :failed
+  end
+end
+
+def counter_may_raise(attempts)
+  begin
+    attempts += 1
+    raise "fail" if attempts < 3
+    :success
+  rescue
+    retry if attempts < 3
+    :failed
+  end
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def another_call_may_raise: -> :failed | :success
+  def different_guard: -> :failed | :success
+  def guard_changes_in_rescue: -> :failed | :success
+  def counter_may_raise: (untyped attempts) -> (:failed | :success)
 end
 ```
 
@@ -599,11 +744,30 @@ class Object < BasicObject
 end
 ```
 
-## Ignore code after a terminating begin body
+## Retry preserves an earlier method return
 
-```yaml
-known_issue: true
+### update
+
+```ruby
+def return_before_retry(uri)
+  return nil if uri.nil?
+  begin
+    :conversation
+  rescue StandardError
+    retry
+  end
+end
 ```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def return_before_retry: (untyped uri) -> :conversation?
+end
+```
+
+## Ignore code after a terminating begin body
 
 ### update
 
@@ -668,10 +832,6 @@ end
 
 ## Exiting rescue branches do not widen fallthrough locals
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 def exiting_rescue_does_not_widen_local
   begin
@@ -693,10 +853,6 @@ end
 ```
 
 ## Source-defined control-flow method names remain ordinary calls
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -782,7 +938,7 @@ class ControlFlowMethodOverrides
   def exit: -> :exited
   def abort: -> :aborted
   def loop: -> :looped
-  def with_yield: -> bot
+  def with_yield: { () -> bot } -> bot
   def no_yield: -> :ignored
   def bare_calls: -> :after_calls
   def explicit_calls: -> :after_calls
@@ -791,5 +947,37 @@ class ControlFlowMethodOverrides
   def no_yield_nonlocal_return: -> :after_no_yield
   def explicit_no_yield_nonlocal_return: -> :after_no_yield
   def yielding_nonlocal_return: -> :from_block
+end
+```
+
+## Rescue branches that raise do not reach code after the begin
+
+```ruby
+class RescueResponse
+  def status = :ok
+end
+
+class RescueFlow
+  def call(should_raise)
+    begin
+      raise "stop" if should_raise
+      response = RescueResponse.new
+    rescue StandardError
+      raise
+    end
+    response.status
+  end
+end
+```
+
+### result
+
+```rbs
+class RescueFlow
+  def call: (untyped should_raise) -> :ok
+end
+
+class RescueResponse
+  def status: -> :ok
 end
 ```

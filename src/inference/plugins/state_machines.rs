@@ -55,6 +55,17 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
     ) {
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
+        let machine_name = self
+            .first_symbol_or_string_arg(call_node)
+            .unwrap_or_else(|| "state".to_string());
+        self.add_simple_method_if_missing(class_name, "state_machine", Type::Untyped, true, loc);
+        self.add_simple_method_if_missing(
+            class_name,
+            &format!("{machine_name}_name"),
+            Type::String,
+            false,
+            loc,
+        );
         self.collect_state_machine_block_like(class_name, call_node, parse_result, loc);
     }
 

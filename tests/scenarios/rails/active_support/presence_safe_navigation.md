@@ -32,6 +32,102 @@ class B
 end
 ```
 
+## Preserve synthetic presence returns with deferred receiver members
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Probe
+  def result(flag)
+    value = flag ? "known" : fallback_value
+    value.presence
+  end
+
+  def fallback_value = :late
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def result: (untyped flag) -> ("known" | :late)?
+  def fallback_value: -> :late
+end
+```
+
+## Preserve Boolean predicates when receiver unions contain unknown members
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class PresenceKnownReceiver
+  #: -> bool
+  def active? = true
+end
+
+class PresenceUnionProbe
+  #: (nil | untyped | PresenceKnownReceiver) -> bool
+  def present_result(value) = value.present?
+
+  #: (nil | untyped | PresenceKnownReceiver) -> untyped
+  def unknown_predicate_result(value) = value.active?
+end
+```
+
+### result
+
+```rbs
+class PresenceKnownReceiver
+  def active?: -> bool
+end
+
+class PresenceUnionProbe
+  def present_result: ((nil | untyped | PresenceKnownReceiver) value) -> bool
+  def unknown_predicate_result: ((nil | untyped | PresenceKnownReceiver) value) -> untyped
+end
+```
+
+## Keep source overrides authoritative for present?
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class CustomPresenceReceiver
+  #: -> :custom
+  def present? = :custom
+end
+
+class CustomPresenceProbe
+  #: (CustomPresenceReceiver | untyped) -> untyped
+  def result(value) = value.present?
+end
+```
+
+### result
+
+```rbs
+class CustomPresenceProbe
+  def result: ((untyped | CustomPresenceReceiver) value) -> untyped
+end
+
+class CustomPresenceReceiver
+  def present?: -> :custom
+end
+```
+
 ## Safe navigation on non-nil receiver returns Integer
 
 ### update

@@ -495,6 +495,7 @@ impl<'a> InferenceEngine<'a> {
                 accessor_type.clone(),
                 loc,
                 Some(format!("@{attr_name}")),
+                false,
             );
             self.register_dirty_attribute_methods(class_name, &attr_name, &accessor_type, loc);
             return;
@@ -530,6 +531,7 @@ impl<'a> InferenceEngine<'a> {
                     accessor_type.clone(),
                     loc,
                     Some(format!("@{attr_name}")),
+                    false,
                 );
                 engine.register_dirty_attribute_methods(
                     class_name,

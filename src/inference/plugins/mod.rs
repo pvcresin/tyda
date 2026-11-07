@@ -24,10 +24,14 @@ pub(super) mod identity_cache;
 pub(super) mod kredis;
 pub(super) mod migration;
 pub(super) mod oj;
+pub(super) mod paperclip;
 pub(super) mod properties;
 pub(super) mod protobuf;
+pub(super) mod rack_attack;
 pub(super) mod rails_configure;
+pub(super) mod rake;
 pub(super) mod settingslogic;
+pub(super) mod shellwords;
 pub(super) mod shrine;
 pub(super) mod sidekiq;
 pub(super) mod state_machines;
@@ -169,6 +173,10 @@ static PLUGINS: &[&dyn Plugin] = &[
     &identity_cache::IdentityCache,
     &kredis::Kredis,
     &oj::Oj,
+    &paperclip::Paperclip,
+    &rake::Rake,
+    &shellwords::Shellwords,
+    &rack_attack::RackAttack,
     &draper::Draper,
     &properties::Properties,
     &active_hash::ActiveHash,
@@ -279,6 +287,10 @@ impl<'e, 'src> PluginCx<'e, 'src> {
 
     pub(in crate::inference) fn any_dsl_enabled(&self, libraries: &[DslLibrary]) -> bool {
         self.engine.any_dsl_enabled(libraries)
+    }
+
+    pub(in crate::inference) fn stdlib_feature_loaded(&self, feature: &str) -> bool {
+        self.engine.stdlib_feature_loaded(feature)
     }
 
     pub(in crate::inference) fn rails_feature_enabled(&self) -> bool {
@@ -674,6 +686,16 @@ impl<'e, 'src> PluginCx<'e, 'src> {
     ) {
         self.engine
             .collect_attribute_dsl(class_name, call_node, parse_result);
+    }
+
+    pub(in crate::inference) fn collect_serialized_attribute_dsl(
+        &mut self,
+        class_name: &str,
+        call_node: &CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+    ) {
+        self.engine
+            .collect_serialized_attribute_dsl(class_name, call_node, parse_result);
     }
 
     pub(in crate::inference) fn collect_attributes_dsl(
@@ -1223,7 +1245,38 @@ impl<'a> InferenceEngine<'a> {
                 return true;
             }
         }
+        self.mark_column_replaced_by_unknown_macro(class_name, method_name, call_node);
         false
+    }
+
+    /// An unknown class macro naming a column may replace its accessor, as uploaders do, so the
+    /// schema type no longer proves what the accessor returns.
+    fn mark_column_replaced_by_unknown_macro(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        call_node: &CallNode<'_>,
+    ) {
+        if call_node.receiver().is_some()
+            || self
+                .registry
+                .first_method_call_owner_cached(class_name, method_name, true)
+                .is_some()
+        {
+            return;
+        }
+        let Some(column) = Self::extract_symbol_args(call_node).first().cloned() else {
+            return;
+        };
+        if self
+            .registry
+            .schema_column_accessor_type(class_name, &column)
+            .is_none()
+        {
+            return;
+        }
+        self.registry
+            .mark_column_accessor_replaced(class_name, &column);
     }
 
     pub(super) fn dsl_plugin_consumes_class_body_call(

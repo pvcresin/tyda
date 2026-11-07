@@ -14,6 +14,7 @@ end
 
 ```rbs
 class Order
+  def status: -> String
   def self.statuses: -> Hash[String, untyped]
   def pending?: -> bool
   def pending!: -> bool
@@ -43,6 +44,7 @@ end
 
 ```rbs
 class EnumLevels
+  def level: -> String
   def self.levels: -> Hash[String, untyped]
   def low?: -> bool
   def low!: -> bool
@@ -69,6 +71,7 @@ end
 
 ```rbs
 class User
+  def status: -> String
   def self.statuses: -> Hash[String, untyped]
   def status_active?: -> bool
   def status_active!: -> bool
@@ -76,6 +79,7 @@ class User
   def status_archived?: -> bool
   def status_archived!: -> bool
   def self.status_archived: -> ActiveRecord::Relation[User]
+  def role: -> String
   def self.roles: -> Hash[String, untyped]
   def admin_role?: -> bool
   def admin_role!: -> bool
@@ -100,6 +104,7 @@ end
 
 ```rbs
 class A
+  def kind: -> String
   def self.kinds: -> Hash[String, untyped]
   def pending?: -> bool
   def pending!: -> bool
@@ -124,6 +129,7 @@ end
 
 ```rbs
 class B
+  def kind: -> String
   def self.kinds: -> Hash[String, untyped]
   def pending?: -> bool
   def pending!: -> bool
@@ -149,6 +155,7 @@ end
 
 ```rbs
 class C
+  def status: -> String
   def self.statuses: -> Hash[String, untyped]
   def status_active?: -> bool
   def status_active!: -> bool
@@ -156,6 +163,7 @@ class C
   def status_archived?: -> bool
   def status_archived!: -> bool
   def self.status_archived: -> ActiveRecord::Relation[C]
+  def role: -> String
   def self.roles: -> Hash[String, untyped]
   def admin_role?: -> bool
   def admin_role!: -> bool
@@ -163,5 +171,282 @@ class C
   def guest_role?: -> bool
   def guest_role!: -> bool
   def self.guest_role: -> ActiveRecord::Relation[C]
+end
+```
+
+## Return the string key from an enum reader
+
+### update
+
+```ruby
+class EnumReader
+  enum :status, { pending: 0, shipped: 1 }
+  def status_value = status
+  def status_symbol = status.to_sym
+end
+```
+
+### result
+
+```rbs
+class EnumReader
+  def status: -> String
+  def self.statuses: -> Hash[String, untyped]
+  def pending?: -> bool
+  def pending!: -> bool
+  def self.pending: -> ActiveRecord::Relation[EnumReader]
+  def shipped?: -> bool
+  def shipped!: -> bool
+  def self.shipped: -> ActiveRecord::Relation[EnumReader]
+  def status_value: -> String
+  def status_symbol: -> Symbol
+end
+```
+
+## Preserve a source reader defined after the enum
+
+### update
+
+```ruby
+class EnumSourceReader
+  enum :status, { pending: 0, shipped: 1 }
+  #: () -> Symbol
+  def status = :pending
+  def status_copy = status
+end
+```
+
+### result
+
+```rbs
+class EnumSourceReader
+  def self.statuses: -> Hash[String, untyped]
+  def pending?: -> bool
+  def pending!: -> bool
+  def self.pending: -> ActiveRecord::Relation[EnumSourceReader]
+  def shipped?: -> bool
+  def shipped!: -> bool
+  def self.shipped: -> ActiveRecord::Relation[EnumSourceReader]
+  def status: -> Symbol
+  def status_copy: -> Symbol
+end
+```
+
+## Preserve an RBS reader declaration
+
+### update
+
+```ruby
+class EnumRbsReader
+  enum :status, { pending: 0, shipped: 1 }
+  def status_value = status
+end
+```
+
+```rbs
+class EnumRbsReader
+  def status: -> Symbol
+end
+```
+
+### result
+
+```rbs
+class EnumRbsReader
+  def self.statuses: -> Hash[String, untyped]
+  def pending?: -> bool
+  def pending!: -> bool
+  def self.pending: -> ActiveRecord::Relation[EnumRbsReader]
+  def shipped?: -> bool
+  def shipped!: -> bool
+  def self.shipped: -> ActiveRecord::Relation[EnumRbsReader]
+  def status_value: -> Symbol
+end
+```
+
+## Keep enum readers as strings when mappings use constants
+
+### update
+
+```ruby
+class ConstantEnumReader
+  STATUSES = { pending: 0, shipped: 1 }.with_indifferent_access.freeze
+  enum :status, STATUSES
+
+  def status_symbol = status.to_sym
+end
+```
+
+### result
+
+```rbs
+class ConstantEnumReader
+  STATUSES: { pending: 0, shipped: 1 }
+
+  def status: -> String
+  def self.statuses: -> Hash[String, untyped]
+  def pending?: -> bool
+  def pending!: -> bool
+  def self.pending: -> ActiveRecord::Relation[ConstantEnumReader]
+  def shipped?: -> bool
+  def shipped!: -> bool
+  def self.shipped: -> ActiveRecord::Relation[ConstantEnumReader]
+  def status_symbol: -> Symbol
+end
+```
+
+## Keep enum methods from a constructed constant mapping
+
+### update
+
+```ruby
+class HashWithIndifferentAccess; end
+
+class ConstructedEnumReader
+  ACTIONS = HashWithIndifferentAccess.new(pending: 0, shipped: 1).freeze
+  enum :status, ACTIONS, suffix: true
+
+  def status_symbol = status.to_sym
+end
+```
+
+### result
+
+```rbs
+class ConstructedEnumReader
+  ACTIONS: HashWithIndifferentAccess
+
+  def status: -> String
+  def self.statuses: -> Hash[String, untyped]
+  def pending_status?: -> bool
+  def pending_status!: -> bool
+  def self.pending_status: -> ActiveRecord::Relation[ConstructedEnumReader]
+  def shipped_status?: -> bool
+  def shipped_status!: -> bool
+  def self.shipped_status: -> ActiveRecord::Relation[ConstructedEnumReader]
+  def status_symbol: -> Symbol
+end
+```
+
+## Ignore namespaced HashWithIndifferentAccess lookalikes
+
+### update
+
+```ruby
+module Alternative
+  class HashWithIndifferentAccess; end
+end
+
+class NamespacedHashEnum
+  ACTIONS = Alternative::HashWithIndifferentAccess.new(pending: 0)
+  enum :status, ACTIONS
+end
+```
+
+### result
+
+```rbs
+class NamespacedHashEnum
+  ACTIONS: Alternative::HashWithIndifferentAccess
+
+  def status: -> String
+  def self.statuses: -> Hash[String, untyped]
+end
+```
+
+## Ignore bare namespaced HashWithIndifferentAccess lookalikes
+
+### update
+
+```ruby
+module Alternative
+  class HashWithIndifferentAccess; end
+
+  class BareHashEnum
+    ACTIONS = HashWithIndifferentAccess.new(pending: 0)
+    enum :status, ACTIONS
+  end
+end
+```
+
+### result
+
+```rbs
+class Alternative::BareHashEnum
+  ACTIONS: Alternative::HashWithIndifferentAccess
+
+  def status: -> String
+  def self.statuses: -> Hash[String, untyped]
+end
+```
+
+## Ignore inherited bare namespaced HashWithIndifferentAccess lookalikes
+
+### update
+
+```ruby
+module Alternative
+  class HashWithIndifferentAccess; end
+
+  class Parent
+    ACTIONS = HashWithIndifferentAccess.new(pending: 0)
+  end
+end
+
+class InheritedBareHashEnum < Alternative::Parent
+  enum :status, ACTIONS
+end
+```
+
+### result
+
+```rbs
+class Alternative::Parent
+  ACTIONS: Alternative::HashWithIndifferentAccess
+end
+
+class InheritedBareHashEnum < Alternative::Parent
+  def status: -> String
+  def self.statuses: -> Hash[String, untyped]
+end
+```
+
+## Override the integer schema type for enum readers
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema.define(version: 2024_01_01) do
+  create_table "enum_columns" do |t|
+    t.integer "status"
+  end
+end
+```
+
+### update
+
+```ruby
+class ActiveRecord::Base; end
+
+class EnumColumn < ActiveRecord::Base
+  enum :status, { pending: 0, shipped: 1 }
+
+  def status_symbol = status.to_sym
+end
+```
+
+### result
+
+```rbs
+class EnumColumn < ActiveRecord::Base
+  def status: -> String
+  def self.statuses: -> Hash[String, untyped]
+  def pending?: -> bool
+  def pending!: -> bool
+  def self.pending: -> ActiveRecord::Relation[EnumColumn]
+  def shipped?: -> bool
+  def shipped!: -> bool
+  def self.shipped: -> ActiveRecord::Relation[EnumColumn]
+  def status_symbol: -> Symbol
 end
 ```

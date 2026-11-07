@@ -76,11 +76,7 @@ class A
 end
 ```
 
-## Infer Object method on untyped receiver
-
-```yaml
-known_issue: true
-```
+## Keep Object methods untyped on an untyped receiver
 
 ### update
 
@@ -108,11 +104,149 @@ class Checker
 end
 ```
 
-## Infer universal conversion methods on untyped receiver
+## Dispatch nil? per arm on a union with an untyped member
 
-```yaml
-known_issue: true
+### update
+
+```ruby
+class UntypedUnionPredicate
+  #: (untyped flag) -> untyped
+  def dynamic_value(flag); end
+
+  def nil_predicate(flag)
+    value = flag ? "known" : dynamic_value(flag)
+    value.nil?
+  end
+
+  def value_type(flag)
+    value = flag ? "known" : dynamic_value(flag)
+    value
+  end
+
+  def unknown_predicate(flag)
+    value = flag ? "known" : dynamic_value(flag)
+    value.valid?
+  end
+end
 ```
+
+### result
+
+```rbs
+class UntypedUnionPredicate
+  def dynamic_value: (untyped flag) -> untyped
+  def nil_predicate: (untyped flag) -> (false | untyped)
+  def value_type: (untyped flag) -> (untyped | "known")
+  def unknown_predicate: (untyped flag) -> untyped
+end
+```
+
+## Dispatch a call per arm when the receiver union has an untyped arm
+
+### update
+
+```ruby
+class UntypedArmTarget
+  def label = :label
+  def with_block = yield
+end
+
+class UntypedArmCaller
+  #: () -> untyped
+  def dynamic_value; end
+
+  def receiver
+    @receiver ||= (dynamic_value ? dynamic_value : UntypedArmTarget.new)
+  end
+
+  def method_receiver = receiver.label
+
+  def ivar_receiver
+    @receiver.label
+  end
+
+  def local_receiver(flag)
+    value = flag ? dynamic_value : UntypedArmTarget.new
+    value.label
+  end
+
+  def block_call(flag)
+    value = flag ? dynamic_value : UntypedArmTarget.new
+    value.with_block { :from_block }
+  end
+
+  def safe_navigation(flag)
+    value = flag ? dynamic_value : UntypedArmTarget.new
+    value&.label
+  end
+
+  def nil_arm_stays_unknown(flag)
+    value = flag ? dynamic_value : nil
+    value.label
+  end
+
+  def typed_arms_only(flag)
+    value = flag ? UntypedArmTarget.new : :symbol
+    value.to_s
+  end
+end
+```
+
+### result
+
+```rbs
+class UntypedArmCaller
+  def dynamic_value: -> untyped
+  def receiver: -> untyped | UntypedArmTarget
+  def method_receiver: -> untyped | :label
+  def ivar_receiver: -> untyped | :label
+  def local_receiver: (untyped flag) -> (untyped | :label)
+  def block_call: (untyped flag) -> (untyped | :from_block)
+  def safe_navigation: (untyped flag) -> (untyped | :label)
+  def nil_arm_stays_unknown: (untyped flag) -> untyped
+  def typed_arms_only: (untyped flag) -> String
+end
+
+class UntypedArmTarget
+  def label: -> :label
+  def with_block: { () -> :from_block } -> :from_block
+end
+```
+
+## Keep source-defined nil predicates unknown on an untyped union
+
+### update
+
+```ruby
+class CustomNilPredicate
+  def nil? = :sentinel
+end
+
+class UntypedUnionOverride
+  #: () -> untyped
+  def dynamic_value; end
+
+  def nil_predicate(flag)
+    value = flag ? CustomNilPredicate.new : dynamic_value
+    value.nil?
+  end
+end
+```
+
+### result
+
+```rbs
+class CustomNilPredicate
+  def nil?: -> :sentinel
+end
+
+class UntypedUnionOverride
+  def dynamic_value: -> untyped
+  def nil_predicate: (untyped flag) -> (untyped | :sentinel)
+end
+```
+
+## Keep conversion methods untyped on an untyped receiver
 
 ### update
 
@@ -138,7 +272,105 @@ class Conv
   def cnt: (untyped x) -> untyped
   def flt: (untyped x) -> untyped
   def arr: (untyped x) -> untyped
-  def neg: (untyped x) -> bool
+  def neg: (untyped x) -> untyped
+end
+```
+
+## Keep non-core methods untyped on an untyped receiver
+
+### update
+
+```ruby
+def unresolved_validity(x) = x.valid?
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def unresolved_validity: (untyped x) -> untyped
+end
+```
+
+## Keep overridden core methods untyped on an untyped receiver
+
+### update
+
+```ruby
+class CustomEquality
+  def ==(_other) = "not a boolean"
+end
+
+def unresolved_equality(x) = x == 1
+```
+
+### result
+
+```rbs
+class CustomEquality
+  def ==: (untyped _other) -> "not a boolean"
+end
+
+class Object < BasicObject
+  def unresolved_equality: (untyped x) -> untyped
+end
+```
+
+## Keep source-overridden conversions untyped on an unresolved receiver
+
+### update
+
+```ruby
+class CustomConversion
+  def to_s = :custom
+end
+
+def unresolved_to_string(value) = value.to_s
+```
+
+### result
+
+```rbs
+class CustomConversion
+  def to_s: -> :custom
+end
+
+class Object < BasicObject
+  def unresolved_to_string: (untyped value) -> untyped
+end
+```
+
+## Keep source-overridden date conversions untyped on an unresolved receiver
+
+### update
+
+```ruby
+class CustomDateConversion
+  def to_date = :custom
+end
+
+def unresolved_to_date(value) = value.to_date
+
+def custom_date_conversion_union(flag)
+  value = if flag
+    CustomDateConversion.new
+  else
+    "2024-01-01"
+  end
+  value.to_date
+end
+```
+
+### result
+
+```rbs
+class CustomDateConversion
+  def to_date: -> :custom
+end
+
+class Object < BasicObject
+  def unresolved_to_date: (untyped value) -> untyped
+  def custom_date_conversion_union: (untyped flag) -> :custom
 end
 ```
 
@@ -295,5 +527,170 @@ end
 
 class Push < Base
   def initialize: -> void
+end
+```
+
+## Unknown count results stay untyped
+
+### update
+
+```ruby
+class UnknownBuilder
+  #: () -> untyped
+  def self.make; end
+end
+
+def unknown_count = UnknownBuilder.make.count
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def unknown_count: -> untyped
+end
+
+class UnknownBuilder
+  def self.make: -> untyped
+end
+```
+
+## Abstract method arguments do not hide callee returns
+
+### update
+
+```ruby
+class ResultBuilder
+  def self.build(value) = :built
+  def self.build_with_keyword(value:) = :built
+end
+
+class AbstractSource
+  def value = raise NotImplementedError
+  def build = ResultBuilder.build(value)
+  def build_with_keyword = ResultBuilder.build_with_keyword(value: value)
+  def value_as_string = value.to_s
+  def build_after_raise = ResultBuilder.build(raise "stop")
+  def build_after_keyword_raise = ResultBuilder.build_with_keyword(value: raise("stop"))
+end
+```
+
+### result
+
+```rbs
+class AbstractSource
+  def value: -> bot
+  def build: -> :built
+  def build_with_keyword: -> :built
+  def value_as_string: -> untyped
+  def build_after_raise: -> bot
+  def build_after_keyword_raise: -> bot
+end
+
+class ResultBuilder
+  def self.build: (untyped value) -> :built
+  def self.build_with_keyword: (value: untyped) -> :built
+end
+```
+
+## Unreachable local arguments stay bot beside other calls
+
+### update
+
+```ruby
+class BotArgumentFactory
+  def self.build(value, decoration) = :built
+end
+
+class BotArgumentBoundary
+  def decoration = :decorated
+
+  def unreachable_call
+    value = raise "stop"
+    BotArgumentFactory.build(value, decoration)
+  end
+end
+```
+
+### result
+
+```rbs
+class BotArgumentBoundary
+  def decoration: -> :decorated
+  def unreachable_call: -> bot
+end
+
+class BotArgumentFactory
+  def self.build: (untyped value, untyped decoration) -> :built
+end
+```
+
+## Calls with arguments on ivar receivers resolve after the ivar settles
+
+### update
+
+```ruby
+class SettledIvarLines
+  attr_reader :ranges
+
+  def initialize(ranges)
+    @lines = ["a", "b"]
+    @ranges = ranges
+  end
+
+  def line_width = @lines[0].size
+  def indent
+    line = @lines[0]
+    line.size - line.lstrip.size
+  end
+  def multiple_via_ivar? = @ranges.size > 1
+  def multiple_via_reader? = ranges.size > 1
+  def first_range = ranges[0]
+end
+
+SettledIvarLines.new([0..1])
+```
+
+### result
+
+```rbs
+class SettledIvarLines
+  def ranges: -> Array[Range[Integer]]
+  def initialize: (Array[Range[Integer]] ranges) -> void
+  def line_width: -> Integer
+  def indent: -> Integer
+  def multiple_via_ivar?: -> bool
+  def multiple_via_reader?: -> bool
+  def first_range: -> Range[Integer]?
+end
+```
+
+## A block call does not return the block-less Enumerator overload
+
+### update
+
+```ruby
+class BlockOverloadReturn
+  def unresolved_block
+    ["a"].flat_map { |item| unknown(item) }
+  end
+
+  def yielded_block
+    ["a"].flat_map { |item| yield item }
+  end
+
+  def without_block
+    ["a"].flat_map
+  end
+end
+```
+
+### result
+
+```rbs
+class BlockOverloadReturn
+  def unresolved_block: -> Array[untyped]
+  def yielded_block: { (untyped) -> untyped } -> Array[untyped]
+  def without_block: -> Enumerator["a", Array[untyped]]
 end
 ```

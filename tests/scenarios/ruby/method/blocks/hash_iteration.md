@@ -41,10 +41,6 @@ end
 
 ## Hash#transform_values preserves records
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -74,7 +70,7 @@ end
 
 class Object < BasicObject
   def value_labels: -> { first: "label", second: "label" }
-  def value_strings: -> { name: String, count: String }
+  def value_strings: -> { name: untyped, count: untyped }
   def stringify: (untyped value) -> untyped
 end
 ```
@@ -203,6 +199,40 @@ end
 ```rbs
 class Object < BasicObject
   def test_hash_select_block: -> Hash[:a | :b, 1 | 2]
+end
+```
+
+## Recursive Hash and Array traversal
+
+### update
+
+```ruby
+class RecursiveContainerTraversal
+  def visit(value)
+    case value
+    when Hash then visit_hash(value)
+    when Array then visit_array(value)
+    else value.to_s
+    end
+  end
+
+  def visit_hash(hash)
+    hash.each { |_key, value| visit(value) }
+  end
+
+  def visit_array(array)
+    array.each { |value| visit(value) }
+  end
+end
+```
+
+### result
+
+```rbs
+class RecursiveContainerTraversal
+  def visit: (untyped value) -> (untyped | Array | Hash)
+  def visit_hash: (Hash hash) -> Hash
+  def visit_array: (Array array) -> Array
 end
 ```
 
@@ -478,5 +508,69 @@ def up = { x: 1, y: "hello" }.transform_values { |v| v.to_s }
 ```rbs
 class Object < BasicObject
   def up: -> { x: String, y: String }
+end
+```
+
+## Bare Hash iteration supplies two unknown values
+
+### update
+
+```rbs
+class Object
+  def bare_hash: -> Hash
+end
+```
+
+```ruby
+def bare_hash_pairs = bare_hash.map { |key, value| [key, value] }
+
+class OneYieldSource
+  def each
+    yield :item
+  end
+end
+
+def one_yield_missing_second = OneYieldSource.new.each { |_item, extra| extra.to_s }
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def bare_hash_pairs: -> Array[[untyped, untyped]]
+  def one_yield_missing_second: -> untyped
+end
+
+class OneYieldSource
+  def each: { (Symbol) -> untyped } -> untyped
+end
+```
+
+## Destructure a tuple yield in a class body
+
+### update
+
+```rbs
+class ClassBodyPairSource
+  def self.each: () { (untyped pair) -> void } -> void
+end
+```
+
+```ruby
+class ClassBodyPairConsumer
+  result = nil
+  ClassBodyPairSource.each do |_name, params|
+    result = params.nil?
+  end
+
+  RESULT = result
+end
+```
+
+### result
+
+```rbs
+class ClassBodyPairConsumer
+  RESULT: untyped?
 end
 ```

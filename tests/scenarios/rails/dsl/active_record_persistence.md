@@ -108,3 +108,29 @@ class User < ActiveRecord::Base
   def self.table: -> String
 end
 ```
+
+## Resolve Active Record class metadata and read only methods
+
+### update
+
+```ruby
+class ActiveRecord::Base; end
+
+class User < ActiveRecord::Base
+  def association_metadata = self.class.reflections
+
+  def base_model = self.class.base_class
+
+  def readonly_record = readonly!
+end
+```
+
+### result
+
+```rbs
+class User < ActiveRecord::Base
+  def association_metadata: -> untyped
+  def base_model: -> untyped
+  def readonly_record: -> untyped
+end
+```

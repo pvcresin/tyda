@@ -382,7 +382,9 @@ fn type_level(ty: &Type, class_context: &str, method_context: Option<&str>) -> C
         | Type::Todo
         | Type::BlockReturnRef
         | Type::TruthyProjection(_)
-        | Type::FalsyProjection(_) => CoverageLevel::Untyped,
+        | Type::FalsyProjection(_)
+        | Type::NonNilProjection(_)
+        | Type::DeferredSafeNavigation(..) => CoverageLevel::Untyped,
         Type::ParamRef(_) | Type::KeywordParamRef(_) => {
             if method_context.is_some() {
                 CoverageLevel::Untyped
@@ -515,6 +517,7 @@ mod tests {
             target,
             class_context: "Object".to_string(),
             method_context: Some("main".to_string()),
+            method_context_singleton_dispatch: None,
         }
     }
 
@@ -569,6 +572,8 @@ mod tests {
                 result_type: Type::String,
                 has_block: false,
                 safe_navigation: false,
+                singleton_dispatch: false,
+                respond_to_guards: Vec::new(),
             },
         );
         let mut recorder = CoverageRecorder::default();

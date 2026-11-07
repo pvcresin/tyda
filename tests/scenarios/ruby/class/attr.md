@@ -276,10 +276,6 @@ end
 
 ## Resolve generated attr methods from call sites
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -316,8 +312,8 @@ end
 class Profile
   def name: -> "Ada"
   def age: -> Integer
-  def age=: (Integer age) -> (20 | 21)
-  def token=: (String token) -> "secret"
+  def age=: (Integer age) -> Integer
+  def token=: (String token) -> String
   def initialize: -> void
 end
 
@@ -355,10 +351,6 @@ end
 ```
 
 ## attr true also generates writer
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -413,10 +405,6 @@ end
 
 ## Collect attr inside visibility wrappers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -447,10 +435,10 @@ item.label
 class Item
   def initialize: -> void
   private def name: -> "item"
-  private def count: -> (1 | 2)
+  private def count: -> 1 | 2
   private def count=: (Integer count) -> Integer
-  def label: -> "item"
   def set_count: -> 2
+  def label: -> "item"
 end
 ```
 
@@ -553,15 +541,20 @@ end
 
 ## Local receiver setter refines a later getter
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
 class DirectStore
   attr_accessor :value
+  attr_accessor :other
+
+  def touch; end
+
+  def custom=(value)
+    @custom = value.to_s
+  end
+
+  attr_reader :custom
 end
 
 def store_direct
@@ -569,17 +562,222 @@ def store_direct
   store.value = 1
   store.value
 end
+
+def store_last_write_wins
+  store = DirectStore.new
+  store.value = 1
+  store.value = :two
+  store.value
+end
+
+def store_branch_joins_writes(flag)
+  store = DirectStore.new
+  if flag
+    store.value = 1
+  else
+    store.value = :two
+  end
+  store.value
+end
+
+def store_loop_write_ends_fact(flag)
+  store = DirectStore.new
+  store.value = 1
+  while flag
+    store.value = :two
+  end
+  store.value
+end
+
+def store_string_keeps_class
+  store = DirectStore.new
+  store.value = "text"
+  store.value
+end
+
+def store_call_ends_fact
+  store = DirectStore.new
+  store.value = 1
+  store.touch
+  store.value
+end
+
+def store_alias_ends_fact
+  store = DirectStore.new
+  other = store
+  store.value = 1
+  other.value = :two
+  store.value
+end
+
+def store_parameter_keeps_no_fact(store)
+  store.value = 1
+  store.value
+end
+
+def store_custom_writer_keeps_no_fact
+  store = DirectStore.new
+  store.custom = 1
+  store.custom
+end
+
+def store_array_keeps_no_fact
+  store = DirectStore.new
+  store.other = []
+  store.other << 1
+  store.other
+end
 ```
 
 ### result
 
 ```rbs
 class DirectStore
-  def value: -> Integer
-  def value=: (Integer value) -> 1
+  def value: -> Integer | String | Symbol
+  def value=: ((Integer | String | Symbol) value) -> (Integer | String | Symbol)
+  def other: -> [ ]
+  def other=: ([ ] other) -> [ ]
+  def touch: -> nil
+  def custom=: (Integer value) -> String
+  def custom: -> String | untyped
 end
 
 class Object < BasicObject
   def store_direct: -> 1
+  def store_last_write_wins: -> :two
+  def store_branch_joins_writes: (untyped flag) -> (1 | :two)
+  def store_loop_write_ends_fact: (untyped flag) -> untyped
+  def store_string_keeps_class: -> String
+  def store_call_ends_fact: -> untyped
+  def store_alias_ends_fact: -> untyped
+  def store_parameter_keeps_no_fact: (untyped store) -> untyped
+  def store_custom_writer_keeps_no_fact: -> String | untyped
+  def store_array_keeps_no_fact: -> untyped
+end
+```
+
+## Attribute readers preserve known record shape around untyped fields
+
+### update
+
+```rbs
+class OptionalCluster
+  def group_type?: -> bool
+end
+
+class ClusterSource
+  def self.fetch: -> (OptionalCluster | untyped)
+end
+```
+
+```ruby
+class AttributeRecordHolder
+  attr_reader :options
+
+  def initialize(options: {})
+    @options = options
+  end
+end
+
+def build_attribute_record_holder
+  cluster = ClusterSource.fetch
+  AttributeRecordHolder.new(options: { fixed: true, dynamic: cluster.group_type? })
+end
+```
+
+### result
+
+```rbs
+class AttributeRecordHolder
+  def options: -> Hash[untyped, untyped] | { fixed: bool, dynamic: bool | untyped }
+  def initialize: (?options: (Hash[untyped, untyped] | { fixed: bool, dynamic: bool })) -> void
+end
+
+class Object < BasicObject
+  def build_attribute_record_holder: -> AttributeRecordHolder
+end
+```
+
+## Keep an unknown hash delete result from narrowing to nil
+
+### update
+
+```ruby
+class ClusterParamProject
+  def id = 1
+end
+
+class ClusterParamGroup
+  def id = 1
+end
+
+class ClusterServiceParams
+  attr_reader :params
+
+  def initialize(params = {})
+    @params = params.dup
+  end
+
+  def clusterable = @clusterable ||= params.delete(:clusterable)
+
+  def clusterable_id
+    case clusterable
+    when ClusterParamProject
+      clusterable.id
+    when ClusterParamGroup
+      clusterable.id
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class ClusterParamGroup
+  def id: -> 1
+end
+
+class ClusterParamProject
+  def id: -> 1
+end
+
+class ClusterServiceParams
+  def params: -> untyped
+  def initialize: (?Hash[untyped, untyped] params) -> void
+  def clusterable: -> untyped
+  def clusterable_id: -> nil | untyped
+end
+```
+
+## Class body locals stay visible to lambdas passed to writers
+
+### update
+
+```ruby
+class ClassBodyLambdaCapture
+  class << self
+    attr_accessor :filter
+  end
+
+  pattern = /a/
+  self.filter = lambda { |value| pattern.match?(value) }
+  FILTER = lambda { |value| pattern.match?(value) }
+end
+
+top_level_pattern = /a/
+TOP_LEVEL_SOURCES = [1].map { |_| top_level_pattern.source }
+```
+
+### result
+
+```rbs
+TOP_LEVEL_SOURCES: Array[String]
+
+class ClassBodyLambdaCapture
+  FILTER: Proc
+
+  def self.filter: -> untyped
+  def self.filter=: (Proc filter) -> Proc
 end
 ```

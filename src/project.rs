@@ -118,7 +118,10 @@ pub enum DslLibrary {
     Kredis,
     MixedInClassAttributes,
     Oj,
+    Paperclip,
     Protobuf,
+    Rake,
+    RackAttack,
     RailsGenerators,
     SidekiqWorker,
     Shrine,
@@ -249,7 +252,10 @@ impl DslLibrary {
             Self::Kredis => "kredis",
             Self::MixedInClassAttributes => "mixed_in_class_attributes",
             Self::Oj => "oj",
+            Self::Paperclip => "paperclip",
             Self::Protobuf => "protobuf",
+            Self::Rake => "rake",
+            Self::RackAttack => "rack_attack",
             Self::RailsGenerators => "rails_generators",
             Self::SidekiqWorker => "sidekiq_worker",
             Self::Shrine => "shrine",
@@ -310,7 +316,10 @@ impl DslLibrary {
             Self::Kredis,
             Self::MixedInClassAttributes,
             Self::Oj,
+            Self::Paperclip,
             Self::Protobuf,
+            Self::Rake,
+            Self::RackAttack,
             Self::RailsGenerators,
             Self::SidekiqWorker,
             Self::Shrine,
@@ -389,7 +398,10 @@ impl DslLibrary {
                 | Self::JsonApiClientResource
                 | Self::Kredis
                 | Self::Oj
+                | Self::Paperclip
                 | Self::Protobuf
+                | Self::Rake
+                | Self::RackAttack
                 | Self::Shrine
                 | Self::SidekiqWorker
                 | Self::SmartProperties
@@ -666,8 +678,37 @@ pub fn detect_declared_gems(root: &Path) -> BTreeSet<String> {
     }
     if let Ok(content) = std::fs::read_to_string(root.join("Gemfile")) {
         collect_gems_from_gemfile(&content, &mut gems);
+        if content.lines().any(|line| line.trim() == "gemspec")
+            && let Some(name) = local_gemspec_name(root)
+        {
+            gems.insert(name);
+        }
     }
     gems
+}
+
+/// The name in the project's only `*.gemspec`: a gem's own repository is a project for that gem.
+fn local_gemspec_name(root: &Path) -> Option<String> {
+    let mut gemspecs = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "gemspec"));
+    let gemspec = gemspecs.next()?;
+    if gemspecs.next().is_some() {
+        return None;
+    }
+    let content = std::fs::read_to_string(gemspec).ok()?;
+    content.lines().find_map(|line| {
+        let (target, value) = line.split_once('=')?;
+        let is_name_write = !line.trim_start().starts_with('#')
+            && !value.starts_with('=')
+            && target.trim_end().ends_with(".name");
+        is_name_write
+            .then(|| extract_quoted_token(value))
+            .flatten()
+            .map(str::to_string)
+    })
 }
 
 /// Constants derived from the Gemfile plus framework constants, so arbitrary gems don't trigger `unresolved_constant`.
@@ -874,6 +915,7 @@ const DSL_MARKERS: &[&str] = &[
     "GraphQL::Schema::InputObject",
     "GraphQL::Schema::Mutation",
     "JsonApiClient::Resource",
+    "Rack::Attack",
     "Shrine::Attachment(",
     "aasm do",
     "after_action",
@@ -898,6 +940,7 @@ const DSL_MARKERS: &[&str] = &[
     "enum :",
     "extend Discard::Model::ClassMethods",
     "field :",
+    "has_attached_file",
     "has_many ",
     "has_many_attached",
     "has_many_rich_texts",
@@ -1130,6 +1173,12 @@ fn detect_dsl_libraries_from_source_text(source: &str, detected: &mut BTreeSet<D
     }
     if contains_any(&["devise :", "devise(", "current_user", "authenticate_user!"]) {
         detected.insert(DslLibrary::Devise);
+    }
+    if hits.contains("has_attached_file", haystack) {
+        detected.insert(DslLibrary::Paperclip);
+    }
+    if hits.contains("Rack::Attack", haystack) {
+        detected.insert(DslLibrary::RackAttack);
     }
     if contains_any(&[
         "include Discard::Model",

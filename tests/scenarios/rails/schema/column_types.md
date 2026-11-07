@@ -51,6 +51,39 @@ class Post < ApplicationRecord
 end
 ```
 
+## Map explicit types in `t.column`
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "events", force: :cascade do |t|
+    t.column "occurred_at", :timestamp, null: false
+    t.column "due_on", :date
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Event < ApplicationRecord
+  def happened_at = occurred_at
+  def due_date = due_on
+end
+```
+
+### result
+
+```rbs
+class Event < ApplicationRecord
+  def happened_at: -> ActiveSupport::TimeWithZone | DateTime
+  def due_date: -> Date?
+end
+```
+
 ## Map structure.sql column types to accessor types
 
 ### update

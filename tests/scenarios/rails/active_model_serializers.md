@@ -116,8 +116,8 @@ class A::B < ActiveModelSerializers::Model
   def x=: (untyped x) -> untyped
   def y: -> untyped
   def y=: (untyped y) -> untyped
-  def z: -> DateTime
-  def z=: (DateTime z) -> DateTime
+  def z: -> untyped
+  def z=: (untyped z) -> untyped
   def item: -> untyped
   def item=: (untyped item) -> untyped
   def initialize: (untyped item, untyped attrs) -> void
@@ -150,8 +150,8 @@ end
 
 ```rbs
 class A::B < ActiveModelSerializers::Model
-  def z: -> DateTime
-  def z=: (DateTime z) -> DateTime
+  def z: -> untyped
+  def z=: (untyped z) -> untyped
   def initialize: (untyped attrs) -> void
   def ok?: -> bool
 end
@@ -202,7 +202,7 @@ class ASerializer < ActiveModel::Serializer
 end
 ```
 
-## Infer CamelCase classes from attributes DSL ivars
+## Attributes DSL ivars do not take a class from their name
 
 ### update
 
@@ -230,11 +230,11 @@ class Account
 end
 
 class Presenter < ActiveModelSerializers::Model
-  def account: -> Account
-  def account=: (Account account) -> Account
+  def account: -> untyped
+  def account=: (untyped account) -> untyped
   def label: -> String
   def label=: (String label) -> "default"
-  def initialize: (Account account) -> void
+  def initialize: (untyped account) -> void
 end
 ```
 
@@ -283,8 +283,9 @@ module ItemAssociations
 
   def item: -> Item
   def item=: (Item item) -> Item
-  def build_item: -> Item
-  def create_item: -> Item
+  def build_item: (?Hash[String | Symbol, untyped] attributes) -> Item
+  def create_item: (?Hash[String | Symbol, untyped] attributes) -> Item
+  def create_item!: (?Hash[String | Symbol, untyped] attributes) -> Item
   def items: -> ActiveRecord::Associations::CollectionProxy[Item]
   def item_ids: -> Array[Integer]
   def item_ids=: (Array[Integer] item_ids) -> Array[Integer]

@@ -1,5 +1,71 @@
 # Rails / Active Support / Core Methods
 
+## Keep a String member in an underscore receiver union
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class RailsStringUnionProvider
+  def underscore = "provider"
+end
+
+class RailsStringUnionProbe
+  #: () -> String
+  def string_value = "value"
+
+  def normalize(use_provider)
+    value = use_provider ? RailsStringUnionProvider.new : string_value
+    value.underscore
+  end
+end
+```
+
+### result
+
+```rbs
+class RailsStringUnionProbe
+  def string_value: -> String
+  def normalize: (untyped use_provider) -> String
+end
+
+class RailsStringUnionProvider
+  def underscore: -> "provider"
+end
+```
+
+## Infer a String return from Active Support inflections in a case branch
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+def normalize(value)
+  case value
+  when String
+    value.underscore.camelize(:lower)
+  else
+    "other"
+  end
+end
+
+normalize("value")
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def normalize: (String value) -> String
+end
+```
+
 ## Narrow nilable local in present? then branch
 
 ### update
@@ -400,10 +466,6 @@ end
 
 ## ActiveSupport Array.wrap and predicate helpers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -427,8 +489,8 @@ class Probe
   def wrapped_nil: -> [ ]
   def wrapped_value: -> Array[:tag]
   def wrapped_array: -> [1, 2]
-  def predicates: (untyped value) -> [untyped, bool, bool]
-  def formatted: (untyped value) -> untyped
+  def predicates: (untyped value) -> [bool, bool, bool]
+  def formatted: (untyped value) -> String
 end
 ```
 

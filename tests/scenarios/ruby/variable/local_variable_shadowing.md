@@ -50,10 +50,6 @@ end
 
 ## Assignment inside unreachable if false introduces local
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -75,6 +71,30 @@ end
 class A
   def x: -> :method
   def call: -> nil
+end
+```
+
+## Skip an unreachable else branch after a truthy predicate
+
+### update
+
+```ruby
+class A
+  def value
+    if 1
+      :reachable
+    else
+      :unreachable
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class A
+  def value: -> :reachable
 end
 ```
 

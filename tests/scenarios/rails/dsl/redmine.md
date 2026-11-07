@@ -45,6 +45,6 @@ end
 class Issue < ApplicationRecord
   include Redmine::SafeAttributes
 
-  def editable?: -> bool
+  def editable?: -> untyped
 end
 ```

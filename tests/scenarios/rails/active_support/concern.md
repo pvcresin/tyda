@@ -537,8 +537,10 @@ class ApplicationRecord < ActiveRecord::Base; end
 module Statused
   extend ActiveSupport::Concern
 
+  STATUSES = { active: 0, archived: 1 }.with_indifferent_access.freeze
+
   included do
-    enum status: { active: 0, archived: 1 }
+    enum status: STATUSES
   end
 end
 
@@ -563,6 +565,7 @@ class Item < ApplicationRecord
   include Statused
 
   def self.statuses: -> Hash[String, untyped]
+  def status: -> String
 end
 
 class Object < BasicObject
@@ -574,6 +577,8 @@ end
 
 module Statused
   extend ActiveSupport::Concern
+
+  STATUSES: { active: 0, archived: 1 }
 
   def active?: -> bool
   def active!: -> bool
@@ -587,6 +592,7 @@ class User < ApplicationRecord
   include Statused
 
   def self.statuses: -> Hash[String, untyped]
+  def status: -> String
 end
 ```
 
