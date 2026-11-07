@@ -1042,6 +1042,8 @@ pub struct InferenceEngine<'a> {
     project_root: Option<PathBuf>,
     record_hover_snapshots: bool,
     block_pass_chain: BlockPassChain,
+    in_discarded_block_walk: bool,
+    value_walked_blocks: FxHashSet<usize>,
     unbound_block_return: Option<Type>,
     record_annotated_method_body_hover_snapshots: bool,
     analyzing_rbi_declaration: bool,
@@ -2458,6 +2460,8 @@ impl<'a> InferenceEngine<'a> {
             project_root: meta.project_root,
             record_hover_snapshots: true,
             block_pass_chain: BlockPassChain::Open,
+            in_discarded_block_walk: false,
+            value_walked_blocks: FxHashSet::default(),
             unbound_block_return: None,
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
@@ -2540,6 +2544,8 @@ impl<'a> InferenceEngine<'a> {
             project_root: None,
             record_hover_snapshots: true,
             block_pass_chain: BlockPassChain::Open,
+            in_discarded_block_walk: false,
+            value_walked_blocks: FxHashSet::default(),
             unbound_block_return: None,
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
@@ -21788,6 +21794,14 @@ impl<'a> InferenceEngine<'a> {
         let Some(block) = block_raw.as_block_node() else {
             return;
         };
+        // The enclosing walk discards its scope, and the value pass already walked this block.
+        if self.in_discarded_block_walk
+            && self
+                .value_walked_blocks
+                .contains(&block.location().start_offset())
+        {
+            return;
+        }
         let Some(body) = block.body() else {
             return;
         };
@@ -24204,6 +24218,10 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
+        if self.in_discarded_block_walk {
+            self.value_walked_blocks
+                .insert(block.location().start_offset());
+        }
         let return_type = if let Some(body) = block.body() {
             self.infer_body_return_type(class_name, &body, parse_result, &mut block_scope)
         } else {
@@ -29179,7 +29197,9 @@ impl<'a> InferenceEngine<'a> {
 
                         let block = {
                             let mut block_scope = scope.fork_for_block();
-                            self.infer_user_defined_call_block(
+                            let outer_discarded =
+                                std::mem::replace(&mut self.in_discarded_block_walk, true);
+                            let block = self.infer_user_defined_call_block(
                                 class_name,
                                 &method_name,
                                 scope.singleton_dispatch,
@@ -29188,7 +29208,9 @@ impl<'a> InferenceEngine<'a> {
                                 &call_node,
                                 parse_result,
                                 &mut block_scope,
-                            )
+                            );
+                            self.in_discarded_block_walk = outer_discarded;
+                            block
                         };
                         let arg_types_for_resolve = arg_types.clone();
                         let kw_types_for_resolve = kw_types.clone();
@@ -30753,6 +30775,8 @@ impl<'a> InferenceEngine<'a> {
                                     self.block_pass_chain = BlockPassChain::Unbound;
                                 }
                                 let mut block_scope = scope.fork_for_block();
+                                let outer_discarded =
+                                    std::mem::replace(&mut self.in_discarded_block_walk, true);
                                 let block = self.infer_user_defined_call_block(
                                     &target_class,
                                     &method_name,
@@ -30763,6 +30787,7 @@ impl<'a> InferenceEngine<'a> {
                                     parse_result,
                                     &mut block_scope,
                                 );
+                                self.in_discarded_block_walk = outer_discarded;
                                 self.block_pass_chain = outer_chain;
                                 block
                             };
@@ -41620,6 +41645,10 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
+        if self.in_discarded_block_walk {
+            self.value_walked_blocks
+                .insert(block.location().start_offset());
+        }
         let block_return_type = if let Some(first_pass_return) = self.unbound_block_return.take() {
             first_pass_return
         } else if let Some(body) = block.body() {
@@ -53309,7 +53338,10 @@ impl<'a> InferenceEngine<'a> {
         self.receiver_type_override = Some((start, end, Type::from_type_vec(typed_arms)));
         let saved_snapshots = std::mem::replace(&mut self.record_hover_snapshots, false);
         let saved_dispatching = std::mem::replace(&mut self.dispatching_typed_receiver_arm, true);
+        // The whole-union walk above already took the view without declared block types.
+        let saved_chain = std::mem::replace(&mut self.block_pass_chain, BlockPassChain::Bound);
         let typed_result = self.infer_node_type_inner(class_name, node, parse_result, scope);
+        self.block_pass_chain = saved_chain;
         self.dispatching_typed_receiver_arm = saved_dispatching;
         self.record_hover_snapshots = saved_snapshots;
         self.receiver_type_override = saved_override;
