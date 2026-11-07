@@ -22,6 +22,8 @@
 - [ ] Concern の includer 依存 DSL を拡張する（schema fallback、Devise、AMS など）
 - [ ] 大規模 Rails での `--diagnostics` context scan を高速化する
 - [ ] block callback の副作用解析を一般化し、外側で nil check 済みのivarがcallback内で誤って `nil` と診断されるケースを見直す（Redmine `Attachment#files_to_final_location` の `sha.update(@temp_file)`）。実際のmutationは引き続きnarrowingを無効化し、クラス・メソッド固有の例外は追加しない
+- [ ] CLI のファイル単位推論で、後のファイルや後方の定義に依存する型を遅延参照として保ち、全体の集約後に解決する。self 呼び出しの戻り値が `nil | untyped` に潰れる、後で定義される定数を使う式が `untyped` になる、別ファイルの model への `find(1)` が `untyped` になる、後のファイルで定義されるクラスの `when` が引数を `untyped` にする、の4件（`known-issues/later_definitions.md`、`tests/cli.rs` の `when_with_class_from_later_file_does_not_leak_other_arguments`）。シナリオ runner は他ファイルを先に解析するため、ファイル間の順序に依存する2件は CLI でのみ再現する
+- [ ] 明示的なレシーバでの `Kernel` の private な関数（`obj.select(x)` など）を、レシーバのクラスが定義しない限り解決しない（`known-issues/kernel_functions.md`）
 - [ ] Ruby / Rails version、framework DSL、scenario coverage を継続する
 
 ## 低

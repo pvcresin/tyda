@@ -4655,3 +4655,33 @@ probe.post_until_truthy
         );
     }
 }
+
+#[test]
+fn when_with_class_from_later_file_does_not_leak_other_arguments() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a_formatter.rb"),
+        "module Formatter\n  def link(project)\n    project.archived?\n  end\n\n  def format_object(object)\n    case object\n    when Integer\n      1\n    when LaterModel\n      link(object)\n    end\n  end\n\n  def calls\n    format_object(1)\n    format_object(LaterModel.new)\n  end\nend\n",
+    )
+    .expect("failed to write formatter");
+    fs::write(
+        dir.path().join("b_later_model.rb"),
+        "class LaterModel\n  def archived? = false\nend\n",
+    )
+    .expect("failed to write model");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let link = stdout
+        .lines()
+        .find(|line| line.contains("def link:"))
+        .unwrap_or_else(|| panic!("expected link signature, got: {stdout}"));
+    assert!(
+        !link.contains("Integer"),
+        "the `when Integer` branch must not reach link: {link}"
+    );
+}
