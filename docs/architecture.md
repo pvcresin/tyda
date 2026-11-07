@@ -164,6 +164,8 @@ hover 専用の block shape 絞り込みと implicit-self の追加 generic bloc
 表示用の推論を広げても、CLI batch / coverage の facts-only profile の RBS 結果と基準値を変えない。
 RBS の block 付き呼び出しは、宣言の型なしと型ありの 2 回 block を走査する。ネストした呼び出しは外側の走査と
 同じ種類だけを行い、走査回数がネストの深さに対して指数的に増えないようにする。
+引数なしの self 呼び出しへの nil ガードは、後続の文が self facts を無効化するまで同じ呼び出しに効く。定義が後方にある
+メソッドも遅延参照のまま絞り込む。
 引数型と block の戻り値は既存の scan site を共有して hover snapshot に複製せず、scan で得た戻り値を
 再計算しないため、通常の hover は候補数と型構造に比例する bounded な query になる。候補を一意に
 確定できない場合は情報を捨てず、元の overload 群を表示する。Playground は Ruby / RBS の編集ごとに

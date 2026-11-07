@@ -59777,7 +59777,7 @@ impl<'a> InferenceEngine<'a> {
             && self
                 .registry
                 .lookup_method_def(class_name, name, false)
-                .is_some_and(|method| method.param_infos.is_empty())
+                .is_none_or(|method| method.param_infos.is_empty())
     }
 
     fn override_result_with_self_fact(
@@ -59843,9 +59843,12 @@ impl<'a> InferenceEngine<'a> {
                 {
                     return Some(ty);
                 }
-                let sig = self.registry.lookup_method_sig(class_name, name)?;
+                let deferred = Type::MethodReturnRef(Sym::new(class_name), Sym::new(name));
+                let Some(sig) = self.registry.lookup_method_sig(class_name, name) else {
+                    return Some(deferred);
+                };
                 Some(if Self::contains_unresolved_ref(&sig.return_type) {
-                    Type::MethodReturnRef(Sym::new(class_name), Sym::new(name))
+                    deferred
                 } else {
                     sig.return_type
                 })
