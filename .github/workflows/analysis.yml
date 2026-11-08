@@ -124,7 +124,9 @@ jobs:
     uses: ./.github/workflows/analysis-compatibility.yml
     with:
       phase: build
+    # The called workflow's subject job asks for actions: read even when it is skipped.
     permissions:
+      actions: read
       contents: read
 
   analysis-subjects:
