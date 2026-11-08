@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 classifier="$repo_root/scripts/ci/classify-changed-paths.sh"
 gate="$repo_root/scripts/ci/require-ci-results.sh"
 approval_gate="$repo_root/scripts/ci/require-analysis-approval.sh"
+runtime_finder="$repo_root/scripts/ci/find-analysis-runtime.sh"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -267,5 +268,56 @@ expect_approval labeled accept "$labeled_success"
 expect_approval running reject "$labeled_running"
 expect_approval revoked reject "$labeled_success" "$unlabeled_later"
 expect_approval ignored-label accept "$ignored_later" "$labeled_success"
+
+pr_ci_run() {
+  local id="$1"
+  local head_sha="$2"
+  local path="${3:-.github/workflows/pull-request-ci.yml}"
+  printf '{"id":%s,"head_sha":"%s","event":"pull_request","path":"%s"}' "$id" "$head_sha" "$path"
+}
+
+runtime_artifact() {
+  local id="$1"
+  local run_id="$2"
+  local head_sha="$3"
+  local created_at="$4"
+  local expired="${5:-false}"
+  printf '{"id":%s,"name":"analysis-compatibility-runtime","expired":%s,"created_at":"%s","workflow_run":{"id":%s,"head_sha":"%s"}}' \
+    "$id" "$expired" "$created_at" "$run_id" "$head_sha"
+}
+
+expect_runtime() {
+  local name="$1"
+  local expected="$2"
+  local runs="$3"
+  local artifacts="$4"
+  local output="$tmp_dir/runtime-$name.out"
+  printf '{"workflow_runs":[%s]}\n' "$runs" > "$tmp_dir/runtime-$name-runs.json"
+  printf '{"artifacts":[%s]}\n' "$artifacts" > "$tmp_dir/runtime-$name-artifacts.json"
+  : > "$output"
+  env HEAD_SHA=abc GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$output" \
+    TYDA_PR_CI_RUNS_JSON="$tmp_dir/runtime-$name-runs.json" \
+    TYDA_RUNTIME_ARTIFACTS_JSON="$tmp_dir/runtime-$name-artifacts.json" \
+    bash "$runtime_finder" >/dev/null || fail "$name: runtime finder failed"
+  if [[ "$expected" == none ]]; then
+    [[ ! -s "$output" ]] || fail "$name should not select an artifact"
+  else
+    assert_output "$output" artifact_id "$expected"
+  fi
+}
+
+expect_runtime no-artifact none "$(pr_ci_run 1 abc)" ""
+expect_runtime pr-ci-artifact 11 "$(pr_ci_run 1 abc)" \
+  "$(runtime_artifact 11 1 abc 2026-01-01T00:00:00Z)"
+expect_runtime newest-artifact 12 "$(pr_ci_run 1 abc),$(pr_ci_run 2 abc)" \
+  "$(runtime_artifact 12 2 abc 2026-01-02T00:00:00Z),$(runtime_artifact 11 1 abc 2026-01-01T00:00:00Z)"
+expect_runtime expired-artifact none "$(pr_ci_run 1 abc)" \
+  "$(runtime_artifact 11 1 abc 2026-01-01T00:00:00Z true)"
+expect_runtime other-head none "$(pr_ci_run 1 abc)" \
+  "$(runtime_artifact 11 1 def 2026-01-01T00:00:00Z)"
+expect_runtime other-workflow none "$(pr_ci_run 1 abc .github/workflows/analysis-approval.yml)" \
+  "$(runtime_artifact 11 1 abc 2026-01-01T00:00:00Z)"
+expect_runtime unknown-run none "$(pr_ci_run 1 abc)" \
+  "$(runtime_artifact 11 9 abc 2026-01-01T00:00:00Z)"
 
 echo "CI helper tests passed."

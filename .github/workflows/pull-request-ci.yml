@@ -130,6 +130,7 @@ jobs:
     with:
       phase: subjects
     permissions:
+      actions: read
       contents: read
 
   performance-subjects:
