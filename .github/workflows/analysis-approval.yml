@@ -149,9 +149,16 @@ jobs:
           BUILD_RESULT: ${{ needs.analysis-build.result }}
           SUBJECTS_RESULT: ${{ needs.analysis-subjects.result }}
           REUSED_ARTIFACT: ${{ needs.runtime.outputs.artifact_id }}
+          ANALYSIS_CHANGED: ${{ needs.analysis-subjects.outputs.analysis_changed }}
+          ANALYSIS_APPROVED: ${{ needs.changes.outputs.analysis_approved }}
         run: |
           if [[ -n "$REUSED_ARTIFACT" ]]; then
-            [[ "$BUILD_RESULT" == skipped && "$SUBJECTS_RESULT" == success ]]
+            [[ "$BUILD_RESULT" == skipped ]]
           else
-            [[ "$BUILD_RESULT" == success && "$SUBJECTS_RESULT" == success ]]
+            [[ "$BUILD_RESULT" == success ]]
+          fi
+          [[ "$SUBJECTS_RESULT" == success ]]
+          if [[ "$ANALYSIS_CHANGED" != false && "$ANALYSIS_APPROVED" != 1 ]]; then
+            echo "Analysis output changed without approved-analysis-change from a maintainer or admin." >&2
+            exit 1
           fi

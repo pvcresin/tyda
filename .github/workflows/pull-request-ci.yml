@@ -172,8 +172,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Require analysis workflows
-        id: required
-        continue-on-error: true
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           RUN_REQUIRED: ${{ needs.changes.outputs.run_analysis }}
@@ -181,10 +179,12 @@ jobs:
             analysis-build=${{ needs.analysis-build.result }}
             analysis-subjects=${{ needs.analysis-subjects.result }}
         run: bash scripts/ci/require-ci-results.sh
-      # A label run can finish before this run. Keep its approval for the same commit
-      # instead of replacing it with this unapproved result.
-      - name: Accept an approved analysis run
-        if: steps.required.outcome == 'failure'
+      # Subject jobs only report changes. A change passes here only when the latest
+      # label run for this commit approved it, even if that run finished first.
+      - name: Require approval for analysis changes
+        if: >-
+          needs.changes.outputs.run_analysis == 'true' &&
+          needs.analysis-subjects.outputs.analysis_changed != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

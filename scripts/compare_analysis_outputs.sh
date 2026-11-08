@@ -11,7 +11,7 @@ SUBJECT_PATH="${TYDA_ANALYSIS_SUBJECT_PATH:-$ROOT_DIR/subject/sample}"
 BINARY_DIR="${TYDA_ANALYSIS_BINARY_DIR:-$ROOT_DIR/target/analysis-runtime/bin}"
 RBS_DIR="${TYDA_ANALYSIS_RBS_DIR:-$ROOT_DIR/target/analysis-runtime/rbs}"
 OUTPUT_DIR="${TYDA_ANALYSIS_OUTPUT_DIR:-$ROOT_DIR/target/analysis/$SUBJECT_NAME}"
-APPROVED="${TYDA_ANALYSIS_APPROVED:-0}"
+FAIL_ON_CHANGE="${TYDA_ANALYSIS_FAIL_ON_CHANGE:-1}"
 TIMEOUT_SECONDS="${TYDA_ANALYSIS_TIMEOUT_SECONDS:-600}"
 LOG_DIFF_LINES="${TYDA_ANALYSIS_LOG_DIFF_LINES:-5000}"
 
@@ -123,8 +123,8 @@ if [[ "$diff_lines" -gt "$LOG_DIFF_LINES" ]]; then
 fi
 echo "::endgroup::"
 
-if [[ "$APPROVED" != 1 ]]; then
-  echo "$MODE output changed without approved-analysis-change." >&2
+if [[ "$FAIL_ON_CHANGE" != 0 ]]; then
+  echo "$MODE output changed." >&2
   exit 1
 fi
-echo "$MODE output change approved by maintainer/admin label."
+echo "$MODE output change recorded; the analysis-compatibility gate decides whether it is approved."

@@ -335,7 +335,7 @@ if $PROGRAM_NAME == __FILE__
   File.write(options.fetch(:output), JSON.pretty_generate(result) + "\n")
   failed = result.fetch("status") == "failed"
   if failed && options.fetch(:allow_regressions, false)
-    puts "WARN coverage regressions approved by maintainer/admin label"
+    puts "WARN coverage regressions recorded; the analysis-compatibility gate decides whether they are approved"
   end
   exit(failed && !options.fetch(:allow_regressions, false) ? 1 : 0)
 end
