@@ -28,7 +28,8 @@ env:
   SCCACHE_GHA_ENABLED: "true"
 
 concurrency:
-  group: analysis-compatibility-${{ github.event.pull_request.number || github.ref }}
+  # github.workflow is the caller, so the PR CI run and a label run do not cancel each other.
+  group: analysis-compatibility-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

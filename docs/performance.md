@@ -127,7 +127,7 @@ successを要求し、対象外scopeでは分類成功と依存jobの全skipを�
 
 差分があれば通常は失敗する。推論の差分は、それまでの推論や診断の誤りを直した結果であることも
 多いため、差分を確認したMaintainer/AdminがPRに `approved-analysis-change` を付けて許可できる。
-このラベルは現在のcommitにだけ有効で、`synchronize` 時に自動削除される。比較の実行自体が
+ラベルの付け外しは `Analysis approval` workflowが受け持ち、解析比較だけを再実行して `analysis-compatibility` gateだけを報告する。このラベルは現在のcommitにだけ有効で、`synchronize` 時に自動削除される。比較の実行自体が
 失敗した場合は、ラベルがあっても許可しない。
 
 結果は人間と agent の両方が読めるように、次の3段で残す。

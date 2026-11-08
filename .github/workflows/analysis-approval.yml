@@ -1,0 +1,83 @@
+name: Analysis approval
+run-name: >-
+  ${{ github.event.label.name == 'approved-analysis-change' &&
+  format('Analysis approval ({0})', github.event.action) ||
+  'Ignored label change' }}
+
+# The approved-analysis-change label only re-runs the analysis checks. This workflow
+# reports only the analysis-compatibility gate, so a label change never replaces the
+# test, performance, or other results of the Pull request CI run for the same commit.
+on:
+  pull_request:
+    types: [labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: analysis-approval-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: resolve approval
+    if: github.event.label.name == 'approved-analysis-change'
+    runs-on: ubuntu-latest
+    outputs:
+      analysis_approved: ${{ steps.approval.outputs.analysis_approved }}
+    steps:
+      - name: Resolve analysis-change approval
+        id: approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_ACTION: ${{ github.event.action }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+        run: |
+          approved=0
+          if [[ "$EVENT_ACTION" == labeled ]]; then
+            permission="$(gh api \
+              "repos/$GITHUB_REPOSITORY/collaborators/$SENDER_LOGIN/permission" \
+              --jq .permission 2>/dev/null || true)"
+            case "$permission" in
+              admin|maintain)
+                approved=1
+                ;;
+              *)
+                echo "Ignoring approved-analysis-change from $SENDER_LOGIN (permission=$permission)."
+                ;;
+            esac
+          fi
+          echo "analysis_approved=$approved" >> "$GITHUB_OUTPUT"
+
+  analysis-build:
+    needs: changes
+    uses: ./.github/workflows/analysis-compatibility.yml
+    with:
+      phase: build
+    permissions:
+      contents: read
+
+  analysis-subjects:
+    needs: [changes, analysis-build]
+    uses: ./.github/workflows/analysis-compatibility.yml
+    with:
+      phase: subjects
+      analysis_approved: ${{ needs.changes.outputs.analysis_approved == '1' }}
+    permissions:
+      contents: read
+
+  analysis-compatibility:
+    # Other labels must not report a skipped analysis-compatibility check, because a
+    # skipped required check counts as passing.
+    name: >-
+      ${{ github.event.label.name == 'approved-analysis-change' &&
+      'analysis-compatibility' || 'ignored label change' }}
+    needs: [changes, analysis-build, analysis-subjects]
+    if: always() && github.event.label.name == 'approved-analysis-change'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require analysis workflows
+        env:
+          BUILD_RESULT: ${{ needs.analysis-build.result }}
+          SUBJECTS_RESULT: ${{ needs.analysis-subjects.result }}
+        run: '[[ "$BUILD_RESULT" == success && "$SUBJECTS_RESULT" == success ]]'
