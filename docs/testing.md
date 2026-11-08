@@ -71,7 +71,7 @@ ARM macOS package smoke testも確認する。Linux ARM64はrunnerの利用条�
 
 `pages / e2e-test` は `npm run format:check`、`npm run typecheck`、`npm run lint` を実行してからVitePressのドキュメント、Playgroundのwasm buildとE2Eを行う。E2EはPages artifactを `/tyda/` 配下で配信し、Top・Docs・Playgroundの遷移、編集内容のhash付きreload、ページ間およびPlayground内のBack/Forward、壊れたhashからの復帰を確認する。Playgroundのエディタでは、行頭へのカーソル移動、選択範囲の削除、プラットフォーム別コメント切り替えもブラウザ操作で確認する。`pages` gateが `e2e-test` の結果をrequired checkとして集約する。
 
-`Analysis compatibility` は base commit と head commitをそれぞれのGemfile.lockから生成したRBSと組み合わせ、sample・pinned OSS subjectのCLI RBS出力とdiagnosticsをbyte単位で比較する。coverageも同じ組み合わせで比較し、差分があるPRはデフォルトで失敗する。意図した推論・coverage変更はJob SummaryのdiffをレビューしたMaintainer/Adminだけが `approved-analysis-change` ラベルで許可できる。ラベルはPerformance matrixのcoverage差分にも適用するが、実行時間・メモリの回帰は許可しない。新しいcommitではラベルを自動削除するため、古い承認を再利用できない。
+`Analysis compatibility` は base commit と head commitをそれぞれのGemfile.lockから生成したRBSと組み合わせ、sample・pinned OSS subjectのCLI RBS出力、diagnostics、coverageを別々の step で比較する。どれかに差分があるPRはデフォルトで失敗するが、1回のCIで3つの比較結果がすべて出る。意図した推論・coverage変更はJob SummaryのdiffをレビューしたMaintainer/Adminだけが `approved-analysis-change` ラベルで許可できる。`Performance` は実行時間とメモリだけを判定し、ラベルの影響を受けない。新しいcommitではラベルを自動削除するため、古い承認を再利用できない。
 
 scenario の期待 RBS は whitespace を正規化して比較するが、意味のない出力変更を許容する
 ための仕組みではない。出力を変えたときは意図を scenario / CLI test に残す。

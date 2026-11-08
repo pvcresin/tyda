@@ -178,7 +178,6 @@ jobs:
       phase: subjects
       base_sha: ${{ needs.performance-build.outputs.base_sha }}
       head_sha: ${{ needs.performance-build.outputs.head_sha }}
-      analysis_approved: ${{ needs.changes.outputs.analysis_approved == '1' }}
     permissions:
       contents: read
 
