@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run the exact-output and coverage gates for one compatibility subject.
+# Run the RBS output, diagnostics, and coverage checks for one compatibility subject.
+# Every check runs even when an earlier one fails, so one run reports all changes.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUBJECT_NAME="${TYDA_ANALYSIS_SUBJECT_NAME:-subject}"
@@ -18,11 +19,14 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 set +e
-TYDA_ANALYSIS_OUTPUT_DIR="$OUTPUT_DIR/output" \
-  TYDA_ANALYSIS_SUBJECT_NAME="$SUBJECT_NAME" \
-  TYDA_ANALYSIS_SUBJECT_PATH="$SUBJECT_PATH" \
-  "$ROOT_DIR/scripts/compare_analysis_outputs.sh"
-output_status=$?
+statuses=()
+for mode in rbs diagnostics; do
+  TYDA_ANALYSIS_OUTPUT_DIR="$OUTPUT_DIR/output" \
+    TYDA_ANALYSIS_SUBJECT_NAME="$SUBJECT_NAME" \
+    TYDA_ANALYSIS_SUBJECT_PATH="$SUBJECT_PATH" \
+    "$ROOT_DIR/scripts/compare_analysis_outputs.sh" "$mode"
+  statuses+=("$mode=$?")
+done
 
 TYDA_COVERAGE_BINARY_DIR="${TYDA_ANALYSIS_BINARY_DIR:-$ROOT_DIR/target/analysis-runtime/bin}" \
   TYDA_COVERAGE_BASE_RBS_DIR="${TYDA_ANALYSIS_BASE_RBS_DIR:-$ROOT_DIR/target/analysis-runtime/rbs/base}" \
@@ -30,11 +34,13 @@ TYDA_COVERAGE_BINARY_DIR="${TYDA_ANALYSIS_BINARY_DIR:-$ROOT_DIR/target/analysis-
   TYDA_COVERAGE_OUTPUT_DIR="$OUTPUT_DIR/coverage" \
   TYDA_COVERAGE_SUBJECT="$SUBJECT_PATH" \
   "$ROOT_DIR/scripts/coverage_ci.sh"
-coverage_status=$?
+statuses+=("coverage=$?")
 set -e
 
-if [[ "$output_status" -ne 0 || "$coverage_status" -ne 0 ]]; then
-  echo "Analysis compatibility failed (output=$output_status coverage=$coverage_status)." >&2
+ruby "$ROOT_DIR/scripts/summarize_analysis.rb" subject "$OUTPUT_DIR" "$SUBJECT_NAME"
+
+if [[ " ${statuses[*]} " =~ =[1-9] ]]; then
+  echo "Analysis compatibility failed (${statuses[*]})." >&2
   exit 1
 fi
 

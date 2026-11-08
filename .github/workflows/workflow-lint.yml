@@ -35,3 +35,4 @@ jobs:
         run: |
           bash -n scripts/ci/*.sh
           bash scripts/ci/test-ci-gates.sh
+          ruby scripts/summarize_analysis_test.rb

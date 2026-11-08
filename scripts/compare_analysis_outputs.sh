@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Compare CLI output and diagnostics for base/head compatibility subjects.
+# Compare one CLI output mode (rbs or diagnostics) for a base/head compatibility subject.
+# Usage: compare_analysis_outputs.sh <rbs|diagnostics>
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MODE="${1:-}"
 SUBJECT_NAME="${TYDA_ANALYSIS_SUBJECT_NAME:-subject}"
 SUBJECT_PATH="${TYDA_ANALYSIS_SUBJECT_PATH:-$ROOT_DIR/subject/sample}"
 BINARY_DIR="${TYDA_ANALYSIS_BINARY_DIR:-$ROOT_DIR/target/analysis-runtime/bin}"
@@ -11,6 +13,12 @@ RBS_DIR="${TYDA_ANALYSIS_RBS_DIR:-$ROOT_DIR/target/analysis-runtime/rbs}"
 OUTPUT_DIR="${TYDA_ANALYSIS_OUTPUT_DIR:-$ROOT_DIR/target/analysis/$SUBJECT_NAME}"
 APPROVED="${TYDA_ANALYSIS_APPROVED:-0}"
 TIMEOUT_SECONDS="${TYDA_ANALYSIS_TIMEOUT_SECONDS:-600}"
+LOG_DIFF_LINES="${TYDA_ANALYSIS_LOG_DIFF_LINES:-5000}"
+
+if [[ "$MODE" != rbs && "$MODE" != diagnostics ]]; then
+  echo "usage: $0 <rbs|diagnostics>" >&2
+  exit 2
+fi
 
 for variable in SUBJECT_PATH BINARY_DIR RBS_DIR OUTPUT_DIR; do
   value="${!variable}"
@@ -41,13 +49,17 @@ if ! [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "TYDA_ANALYSIS_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
 fi
+if ! [[ "$LOG_DIFF_LINES" =~ ^[0-9]+$ ]]; then
+  echo "TYDA_ANALYSIS_LOG_DIFF_LINES must be a non-negative integer" >&2
+  exit 2
+fi
 
 mkdir -p "$OUTPUT_DIR"
-rm -f "$OUTPUT_DIR"/*.stdout "$OUTPUT_DIR"/*.stderr "$OUTPUT_DIR"/*.meta \
-  "$OUTPUT_DIR"/*.status "$OUTPUT_DIR"/*.diff "$OUTPUT_DIR/summary.md"
+rm -f "$OUTPUT_DIR"/*."$MODE".stdout "$OUTPUT_DIR"/*."$MODE".stderr \
+  "$OUTPUT_DIR"/*."$MODE".meta "$OUTPUT_DIR"/*."$MODE".status \
+  "$OUTPUT_DIR/$MODE.diff" "$OUTPUT_DIR/$MODE.result"
 
 execution_failed=0
-differences_found=0
 
 run_variant() {
   local variant="$1"
@@ -83,70 +95,36 @@ run_variant() {
   fi
 }
 
-compare_outputs() {
-  local mode="$1"
-  local base="$OUTPUT_DIR/base.$mode.stdout"
-  local head="$OUTPUT_DIR/head.$mode.stdout"
-  local diff_file="$OUTPUT_DIR/$mode.diff"
-
-  if cmp -s "$base" "$head"; then
-    echo "$mode output: identical"
-    rm -f "$diff_file"
-  else
-    echo "$mode output: changed"
-    diff -u "$base" "$head" > "$diff_file" || true
-    differences_found=1
-  fi
-}
-
-run_variant base rbs
-run_variant head rbs
-run_variant base diagnostics
-run_variant head diagnostics
-compare_outputs rbs
-compare_outputs diagnostics
-
-summary="$OUTPUT_DIR/summary.md"
-{
-  echo "## Analysis compatibility: $SUBJECT_NAME"
-  echo
-  echo "- Subject: \`$SUBJECT_PATH\`"
-  if [[ "$APPROVED" == 1 ]]; then
-    echo "- Approval label: present"
-  else
-    echo "- Approval label: absent"
-  fi
-  echo
-  for mode in rbs diagnostics; do
-    if cmp -s "$OUTPUT_DIR/base.$mode.stdout" "$OUTPUT_DIR/head.$mode.stdout"; then
-      echo "- $mode output: identical"
-    else
-      echo "- $mode output: changed"
-      echo
-      echo "<details><summary>$mode diff (first 200 lines)</summary>"
-      echo
-      echo '<pre>'
-      ruby -rcgi -e 'puts CGI.escapeHTML(File.read(ARGV.fetch(0)).lines.first(200).join)' \
-        "$OUTPUT_DIR/$mode.diff"
-      echo '</pre>'
-      echo
-      echo '</details>'
-    fi
-  done
-} > "$summary"
-
-if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-  cat "$summary" >> "$GITHUB_STEP_SUMMARY"
-fi
-cat "$summary"
+run_variant base "$MODE"
+run_variant head "$MODE"
 
 if [[ "$execution_failed" -ne 0 ]]; then
+  echo error > "$OUTPUT_DIR/$MODE.result"
   exit 1
 fi
-if [[ "$differences_found" -ne 0 && "$APPROVED" != 1 ]]; then
-  echo "Analysis output changed without approved-analysis-change." >&2
+
+base_output="$OUTPUT_DIR/base.$MODE.stdout"
+head_output="$OUTPUT_DIR/head.$MODE.stdout"
+diff_file="$OUTPUT_DIR/$MODE.diff"
+if cmp -s "$base_output" "$head_output"; then
+  echo identical > "$OUTPUT_DIR/$MODE.result"
+  echo "$SUBJECT_NAME $MODE output: identical"
+  exit 0
+fi
+
+echo changed > "$OUTPUT_DIR/$MODE.result"
+diff -u --label "base/$MODE" --label "head/$MODE" "$base_output" "$head_output" > "$diff_file" || true
+diff_lines="$(wc -l < "$diff_file" | tr -d ' ')"
+echo "$SUBJECT_NAME $MODE output: changed ($diff_lines diff lines)"
+echo "::group::$MODE diff ($SUBJECT_NAME)"
+head -n "$LOG_DIFF_LINES" "$diff_file"
+if [[ "$diff_lines" -gt "$LOG_DIFF_LINES" ]]; then
+  echo "... truncated after $LOG_DIFF_LINES of $diff_lines lines; the full diff is in the analysis-comparison-$SUBJECT_NAME artifact."
+fi
+echo "::endgroup::"
+
+if [[ "$APPROVED" != 1 ]]; then
+  echo "$MODE output changed without approved-analysis-change." >&2
   exit 1
 fi
-if [[ "$differences_found" -ne 0 ]]; then
-  echo "Analysis output change approved by maintainer/admin label."
-fi
+echo "$MODE output change approved by maintainer/admin label."

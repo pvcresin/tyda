@@ -76,13 +76,9 @@ subjectごとの解析だけが独立runnerで増える。optcarrot の base が
 同 subject のみ base timeout を30秒の比較上限として扱う。headがその上限内に収まらない
 場合は失敗し、timeoutしたbaseのRSSは比較対象から除外する。
 
-各 matrix job は Perf の比較後に、同じ subject と base/head binary pair で `--coverage` を
-base/head 一度ずつ実行する。coverage は `target/coverage/<subject>/result.json` に保存し、
-`declarations` / `references` と各 `by_kind` の counter を比較する。解析対象ファイル数の減少、
-`typed` または tracked site の減少、`unknown` の増加は失敗、`untyped` の増加は warning とする。
-後者には `unknown` から `untyped` へ改善したケースを回帰扱いしない意図がある。既存の release
-binary、subject cache、最大10並列、各解析 jobの10分上限を共有するため、coverage追加のための
-Rust buildや別の直列workflowは発生しない。
+Performance は実行時間とメモリだけを判定する。性能は要件なので、`approved-analysis-change`
+ラベルでは許可しない。推論の精度と coverage は、ラベルで許可できる `Analysis compatibility` で
+比較する。
 
 build job は base/head を別々の Cargo target directory でビルドする。worktree間で target
 directory を共有すると、Cargoが別revisionのworkspace crateを再ビルドせず、baseのbinaryを
@@ -115,19 +111,39 @@ successを要求し、対象外scopeでは分類成功と依存jobの全skipを�
 
 `Analysis compatibility` workflow は、Performanceの速度・メモリ比較とは別に、base/headを
 それぞれのGemfile.lockからvendorしたRBSでビルドする。`sample` と代表的なpinned OSS subjectに
-対して、CLIのRBS出力、diagnostics、`--coverage` の結果を比較し、差分をJob Summaryとartifactに
-保存する。RBS更新そのものによる推論改善もこの比較対象に含まれる。
+対して、次の3つを別々の step で比較する。RBS更新そのものによる推論改善もこの比較対象に含まれる。
 
-出力またはcoverageに差分があれば通常は失敗する。意図した改善や仕様変更の場合だけ、差分を確認した
-Maintainer/AdminがPRに `approved-analysis-change` を付ける。このラベルは現在のcommitにだけ有効で、
-`synchronize` 時に自動削除される。比較の実行自体が失敗した場合は、ラベルがあっても許可しない。
-同じラベルはPerformance matrix内のcoverage比較にも適用するが、実行時間やメモリの回帰は許可しない。
+| step | 比較する内容 |
+|---|---|
+| Compare RBS output | CLI の RBS 出力を byte 単位で比較する |
+| Compare diagnostics | `--diagnostics` の出力を byte 単位で比較する |
+| Compare typed coverage | `--coverage` の counter を比較する |
 
-結果は subject ごとに `target/performance/<subject>/result.json` と
-`target/coverage/<subject>/result.json` として artifact に保存する。coverage の base/head
-生JSON、プロセスログ、計測メタデータも同じ artifact に含める。Perf と coverage は CI log と
-artifact を正本とし、PRへの自動コメントは投稿しない。これにより、GitHubのbot commentに
+各 step は差分があると単独で失敗するが、後の step も実行する。1 回の CI で、どの比較に差分が
+あるかがすべて分かる。coverage は `declarations` / `references` と各 `by_kind` の counter を
+比較し、解析対象ファイル数の減少、`typed` または tracked site の減少、`unknown` の増加を失敗、
+`untyped` の増加を warning とする。後者には `unknown` から `untyped` へ改善したケースを回帰扱い
+しない意図がある。
+
+差分があれば通常は失敗する。推論の差分は、それまでの推論や診断の誤りを直した結果であることも
+多いため、差分を確認したMaintainer/AdminがPRに `approved-analysis-change` を付けて許可できる。
+ラベルの付け外しは `Analysis approval` workflowが受け持ち、解析比較だけを再実行して `analysis-compatibility` gateだけを報告する。このラベルは現在のcommitにだけ有効で、`synchronize` 時に自動削除される。比較の実行自体が
+失敗した場合は、ラベルがあっても許可しない。
+
+結果は人間と agent の両方が読めるように、次の3段で残す。
+
+- gate job `analysis-compatibility` の Job Summary に、全 subject の比較結果を1つの表で出す。
+- `analysis (<subject>)` job の Job Summary に、比較結果と diff の先頭を出す。job log には
+  各 diff を折りたたみの group で出す（既定は5000行まで）。
+- artifact `analysis-comparison-<subject>` に、完全な `output/<mode>.diff`、
+  `coverage/result.json`、機械可読な `summary.json` を保存する。`summary.json` は各比較の状態、
+  diff の追加・削除行数、typed の増減、diff ファイルへの相対 path を持つ。
+
+性能の結果は subject ごとに `target/performance/<subject>/result.json` として artifact に保存する。
+CI log と artifact を正本とし、PRへの自動コメントは投稿しない。これにより、GitHubのbot commentに
 対するメール通知設定に依存せず、通知の増加を避ける。
+
+手元で1 subject の3つの比較をまとめて実行するときは `scripts/run_analysis_compatibility.sh` を使う。
 
 warning が継続する場合や runner 環境が変わった場合は、まず複数回の結果を確認してから閾値を見直す。
 性能計測の対象を追加するときも、同じ測定順序・worker 数・subject pin を維持する。
@@ -135,6 +151,7 @@ warning が継続する場合や runner 環境が変わった場合は、まず�
 計測のプロセス監視と結果比較は Ruby の `scripts/measure_process.rb` と
 `scripts/compare_performance.rb` で行う。coverage は `scripts/coverage_ci.sh` と
 `scripts/compare_coverage.rb` が担当し、プロセス監視は同じ `measure_process.rb` を共有する。
+解析比較の要約は `scripts/summarize_analysis.rb` が作る。
 
 ### CI subjects
 

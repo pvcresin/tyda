@@ -21,11 +21,6 @@ on:
         description: Head revision for the subject matrix phase.
         required: false
         type: string
-      analysis_approved:
-        description: Whether a maintainer approved the analysis output and coverage changes.
-        required: false
-        type: boolean
-        default: false
     outputs:
       run_full_ci:
         description: Whether the changed files require full CI.
@@ -256,35 +251,12 @@ jobs:
           TYDA_RBS_DIR: ${{ github.workspace }}/target/performance-runtime/vendor/rbs
         run: ./scripts/benchmark_ci.sh
 
-      - name: Compare base and head coverage (${{ matrix.subject }})
-        if: always()
-        env:
-          TYDA_COVERAGE_BASE_SHA: ${{ inputs.phase == 'subjects' && inputs.base_sha || needs.build.outputs.base_sha }}
-          TYDA_COVERAGE_HEAD_SHA: ${{ inputs.phase == 'subjects' && inputs.head_sha || needs.build.outputs.head_sha }}
-          TYDA_COVERAGE_THREADS: "2"
-          TYDA_COVERAGE_ALLOW_BASE_TIMEOUT: ${{ matrix.allow_base_timeout }}
-          TYDA_COVERAGE_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
-          TYDA_COVERAGE_SUBJECT: ${{ github.workspace }}/${{ matrix.subject_path }}
-          TYDA_COVERAGE_BINARY_DIR: ${{ github.workspace }}/target/performance-runtime/bin
-          TYDA_COVERAGE_OUTPUT_DIR: ${{ github.workspace }}/target/coverage/${{ matrix.subject }}
-          TYDA_COVERAGE_ALLOW_REGRESSIONS: ${{ inputs.analysis_approved && '1' || '0' }}
-          TYDA_RBS_DIR: ${{ github.workspace }}/target/performance-runtime/vendor/rbs
-        run: ./scripts/coverage_ci.sh
-
       - name: Upload performance result (${{ matrix.subject }})
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: performance-result-${{ matrix.subject }}
           path: target/performance/${{ matrix.subject }}/result.json
-          if-no-files-found: ignore
-
-      - name: Upload coverage result (${{ matrix.subject }})
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: coverage-result-${{ matrix.subject }}
-          path: target/coverage/${{ matrix.subject }}
           if-no-files-found: ignore
 
   performance-gate:

@@ -28,7 +28,8 @@ env:
   SCCACHE_GHA_ENABLED: "true"
 
 concurrency:
-  group: analysis-compatibility-${{ github.event.pull_request.number || github.ref }}
+  # github.workflow is the caller, so the PR CI run and a label run do not cancel each other.
+  group: analysis-compatibility-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -196,23 +197,51 @@ jobs:
         if: matrix.subject != 'sample'
         run: ./scripts/setup_subjects.sh "${{ matrix.subject }}"
 
-      - name: Compare analysis output and coverage
+      # Each check records its result and fails on its own, and the later checks still
+      # run, so one CI run shows every kind of change.
+      - name: Compare RBS output
+        id: rbs
         env:
           TYDA_ANALYSIS_APPROVED: ${{ inputs.analysis_approved && '1' || '0' }}
           TYDA_ANALYSIS_BINARY_DIR: ${{ github.workspace }}/target/analysis-runtime/bin
-          TYDA_ANALYSIS_BASE_RBS_DIR: ${{ github.workspace }}/target/analysis-runtime/rbs/base
-          TYDA_ANALYSIS_HEAD_RBS_DIR: ${{ github.workspace }}/target/analysis-runtime/rbs/head
-          TYDA_ANALYSIS_OUTPUT_DIR: ${{ github.workspace }}/target/analysis/${{ matrix.subject }}
+          TYDA_ANALYSIS_OUTPUT_DIR: ${{ github.workspace }}/target/analysis/${{ matrix.subject }}/output
           TYDA_ANALYSIS_SUBJECT_NAME: ${{ matrix.subject }}
           TYDA_ANALYSIS_SUBJECT_PATH: ${{ github.workspace }}/${{ matrix.subject_path }}
           TYDA_ANALYSIS_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
+        run: ./scripts/compare_analysis_outputs.sh rbs
+
+      - name: Compare diagnostics
+        if: ${{ !cancelled() && steps.rbs.outcome != 'skipped' }}
+        env:
+          TYDA_ANALYSIS_APPROVED: ${{ inputs.analysis_approved && '1' || '0' }}
+          TYDA_ANALYSIS_BINARY_DIR: ${{ github.workspace }}/target/analysis-runtime/bin
+          TYDA_ANALYSIS_OUTPUT_DIR: ${{ github.workspace }}/target/analysis/${{ matrix.subject }}/output
+          TYDA_ANALYSIS_SUBJECT_NAME: ${{ matrix.subject }}
+          TYDA_ANALYSIS_SUBJECT_PATH: ${{ github.workspace }}/${{ matrix.subject_path }}
+          TYDA_ANALYSIS_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
+        run: ./scripts/compare_analysis_outputs.sh diagnostics
+
+      - name: Compare typed coverage
+        if: ${{ !cancelled() && steps.rbs.outcome != 'skipped' }}
+        env:
+          TYDA_COVERAGE_BINARY_DIR: ${{ github.workspace }}/target/analysis-runtime/bin
+          TYDA_COVERAGE_BASE_RBS_DIR: ${{ github.workspace }}/target/analysis-runtime/rbs/base
+          TYDA_COVERAGE_HEAD_RBS_DIR: ${{ github.workspace }}/target/analysis-runtime/rbs/head
+          TYDA_COVERAGE_OUTPUT_DIR: ${{ github.workspace }}/target/analysis/${{ matrix.subject }}/coverage
+          TYDA_COVERAGE_SUBJECT: ${{ github.workspace }}/${{ matrix.subject_path }}
           TYDA_COVERAGE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           TYDA_COVERAGE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           TYDA_COVERAGE_THREADS: "2"
           TYDA_COVERAGE_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
           TYDA_COVERAGE_ALLOW_BASE_TIMEOUT: "0"
           TYDA_COVERAGE_ALLOW_REGRESSIONS: ${{ inputs.analysis_approved && '1' || '0' }}
-        run: ./scripts/run_analysis_compatibility.sh
+        run: ./scripts/coverage_ci.sh
+
+      - name: Summarize analysis changes
+        if: ${{ !cancelled() && steps.rbs.outcome != 'skipped' }}
+        env:
+          TYDA_ANALYSIS_APPROVED: ${{ inputs.analysis_approved && '1' || '0' }}
+        run: ruby scripts/summarize_analysis.rb subject target/analysis/${{ matrix.subject }} ${{ matrix.subject }}
 
       - name: Upload analysis comparison
         if: always()
@@ -233,6 +262,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download analysis summaries
+        if: ${{ needs.analysis.result != 'skipped' }}
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: analysis-comparison-*
+          path: target/analysis
+
+      - name: Summarize all subjects
+        if: ${{ needs.analysis.result != 'skipped' }}
+        run: ruby scripts/summarize_analysis.rb aggregate target/analysis
 
       - name: Require compatibility checks
         env:
