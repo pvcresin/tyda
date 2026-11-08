@@ -7,8 +7,7 @@
 #     Reads DIR/output/{rbs,diagnostics}.{result,diff} and DIR/coverage/result.json,
 #     then writes DIR/summary.json and DIR/summary.md.
 #   summarize_analysis.rb aggregate DIR
-#     Reads every DIR/**/summary.json and prints one table for all subjects. Writes
-#     changed=true|false to $GITHUB_OUTPUT when it is set.
+#     Reads every DIR/**/summary.json and prints one table for all subjects.
 #
 # Both commands append their Markdown to $GITHUB_STEP_SUMMARY when it is set.
 
@@ -73,12 +72,6 @@ module AnalysisSummary
     }
   end
 
-  # A coverage failure is a regression; real coverage errors fail the subject job.
-  def changed?(summary)
-    OUTPUT_MODES.each_key.any? { |mode| summary.fetch(mode).fetch("status") != "identical" } ||
-      summary.fetch("coverage").fetch("status") == "failed"
-  end
-
   def subject_markdown(summary, dir, run_id: nil)
     lines = ["## Analysis: #{summary.fetch("subject")}", ""]
     lines << "Approval label: #{summary.fetch("approved") ? "present" : "absent"}"
@@ -131,13 +124,6 @@ module AnalysisSummary
     approved = summaries.any? { |summary| summary.fetch("approved") }
     lines << "Approval label: #{approved ? "present" : "absent"}. " \
              "The label applies only to these inference checks, not to performance."
-    lines << ""
-    if summaries.any? { |summary| changed?(summary) }
-      lines << "Analysis output changed. The `analysis-compatibility` gate passes only with " \
-               "`approved-analysis-change` from a maintainer or admin."
-    else
-      lines << "No analysis output changed."
-    end
     lines << ""
     lines << "| Subject | RBS output | Diagnostics | Coverage | Typed delta (declarations / references) |"
     lines << "|---|---|---|---|---|"
@@ -211,11 +197,6 @@ if $PROGRAM_NAME == __FILE__
     end
     summaries = Dir.glob(File.join(dir, "**", "summary.json")).map { |path| JSON.parse(File.read(path)) }
     markdown = AnalysisSummary.aggregate_markdown(summaries, run_id: run_id)
-    output = ENV["GITHUB_OUTPUT"]
-    if output && !output.empty?
-      changed = summaries.empty? || summaries.any? { |summary| AnalysisSummary.changed?(summary) }
-      File.write(output, "changed=#{changed}\n", mode: "a")
-    end
   else
     warn "usage: #{$PROGRAM_NAME} <subject|aggregate> ..."
     exit 2

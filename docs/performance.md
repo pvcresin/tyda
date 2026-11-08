@@ -119,15 +119,15 @@ successを要求し、対象外scopeでは分類成功と依存jobの全skipを�
 | Compare diagnostics | `--diagnostics` の出力を byte 単位で比較する |
 | Compare typed coverage | `--coverage` の counter を比較する |
 
-各 step は差分を記録するだけで失敗せず、後の step も実行する。1 回の CI で、どの比較に差分が
-あるかがすべて分かる。実行エラーやtimeoutではjobが失敗する。coverage は `declarations` / `references` と各 `by_kind` の counter を
+各 step は差分があると単独で失敗するが、後の step も実行する。1 回の CI で、どの比較に差分が
+あるかがすべて分かる。coverage は `declarations` / `references` と各 `by_kind` の counter を
 比較し、解析対象ファイル数の減少、`typed` または tracked site の減少、`unknown` の増加を失敗、
 `untyped` の増加を warning とする。後者には `unknown` から `untyped` へ改善したケースを回帰扱い
 しない意図がある。
 
-差分があれば最上位の `analysis-compatibility` gateが失敗する。推論の差分は、それまでの推論や診断の誤りを直した結果であることも
+差分があれば通常は失敗する。推論の差分は、それまでの推論や診断の誤りを直した結果であることも
 多いため、差分を確認したMaintainer/AdminがPRに `approved-analysis-change` を付けて許可できる。
-ラベルの付け外しは `Analysis approval` workflowが受け持ち、解析比較だけを再実行して `analysis-compatibility` gateだけを報告する。このラベルは現在のcommitにだけ有効で、`synchronize` 時に自動削除される。比較の実行自体が
+比較は `Analysis` workflowがcommitとラベルの付け外しの両方で実行し、ラベルを付けると同じcheckが承認付きで再実行される。このラベルは現在のcommitにだけ有効で、`synchronize` 時に自動削除される。比較の実行自体が
 失敗した場合は、ラベルがあっても許可しない。
 
 結果は人間と agent の両方が読めるように、次の3段で残す。

@@ -1,60 +1,71 @@
-name: Analysis approval
+name: Analysis
 run-name: >-
-  ${{ github.event.label.name == 'approved-analysis-change' &&
-  format('Analysis approval ({0})', github.event.action) ||
-  'Ignored label change' }}
+  ${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+  github.event.label.name != 'approved-analysis-change' &&
+  'Ignored label change' ||
+  format('Analysis ({0})', github.event.action) }}
 
-# The approved-analysis-change label only re-runs the analysis checks. This workflow
-# reports only the analysis-compatibility gate, so a label change never replaces the
-# test, performance, or other results of the Pull request CI run for the same commit.
+# One workflow owns the analysis checks for every commit and every change of the
+# approved-analysis-change label, so the newest run is the only analysis result.
 on:
   pull_request:
-    types: [labeled, unlabeled]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
 
+# A push also removes the label, so only the newest run for the PR stays. Other label
+# changes get their own group so they never cancel a real run.
 concurrency:
-  group: analysis-approval-${{ github.event.pull_request.number }}
+  group: >-
+    ${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+    github.event.label.name != 'approved-analysis-change' &&
+    format('analysis-ignored-{0}', github.run_id) ||
+    format('analysis-{0}', github.event.pull_request.number) }}
   cancel-in-progress: true
 
 jobs:
   changes:
-    name: resolve approval
-    if: github.event.label.name == 'approved-analysis-change'
+    name: classify changes
+    if: >-
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      github.event.label.name == 'approved-analysis-change'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
+      run_analysis: ${{ steps.paths.outputs.run_analysis }}
       analysis_approved: ${{ steps.approval.outputs.analysis_approved }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+        run: bash scripts/ci/classify-changed-paths.sh
+
       - name: Resolve analysis-change approval
         id: approval
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_ACTION: ${{ github.event.action }}
           SENDER_LOGIN: ${{ github.event.sender.login }}
-        run: |
-          approved=0
-          if [[ "$EVENT_ACTION" == labeled ]]; then
-            permission="$(gh api \
-              "repos/$GITHUB_REPOSITORY/collaborators/$SENDER_LOGIN/permission" \
-              --jq .permission 2>/dev/null || true)"
-            case "$permission" in
-              admin|maintain)
-                approved=1
-                ;;
-              *)
-                echo "Ignoring approved-analysis-change from $SENDER_LOGIN (permission=$permission)."
-                ;;
-            esac
-          fi
-          echo "analysis_approved=$approved" >> "$GITHUB_OUTPUT"
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash scripts/ci/resolve-analysis-approval.sh
 
-  # Pull request CI already built the binaries for this commit. Reuse them when they
-  # match the exact base and head revisions, so the label run does not wait for a
-  # rebuild.
+  # An earlier run of this workflow may have built the binaries for the same commit.
+  # Reuse them when they match the exact base and head revisions.
   runtime:
     name: find analysis build
-    if: github.event.label.name == 'approved-analysis-change'
+    needs: changes
+    if: needs.changes.outputs.run_analysis == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -66,7 +77,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Find Pull request CI build
+      - name: Find earlier analysis build
         id: find
         continue-on-error: true
         env:
@@ -74,7 +85,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash scripts/ci/find-analysis-runtime.sh
 
-      - name: Download Pull request CI build
+      - name: Download earlier analysis build
         if: steps.find.outputs.artifact_id != ''
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -100,11 +111,11 @@ jobs:
                 -f target/analysis-runtime/bin/head/tyda &&
                 "$(sed -n 's/^base_sha=//p' "$metadata")" == "$BASE_SHA" &&
                 "$(sed -n 's/^head_sha=//p' "$metadata")" == "$HEAD_SHA" ]]; then
-            echo "Reusing analysis build from Pull request CI run $RUN_ID."
+            echo "Reusing analysis build from run $RUN_ID."
             echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
             echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
           else
-            echo "The Pull request CI build does not match $BASE_SHA...$HEAD_SHA; building again."
+            echo "The earlier build does not match $BASE_SHA...$HEAD_SHA; building again."
           fi
 
   analysis-build:
@@ -121,6 +132,7 @@ jobs:
     if: >-
       always() &&
       needs.changes.result == 'success' &&
+      needs.changes.outputs.run_analysis == 'true' &&
       needs.runtime.result == 'success' &&
       (needs.analysis-build.result == 'success' ||
        (needs.analysis-build.result == 'skipped' && needs.runtime.outputs.artifact_id != ''))
@@ -135,30 +147,35 @@ jobs:
       contents: read
 
   analysis-compatibility:
-    # Other labels must not report a skipped analysis-compatibility check, because a
-    # skipped required check counts as passing.
+    # Other labels must not report a skipped or passing analysis-compatibility check:
+    # a skipped required check counts as passing, which would let auto-merge proceed.
+    # always() also makes a cancelled run report a failure instead of a skip.
     name: >-
-      ${{ github.event.label.name == 'approved-analysis-change' &&
-      'analysis-compatibility' || 'ignored label change' }}
+      ${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+      github.event.label.name != 'approved-analysis-change' &&
+      'ignored label change' || 'analysis-compatibility' }}
     needs: [changes, runtime, analysis-build, analysis-subjects]
-    if: always() && github.event.label.name == 'approved-analysis-change'
+    if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        if: needs.changes.result != 'skipped'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Require analysis workflows
+        if: needs.changes.result != 'skipped'
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_analysis }}
+          REUSED_ARTIFACT: ${{ needs.runtime.outputs.artifact_id }}
           BUILD_RESULT: ${{ needs.analysis-build.result }}
           SUBJECTS_RESULT: ${{ needs.analysis-subjects.result }}
-          REUSED_ARTIFACT: ${{ needs.runtime.outputs.artifact_id }}
-          ANALYSIS_CHANGED: ${{ needs.analysis-subjects.outputs.analysis_changed }}
-          ANALYSIS_APPROVED: ${{ needs.changes.outputs.analysis_approved }}
         run: |
           if [[ -n "$REUSED_ARTIFACT" ]]; then
             [[ "$BUILD_RESULT" == skipped ]]
+            REQUIRED_RESULTS="analysis-subjects=$SUBJECTS_RESULT"
           else
-            [[ "$BUILD_RESULT" == success ]]
+            REQUIRED_RESULTS=$'analysis-build='"$BUILD_RESULT"$'\nanalysis-subjects='"$SUBJECTS_RESULT"
           fi
-          [[ "$SUBJECTS_RESULT" == success ]]
-          if [[ "$ANALYSIS_CHANGED" != false && "$ANALYSIS_APPROVED" != 1 ]]; then
-            echo "Analysis output changed without approved-analysis-change from a maintainer or admin." >&2
-            exit 1
-          fi
+          export REQUIRED_RESULTS
+          bash scripts/ci/require-ci-results.sh

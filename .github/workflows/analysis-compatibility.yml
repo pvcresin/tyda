@@ -10,7 +10,7 @@ on:
         type: string
         default: all
       analysis_approved:
-        description: Whether a maintainer approved the analysis output and coverage changes. Only shown in the summaries; callers decide approval.
+        description: Whether a maintainer approved the analysis output and coverage changes.
         required: false
         type: boolean
         default: false
@@ -28,9 +28,6 @@ on:
       run_analysis:
         description: Whether the changed files require analysis compatibility checks.
         value: ${{ jobs.changes.outputs.run_analysis }}
-      analysis_changed:
-        description: Whether any subject changed RBS output, diagnostics, or coverage. Not 'false' when it is unknown.
-        value: ${{ jobs.analysis-compatibility.outputs.analysis_changed }}
 
 permissions:
   contents: read
@@ -41,7 +38,7 @@ env:
   SCCACHE_GHA_ENABLED: "true"
 
 concurrency:
-  # github.workflow is the caller, so the PR CI run and a label run do not cancel each other.
+  # github.workflow is the caller, so a manual run and an Analysis run do not cancel each other.
   group: analysis-compatibility-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
@@ -224,13 +221,12 @@ jobs:
         if: matrix.subject != 'sample'
         run: ./scripts/setup_subjects.sh "${{ matrix.subject }}"
 
-      # Each check records a change instead of failing, so one CI run shows every kind
-      # of change. Errors still fail the job. The caller's analysis-compatibility gate
-      # requires approval when anything changed.
+      # Each check records its result and fails on its own, and the later checks still
+      # run, so one CI run shows every kind of change.
       - name: Compare RBS output
         id: rbs
         env:
-          TYDA_ANALYSIS_FAIL_ON_CHANGE: "0"
+          TYDA_ANALYSIS_APPROVED: ${{ inputs.analysis_approved && '1' || '0' }}
           TYDA_ANALYSIS_BINARY_DIR: ${{ github.workspace }}/target/analysis-runtime/bin
           TYDA_ANALYSIS_OUTPUT_DIR: ${{ github.workspace }}/target/analysis/${{ matrix.subject }}/output
           TYDA_ANALYSIS_SUBJECT_NAME: ${{ matrix.subject }}
@@ -241,7 +237,7 @@ jobs:
       - name: Compare diagnostics
         if: ${{ !cancelled() && steps.rbs.outcome != 'skipped' }}
         env:
-          TYDA_ANALYSIS_FAIL_ON_CHANGE: "0"
+          TYDA_ANALYSIS_APPROVED: ${{ inputs.analysis_approved && '1' || '0' }}
           TYDA_ANALYSIS_BINARY_DIR: ${{ github.workspace }}/target/analysis-runtime/bin
           TYDA_ANALYSIS_OUTPUT_DIR: ${{ github.workspace }}/target/analysis/${{ matrix.subject }}/output
           TYDA_ANALYSIS_SUBJECT_NAME: ${{ matrix.subject }}
@@ -262,7 +258,7 @@ jobs:
           TYDA_COVERAGE_THREADS: "2"
           TYDA_COVERAGE_TIMEOUT_SECONDS: ${{ matrix.timeout_seconds }}
           TYDA_COVERAGE_ALLOW_BASE_TIMEOUT: "0"
-          TYDA_COVERAGE_ALLOW_REGRESSIONS: "1"
+          TYDA_COVERAGE_ALLOW_REGRESSIONS: ${{ inputs.analysis_approved && '1' || '0' }}
         run: ./scripts/coverage_ci.sh
 
       - name: Summarize analysis changes
@@ -287,14 +283,11 @@ jobs:
       - analysis
     if: always()
     runs-on: ubuntu-latest
-    outputs:
-      analysis_changed: ${{ steps.changed.outputs.changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download analysis summaries
-        id: download
         if: ${{ needs.analysis.result != 'skipped' }}
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -303,26 +296,8 @@ jobs:
           path: target/analysis
 
       - name: Summarize all subjects
-        id: summary
         if: ${{ needs.analysis.result != 'skipped' }}
         run: ruby scripts/summarize_analysis.rb aggregate target/analysis
-
-      # Without every summary the change state is unknown, so the caller must not treat
-      # it as unchanged.
-      - name: Export analysis change state
-        id: changed
-        if: ${{ needs.analysis.result != 'skipped' }}
-        env:
-          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
-          ANALYSIS_RESULT: ${{ needs.analysis.result }}
-          SUMMARY_CHANGED: ${{ steps.summary.outputs.changed }}
-        run: |
-          changed=true
-          if [[ "$DOWNLOAD_OUTCOME" == success && "$ANALYSIS_RESULT" == success &&
-                "$SUMMARY_CHANGED" == false ]]; then
-            changed=false
-          fi
-          echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
       - name: Require compatibility checks
         env:

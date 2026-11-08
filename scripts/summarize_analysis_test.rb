@@ -64,20 +64,6 @@ class SummarizeAnalysisTest < Minitest::Test
     assert_includes markdown, "| redmine | changed (+5 / -2 lines) | identical | passed | +0 / -1 |"
   end
 
-  def test_changed_detects_output_and_coverage_changes
-    assert_equal false, AnalysisSummary.changed?(subject("rack", rbs: { "status" => "identical" }))
-    assert_equal true, AnalysisSummary.changed?(subject("rack", rbs: { "status" => "changed" }))
-    assert_equal true, AnalysisSummary.changed?(subject("rack", rbs: { "status" => "missing" }))
-
-    regressed = subject("rack", rbs: { "status" => "identical" })
-    regressed["coverage"] = { "status" => "failed" }
-    assert_equal true, AnalysisSummary.changed?(regressed)
-
-    warned = subject("rack", rbs: { "status" => "identical" })
-    warned["coverage"] = { "status" => "warned" }
-    assert_equal false, AnalysisSummary.changed?(warned)
-  end
-
   private
 
   def write(dir, path, content)

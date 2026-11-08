@@ -27,15 +27,16 @@ if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
   head_sha="${HEAD_SHA:?HEAD_SHA is required for pull requests}"
   changed_paths="$(git diff --name-only "${base_sha}...${head_sha}")"
 
-  if [[ "${GITHUB_EVENT_ACTION:-}" == labeled || "${GITHUB_EVENT_ACTION:-}" == unlabeled ]]; then
-    run_full_ci=false
-    run_pages=false
-    run_analysis=true
-  elif [[ -n "$changed_paths" ]]; then
+  if [[ -n "$changed_paths" ]]; then
     classify_paths "$changed_paths"
     run_analysis="$run_full_ci"
   else
     run_analysis=true
+  fi
+  # A label change only re-runs the analysis checks for the same commit.
+  if [[ "${GITHUB_EVENT_ACTION:-}" == labeled || "${GITHUB_EVENT_ACTION:-}" == unlabeled ]]; then
+    run_full_ci=false
+    run_pages=false
   fi
 elif [[ "${GITHUB_EVENT_NAME:-}" == push && "${GITHUB_REF_TYPE:-}" == branch ]]; then
   base_sha="${BASE_SHA:-}"
