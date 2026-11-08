@@ -1,9 +1,5 @@
 name: Analysis
-run-name: >-
-  ${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
-  github.event.label.name != 'approved-analysis-change' &&
-  'Ignored label change' ||
-  format('Analysis ({0})', github.event.action) }}
+
 
 # One workflow owns the analysis checks for every commit and every change of the
 # approved-analysis-change label, so the newest run is the only analysis result.
