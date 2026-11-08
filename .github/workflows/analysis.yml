@@ -1,0 +1,179 @@
+name: Analysis
+
+
+# One workflow owns the analysis checks for every commit and every change of the
+# approved-analysis-change label, so the newest run is the only analysis result.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+# A push also removes the label, so only the newest run for the PR stays. Other label
+# changes get their own group so they never cancel a real run.
+concurrency:
+  group: >-
+    ${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+    github.event.label.name != 'approved-analysis-change' &&
+    format('analysis-ignored-{0}', github.run_id) ||
+    format('analysis-{0}', github.event.pull_request.number) }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: classify changes
+    if: >-
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      github.event.label.name == 'approved-analysis-change'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run_analysis: ${{ steps.paths.outputs.run_analysis }}
+      analysis_approved: ${{ steps.approval.outputs.analysis_approved }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+        run: bash scripts/ci/classify-changed-paths.sh
+
+      - name: Resolve analysis-change approval
+        id: approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_ACTION: ${{ github.event.action }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash scripts/ci/resolve-analysis-approval.sh
+
+  # An earlier run of this workflow may have built the binaries for the same commit.
+  # Reuse them when they match the exact base and head revisions.
+  runtime:
+    name: find analysis build
+    needs: changes
+    if: needs.changes.outputs.run_analysis == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_id: ${{ steps.verify.outputs.run_id }}
+      artifact_id: ${{ steps.verify.outputs.artifact_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Find earlier analysis build
+        id: find
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/ci/find-analysis-runtime.sh
+
+      - name: Download earlier analysis build
+        if: steps.find.outputs.artifact_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ steps.find.outputs.artifact_id }}
+          run-id: ${{ steps.find.outputs.run_id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: target/analysis-runtime
+
+      - name: Verify build revisions
+        id: verify
+        if: steps.find.outputs.artifact_id != ''
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ steps.find.outputs.run_id }}
+          ARTIFACT_ID: ${{ steps.find.outputs.artifact_id }}
+        run: |
+          metadata=target/analysis-runtime/metadata
+          if [[ -f "$metadata" &&
+                -f target/analysis-runtime/bin/base/tyda &&
+                -f target/analysis-runtime/bin/head/tyda &&
+                "$(sed -n 's/^base_sha=//p' "$metadata")" == "$BASE_SHA" &&
+                "$(sed -n 's/^head_sha=//p' "$metadata")" == "$HEAD_SHA" ]]; then
+            echo "Reusing analysis build from run $RUN_ID."
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "The earlier build does not match $BASE_SHA...$HEAD_SHA; building again."
+          fi
+
+  analysis-build:
+    needs: [changes, runtime]
+    if: needs.runtime.outputs.artifact_id == ''
+    uses: ./.github/workflows/analysis-compatibility.yml
+    with:
+      phase: build
+    # The called workflow's subject job asks for actions: read even when it is skipped.
+    permissions:
+      actions: read
+      contents: read
+
+  analysis-subjects:
+    needs: [changes, runtime, analysis-build]
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.run_analysis == 'true' &&
+      needs.runtime.result == 'success' &&
+      (needs.analysis-build.result == 'success' ||
+       (needs.analysis-build.result == 'skipped' && needs.runtime.outputs.artifact_id != ''))
+    uses: ./.github/workflows/analysis-compatibility.yml
+    with:
+      phase: subjects
+      analysis_approved: ${{ needs.changes.outputs.analysis_approved == '1' }}
+      runtime_run_id: ${{ needs.runtime.outputs.run_id }}
+      runtime_artifact_id: ${{ needs.runtime.outputs.artifact_id }}
+    permissions:
+      actions: read
+      contents: read
+
+  analysis-compatibility:
+    # Other labels must not report a skipped or passing analysis-compatibility check:
+    # a skipped required check counts as passing, which would let auto-merge proceed.
+    # always() also makes a cancelled run report a failure instead of a skip.
+    name: >-
+      ${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+      github.event.label.name != 'approved-analysis-change' &&
+      'ignored label change' || 'analysis-compatibility' }}
+    needs: [changes, runtime, analysis-build, analysis-subjects]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        if: needs.changes.result != 'skipped'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require analysis workflows
+        if: needs.changes.result != 'skipped'
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_REQUIRED: ${{ needs.changes.outputs.run_analysis }}
+          REUSED_ARTIFACT: ${{ needs.runtime.outputs.artifact_id }}
+          BUILD_RESULT: ${{ needs.analysis-build.result }}
+          SUBJECTS_RESULT: ${{ needs.analysis-subjects.result }}
+        run: |
+          if [[ -n "$REUSED_ARTIFACT" ]]; then
+            [[ "$BUILD_RESULT" == skipped ]]
+            REQUIRED_RESULTS="analysis-subjects=$SUBJECTS_RESULT"
+          else
+            REQUIRED_RESULTS=$'analysis-build='"$BUILD_RESULT"$'\nanalysis-subjects='"$SUBJECTS_RESULT"
+          fi
+          export REQUIRED_RESULTS
+          bash scripts/ci/require-ci-results.sh

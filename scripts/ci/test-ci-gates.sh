@@ -4,7 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 classifier="$repo_root/scripts/ci/classify-changed-paths.sh"
 gate="$repo_root/scripts/ci/require-ci-results.sh"
-approval_gate="$repo_root/scripts/ci/require-analysis-approval.sh"
+approval_resolver="$repo_root/scripts/ci/resolve-analysis-approval.sh"
+runtime_finder="$repo_root/scripts/ci/find-analysis-runtime.sh"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -141,6 +142,7 @@ assert_pr_classification pr-docs opened false true false docs/index.md
 assert_pr_classification pr-playground opened false true false playground/src/main.ts
 assert_pr_classification pr-source opened true true true src/lib.rs
 assert_pr_classification pr-analysis-label labeled false false true src/lib.rs
+assert_pr_classification pr-analysis-label-docs labeled false false false docs/index.md
 assert_pr_classification pr-empty opened true true true
 
 fixture="$(new_fixture workflow-dispatch)"
@@ -233,39 +235,84 @@ expect_failure \
   RUN_REQUIRED=true \
   REQUIRED_RESULTS=$'\n'
 
-approval_run() {
-  local created_at="$1"
-  local title="$2"
-  local status="$3"
-  local conclusion="$4"
-  printf '{"created_at":"%s","display_title":"%s","status":"%s","conclusion":%s}' \
-    "$created_at" "$title" "$status" "$conclusion"
-}
-
 expect_approval() {
   local name="$1"
   local expected="$2"
-  shift 2
-  local runs_json="$tmp_dir/approval-$name.json"
-  local IFS=,
-  printf '{"workflow_runs":[%s]}\n' "$*" > "$runs_json"
-  if env HEAD_SHA=abc GITHUB_REPOSITORY=owner/repo TYDA_APPROVAL_RUNS_JSON="$runs_json" \
-    bash "$approval_gate" >/dev/null 2>&1; then
-    [[ "$expected" == accept ]] || fail "$name should not accept the approval"
+  local action="$3"
+  local permission="$4"
+  local labels="$5"
+  local output="$tmp_dir/approval-$name.out"
+  printf '[%s]\n' "$labels" > "$tmp_dir/approval-$name-labels.json"
+  : > "$output"
+  env EVENT_ACTION="$action" SENDER_LOGIN=maintainer PR_NUMBER=1 \
+    GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$output" \
+    TYDA_SENDER_PERMISSION="$permission" \
+    TYDA_PR_LABELS_JSON="$tmp_dir/approval-$name-labels.json" \
+    bash "$approval_resolver" >/dev/null || fail "$name: approval resolver failed"
+  assert_output "$output" analysis_approved "$expected"
+}
+
+approval_label='{"name":"approved-analysis-change"}'
+other_label='{"name":"documentation"}'
+
+expect_approval maintainer-label 1 labeled maintain "$approval_label"
+expect_approval admin-label 1 labeled admin "$other_label,$approval_label"
+expect_approval writer-label 0 labeled write "$approval_label"
+expect_approval unknown-permission 0 labeled "" "$approval_label"
+expect_approval label-removed 0 labeled maintain "$other_label"
+expect_approval unlabeled 0 unlabeled maintain ""
+expect_approval push-with-stale-label 0 synchronize maintain "$approval_label"
+expect_approval reopened-with-label 0 reopened maintain "$approval_label"
+
+analysis_run() {
+  local id="$1"
+  local head_sha="$2"
+  local path="${3:-.github/workflows/analysis.yml}"
+  printf '{"id":%s,"head_sha":"%s","event":"pull_request","path":"%s"}' "$id" "$head_sha" "$path"
+}
+
+runtime_artifact() {
+  local id="$1"
+  local run_id="$2"
+  local head_sha="$3"
+  local created_at="$4"
+  local expired="${5:-false}"
+  printf '{"id":%s,"name":"analysis-compatibility-runtime","expired":%s,"created_at":"%s","workflow_run":{"id":%s,"head_sha":"%s"}}' \
+    "$id" "$expired" "$created_at" "$run_id" "$head_sha"
+}
+
+expect_runtime() {
+  local name="$1"
+  local expected="$2"
+  local runs="$3"
+  local artifacts="$4"
+  local output="$tmp_dir/runtime-$name.out"
+  printf '{"workflow_runs":[%s]}\n' "$runs" > "$tmp_dir/runtime-$name-runs.json"
+  printf '{"artifacts":[%s]}\n' "$artifacts" > "$tmp_dir/runtime-$name-artifacts.json"
+  : > "$output"
+  env HEAD_SHA=abc GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$output" \
+    TYDA_ANALYSIS_RUNS_JSON="$tmp_dir/runtime-$name-runs.json" \
+    TYDA_RUNTIME_ARTIFACTS_JSON="$tmp_dir/runtime-$name-artifacts.json" \
+    bash "$runtime_finder" >/dev/null || fail "$name: runtime finder failed"
+  if [[ "$expected" == none ]]; then
+    [[ ! -s "$output" ]] || fail "$name should not select an artifact"
   else
-    [[ "$expected" == reject ]] || fail "$name should accept the approval"
+    assert_output "$output" artifact_id "$expected"
   fi
 }
 
-labeled_success="$(approval_run 2026-01-01T00:00:00Z "Analysis approval (labeled)" completed '"success"')"
-labeled_running="$(approval_run 2026-01-01T00:00:00Z "Analysis approval (labeled)" in_progress null)"
-unlabeled_later="$(approval_run 2026-01-02T00:00:00Z "Analysis approval (unlabeled)" completed '"failure"')"
-ignored_later="$(approval_run 2026-01-03T00:00:00Z "Ignored label change" completed '"skipped"')"
-
-expect_approval no-runs reject
-expect_approval labeled accept "$labeled_success"
-expect_approval running reject "$labeled_running"
-expect_approval revoked reject "$labeled_success" "$unlabeled_later"
-expect_approval ignored-label accept "$ignored_later" "$labeled_success"
+expect_runtime no-artifact none "$(analysis_run 1 abc)" ""
+expect_runtime analysis-artifact 11 "$(analysis_run 1 abc)" \
+  "$(runtime_artifact 11 1 abc 2026-01-01T00:00:00Z)"
+expect_runtime newest-artifact 12 "$(analysis_run 1 abc),$(analysis_run 2 abc)" \
+  "$(runtime_artifact 12 2 abc 2026-01-02T00:00:00Z),$(runtime_artifact 11 1 abc 2026-01-01T00:00:00Z)"
+expect_runtime expired-artifact none "$(analysis_run 1 abc)" \
+  "$(runtime_artifact 11 1 abc 2026-01-01T00:00:00Z true)"
+expect_runtime other-head none "$(analysis_run 1 abc)" \
+  "$(runtime_artifact 11 1 def 2026-01-01T00:00:00Z)"
+expect_runtime other-workflow none "$(analysis_run 1 abc .github/workflows/pull-request-ci.yml)" \
+  "$(runtime_artifact 11 1 abc 2026-01-01T00:00:00Z)"
+expect_runtime unknown-run none "$(analysis_run 1 abc)" \
+  "$(runtime_artifact 11 9 abc 2026-01-01T00:00:00Z)"
 
 echo "CI helper tests passed."
