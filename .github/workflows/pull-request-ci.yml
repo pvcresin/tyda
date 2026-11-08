@@ -2,7 +2,8 @@ name: Pull request CI
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+    # Label events run in analysis-approval.yml, so they never re-report these gates.
+    types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
   contents: read
@@ -21,10 +22,8 @@ jobs:
       run_full_ci: ${{ steps.paths.outputs.run_full_ci }}
       run_pages: ${{ steps.paths.outputs.run_pages }}
       run_analysis: ${{ steps.paths.outputs.run_analysis }}
-      analysis_approved: ${{ steps.approval.outputs.analysis_approved }}
     permissions:
       contents: read
-      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -38,30 +37,6 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
         run: bash scripts/ci/classify-changed-paths.sh
-
-      - name: Resolve analysis-change approval
-        id: approval
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_ACTION: ${{ github.event.action }}
-          EVENT_LABEL: ${{ github.event.label.name }}
-          SENDER_LOGIN: ${{ github.event.sender.login }}
-        run: |
-          approved=0
-          if [[ "$EVENT_ACTION" == labeled && "$EVENT_LABEL" == approved-analysis-change ]]; then
-            permission="$(gh api \
-              "repos/$GITHUB_REPOSITORY/collaborators/$SENDER_LOGIN/permission" \
-              --jq .permission 2>/dev/null || true)"
-            case "$permission" in
-              admin|maintain)
-                approved=1
-                ;;
-              *)
-                echo "Ignoring approved-analysis-change from $SENDER_LOGIN (permission=$permission)."
-                ;;
-            esac
-          fi
-          echo "analysis_approved=$approved" >> "$GITHUB_OUTPUT"
 
   test-suite:
     needs: changes
@@ -78,7 +53,6 @@ jobs:
       contents: read
 
   workflow-lint:
-    if: github.event.action != 'labeled' && github.event.action != 'unlabeled'
     uses: ./.github/workflows/workflow-lint.yml
     permissions:
       contents: read
@@ -141,14 +115,8 @@ jobs:
     steps:
       - name: Require workflow lint
         env:
-          EVENT_ACTION: ${{ github.event.action }}
           WORKFLOW_RESULT: ${{ needs.workflow-lint.result }}
-        run: |
-          if [[ "$EVENT_ACTION" == labeled || "$EVENT_ACTION" == unlabeled ]]; then
-            [[ "$WORKFLOW_RESULT" == skipped ]]
-          else
-            [[ "$WORKFLOW_RESULT" == success ]]
-          fi
+        run: '[[ "$WORKFLOW_RESULT" == success ]]'
 
   analysis-subjects:
     needs: [changes, test, analysis-build]
@@ -161,7 +129,6 @@ jobs:
     uses: ./.github/workflows/analysis-compatibility.yml
     with:
       phase: subjects
-      analysis_approved: ${{ needs.changes.outputs.analysis_approved == '1' }}
     permissions:
       contents: read
 
@@ -197,10 +164,15 @@ jobs:
     needs: [changes, analysis-build, analysis-subjects]
     if: always()
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Require analysis workflows
+        id: required
+        continue-on-error: true
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           RUN_REQUIRED: ${{ needs.changes.outputs.run_analysis }}
@@ -208,6 +180,14 @@ jobs:
             analysis-build=${{ needs.analysis-build.result }}
             analysis-subjects=${{ needs.analysis-subjects.result }}
         run: bash scripts/ci/require-ci-results.sh
+      # A label run can finish before this run. Keep its approval for the same commit
+      # instead of replacing it with this unapproved result.
+      - name: Accept an approved analysis run
+        if: steps.required.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/ci/require-analysis-approval.sh
 
   performance:
     name: performance

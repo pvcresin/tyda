@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 classifier="$repo_root/scripts/ci/classify-changed-paths.sh"
 gate="$repo_root/scripts/ci/require-ci-results.sh"
+approval_gate="$repo_root/scripts/ci/require-analysis-approval.sh"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -231,5 +232,40 @@ expect_failure \
   CHANGES_RESULT=success \
   RUN_REQUIRED=true \
   REQUIRED_RESULTS=$'\n'
+
+approval_run() {
+  local created_at="$1"
+  local title="$2"
+  local status="$3"
+  local conclusion="$4"
+  printf '{"created_at":"%s","display_title":"%s","status":"%s","conclusion":%s}' \
+    "$created_at" "$title" "$status" "$conclusion"
+}
+
+expect_approval() {
+  local name="$1"
+  local expected="$2"
+  shift 2
+  local runs_json="$tmp_dir/approval-$name.json"
+  local IFS=,
+  printf '{"workflow_runs":[%s]}\n' "$*" > "$runs_json"
+  if env HEAD_SHA=abc GITHUB_REPOSITORY=owner/repo TYDA_APPROVAL_RUNS_JSON="$runs_json" \
+    bash "$approval_gate" >/dev/null 2>&1; then
+    [[ "$expected" == accept ]] || fail "$name should not accept the approval"
+  else
+    [[ "$expected" == reject ]] || fail "$name should accept the approval"
+  fi
+}
+
+labeled_success="$(approval_run 2026-01-01T00:00:00Z "Analysis approval (labeled)" completed '"success"')"
+labeled_running="$(approval_run 2026-01-01T00:00:00Z "Analysis approval (labeled)" in_progress null)"
+unlabeled_later="$(approval_run 2026-01-02T00:00:00Z "Analysis approval (unlabeled)" completed '"failure"')"
+ignored_later="$(approval_run 2026-01-03T00:00:00Z "Ignored label change" completed '"skipped"')"
+
+expect_approval no-runs reject
+expect_approval labeled accept "$labeled_success"
+expect_approval running reject "$labeled_running"
+expect_approval revoked reject "$labeled_success" "$unlabeled_later"
+expect_approval ignored-label accept "$ignored_later" "$labeled_success"
 
 echo "CI helper tests passed."
