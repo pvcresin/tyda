@@ -112,7 +112,7 @@ IvarSetter.new(1)
 ```rbs
 class IvarSetter
   def count: -> Integer
-  def name: -> untyped?
+  def name: -> untyped
   def names: -> [untyped]
   def initialize: (Integer count) -> void
   def rename: (untyped name) -> [untyped]

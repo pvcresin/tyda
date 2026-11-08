@@ -2633,6 +2633,8 @@ pub struct TypeRegistry {
     pending_method_aliases: Vec<PendingMethodAlias>,
     /// forward references inside scoped types are resolved in lexical order by `finalize_pending_scoped_type_refs` after merge.
     pending_scoped_type_refs: Vec<PendingScopedTypeRef>,
+    /// Source methods whose bodies are being inferred, so they are not registered yet.
+    inferring_method_bodies: Vec<(Sym, Sym)>,
 }
 
 /// Registry state a per-file snapshot never populates, kept behind one box.
@@ -2663,6 +2665,10 @@ fn empty_registry_cold_tail() -> &'static RegistryColdTail {
 struct GlobalResolveBudget {
     remaining_nodes: usize,
     exhausted: bool,
+    /// The slot being resolved. A return-position cycle back to it adds nothing to its least fixpoint.
+    cycle_root: Option<(Sym, Sym)>,
+    /// How many non-union type constructors enclose the current node. Only `0` is return position.
+    nesting: usize,
 }
 
 impl GlobalResolveBudget {
@@ -2672,6 +2678,8 @@ impl GlobalResolveBudget {
         Self {
             remaining_nodes: Self::NODE_LIMIT,
             exhausted: false,
+            cycle_root: None,
+            nesting: 0,
         }
     }
 
@@ -2718,6 +2726,7 @@ impl Clone for TypeRegistry {
             call_site_index: CallSiteIndexCache::default(),
             pending_method_aliases: self.pending_method_aliases.clone(),
             pending_scoped_type_refs: self.pending_scoped_type_refs.clone(),
+            inferring_method_bodies: Vec::new(),
         }
     }
 }
@@ -2826,6 +2835,52 @@ impl TypeRegistry {
             is_singleton,
             loc,
         });
+    }
+
+    /// `alias_method` captures the definition visible when it runs. An alias whose target was not
+    /// visible yet stays bound to `class#name` by name; once the class itself defines `name`
+    /// afterwards, that binding would wrongly see the new body, so rebind it above the class.
+    pub(crate) fn rebind_aliases_before_redefinition(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) {
+        let Some(data) = self.class_data.get(class_name) else {
+            return;
+        };
+        let late_binding = Type::MethodReturnRef(class_name.into(), method_name.into());
+        let late_aliases: Vec<Sym> = data
+            .cold()
+            .method_aliases
+            .iter()
+            .filter(|alias| alias.old_name == method_name && alias.is_singleton == is_singleton)
+            .map(|alias| Sym::new(&alias.new_name))
+            .filter(|new_name| {
+                Self::method_for_lookup_kind(data, new_name, Some(is_singleton))
+                    .is_some_and(|method| method.raw_return_type == late_binding)
+            })
+            .collect();
+        if late_aliases.is_empty() {
+            return;
+        }
+        // Without a visible definition above the class, the captured body is unknown. A bare
+        // superclass ref would not do: its subclass fallback finds this redefinition again.
+        let captured = self
+            .super_method_targets(class_name, method_name, is_singleton)
+            .into_iter()
+            .next()
+            .map_or(Type::Untyped, |(owner, _)| {
+                Type::MethodReturnRef(owner.as_str().into(), method_name.into())
+            });
+        for new_name in late_aliases {
+            self.update_method_return_type_variant(
+                class_name,
+                new_name.as_str(),
+                is_singleton,
+                captured.clone(),
+            );
+        }
     }
 
     /// follow aliases within a class to resolve to the canonical (non-alias) method name. Cycles
@@ -3323,6 +3378,20 @@ impl TypeRegistry {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn begin_method_body(&mut self, class_name: &str, method_name: &str) {
+        self.inferring_method_bodies
+            .push((Sym::new(class_name), Sym::new(method_name)));
+    }
+
+    pub(crate) fn end_method_body(&mut self) {
+        self.inferring_method_bodies.pop();
+    }
+
+    fn is_inferring_method_body(&self, class_name: Sym, method_name: Sym) -> bool {
+        self.inferring_method_bodies
+            .contains(&(class_name, method_name))
     }
 
     #[inline]
@@ -4860,7 +4929,12 @@ impl TypeRegistry {
         );
         self.resolve_param_refs_for_classes(&target_class_names);
         report("resolve_param_refs_for_classes", &mut stamp);
-        self.resolve_method_return_refs_for_classes(&target_class_names);
+        let return_ref_class_names: Vec<Sym> = self
+            .source_method_class_names_unsorted()
+            .into_iter()
+            .filter(|class_name| target_classes.contains(class_name.as_str()))
+            .collect();
+        self.resolve_method_return_refs_for_classes(&return_ref_class_names);
         report("resolve_method_return_refs_for_classes", &mut stamp);
     }
 
@@ -6962,6 +7036,9 @@ impl TypeRegistry {
     fn resolve_method_param_refs_from_call_sites_for_classes(&mut self, class_names: &[Sym]) {
         for class_name in class_names {
             let _caller_ctx_memo_scope = CallerCtxMemoScope::enter();
+            // Read-only until this class's updates apply: nested resolutions of the same
+            // (class, type) share one result instead of branching per caller hop.
+            let _hop_memo = DeferredHopMemoScope::enter();
             let Some(data) = self.class_data.get(class_name) else {
                 continue;
             };
@@ -7296,6 +7373,29 @@ impl TypeRegistry {
             for part in parts {
                 self.collect_receiver_owner_classes(part, method_name, classes);
             }
+            return;
+        }
+        // A deferred receiver (`later_defined_method.read`) names its class through the
+        // callee's current return type; a later round sees what that type loads.
+        if let Type::MethodReturnRef(class_name, callee) = receiver {
+            thread_local! {
+                static COLLECTING_RECEIVERS: std::cell::RefCell<Vec<Type>> =
+                    const { std::cell::RefCell::new(Vec::new()) };
+            }
+            let Some(callee_return) = self.lookup_method_return_type(class_name, callee) else {
+                return;
+            };
+            // A return type that leads back to this receiver gives no class to load.
+            if COLLECTING_RECEIVERS.with(|stack| stack.borrow().contains(receiver)) {
+                return;
+            }
+            COLLECTING_RECEIVERS.with(|stack| stack.borrow_mut().push(receiver.clone()));
+            if Self::type_needs_deferred_resolution(&callee_return) {
+                self.collect_deferred_receiver_classes(&callee_return, classes);
+            } else {
+                self.collect_receiver_owner_classes(&callee_return, method_name, classes);
+            }
+            COLLECTING_RECEIVERS.with(|stack| stack.borrow_mut().pop());
             return;
         }
         let Some(class_name) = Self::type_to_class_name(receiver) else {
@@ -7943,8 +8043,20 @@ impl TypeRegistry {
     }
 
     pub fn resolve_method_return_refs_global(&mut self) {
-        let class_names = self.user_defined_class_names_unsorted();
+        let class_names = self.source_method_class_names_unsorted();
         self.resolve_method_return_refs_for_classes(&class_names);
+    }
+
+    /// User-defined classes plus classes reopened by source bodies. Top-level `def`s live on
+    /// `Object`, which is not user defined.
+    fn source_method_class_names_unsorted(&self) -> Vec<Sym> {
+        self.class_data
+            .iter()
+            .filter(|(_, data)| {
+                data.user_defined || data.methods.iter().any(|method| !method.rbs_file_source)
+            })
+            .map(|(name, _)| *name)
+            .collect()
     }
 
     fn resolve_method_return_refs_for_classes(&mut self, class_names: &[Sym]) {
@@ -8029,7 +8141,8 @@ impl TypeRegistry {
                     *cell.borrow_mut() = Some(FxHashSet::default());
                 });
                 let mut resolve_budget = GlobalResolveBudget::new();
-                let resolved = self.resolve_global_refs(
+                resolve_budget.cycle_root = Some((class_name, Sym::new(method.name)));
+                let mut resolved = self.resolve_global_refs(
                     class_name.as_str(),
                     &method.raw_return_type,
                     &mut visiting,
@@ -8037,6 +8150,10 @@ impl TypeRegistry {
                     0,
                     &mut resolve_budget,
                 );
+                // A slot made only of cycles never returns a value we can see; keep it unknown.
+                if resolved == Type::Bot && method.raw_return_type != Type::Bot {
+                    resolved = method.raw_return_type.clone();
+                }
                 let reads: Vec<(Sym, Sym)> = RETURN_TYPE_READS
                     .with(|cell| cell.borrow_mut().take())
                     .map(|set| set.into_iter().collect())
@@ -8250,13 +8367,47 @@ impl TypeRegistry {
         if !budget.consume() {
             return Type::Untyped;
         }
+        // A return-position result can drop the cycle back to the root slot, so it must not
+        // be shared with nested positions through the memo.
+        let return_position = budget.nesting == 0;
         // keyed per context so the type probes by reference: building a `(Sym, Type)`
         // key would deep-clone `ty` on every lookup, which outweighs the memo on wide unions.
         let context_key = Sym::new(context_class);
-        if let Some(cached) = memo.get(&context_key).and_then(|slot| slot.get(ty)) {
+        if !return_position
+            && let Some(cached) = memo.get(&context_key).and_then(|slot| slot.get(ty))
+        {
             return cached.clone();
         }
-        let resolved = match ty {
+        let encloses = !matches!(ty, Type::Union(_) | Type::MethodReturnRef(..));
+        if encloses {
+            budget.nesting += 1;
+        }
+        let resolved =
+            self.resolve_global_ref_node(context_class, ty, visiting, memo, depth, budget);
+        if encloses {
+            budget.nesting -= 1;
+        }
+        if budget.is_exhausted() {
+            return Type::Untyped;
+        }
+        if !return_position && Self::is_concrete_for_global_resolve(&resolved) {
+            memo.entry(context_key)
+                .or_default()
+                .insert(ty.clone(), resolved.clone());
+        }
+        resolved
+    }
+
+    fn resolve_global_ref_node(
+        &self,
+        context_class: &str,
+        ty: &Type,
+        visiting: &mut FxHashSet<(Sym, Sym)>,
+        memo: &mut FxHashMap<Sym, FxHashMap<Type, Type>>,
+        depth: usize,
+        budget: &mut GlobalResolveBudget,
+    ) -> Type {
+        match ty {
             Type::GlobalVariableRef(name) => {
                 // globals don't depend on class context. Resolves to the type accumulated program-wide.
                 self.lookup_global_variable_type(name)
@@ -8300,6 +8451,11 @@ impl TypeRegistry {
             }
             Type::MethodReturnRef(class_name, method_name) => {
                 if visiting.contains(&(*class_name, *method_name)) {
+                    if budget.nesting == 0 && budget.cycle_root == Some((*class_name, *method_name))
+                    {
+                        // `x = C | x` has least solution `C`: the back edge is the union identity.
+                        return Type::Bot;
+                    }
                     // Record the cycle partner: if it resolves through some
                     // other path later, this slot must be re-evaluated.
                     note_return_type_read(*class_name, *method_name);
@@ -8754,16 +8910,7 @@ impl TypeRegistry {
                 }
             }
             _ => ty.clone(),
-        };
-        if budget.is_exhausted() {
-            return Type::Untyped;
         }
-        if Self::is_concrete_for_global_resolve(&resolved) {
-            memo.entry(context_key)
-                .or_default()
-                .insert(ty.clone(), resolved.clone());
-        }
-        resolved
     }
 
     fn resolve_param_refs_from_resolved(&self, ty: &Type, params: &[Param]) -> Type {
@@ -9118,10 +9265,48 @@ impl TypeRegistry {
                 return resolved.clone();
             }
             if !visiting.insert(Arc::clone(key)) {
-                return Type::Untyped;
+                // A method-return cycle stays a reference: the enclosing resolution of the same
+                // method drops it in return position (see `without_return_position_self_ref`).
+                let method_return_cycle = match ty {
+                    Type::MethodReturnRef(..) => true,
+                    Type::Union(parts) => parts
+                        .iter()
+                        .any(|part| matches!(part, Type::MethodReturnRef(..))),
+                    _ => false,
+                };
+                return if method_return_cycle {
+                    ty.clone()
+                } else {
+                    Type::Untyped
+                };
             }
         }
-        let resolved = match ty {
+        // Every exit of the node must leave `visiting`; a stale entry looks like a cycle later.
+        let resolved = self.resolve_deferred_ref_node(
+            class_name,
+            singleton_context,
+            ty,
+            depth,
+            memo,
+            visiting,
+        );
+        if let Some(key) = key {
+            visiting.remove(&key);
+            memo.insert(key, resolved.clone());
+        }
+        resolved
+    }
+
+    fn resolve_deferred_ref_node(
+        &self,
+        class_name: &str,
+        singleton_context: bool,
+        ty: &Type,
+        depth: usize,
+        memo: &mut DeferredMemo,
+        visiting: &mut DeferredVisiting,
+    ) -> Type {
+        match ty {
             Type::GlobalVariableRef(name) => self
                 .lookup_global_variable_type(name)
                 .unwrap_or(Type::Untyped),
@@ -9148,6 +9333,7 @@ impl TypeRegistry {
             }
             Type::KeywordParamRef(_) => ty.clone(),
             Type::MethodReturnRef(ref_class, method_name) => {
+                let mut found_definition = false;
                 for singleton in [false, true] {
                     if let Some((owner, is_singleton)) =
                         self.first_method_call_owner_cached(ref_class, method_name, singleton)
@@ -9160,6 +9346,7 @@ impl TypeRegistry {
                         else {
                             continue;
                         };
+                        found_definition = true;
                         if Self::rbs_overload_returns_disagree(&method.rbs_method_types) {
                             return Type::Untyped;
                         }
@@ -9168,13 +9355,16 @@ impl TypeRegistry {
                             method,
                             &method.raw_return_type,
                         );
-                        let raw = self.resolve_deferred_refs_depth(
-                            owner.as_ref(),
-                            is_singleton,
-                            &raw_with_block,
-                            depth + 1,
-                            memo,
-                            visiting,
+                        let raw = Self::without_return_position_self_ref(
+                            self.resolve_deferred_refs_depth(
+                                owner.as_ref(),
+                                is_singleton,
+                                &raw_with_block,
+                                depth + 1,
+                                memo,
+                                visiting,
+                            ),
+                            ty,
                         );
                         // `resolve_param_refs_from_resolved` reads `params` only at a reachable
                         // `ParamRef`/`KeywordParamRef`, which is exactly what
@@ -9202,14 +9392,15 @@ impl TypeRegistry {
                         }
                     }
                 }
-                if let Some(ret) =
-                    self.lookup_method_return_type_in_subclasses(ref_class, method_name)
+                let subclass_return =
+                    self.lookup_method_return_type_in_subclasses(ref_class, method_name);
+                if let Some(ret) = &subclass_return
                     && !matches!(ret, Type::MethodReturnRef(..))
                 {
                     let resolved = self.resolve_deferred_refs_depth(
                         ref_class,
                         false,
-                        &ret,
+                        ret,
                         depth + 1,
                         memo,
                         visiting,
@@ -9217,6 +9408,15 @@ impl TypeRegistry {
                     if resolved != Type::Untyped {
                         return resolved;
                     }
+                }
+                if !found_definition
+                    && subclass_return.is_none()
+                    && self.is_inferring_method_body(*ref_class, *method_name)
+                {
+                    // The body being inferred reaches itself through a callee (mutual
+                    // recursion). It is not registered yet, so keep the reference for the
+                    // global fixpoint instead of fixing it to `untyped`.
+                    return ty.clone();
                 }
                 Type::Untyped
             }
@@ -9492,12 +9692,32 @@ impl TypeRegistry {
                     .collect(),
             ),
             _ => ty.clone(),
-        };
-        if let Some(key) = key {
-            visiting.remove(&key);
-            memo.insert(key, resolved.clone());
         }
-        resolved
+    }
+
+    /// `x = C | x` has least solution `C`, so a cycle back to `self_ref` in return position adds
+    /// nothing. A body made only of that cycle gives no evidence and stays `untyped`. Nested
+    /// occurrences (`[x]`) are left for the caller to degrade.
+    fn without_return_position_self_ref(resolved: Type, self_ref: &Type) -> Type {
+        // A truthiness projection of `x` (from `x || y`, `x&.m`) is still a back edge to `x`.
+        let is_self = |part: &Type| match part {
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => **inner == *self_ref,
+            part => part == self_ref,
+        };
+        match resolved {
+            Type::Union(parts) if parts.iter().any(is_self) => {
+                let rest: Vec<Type> = parts.into_iter().filter(|part| !is_self(part)).collect();
+                if rest.is_empty() {
+                    Type::Untyped
+                } else {
+                    Type::from_type_vec_preserve_untyped(rest)
+                }
+            }
+            resolved if is_self(&resolved) => Type::Untyped,
+            resolved => resolved,
+        }
     }
 
     fn resolve_method_on_resolved_receiver(
@@ -12201,20 +12421,26 @@ impl TypeRegistry {
     }
 
     pub(crate) fn resolve_pattern_index_ref(subject: &Type, index: usize) -> Type {
-        match subject {
-            Type::Union(parts) => {
-                let mut resolved: Vec<Type> = parts
-                    .iter()
-                    .map(|part| Self::resolve_pattern_index_ref(part, index))
-                    .collect();
-                if resolved.iter().any(|ty| *ty != Type::Untyped) {
-                    resolved.retain(|ty| *ty != Type::Untyped);
-                }
-                Type::from_type_vec_preserve_untyped(resolved)
-            }
-            Type::Tuple(elems) => elems.get(index).cloned().unwrap_or(Type::Untyped),
-            Type::Array(Some(elem)) => *elem.clone(),
-            _ => Type::Untyped,
+        Self::join_pattern_slots(subject, &|part| match part {
+            Type::Tuple(elems) => elems.get(index).cloned(),
+            Type::Array(Some(elem)) => Some(*elem.clone()),
+            Type::Untyped => Some(Type::Untyped),
+            _ => None,
+        })
+    }
+
+    /// Joins one destructured slot over the arms of `subject`. An arm that cannot supply the
+    /// slot (`None`) adds nothing; a real `untyped` element or arm stays in the join.
+    fn join_pattern_slots(subject: &Type, slot: &dyn Fn(&Type) -> Option<Type>) -> Type {
+        let parts = match subject {
+            Type::Union(parts) => parts.as_slice(),
+            part => std::slice::from_ref(part),
+        };
+        let found: Vec<Type> = parts.iter().filter_map(slot).collect();
+        if found.is_empty() {
+            Type::Untyped
+        } else {
+            Type::from_type_vec_preserve_untyped(found)
         }
     }
 
@@ -12238,54 +12464,34 @@ impl TypeRegistry {
     }
 
     pub(crate) fn resolve_pattern_trailing_ref(subject: &Type, from_end: usize) -> Type {
-        match subject {
-            Type::Union(parts) => {
-                let mut resolved: Vec<Type> = parts
-                    .iter()
-                    .map(|part| Self::resolve_pattern_trailing_ref(part, from_end))
-                    .collect();
-                if resolved.iter().any(|ty| *ty != Type::Untyped) {
-                    resolved.retain(|ty| *ty != Type::Untyped);
-                }
-                Type::from_type_vec_preserve_untyped(resolved)
-            }
+        Self::join_pattern_slots(subject, &|part| match part {
             Type::Tuple(elems) => elems
                 .len()
                 .checked_sub(from_end + 1)
-                .and_then(|index| elems.get(index).cloned())
-                .unwrap_or(Type::Untyped),
-            Type::Array(Some(elem)) => *elem.clone(),
-            _ => Type::Untyped,
-        }
+                .and_then(|index| elems.get(index).cloned()),
+            Type::Array(Some(elem)) => Some(*elem.clone()),
+            Type::Untyped => Some(Type::Untyped),
+            _ => None,
+        })
     }
 
     pub(crate) fn resolve_pattern_key_ref(subject: &Type, key: &RecordKey) -> Type {
-        match subject {
-            Type::Union(parts) => {
-                let mut resolved: Vec<Type> = parts
-                    .iter()
-                    .map(|part| Self::resolve_pattern_key_ref(part, key))
-                    .collect();
-                if resolved.iter().any(|ty| *ty != Type::Untyped) {
-                    resolved.retain(|ty| *ty != Type::Untyped);
-                }
-                Type::from_type_vec_preserve_untyped(resolved)
-            }
+        Self::join_pattern_slots(subject, &|part| match part {
             Type::Record(fields) => fields
                 .iter()
                 .find(|field| field.key == *key)
-                .map(|field| field.value.clone())
-                .unwrap_or(Type::Untyped),
+                .map(|field| field.value.clone()),
             Type::Hash(key_type, Some(value_type))
                 if key_type
                     .as_deref()
                     .map(|key_type| Self::pattern_hash_key_type_matches(key_type, key))
                     .unwrap_or(true) =>
             {
-                *value_type.clone()
+                Some(*value_type.clone())
             }
-            _ => Type::Untyped,
-        }
+            Type::Untyped => Some(Type::Untyped),
+            _ => None,
+        })
     }
 
     pub(crate) fn resolve_pattern_key_rest_ref(subject: &Type, matched_keys: &[RecordKey]) -> Type {

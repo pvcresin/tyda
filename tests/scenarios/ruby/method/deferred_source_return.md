@@ -286,7 +286,7 @@ end
 
 ```rbs
 class MixedHashReceiver
-  def kept_settings: -> untyped | Hash[untyped, untyped]
+  def kept_settings: -> untyped
 end
 ```
 
@@ -419,7 +419,7 @@ class DeferredListNode
   def head: -> Integer
   def tail: -> DeferredEmptyNode
   def empty?: -> false
-  def same_end: (untyped other) -> (false | untyped)
+  def same_end: (untyped other) -> untyped
 end
 ```
 
@@ -450,5 +450,23 @@ class Breadcrumbs
   def add: (untyped name) -> Array[untyped]
   def crumbs: -> [ ]
   def seed: -> ["x"]
+end
+```
+
+## A singleton call on a later singleton method loads the stdlib receiver class
+
+```ruby
+class RevisionReader
+  def self.read_revision = revision_file.read
+  def self.revision_file = Pathname.new("REVISION")
+end
+```
+
+### result
+
+```rbs
+class RevisionReader
+  def self.read_revision: -> String
+  def self.revision_file: -> Pathname
 end
 ```

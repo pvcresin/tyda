@@ -29,8 +29,8 @@ end
 
 ```rbs
 class Guards
-  def default_when_absent: (untyped x) -> (untyped | 0)
-  def ternary_default: (untyped x) -> (untyped | 0)
+  def default_when_absent: (untyped x) -> untyped
+  def ternary_default: (untyped x) -> untyped
   def or_default: (untyped flag) -> (0 | "value")
 end
 ```

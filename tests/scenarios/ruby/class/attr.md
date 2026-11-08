@@ -639,7 +639,7 @@ class DirectStore
   def other=: ([ ] other) -> [ ]
   def touch: -> nil
   def custom=: (Integer value) -> String
-  def custom: -> String | untyped
+  def custom: -> untyped
 end
 
 class Object < BasicObject
@@ -651,7 +651,7 @@ class Object < BasicObject
   def store_call_ends_fact: -> untyped
   def store_alias_ends_fact: -> untyped
   def store_parameter_keeps_no_fact: (untyped store) -> untyped
-  def store_custom_writer_keeps_no_fact: -> String | untyped
+  def store_custom_writer_keeps_no_fact: -> untyped
   def store_array_keeps_no_fact: -> untyped
 end
 ```
@@ -689,7 +689,7 @@ end
 
 ```rbs
 class AttributeRecordHolder
-  def options: -> Hash[untyped, untyped] | { fixed: bool, dynamic: bool | untyped }
+  def options: -> Hash[untyped, untyped] | { fixed: bool, dynamic: untyped }
   def initialize: (?options: (Hash[untyped, untyped] | { fixed: bool, dynamic: bool })) -> void
 end
 
@@ -746,7 +746,7 @@ class ClusterServiceParams
   def params: -> untyped
   def initialize: (?Hash[untyped, untyped] params) -> void
   def clusterable: -> untyped
-  def clusterable_id: -> nil | untyped
+  def clusterable_id: -> untyped
 end
 ```
 

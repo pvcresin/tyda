@@ -197,7 +197,7 @@ BlockGivenOverride.new.run
 ```rbs
 class BlockGivenOverride
   def block_given?: -> true
-  def run: { (Symbol) -> untyped } -> nil | untyped
+  def run: { (Symbol) -> untyped } -> untyped
 end
 ```
 
@@ -221,7 +221,7 @@ end
 
 ```rbs
 class InheritedBlockGivenOverride
-  def run: { (Symbol) -> untyped } -> nil | untyped
+  def run: { (Symbol) -> untyped } -> untyped
 end
 
 class Object < BasicObject
@@ -249,7 +249,7 @@ end
 
 ```rbs
 class GuardedYield
-  def run: ?{ (Symbol) -> untyped } -> nil | untyped
+  def run: ?{ (Symbol) -> untyped } -> untyped
 end
 
 class UnrelatedBlockGivenOverride
@@ -303,7 +303,7 @@ end
 
 ```rbs
 class CaseGuardedYield
-  def run: ?{ (Symbol) -> untyped } -> nil | untyped
+  def run: ?{ (Symbol) -> untyped } -> untyped
 end
 
 class ExplicitRequiredGuardedBlock
@@ -311,7 +311,7 @@ class ExplicitRequiredGuardedBlock
 end
 
 class LaterBlockGivenOverride
-  def run: { (Symbol) -> untyped } -> nil | untyped
+  def run: { (Symbol) -> untyped } -> untyped
   def block_given?: -> true
 end
 
@@ -320,7 +320,7 @@ class NestedGuardedYield
 end
 
 class ShortCircuitGuardedYield
-  def run: ?{ (Symbol) -> untyped } -> false | untyped
+  def run: ?{ (Symbol) -> untyped } -> untyped
 end
 ```
 
@@ -351,11 +351,11 @@ end
 ```rbs
 class InstanceBlockGivenOverrideDoesNotAffectSingleton
   def block_given?: -> true
-  def self.run: ?{ () -> untyped } -> nil | untyped
+  def self.run: ?{ () -> untyped } -> untyped
 end
 
 class SingletonBlockGivenOverride
-  def self.run: { (Symbol) -> untyped } -> nil | untyped
+  def self.run: { (Symbol) -> untyped } -> untyped
   def self.block_given?: -> true
 end
 ```
@@ -383,7 +383,7 @@ end
 
 ```rbs
 class BlockLocalParameterShadow
-  def run: (?untyped &blk) -> (nil | untyped)
+  def run: (?untyped &blk) -> untyped
 end
 
 class NestedBlockParameterShadow
@@ -445,11 +445,11 @@ end
 
 ```rbs
 class RescueAfterArrayLiteral
-  def run: -> untyped | [ ]
+  def run: -> untyped
 end
 
 class RescueAfterHashLiteral
-  def run: -> untyped | Hash[untyped, untyped]
+  def run: -> untyped
 end
 
 class RescueAfterRaise
@@ -457,7 +457,7 @@ class RescueAfterRaise
 end
 
 class RescueYield
-  def run: ?{ (Symbol) -> untyped } -> nil | untyped
+  def run: ?{ (Symbol) -> untyped } -> untyped
 end
 
 ```

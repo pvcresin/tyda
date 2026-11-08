@@ -450,3 +450,56 @@ class EnumColumn < ActiveRecord::Base
   def status_symbol: -> Symbol
 end
 ```
+
+## Keep the enum reader type for parameter receivers
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema.define(version: 2024_01_01) do
+  create_table "enum_receivers" do |t|
+    t.integer "status"
+    t.integer "count"
+  end
+end
+```
+
+### update
+
+```ruby
+class ActiveRecord::Base; end
+
+class EnumReceiver < ActiveRecord::Base
+  enum :status, { pending: 0, shipped: 1 }
+end
+
+class EnumReader
+  def status_of(record) = record&.status || "initial"
+  def count_of(record) = record.count
+
+  def read = status_of(EnumReceiver.new)
+  def read_count = count_of(EnumReceiver.new)
+end
+```
+
+### result
+
+```rbs
+class EnumReader
+  def status_of: (EnumReceiver record) -> String
+  def count_of: (EnumReceiver record) -> Integer?
+  def read: -> String
+  def read_count: -> Integer?
+end
+
+class EnumReceiver < ActiveRecord::Base
+  def status: -> String
+  def self.statuses: -> Hash[String, untyped]
+  def pending?: -> bool
+  def pending!: -> bool
+  def self.pending: -> ActiveRecord::Relation[EnumReceiver]
+  def shipped?: -> bool
+  def shipped!: -> bool
+  def self.shipped: -> ActiveRecord::Relation[EnumReceiver]
+end
+```

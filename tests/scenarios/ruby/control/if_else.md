@@ -254,10 +254,10 @@ end
 ```rbs
 class IvarShortCircuitNarrowing
   def initialize: (untyped options) -> void
-  def with_and: -> false | untyped | [bool]
+  def with_and: -> untyped
   def with_ternary: -> false | [bool]
   def with_if: -> false | [bool]
-  def with_local: -> false | untyped | [bool]
+  def with_local: -> untyped
 end
 ```
 

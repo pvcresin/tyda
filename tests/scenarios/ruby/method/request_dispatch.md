@@ -21,7 +21,7 @@ end
 
 ```rbs
 class Dispatcher
-  def call: (untyped message) -> (nil | untyped)
+  def call: (untyped message) -> untyped
 end
 ```
 

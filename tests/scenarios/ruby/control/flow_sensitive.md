@@ -484,8 +484,8 @@ end
 UnknownTargetChild: singleton(Object)
 
 class Object < BasicObject
-  def unknown_target_value: (UnknownTargetBase value) -> (nil | untyped)
-  def inferred_unknown_target_value: -> nil | untyped
+  def unknown_target_value: (UnknownTargetBase value) -> untyped
+  def inferred_unknown_target_value: -> untyped
 end
 
 class UnknownTargetBase
@@ -1997,7 +1997,7 @@ end
 
 class Object < BasicObject
   def read_known_missing: (String x) -> :unavailable
-  def read_dynamic: (DynamicReceiver x) -> (untyped | :unavailable)
+  def read_dynamic: (DynamicReceiver x) -> untyped
 end
 ```
 
@@ -2489,7 +2489,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def inferred_instance_of_return: (?untyped value) -> (untyped | :other)
+  def inferred_instance_of_return: (?untyped value) -> untyped
 end
 
 class UnknownInstanceOfTarget
@@ -2916,10 +2916,6 @@ end
 
 ## A self-recursive predicate returns only its boolean arms
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class RecursivePredicate
   def top?(depth)
@@ -2941,5 +2937,27 @@ end
 class RecursivePredicate
   def top?: (Integer depth) -> bool
   def call_top: -> bool
+end
+```
+
+## A nonzero fallback keeps Integer
+
+### update
+
+```ruby
+class NonzeroFallback
+  def width = @width ||= (stty.nonzero? || tput)
+  def stty = "1 2".split[1].to_i
+  def tput = "3".to_i
+end
+```
+
+### result
+
+```rbs
+class NonzeroFallback
+  def width: -> Integer
+  def stty: -> Integer
+  def tput: -> Integer
 end
 ```

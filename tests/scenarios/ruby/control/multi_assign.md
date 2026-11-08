@@ -436,3 +436,32 @@ class Store
   def assign: -> [1, "two", :three, [false]]
 end
 ```
+
+## Destructuring a tuple union keeps unknown elements
+
+### update
+
+```ruby
+class TupleUnionDestructure
+  def paths
+    return ["dir", "file"] if rand > 0.5
+    return [nil, nil] if rand > 0.5
+
+    [store_dir, identifier]
+  end
+
+  def split
+    dir, file = paths
+    { dir: dir, file: file }
+  end
+end
+```
+
+### result
+
+```rbs
+class TupleUnionDestructure
+  def paths: -> [nil, nil] | [untyped, untyped] | ["dir", "file"]
+  def split: -> { dir: untyped, file: untyped }
+end
+```

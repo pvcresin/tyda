@@ -27,26 +27,6 @@ class RecursiveTopValue
 end
 ```
 
-## A nonzero fallback keeps Integer
-
-```ruby
-class NonzeroFallback
-  def width = @width ||= (stty.nonzero? || tput)
-  def stty = "1 2".split[1].to_i
-  def tput = "3".to_i
-end
-```
-
-### result
-
-```rbs
-class NonzeroFallback
-  def width: -> Integer
-  def stty: -> Integer
-  def tput: -> Integer
-end
-```
-
 ## A value checked by break unless is yielded as non-nil
 
 ```ruby

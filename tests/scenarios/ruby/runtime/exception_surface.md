@@ -24,7 +24,7 @@ end
 
 ```rbs
 class ErrorHandler
-  def safe_parse: -> String | untyped
-  def trace: -> nil | untyped | Array[String]
+  def safe_parse: -> untyped
+  def trace: -> untyped
 end
 ```

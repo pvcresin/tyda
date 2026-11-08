@@ -802,7 +802,7 @@ CollisionScope.narrow(eval("CollisionTarget::Child.new"))
 
 ```rbs
 module CollisionScope
-  def self.narrow: (untyped value) -> (untyped | :other)
+  def self.narrow: (untyped value) -> untyped
 end
 
 class CollisionTarget::Child
@@ -863,7 +863,7 @@ narrow_with_overridden_is_a(eval("OverriddenIsATarget.new"))
 
 ```rbs
 class Object < BasicObject
-  def narrow_with_overridden_is_a: (untyped value) -> (untyped | :other)
+  def narrow_with_overridden_is_a: (untyped value) -> untyped
 end
 
 class OverriddenIsATarget
@@ -902,7 +902,7 @@ narrow_with_refined_is_a(eval("RefinedIsATarget.new"))
 
 ```rbs
 class Object < BasicObject
-  def narrow_with_refined_is_a: (untyped value) -> (untyped | :other)
+  def narrow_with_refined_is_a: (untyped value) -> untyped
 end
 
 class RefinedIsATarget

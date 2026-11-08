@@ -17516,6 +17516,8 @@ impl<'a> InferenceEngine<'a> {
             || def_node
                 .receiver()
                 .is_some_and(|r| matches!(r, Node::SelfNode { .. }));
+        self.registry
+            .rebind_aliases_before_redefinition(class_name, &method_name, is_singleton);
 
         let def_start_offset = def_node.location().start_offset();
         let body_ctx = MethodBodyContext {
@@ -17971,6 +17973,7 @@ impl<'a> InferenceEngine<'a> {
             (self.defer_unresolved_body_call_sites || self.track_deferred_block_receiver_bodies)
                 .then(ActiveMethodBody::default),
         );
+        self.registry.begin_method_body(class_name, &method_name);
         let mut return_type = if method_name == "initialize" {
             if let Some(body) = def_node.body() {
                 self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
@@ -17991,6 +17994,7 @@ impl<'a> InferenceEngine<'a> {
         } else {
             Type::Nil
         };
+        self.registry.end_method_body();
         self.suppress_body_call_sites = saved_suppress_call_sites;
         if method_name != "initialize"
             && let Some(body) = def_node.body()

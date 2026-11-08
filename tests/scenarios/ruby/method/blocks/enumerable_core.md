@@ -383,7 +383,7 @@ class ExplicitBlockInvocation
   def mutation_in_repeated_block_widens: -> Array[1]
   def guarded_yield: (?untyped &block) -> :done
   def guarded_yield_updates_outer_local: -> :after
-  def early_return_before_yield: (untyped flag) { () -> untyped } -> (untyped | :early)
+  def early_return_before_yield: (untyped flag) { () -> untyped } -> untyped
   def early_return_joins_outer_local: (untyped flag) -> (:after | :before)
   def escaped_block: (?untyped &block) -> :stored
   def escaped_block_joins_outer_local: -> :after | :before
@@ -635,7 +635,7 @@ class LiteralBlockEdges
   def optional: (?bool? flag) { () -> :after } -> :done
   def trailing: (?Integer? first, Integer flag) { () -> :after } -> :done
   def retried: (bool flag, ?untyped &block) -> :done
-  def forwarded: (Integer? flag) { () -> untyped } -> (untyped | :none)
+  def forwarded: (Integer? flag) { () -> untyped } -> untyped
   def target: { () -> untyped } -> untyped
   def nil_skips: -> :before
   def symbol_runs: -> :after
@@ -1892,7 +1892,7 @@ class Object < BasicObject
   def inspect_reverse_each_value: (untyped value) -> Array["address"]
   def observed_address: (String address) -> String
   def inspect_split_header: (untyped value) -> :done
-  def split_header: (untyped value) -> (untyped | [ ])
+  def split_header: (untyped value) -> untyped
   def observed_split_header: (untyped address) -> untyped
 end
 ```

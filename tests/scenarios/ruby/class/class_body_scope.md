@@ -76,7 +76,7 @@ class ClassBodyYield
 end
 
 class Module
-  def install_generic: (untyped method) { () -> untyped } -> (nil | untyped)
+  def install_generic: (untyped method) { () -> untyped } -> untyped
   def ignore_generic: -> nil
 end
 
@@ -119,7 +119,7 @@ def read_iterator_attribute = IteratorAttributeReaders.new.frames
 
 ```rbs
 class IteratorAttributeReaders
-  DEFAULT_OPTIONS: Hash[:frames | :shortcut, 1 | untyped]
+  DEFAULT_OPTIONS: Hash[:frames | :shortcut, untyped]
 
   def frames: -> 1
   def initialize: -> void
@@ -201,7 +201,7 @@ class Object < BasicObject
 end
 
 class Optcarrot::Config
-  DEFAULT_OPTIONS: Hash[:frames | :loglevel | :opt | :opt_ppu | :print_fps | :quiet | :sprite_limit | :stackprof | :stackprof_mode, (false | 0 | 1 | untyped)?]
+  DEFAULT_OPTIONS: Hash[:frames | :loglevel | :opt | :opt_ppu | :print_fps | :quiet | :sprite_limit | :stackprof | :stackprof_mode, untyped]
   OPTIONS: { optimization: { opt_ppu: { type: :opts, candidates: untyped, default: nil }, opt: { shortcut: ["--opt-ppu=all", "--opt-cpu=all"] } }, emulation: { sprite_limit: { type: :switch, default: false }, frames: { type: :int, default: 0, aliases: [:f, :frame] } }, profiling: { print_fps: { type: :switch, default: false }, stackprof_mode: { type: "MODE", default: nil }, stackprof: { shortcut: "--stackprof-mode=cpu" } }, misc: { loglevel: { type: :int, default: 1 }, quiet: { shortcut: "--loglevel=0", aliases: :q } } }
 
   def opt_ppu: -> untyped

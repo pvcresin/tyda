@@ -53,9 +53,9 @@ def f = odd?(3)
 
 ```rbs
 class Object < BasicObject
-  def odd?: (Integer n) -> (true | false | untyped)
-  def even?: (Integer n) -> (true | false | untyped)
-  def f: -> true | false | untyped
+  def odd?: (Integer n) -> bool
+  def even?: (Integer n) -> bool
+  def f: -> bool
 end
 ```
 
@@ -90,5 +90,45 @@ end
 
 class ReceiverB
   def call: (ReceiverA other) -> untyped
+end
+```
+
+## Return-position cycles add nothing to the joined return type
+
+### update
+
+```ruby
+class ReturnCycles
+  def self_loop(flag)
+    flag ? 1 : self_loop(flag)
+  end
+
+  def first(flag)
+    flag ? 1 : second(flag)
+  end
+
+  def second(flag)
+    flag ? "s" : third(flag)
+  end
+
+  def third(flag)
+    flag ? :s : first(flag)
+  end
+
+  def nested(flag)
+    flag ? [1] : [nested(flag)]
+  end
+end
+```
+
+### result
+
+```rbs
+class ReturnCycles
+  def self_loop: (untyped flag) -> 1
+  def first: (untyped flag) -> (1 | "s" | :s)
+  def second: (untyped flag) -> (1 | "s" | :s)
+  def third: (untyped flag) -> (1 | "s" | :s)
+  def nested: (untyped flag) -> ([untyped] | [1])
 end
 ```
