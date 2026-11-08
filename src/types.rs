@@ -1342,6 +1342,32 @@ impl Type {
     }
 }
 
+impl Type {
+    /// Unknown values and references left unresolved at display time both print as `untyped`.
+    fn renders_as_untyped(&self) -> bool {
+        matches!(
+            self,
+            Type::Untyped
+                | Type::ParamRef(_)
+                | Type::KeywordParamRef(_)
+                | Type::IvarRef(_)
+                | Type::GlobalVariableRef(_)
+                | Type::MethodReturnRef(_, _)
+                | Type::BlockReturnRef
+                | Type::PatternIndexRef(_, _)
+                | Type::PatternRestRef(_)
+                | Type::PatternTrailingRef(_, _)
+                | Type::PatternKeyRef(_, _)
+                | Type::PatternKeyRestRef(_, _)
+                | Type::ReceiverMethodRef(_, _)
+                | Type::DeferredSafeNavigation(_, _)
+                | Type::TruthyProjection(_)
+                | Type::FalsyProjection(_)
+                | Type::NonNilProjection(_)
+        )
+    }
+}
+
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1384,15 +1410,17 @@ impl fmt::Display for Type {
                 }
                 write!(f, " }}")
             }
+            // `untyped | X` is `untyped` in RBS; the arms stay in the inferred type for dispatch.
+            Type::Union(types) if types.iter().any(Type::renders_as_untyped) => {
+                write!(f, "untyped")
+            }
             Type::Union(types) => {
                 let has_nil = types.iter().any(|t| matches!(t, Type::Nil));
                 let non_nil: Vec<&Type> =
                     types.iter().filter(|t| !matches!(t, Type::Nil)).collect();
                 let boolean_union =
                     non_nil.len() > 1 && non_nil.iter().all(|ty| ty.is_booleanish());
-                let absorbs_nil = non_nil
-                    .iter()
-                    .any(|t| matches!(t, Type::Untyped | Type::Top | Type::Bot));
+                let absorbs_nil = non_nil.iter().any(|t| matches!(t, Type::Top | Type::Bot));
                 if boolean_union {
                     if has_nil {
                         write!(f, "bool?")
@@ -1586,8 +1614,19 @@ mod tests {
 
     #[test]
     fn display_deduplicates_union_members() {
-        let ty = Type::Union(vec![Type::Untyped, Type::Untyped, Type::String]);
-        assert_eq!(ty.to_string(), "untyped | String");
+        let ty = Type::Union(vec![Type::Integer, Type::Integer, Type::String]);
+        assert_eq!(ty.to_string(), "Integer | String");
+    }
+
+    #[test]
+    fn display_collapses_unions_with_an_untyped_arm() {
+        let ty = Type::Union(vec![Type::Nil, Type::String, Type::Untyped]);
+        assert_eq!(ty.to_string(), "untyped");
+        let nested = Type::Array(Some(Box::new(Type::Union(vec![
+            Type::Integer,
+            Type::MethodReturnRef("A".into(), "b".into()),
+        ]))));
+        assert_eq!(nested.to_string(), "Array[untyped]");
     }
 
     #[test]

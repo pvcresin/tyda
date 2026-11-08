@@ -322,7 +322,7 @@ Vector.new(1, 2)
 
 ```rbs
 class Vector
-  def initialize: ((Integer | untyped) x, (Integer | untyped) y) -> void
+  def initialize: (untyped x, untyped y) -> void
   def +: (untyped other) -> Vector
   def -: (untyped other) -> Vector
   def %: (untyped other) -> 0
@@ -434,7 +434,7 @@ Vector.new(1, 2)
 ```rbs
 class Vector
   def initialize: (Integer x, Integer y) -> void
-  def []: (untyped index) -> (Integer | untyped)
+  def []: (untyped index) -> untyped
   def []=: (untyped index, untyped value) -> untyped
   def <<: (untyped item) -> Vector
   def >>: (untyped amount) -> Vector

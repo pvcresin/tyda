@@ -436,7 +436,7 @@ end
 
 ```rbs
 class RespondGuardedCaller
-  def run: (RespondGuardedNote note) -> (false | untyped)
-  def call_run: -> false | untyped
+  def run: (RespondGuardedNote note) -> untyped
+  def call_run: -> untyped
 end
 ```

@@ -1069,7 +1069,7 @@ end
 
 ```rbs
 class Source
-  def each: ?{ (String) -> untyped } -> untyped | Enumerator["a" | "b", Source]
+  def each: ?{ (String) -> untyped } -> untyped
   def values: -> Array["A" | "B"]
   def direct_values: -> Array["A" | "B"]
 end
@@ -1167,7 +1167,7 @@ end
 
 ```rbs
 class KeywordSource
-  def each_value: (prefix: String) ?{ (String) -> untyped } -> (untyped | Enumerator[String, untyped])
+  def each_value: (prefix: String) ?{ (String) -> untyped } -> untyped
   def values: -> Array[String]
   def direct_values: -> Array[String]
 end
@@ -1197,7 +1197,7 @@ end
 
 ```rbs
 class Source
-  def each: ?{ (Integer) -> untyped } -> untyped | Enumerator[1, Source]
+  def each: ?{ (Integer) -> untyped } -> untyped
 end
 
 class Store

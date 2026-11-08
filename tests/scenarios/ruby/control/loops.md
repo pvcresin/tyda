@@ -1034,10 +1034,10 @@ end
 
 ```rbs
 class Object < BasicObject
-  def expression_break: (untyped flag) -> (nil | untyped | :after)
-  def expression_next: (untyped flag) -> (nil | untyped | :after)
+  def expression_break: (untyped flag) -> untyped
+  def expression_next: (untyped flag) -> untyped
   def branch_pruned_by_inferred_type: -> :after
-  def kernel_loop_stop_iteration: (untyped enumerator) -> (untyped | :after)
+  def kernel_loop_stop_iteration: (untyped enumerator) -> untyped
   def non_literal_predicate: (untyped node) -> (:after | :returned)
 end
 ```
@@ -1286,7 +1286,7 @@ end
 
 ```rbs
 class Array
-  def each: { (Symbol) -> untyped } -> nil | untyped
+  def each: { (Symbol) -> untyped } -> untyped
 end
 
 class ForEachConditional

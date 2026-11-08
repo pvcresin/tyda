@@ -477,7 +477,7 @@ module Colorable
 
   DEFAULT_COLOR: "#6699cc"
 
-  def color: -> untyped | "#6699cc"
+  def color: -> untyped
 end
 ```
 
@@ -671,5 +671,51 @@ end
 
 class Object < BasicObject
   def result: -> ActiveRecord::Relation[Item]
+end
+```
+
+## alias_method of a method added by included keeps it unknown
+
+### update
+
+```ruby
+module UpdateStatistics
+  extend ActiveSupport::Concern
+
+  included do
+    def statistics_changed?
+      changed_attribute?
+    end
+  end
+end
+
+class SnippetStatistics
+  include UpdateStatistics
+
+  alias_method :original_statistics_changed?, :statistics_changed?
+
+  def statistics_changed?
+    project_snippet? && original_statistics_changed?
+  end
+
+  def project_snippet? = rand > 0.5
+end
+```
+
+### result
+
+```rbs
+class SnippetStatistics
+  include UpdateStatistics
+
+  def statistics_changed?: -> untyped
+  def project_snippet?: -> bool
+  alias original_statistics_changed? statistics_changed?
+end
+
+module UpdateStatistics
+  extend ActiveSupport::Concern
+
+  def statistics_changed?: -> untyped
 end
 ```

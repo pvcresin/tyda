@@ -230,7 +230,7 @@ end
 
 ```rbs
 class RecursiveContainerTraversal
-  def visit: (untyped value) -> (untyped | Array | Hash)
+  def visit: (untyped value) -> untyped
   def visit_hash: (Hash hash) -> Hash
   def visit_array: (Array array) -> Array
 end
@@ -571,6 +571,6 @@ end
 
 ```rbs
 class ClassBodyPairConsumer
-  RESULT: untyped?
+  RESULT: untyped
 end
 ```

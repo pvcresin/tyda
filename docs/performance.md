@@ -181,6 +181,14 @@ warning が継続する場合や runner 環境が変わった場合は、まず�
 | `subject/mastodon` | 中 | 0.88s（3 runs、2026-08-27） | 147–161MB |
 | `subject/gitlab/app` | 大、6,455 files | 1.84s（6 runs 中央、2026-08-27、compact-scan 0.75s） | 283–297MB（6 runs、range） |
 | `subject/optcarrot` | 小、42 files | 0.30s（3 runs 中央、2026-09-05、worker 2） | 54–61MB（3 runs、range） |
+| `subject/gitlab`（全体） | 大、11,735 files | 4.4s（1 run、2026-11-08） | 475MB（1 run） |
+
+gitlab 全体は CI の対象外で、2026-11 時点の main では 120 秒以内に終わらなかった。原因は
+`resolve_method_param_refs_from_call_sites_for_classes` が呼び出し元の文脈をたどって引数の型を
+解くとき、入れ子の `resolve_deferred_refs_for_context` が毎回新しい memo で同じ (class, type) を
+解き直し、hop ごとに分岐が増えていたこと。クラスごとの読み取り専用区間に `DeferredHopMemoScope`
+を張ると、gitlab/app・mastodon の RBS 出力は byte-identical のまま全体が 4.4 秒になった。
+`app/services` と `lib/gitlab`・`lib/api` が揃うと発生し、各ディレクトリ単体では再現しない。
 
 `--diagnostics` は targets に加えて workspace context を読むため、通常の RBS render と別軸で
 比較する。

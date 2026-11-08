@@ -135,8 +135,8 @@ end
 ```rbs
 class UntypedUnionPredicate
   def dynamic_value: (untyped flag) -> untyped
-  def nil_predicate: (untyped flag) -> (false | untyped)
-  def value_type: (untyped flag) -> (untyped | "known")
+  def nil_predicate: (untyped flag) -> untyped
+  def value_type: (untyped flag) -> untyped
   def unknown_predicate: (untyped flag) -> untyped
 end
 ```
@@ -197,12 +197,12 @@ end
 ```rbs
 class UntypedArmCaller
   def dynamic_value: -> untyped
-  def receiver: -> untyped | UntypedArmTarget
-  def method_receiver: -> untyped | :label
-  def ivar_receiver: -> untyped | :label
-  def local_receiver: (untyped flag) -> (untyped | :label)
-  def block_call: (untyped flag) -> (untyped | :from_block)
-  def safe_navigation: (untyped flag) -> (untyped | :label)
+  def receiver: -> untyped
+  def method_receiver: -> untyped
+  def ivar_receiver: -> untyped
+  def local_receiver: (untyped flag) -> untyped
+  def block_call: (untyped flag) -> untyped
+  def safe_navigation: (untyped flag) -> untyped
   def nil_arm_stays_unknown: (untyped flag) -> untyped
   def typed_arms_only: (untyped flag) -> String
 end
@@ -242,7 +242,7 @@ end
 
 class UntypedUnionOverride
   def dynamic_value: -> untyped
-  def nil_predicate: (untyped flag) -> (untyped | :sentinel)
+  def nil_predicate: (untyped flag) -> untyped
 end
 ```
 

@@ -411,7 +411,7 @@ class ArityMismatchBlockRunner
 end
 
 class BlockRunner
-  def run: { (Integer) -> (1 | untyped) } -> String | 1
+  def run: { (Integer) -> untyped } -> String | 1
   def via_lambda: -> String
   def via_identity_lambda: -> 1
   def via_proc: -> String
@@ -553,7 +553,7 @@ end
 
 ```rbs
 class BranchYield
-  def each_data: (untyped filename) { ((String | { name: untyped })) -> untyped } -> (nil | untyped)
+  def each_data: (untyped filename) { ((String | { name: untyped })) -> untyped } -> untyped
 end
 ```
 

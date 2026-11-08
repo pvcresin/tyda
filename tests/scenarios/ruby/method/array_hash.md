@@ -2406,8 +2406,8 @@ end
 ```rbs
 class PluginBlockMap
   def definitions: -> Hash
-  def find_block: (untyped name) -> (nil | untyped)
-  def partial: (untyped name) -> (nil | untyped)
+  def find_block: (untyped name) -> untyped
+  def partial: (untyped name) -> untyped
 end
 ```
 

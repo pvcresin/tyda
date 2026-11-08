@@ -366,3 +366,43 @@ class Object < BasicObject
   def f: -> "b"
 end
 ```
+
+## alias_method keeps the definition it captured before a redefinition
+
+### update
+
+```ruby
+class AliasBase
+  def value = 1
+end
+
+class InheritedAliasChain < AliasBase
+  alias_method :original_value, :value
+
+  def value = rand > 0.5 ? original_value : "s"
+end
+
+class UnknownAliasChain
+  alias_method :original_value, :value
+
+  def value = rand > 0.5 ? original_value : "s"
+end
+```
+
+### result
+
+```rbs
+class AliasBase
+  def value: -> 1
+end
+
+class InheritedAliasChain < AliasBase
+  def value: -> 1 | "s"
+  alias original_value value
+end
+
+class UnknownAliasChain
+  def value: -> untyped
+  alias original_value value
+end
+```

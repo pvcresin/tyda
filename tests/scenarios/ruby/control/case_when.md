@@ -810,7 +810,7 @@ module Module
 end
 
 class Object < BasicObject
-  def module_override_unknown_case: (untyped value) -> (untyped | "other")
+  def module_override_unknown_case: (untyped value) -> untyped
 end
 ```
 
@@ -1268,7 +1268,7 @@ end
 class ReaderWriters
   def state: -> nil
   def state=: (nil state) -> nil
-  def name: -> untyped?
+  def name: -> untyped
   def initialize: -> void
   def by_state: -> (1 | "a")?
   def by_name: -> 1 | "known"

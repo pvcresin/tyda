@@ -3669,7 +3669,7 @@ end
                 "case_when_override.rb",
             );
             assert!(
-                rendered.contains("def participant_email: (untyped value) -> (untyped | :other)"),
+                rendered.contains("def participant_email: (untyped value) -> untyped\n"),
                 "a later base equality override must keep the branch receiver unknown:\n{rendered}"
             );
         }
@@ -3782,8 +3782,7 @@ end
             "case_when_target.rb",
         );
         assert!(
-            preflight_rendered
-                .contains("def participant_email: (untyped value) -> (untyped | :other)"),
+            preflight_rendered.contains("def participant_email: (untyped value) -> untyped\n"),
             "CLI source preflight must prevent class narrowing:\n{preflight_rendered}"
         );
         assert_eq!(builder_rendered, preflight_rendered);
@@ -4686,15 +4685,13 @@ end
         );
         let mut builder = crate::workspace_state::BatchProjectionBuilder::new(rbs_registry);
         builder.apply_chunk([("app_revision.rb".to_owned(), snapshot)]);
-        let registry = builder.finish(None, None);
+        let registry = builder.finish(Some(&loader), None);
         let rendered = crate::rbs::render::render_rbs_for_file(&registry, "app_revision.rb");
 
+        let has_line = |line: &str| rendered.lines().any(|l| l.trim() == line);
+        assert!(has_line("def self.version: -> String"), "{rendered}");
         assert!(
-            rendered.contains("def self.version: -> String"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("def self.revision_or_fallback: -> String"),
+            has_line("def self.revision_or_fallback: -> String"),
             "{rendered}"
         );
     }

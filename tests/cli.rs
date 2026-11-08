@@ -86,7 +86,7 @@ fn batch_resolution_keeps_untyped_right_side_of_short_circuit() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("def same_end: (untyped other) -> (false | untyped)"),
+        stdout.contains("def same_end: (untyped other) -> untyped\n"),
         "got: {stdout}"
     );
 }

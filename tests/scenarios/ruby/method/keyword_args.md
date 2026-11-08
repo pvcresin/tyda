@@ -396,7 +396,7 @@ end
 
 ```rbs
 class KeywordRestReadWithUntypedSibling
-  def target: (**(String | untyped) rest) -> "known"
+  def target: (**untyped rest) -> "known"
   def call: -> "known"
 end
 ```
@@ -548,8 +548,8 @@ end
 
 ```rbs
 class KeywordRestFetchFromDynamicHash
-  def target: (**untyped rest) -> (untyped | "fallback")
-  def call: (untyped options) -> (untyped | "fallback")
+  def target: (**untyped rest) -> untyped
+  def call: (untyped options) -> untyped
 end
 ```
 

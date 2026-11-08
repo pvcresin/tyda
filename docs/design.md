@@ -54,6 +54,16 @@ source の annotation を更新・削除した場合は snapshot と fingerprint
 32 world を超えたら相関を捨てる（値はunionのままで健全）。
 遅延参照をtruthy/falsy projectionの内側で解決するときは、union中の `untyped` を保持し、不明な分岐の到達可能性を失わない。
 
+メソッド戻り値の再帰は最小不動点で解く。`x = C | x` のように union の直下（truthy/falsy projection を含む）で
+自分へ戻る辺は何も足さないので `C` になる。`[x]` のように入れ子の中で戻る辺は無限の型になるため `untyped` にし、
+循環だけで値の証拠がないメソッドも `untyped` にする。循環は「分からない値」ではないので、検出時に `untyped` へ
+確定させない。同様に、推論中でまだ登録されていないメソッドへの参照も遅延参照のまま残す。
+`alias_method` は実行時点で見えている定義を捕まえる。その時点で対象が見えず名前で遅延束縛した alias は、
+同じクラスが後から対象を `def` し直したとき、クラスより上の定義へ付け替え、見えなければ `untyped` にする
+（再定義後の本体を指すと偽の再帰になる）。
+表示（RBS・hover・code lens）では `X | untyped` を `untyped` とする。内部の型は腕を保ったままにし、
+腕ごとの dispatch・補完・後からの解決に使う。
+
 ## semantic backend
 
 長寿命の `WorkspaceState` にファイルの snapshot、依存関係、推論結果を保持し、CLI / LSP / MCP /

@@ -91,8 +91,8 @@ class PresenceKnownReceiver
 end
 
 class PresenceUnionProbe
-  def present_result: ((nil | untyped | PresenceKnownReceiver) value) -> bool
-  def unknown_predicate_result: ((nil | untyped | PresenceKnownReceiver) value) -> untyped
+  def present_result: (untyped value) -> bool
+  def unknown_predicate_result: (untyped value) -> untyped
 end
 ```
 
@@ -120,7 +120,7 @@ end
 
 ```rbs
 class CustomPresenceProbe
-  def result: ((untyped | CustomPresenceReceiver) value) -> untyped
+  def result: (untyped value) -> untyped
 end
 
 class CustomPresenceReceiver
@@ -177,6 +177,6 @@ A.new.foo("x")
 
 ```rbs
 class A
-  def foo: (?String? x) -> (nil | untyped)
+  def foo: (?String? x) -> untyped
 end
 ```
