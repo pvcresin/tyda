@@ -49270,16 +49270,20 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn is_unresolved_call_arg_type(ty: &Type) -> bool {
-        matches!(
-            ty,
+        match ty {
             Type::Untyped
-                | Type::Todo
-                | Type::ParamRef(_)
-                | Type::KeywordParamRef(_)
-                | Type::ReceiverMethodRef(_, _)
-                | Type::DeferredSafeNavigation(_, _)
-                | Type::MethodReturnRef(_, _)
-        )
+            | Type::Todo
+            | Type::ParamRef(_)
+            | Type::KeywordParamRef(_)
+            | Type::ReceiverMethodRef(_, _)
+            | Type::DeferredSafeNavigation(_, _)
+            | Type::MethodReturnRef(_, _) => true,
+            // A flow projection of a deferred value is still unknown until the call site.
+            Type::NonNilProjection(inner)
+            | Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner) => Self::is_unresolved_call_arg_type(inner),
+            _ => false,
+        }
     }
 
     fn method_object_positional_param_count(method: &MethodDef) -> usize {

@@ -1180,3 +1180,31 @@ class ExistingPathReader
   private def real_path: -> String
 end
 ```
+
+## A guarded parameter path keeps the block overload of a call
+
+### update
+
+```ruby
+class GuardedFileHeader
+  def header(path)
+    return unless File.exist? path
+    File.open(path) { |file| return file.gets && 1 }
+    nil
+  end
+
+  def first_line(path)
+    return if path.nil?
+    File.open(path) { |file| file.gets }
+  end
+end
+```
+
+### result
+
+```rbs
+class GuardedFileHeader
+  def header: (untyped path) -> 1?
+  def first_line: (untyped path) -> String?
+end
+```
