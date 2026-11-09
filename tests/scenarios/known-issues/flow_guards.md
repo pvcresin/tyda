@@ -84,50 +84,6 @@ class RepeatedEnvRead
 end
 ```
 
-## A when clause with a constant lookup narrows the subject to that class
-
-```ruby
-class DynamicWhenFirst < StandardError
-  def detail = 1
-end
-
-class DynamicWhenSecond < StandardError
-end
-
-class DynamicWhenSubject
-  ERRORS = { first: DynamicWhenFirst, second: DynamicWhenSecond }.freeze
-
-  def handle(error)
-    case error
-    when ERRORS[:first]
-      consume(error)
-    end
-  end
-
-  def consume(error) = error
-
-  def run
-    handle(DynamicWhenFirst.new)
-    handle(DynamicWhenSecond.new)
-  end
-end
-```
-
-### result
-
-```rbs
-class DynamicWhenFirst < StandardError
-  def detail: -> 1
-end
-
-class DynamicWhenSubject
-  ERRORS: { first: singleton(DynamicWhenFirst), second: singleton(DynamicWhenSecond) }
-  def handle: ((DynamicWhenFirst | DynamicWhenSecond) error) -> DynamicWhenFirst?
-  def consume: (DynamicWhenFirst error) -> DynamicWhenFirst
-  def run: -> DynamicWhenFirst?
-end
-```
-
 ## A rest parameter keeps Array through a filtering block
 
 ```ruby

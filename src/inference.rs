@@ -26798,6 +26798,8 @@ impl<'a> InferenceEngine<'a> {
                             self.case_when_branch_class_narrowing(
                                 class_name,
                                 &when_node,
+                                parse_result,
+                                scope,
                                 &mut remaining_subject_type,
                             )
                         })
@@ -27006,6 +27008,7 @@ impl<'a> InferenceEngine<'a> {
                 let mut remaining_subject_type = subject_type.clone();
                 let mut remaining_subject_is_known = subject_type.is_some();
                 let mut literal_partitioning_enabled = subject_type.is_some();
+                let mut rejected_numeric_literals = Vec::new();
                 let mut fallthrough: Option<Scope> = None;
                 for condition in case_node.conditions().iter() {
                     if remaining_subject_is_known && remaining_subject_type.is_none() {
@@ -27032,6 +27035,13 @@ impl<'a> InferenceEngine<'a> {
                             literal_partitioning_enabled = false;
                             matched_type
                         } else if literal_partitioning_enabled {
+                            if Self::numeric_literal_arm_already_rejected(
+                                pattern,
+                                remaining_subject_type.as_ref(),
+                                &rejected_numeric_literals,
+                            ) {
+                                continue;
+                            }
                             if let Some((matched_type, unmatched_type)) = self
                                 .partition_case_pattern(
                                     class_name,
@@ -27040,6 +27050,11 @@ impl<'a> InferenceEngine<'a> {
                                     scope,
                                 )
                             {
+                                if guard.is_none()
+                                    && let Some(value) = Self::numeric_literal_arm_value(pattern)
+                                {
+                                    rejected_numeric_literals.push(value);
+                                }
                                 remaining_subject_type = unmatched_type;
                                 remaining_subject_is_known = true;
                                 let Some(matched_type) = matched_type else {
@@ -32255,6 +32270,8 @@ impl<'a> InferenceEngine<'a> {
                             self.case_when_branch_class_narrowing(
                                 class_name,
                                 &when_node,
+                                parse_result,
+                                scope,
                                 &mut remaining_subject_type,
                             )
                         })
@@ -32374,6 +32391,7 @@ impl<'a> InferenceEngine<'a> {
                     let mut remaining_subject_type = subject_type.clone();
                     let mut remaining_subject_is_known = subject_type.is_some();
                     let mut literal_partitioning_enabled = subject_type.is_some();
+                    let mut rejected_numeric_literals = Vec::new();
                     let mut fallthrough: Option<Scope> = None;
 
                     for condition in case_node.conditions().iter() {
@@ -32401,6 +32419,13 @@ impl<'a> InferenceEngine<'a> {
                                 literal_partitioning_enabled = false;
                                 matched_type
                             } else if literal_partitioning_enabled {
+                                if Self::numeric_literal_arm_already_rejected(
+                                    pattern,
+                                    remaining_subject_type.as_ref(),
+                                    &rejected_numeric_literals,
+                                ) {
+                                    continue;
+                                }
                                 if let Some((matched_type, unmatched_type)) = self
                                     .partition_case_pattern(
                                         class_name,
@@ -32409,6 +32434,12 @@ impl<'a> InferenceEngine<'a> {
                                         scope,
                                     )
                                 {
+                                    if guard.is_none()
+                                        && let Some(value) =
+                                            Self::numeric_literal_arm_value(pattern)
+                                    {
+                                        rejected_numeric_literals.push(value);
+                                    }
                                     remaining_subject_type = unmatched_type;
                                     remaining_subject_is_known = true;
                                     let Some(matched_type) = matched_type else {
@@ -55495,36 +55526,74 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         class_name: &str,
         when_node: &ruby_prism::WhenNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
     ) -> Option<Vec<String>> {
         let conditions = when_node.conditions();
         let mut targets = Vec::new();
         for condition in conditions.iter() {
-            if !matches!(
-                condition,
-                Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
-            ) {
-                return None;
-            }
-            let path = String::from_utf8_lossy(condition.location().as_slice());
-            let resolved = self.resolve_constant_type_in_scope(&path, class_name);
-            let Type::Singleton(target) = resolved else {
-                return None;
+            let resolved = match condition {
+                Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
+                    let path = String::from_utf8_lossy(condition.location().as_slice());
+                    self.resolve_constant_type_in_scope(&path, class_name)
+                }
+                _ if Self::cannot_evaluate_to_class(&condition) => return None,
+                // Any value of type `singleton(C)` is the class C, so `===` is `is_a?`.
+                _ => self.infer_node_type(
+                    class_name,
+                    &condition,
+                    parse_result,
+                    &scope.fork_for_branch(),
+                ),
             };
-            let target = target.to_string();
-            self.ensure_class_available(&target);
-            let target_data = self.registry.class_data_for(&target)?;
-            let is_module = target_data.is_module;
-            let has_type_substance = target_data.has_type_substance();
-            let standard_equality = self.uses_standard_class_case_equality(&target);
-            if is_module || !has_type_substance {
-                return None;
+            let resolved = match resolved {
+                Type::Union(parts) => parts,
+                single => vec![single],
+            };
+            for part in resolved {
+                let Type::Singleton(target) = part else {
+                    return None;
+                };
+                let target = target.to_string();
+                self.ensure_class_available(&target);
+                let target_data = self.registry.class_data_for(&target)?;
+                if target_data.is_module || !target_data.has_type_substance() {
+                    return None;
+                }
+                if !self.uses_standard_class_case_equality(&target) {
+                    return None;
+                }
+                if !targets.contains(&target) {
+                    targets.push(target);
+                }
             }
-            if !standard_equality {
-                return None;
-            }
-            targets.push(target);
         }
         (!targets.is_empty()).then_some(targets)
+    }
+
+    fn cannot_evaluate_to_class(node: &Node<'_>) -> bool {
+        matches!(
+            node,
+            Node::NilNode { .. }
+                | Node::TrueNode { .. }
+                | Node::FalseNode { .. }
+                | Node::IntegerNode { .. }
+                | Node::FloatNode { .. }
+                | Node::RationalNode { .. }
+                | Node::ImaginaryNode { .. }
+                | Node::StringNode { .. }
+                | Node::InterpolatedStringNode { .. }
+                | Node::XStringNode { .. }
+                | Node::SymbolNode { .. }
+                | Node::InterpolatedSymbolNode { .. }
+                | Node::RegularExpressionNode { .. }
+                | Node::InterpolatedRegularExpressionNode { .. }
+                | Node::RangeNode { .. }
+                | Node::ArrayNode { .. }
+                | Node::HashNode { .. }
+                | Node::LambdaNode { .. }
+                | Node::SplatNode { .. }
+        )
     }
 
     /// `when Foo` with a class defined later still proves something about the subject, so the
@@ -55770,6 +55839,8 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         class_name: &str,
         when_node: &ruby_prism::WhenNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
         remaining_subject_type: &mut Option<Type>,
     ) -> Option<Type> {
         if self.source_base_case_equality_override
@@ -55780,7 +55851,8 @@ impl<'a> InferenceEngine<'a> {
         }
         if !self.case_when_narrowing_enabled {
             let has_active_method = self.active_method_body.is_some();
-            let class_targets = self.case_when_class_targets(class_name, when_node);
+            let class_targets =
+                self.case_when_class_targets(class_name, when_node, parse_result, scope);
             let initial_subject_type = remaining_subject_type.clone();
             let has_class_dispatch = class_targets.is_some();
             if let Some(active_method_body) = self.active_method_body.as_mut() {
@@ -55800,7 +55872,9 @@ impl<'a> InferenceEngine<'a> {
                 _ => None,
             };
         }
-        let Some(targets) = self.case_when_class_targets(class_name, when_node) else {
+        let Some(targets) =
+            self.case_when_class_targets(class_name, when_node, parse_result, scope)
+        else {
             if remaining_subject_type.is_some() {
                 *remaining_subject_type = None;
             }
@@ -58738,6 +58812,8 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let pattern_type = pattern_type?;
+        let numeric_pattern = matches!(class_name, "Integer" | "Float" | "Rational" | "Complex");
+        let pattern_is_non_real = Self::imaginary_literal_is_non_zero(pattern);
 
         let mut pending = vec![subject_type.clone()];
         let mut matched_types = Vec::new();
@@ -58764,18 +58840,15 @@ impl<'a> InferenceEngine<'a> {
                     }
                     _ => unmatched_types.push(Type::Bool),
                 },
-                Type::Integer if class_name == "Integer" => {
-                    matched_types.push(Type::Integer);
-                    unmatched_types.push(Type::Integer);
-                }
-                Type::Float if class_name == "Float" => {
-                    matched_types.push(Type::Float);
-                    unmatched_types.push(Type::Float);
-                }
-                Type::LiteralInteger(_) | Type::LiteralFloat(_)
-                    if matches!(class_name, "Integer" | "Float") =>
-                {
-                    let equality = Self::numeric_value_equality(&pattern_type, &subject);
+                // Numeric equality crosses classes: `1.0 === 1` and `1r === 1` are true.
+                subject if numeric_pattern && Self::is_numeric_value_type(&subject) => {
+                    let subject_is_real =
+                        !matches!(&subject, Type::Class(name) if name.as_str() == "Complex");
+                    let equality = if pattern_is_non_real && subject_is_real {
+                        Some(false)
+                    } else {
+                        Self::numeric_value_equality(&pattern_type, &subject)
+                    };
                     if equality != Some(false) {
                         matched_types.push(subject.clone());
                     }
@@ -58783,13 +58856,16 @@ impl<'a> InferenceEngine<'a> {
                         unmatched_types.push(subject);
                     }
                 }
-                Type::Class(name) if matches!(class_name, "Rational" | "Complex") => {
-                    if name.as_str() == class_name {
-                        matched_types.push(Type::Class(name));
-                        unmatched_types.push(Type::Class(name));
-                    } else {
-                        unmatched_types.push(Type::Class(name));
-                    }
+                Type::Class(ref name) | Type::Generic { base: ref name, .. }
+                    if numeric_pattern
+                        && self.class_is_or_subclass_of_target(
+                            name.as_str(),
+                            "Numeric",
+                            &mut HashSet::new(),
+                        ) =>
+                {
+                    matched_types.push(subject.clone());
+                    unmatched_types.push(subject);
                 }
                 Type::String
                 | Type::Symbol
@@ -58843,6 +58919,53 @@ impl<'a> InferenceEngine<'a> {
 
     fn is_irrefutable_variable_pattern(pattern: &Node<'_>) -> bool {
         matches!(pattern, Node::LocalVariableTargetNode { .. })
+    }
+
+    fn imaginary_literal_is_non_zero(node: &Node<'_>) -> bool {
+        if !matches!(node, Node::ImaginaryNode { .. }) {
+            return false;
+        }
+        let source = String::from_utf8_lossy(node.location().as_slice()).replace('_', "");
+        let coefficient = source.trim_end_matches('i').trim_end_matches('r');
+        coefficient
+            .parse::<f64>()
+            .is_ok_and(|value| value.is_finite() && value != 0.0)
+    }
+
+    /// The exact value of an unguarded numeric literal arm, as an Integer or Float literal type.
+    fn numeric_literal_arm_value(node: &Node<'_>) -> Option<Type> {
+        match node {
+            Node::IntegerNode { .. } | Node::FloatNode { .. } => {
+                Self::literal_singleton_type_from_node(node)
+            }
+            Node::RationalNode { .. } => {
+                let source = String::from_utf8_lossy(node.location().as_slice()).replace('_', "");
+                let value = source.strip_suffix('r')?.parse::<i64>().ok()?;
+                Some(Type::LiteralInteger(value))
+            }
+            _ => None,
+        }
+    }
+
+    /// Built-in numeric equality is exact, so a subject that failed `in 1` also fails `in 1.0`.
+    fn numeric_literal_arm_already_rejected(
+        pattern: &Node<'_>,
+        remaining_subject_type: Option<&Type>,
+        rejected: &[Type],
+    ) -> bool {
+        let Some(subject) = remaining_subject_type else {
+            return false;
+        };
+        let subject_is_numeric = match subject {
+            Type::Union(parts) => parts.iter().all(Self::is_numeric_value_type),
+            single => Self::is_numeric_value_type(single),
+        };
+        subject_is_numeric
+            && Self::numeric_literal_arm_value(pattern).is_some_and(|value| {
+                rejected
+                    .iter()
+                    .any(|seen| Self::numeric_value_equality(&value, seen) == Some(true))
+            })
     }
 
     fn uses_standard_literal_value_equality(&mut self, class_name: &str) -> bool {
