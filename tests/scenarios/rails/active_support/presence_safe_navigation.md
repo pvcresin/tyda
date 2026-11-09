@@ -96,6 +96,79 @@ class PresenceUnionProbe
 end
 ```
 
+## Keep present? Boolean through a self call whose return has an unknown arm
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class PresenceSelfCallProbe
+  def description
+    return missing_value if ready?
+    @summary.try(:chomp)
+  end
+
+  def description?
+    description.present?
+  end
+
+  def summary_or_one?(flag)
+    (flag ? missing_value : 1).present?
+  end
+end
+
+class PresenceLaterSelfCallProbe
+  def description
+    return fallback if ready?
+    @summary.try(:chomp)
+  end
+
+  def description?
+    description.present?
+  end
+
+  def fallback = @fallback
+end
+
+class PresenceEarlierSelfCallProbe
+  def fallback = @fallback
+
+  def description
+    return fallback if ready?
+    @summary.try(:chomp)
+  end
+
+  def description?
+    description.present?
+  end
+end
+```
+
+### result
+
+```rbs
+class PresenceEarlierSelfCallProbe
+  def fallback: -> untyped
+  def description: -> untyped
+  def description?: -> bool
+end
+
+class PresenceLaterSelfCallProbe
+  def description: -> untyped
+  def description?: -> bool
+  def fallback: -> untyped
+end
+
+class PresenceSelfCallProbe
+  def description: -> untyped
+  def description?: -> bool
+  def summary_or_one?: (untyped flag) -> bool
+end
+```
+
 ## Keep source overrides authoritative for present?
 
 ```yaml

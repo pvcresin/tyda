@@ -19,10 +19,6 @@ AFTER_SHELLWORDS: String
 
 ## Optional stdlib methods on lazily loaded classes appear after the require runs
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -42,6 +38,56 @@ BEFORE_PP: untyped
 AFTER_PP: String
 BEFORE_ABBREV: untyped
 AFTER_ABBREV: Hash[String, String]
+```
+
+## A project method with a feature method's name ignores the require order
+
+### update
+
+```ruby
+class Words
+  def abbrev = 1
+end
+
+EARLY = Words.new.abbrev
+require "abbrev"
+```
+
+### result
+
+```rbs
+EARLY: 1
+
+class Words
+  def abbrev: -> 1
+end
+```
+
+## A method-local require loads lazily added methods for later calls
+
+### update
+
+```ruby
+def local_load
+  before = ["fast"].abbrev
+  require "abbrev"
+  [before, ["boat"].abbrev]
+end
+
+def local_escape
+  before = "a b".shellescape
+  require "shellwords"
+  [before, "c d".shellescape]
+end
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def local_load: -> [untyped, Hash[String, String]]
+  def local_escape: -> [untyped, String]
+end
 ```
 
 ## Method bodies see a require that runs before the method is called

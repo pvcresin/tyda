@@ -391,11 +391,25 @@ struct TypeSlotAccumulator {
     parts: rustc_hash::FxHashSet<Type>,
     // exceeding the union cap sticks to untyped regardless of merge order.
     saturated: bool,
+    argument: bool,
 }
 
 impl TypeSlotAccumulator {
     fn from_type(ty: Type) -> Self {
         let mut acc = Self::default();
+        acc.add(ty);
+        acc
+    }
+
+    fn argument_slot() -> Self {
+        Self {
+            argument: true,
+            ..Self::default()
+        }
+    }
+
+    fn from_argument(ty: Type) -> Self {
+        let mut acc = Self::argument_slot();
         acc.add(ty);
         acc
     }
@@ -407,7 +421,11 @@ impl TypeSlotAccumulator {
         // append_union_parts flattens nested unions and drops Untyped
         // (but keeps the empty signal meaning "call site told us nothing").
         let mut flattened = Vec::new();
-        Type::append_union_parts(&mut flattened, ty);
+        if self.argument {
+            Type::append_argument_parts(&mut flattened, ty);
+        } else {
+            Type::append_union_parts(&mut flattened, ty);
+        }
         for part in flattened {
             self.parts.insert(part);
         }
@@ -439,12 +457,12 @@ impl CallSiteSummaryAccumulator {
         let arg_slots = site
             .arg_types
             .drain(..)
-            .map(TypeSlotAccumulator::from_type)
+            .map(TypeSlotAccumulator::from_argument)
             .collect();
         let keyword_slots = site
             .keyword_arg_types
             .drain()
-            .map(|(name, ty)| (name, TypeSlotAccumulator::from_type(ty)))
+            .map(|(name, ty)| (name, TypeSlotAccumulator::from_argument(ty)))
             .collect();
         let keyword_rest_shape = site
             .keyword_rest_shape
@@ -474,7 +492,7 @@ impl CallSiteSummaryAccumulator {
         if self.arg_slots.len() < other.arg_types.len() {
             // fill missing positional-argument observations as Untyped (i.e. an empty slot).
             self.arg_slots
-                .resize_with(other.arg_types.len(), TypeSlotAccumulator::default);
+                .resize_with(other.arg_types.len(), TypeSlotAccumulator::argument_slot);
         }
         for (idx, ty) in other.arg_types.into_iter().enumerate() {
             self.arg_slots[idx].add(ty);
@@ -485,7 +503,7 @@ impl CallSiteSummaryAccumulator {
                     entry.get_mut().add(ty);
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(TypeSlotAccumulator::from_type(ty));
+                    entry.insert(TypeSlotAccumulator::from_argument(ty));
                 }
             }
         }
@@ -3337,7 +3355,7 @@ impl TypeRegistry {
         let bound = Self::bind_positional_arguments(&positional_infos, arg_types);
         for (slot, arg_types) in param_types.iter_mut().zip(bound) {
             for arg_type in arg_types {
-                Type::append_union_parts(slot, arg_type);
+                Type::append_argument_parts(slot, arg_type);
             }
         }
     }
@@ -7091,9 +7109,8 @@ impl TypeRegistry {
                             if types.is_empty() {
                                 Type::Untyped
                             } else {
-                                finalize(Self::replace_forwarded_markers(
+                                finalize(Self::erase_forwarded_markers(
                                     Type::from_type_vec(types).widen_arg_for_param(),
-                                    &Type::Untyped,
                                 ))
                             }
                         })
@@ -7264,6 +7281,35 @@ impl TypeRegistry {
                 *subject.as_ref() == Type::Untyped || Self::is_projection_of_unknown(subject)
             }
             _ => false,
+        }
+    }
+
+    /// An unknown marker inside a container erases only its own slot, so the known slots keep their types.
+    fn erase_forwarded_markers(ty: Type) -> Type {
+        match ty {
+            Type::Tuple(elems) => Type::Tuple(
+                elems
+                    .into_iter()
+                    .map(Self::erase_forwarded_markers)
+                    .collect(),
+            ),
+            Type::Array(Some(inner)) => {
+                Type::Array(Some(Box::new(Self::erase_forwarded_markers(*inner))))
+            }
+            Type::Hash(key, value) => Type::Hash(
+                key.map(|key| Box::new(Self::erase_forwarded_markers(*key))),
+                value.map(|value| Box::new(Self::erase_forwarded_markers(*value))),
+            ),
+            Type::Record(fields) => Type::Record(
+                fields
+                    .into_iter()
+                    .map(|field| RecordField {
+                        value: Self::erase_forwarded_markers(field.value),
+                        ..field
+                    })
+                    .collect(),
+            ),
+            ty => Self::replace_forwarded_markers(ty, &Type::Untyped),
         }
     }
 
@@ -9137,7 +9183,7 @@ impl TypeRegistry {
 
     /// A deferred call keeps no arguments and may have written to the tuple, so `self` is only known
     /// to be an array of it.
-    fn deferred_self_return(ret: &Type, receiver: &Type) -> Type {
+    pub(crate) fn deferred_self_return(ret: &Type, receiver: &Type) -> Type {
         match receiver {
             Type::Tuple(_) => {
                 Self::substitute_self_type(ret, &receiver.clone().widen_tuple_to_array())
@@ -11127,7 +11173,7 @@ impl TypeRegistry {
             {
                 let resolved =
                     self.resolve_call_site_type_from_caller_context(call_site, ty, visiting);
-                Type::append_union_parts(&mut types, resolved);
+                Type::append_argument_parts(&mut types, resolved);
             }
         }
         if types.is_empty() {

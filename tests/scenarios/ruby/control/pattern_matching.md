@@ -282,10 +282,6 @@ end
 
 ## Non-literal numeric subjects can match numeric literal patterns of another class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -324,6 +320,69 @@ class CrossClassNumericPattern
   def float: -> Float
   def integer_against_float: -> :float | :other
   def float_against_integer: -> :int | :other
+end
+```
+
+## Numeric literal patterns stay reachable for other numeric subjects
+
+### update
+
+```ruby
+class OtherNumericPattern
+  #: () -> Numeric
+  def number = 1
+
+  #: () -> Rational
+  def ratio = 1r
+
+  #: () -> Integer
+  def int = 1
+
+  def numeric_against_integer
+    case number
+    in 1
+      :one
+    else
+      :other
+    end
+  end
+
+  def rational_against_integer
+    case ratio
+    in 1
+      :one
+    in 1.0
+      :again
+    else
+      :other
+    end
+  end
+
+  def guarded_value_stays_open
+    case int
+    in 1 if rand > 0.5
+      :guarded
+    in 1.0
+      :float
+    in 2i
+      :imaginary
+    else
+      :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class OtherNumericPattern
+  def number: -> Numeric
+  def ratio: -> Rational
+  def int: -> Integer
+  def numeric_against_integer: -> :one | :other
+  def rational_against_integer: -> :one | :other
+  def guarded_value_stays_open: -> :float | :guarded | :other
 end
 ```
 

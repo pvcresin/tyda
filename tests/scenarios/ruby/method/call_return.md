@@ -213,6 +213,32 @@ class UntypedArmTarget
 end
 ```
 
+## A call on an untyped receiver that may be nil stays untyped
+
+### update
+
+```ruby
+class MaybeUntypedReceiver
+  def mapped(x) = (x ? x.y : nil).map(&:path)
+  def plain(x) = x.y.map(&:path)
+  def sliced(x) = (x ? x.y : nil).each_slice(2)
+  def included(x) = (x ? x.y : nil).include?(1)
+  def first_mapped(x) = (x ? x.y : nil).map(&:path).first
+end
+```
+
+### result
+
+```rbs
+class MaybeUntypedReceiver
+  def mapped: (untyped x) -> untyped
+  def plain: (untyped x) -> untyped
+  def sliced: (untyped x) -> untyped
+  def included: (untyped x) -> untyped
+  def first_mapped: (untyped x) -> untyped
+end
+```
+
 ## Keep source-defined nil predicates unknown on an untyped union
 
 ### update
@@ -692,5 +718,30 @@ class BlockOverloadReturn
   def unresolved_block: -> Array[untyped]
   def yielded_block: { (untyped) -> untyped } -> Array[untyped]
   def without_block: -> Enumerator["a", Array[untyped]]
+end
+```
+
+## A length read through a parameter keeps the nil of IO#read
+
+### update
+
+```ruby
+class ReadLength
+  def read_part(file, len)
+    file.read(len)
+  end
+
+  def run
+    read_part(File.open("x"), 3)
+  end
+end
+```
+
+### result
+
+```rbs
+class ReadLength
+  def read_part: (File file, Integer len) -> String?
+  def run: -> String?
 end
 ```

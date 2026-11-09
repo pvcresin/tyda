@@ -1368,3 +1368,33 @@ class WhileAssignmentSource
   def next_entry: (bool flag) -> WhileAssignmentEntry?
 end
 ```
+
+## A value checked by break unless is yielded as non-nil
+
+### update
+
+```ruby
+class YieldReadParts
+  def each_part(file, len)
+    while len > 0
+      part = file.read(len)
+      break unless part
+      len -= part.length
+      yield part
+    end
+  end
+
+  def run
+    each_part(File.open("x"), 3) { |part| part }
+  end
+end
+```
+
+### result
+
+```rbs
+class YieldReadParts
+  def each_part: (File file, Integer len) { (String) -> untyped } -> nil
+  def run: -> nil
+end
+```

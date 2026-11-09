@@ -21,7 +21,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - class / module / method / mixin / constant / local / instance variable（LSP / Playground の定義・参照 hover を含む。宣言済み引数の定義位置も対象）
 - method dispatch、visibility、`super`、singleton method、refinement（`include` / `prepend` /
   `extend` の適用順を反映。`class << self` 内の `include` は `extend` として出力。有効な refinement は Array / Hash の literal shape や subclass にも祖先順で適用する。静的に完全な `Module#ancestors` は順序付き `Tuple`。トップレベルの
-  local receiver も呼び出し時点の型で解決し、型は解決済み receiver の宣言（RBS / source）か plugin からだけ決まり、untyped receiver の呼び出しは `to_s` や `==` を含め常に untyped。メソッド名から戻り値を推測しない。`super(...)` の引数転送と method call の keyword splat から optional keyword 型を広げ、明示的な `super` に渡す `&block` には親 method の既知の block contract を反映する。名前付き `**rest` は個別の keyword 引数を除いた caller record から推論し、動的な keyword hash でも標準 Hash API の key 型（`keys` は `Symbol`）を保つ。`obj[key] = value` は RHS を返し、`obj.[]=(...)` はメソッドの戻り値を保つ。`alias_method` は alias 元の keyword signature と戻り値参照を保持し、source method return refを含む union receiver の引数なし call も後段でarmごとに解決する）
+  local receiver も呼び出し時点の型で解決し、型は解決済み receiver の宣言（RBS / source）か plugin からだけ決まり、untyped receiver の呼び出しは `to_s` や `==` を含め常に untyped（`untyped | nil` で `NilClass` にないメソッドも同じ）。メソッド名から戻り値を推測しない。`super(...)` の引数転送と method call の keyword splat から optional keyword 型を広げ、明示的な `super` に渡す `&block` には親 method の既知の block contract を反映する。名前付き `**rest` は個別の keyword 引数を除いた caller record から推論し、動的な keyword hash でも標準 Hash API の key 型（`keys` は `Symbol`）を保つ。`obj[key] = value` は RHS を返し、`obj.[]=(...)` はメソッドの戻り値を保つ。`alias_method` は alias 元の keyword signature と戻り値参照を保持し、source method return refを含む union receiver の引数なし call も後段でarmごとに解決する）
   `untyped` の腕を持つ union receiver への呼び出しは内部で腕ごとに解決し（`untyped | Pathname` の `join` は内部で `untyped | Pathname`）、`nil` の腕は dispatch しない。RBS・hover・code lens では、`untyped` の腕を含む union は RBS の意味どおり `untyped` と表示する。
 - block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（同じdispatchのsource overrideがない `block_given?` / 安定した `&block` のガードとcall block内のyieldからrequirednessを推論し、明示RBSのblock契約を優先。`Enumerator::Lazy.new` は既知 enumerable source の要素型を block に渡し、yielder への送信型から出力要素型を推論。遅延解決された source method return を
   block dispatch 前に反映し、source method の yield 型に呼び出し引数を代入し、block signature にも positional / keyword method parameter の型を反映し、`&` で渡された Proc / lambda の戻り型にも yield 引数型を反映し、tuple の要素 union とリテラル演算を block 内へ伝播。既知の空配列に対する
@@ -38,8 +38,10 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - `if` の単一 `&&` 条件で、左辺が local read、右辺が直接の local assignment の場合は、短絡時の未代入経路と右辺代入値のtruthy / falsy projectionを分岐 local に反映する。guardと代入先が同じlocalの場合も分岐ごとの値を保つ。右辺内で別localを変更する副作用はbranch scopeへ反映しない。入れ子の複合条件や別の左辺 / 右辺構文は対象外
 - optional parameter の `nil?` / `== nil` guard 後は、遅延参照から `nil` だけを除き、`false` は残す
 - 標準の no-block `Array#any?` と `Array#all?(Class)` を同じ `&&` 条件で確認した直後は、同じ local Array / `Hash#values` の `first` を非空かつ class 型で絞る。block・source override・refinement を含む場合や、間に別の文がある場合は絞らない
-- 多重代入、右辺型を使った RBS operator overload の選択と source-defined operator を優先する operator-write、method 内の instance variable 再代入、文字列・シンボル補間（静的な literal / union の展開を含む）
+- `Array[T]` の local に対する標準の `size` / `length` の比較・`!empty?` guard と truthy な `values[i]` 条件は、要素 fact として残す。範囲内の literal index の `[]` は `T`（truthy 条件の添字は `nil` / `false` を除く）、範囲内から始まる `[start..]` / `[start, length]` は `Array[T]` にする。local の別用途・再代入・任意の call / `yield` / `super` を含む文や source override・singleton method がある場合は fact を捨てる
+- 多重代入、右辺型を使った RBS operator overload の選択と source-defined operator を優先する operator-write、method 内の instance variable 再代入（literal を receiver にする引数・block なしの call の結果も含む。式が読む fact は末尾の call より先に評価される）、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播。Queue は未解決の要素型を既知の sentinel 要素で上書きしない
+- 呼び出し側の引数から parameter 型を集める。`untyped` だけの引数は型を加えず、`untyped` と `nil` の union は `untyped` のまま保ち、到達不能な分岐の `bot` 引数は加えない
 - 静的に名前を求められる `alias` / `define_method` / `attr_*`（Record / Tuple の静的 iterator 内で束縛された属性名、静的に判定できる `next if` / `next unless`、束縛やDSLに影響しない条件付き代入を含む。receiver上でiterator methodが上書きされている場合は展開しない。生成 writer の戻り値は引数型に一致し、代入値は対応する reader にも反映） /
   `Struct.new` / `Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） / `Forwardable` / `send` / `const_get`
 
@@ -51,7 +53,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 ### RBS
 
-- `.rbs` の自動発見、stdlib の lazy load、直接実行される文字列リテラル `require` のsource orderに応じた stdlib feature RBS の読み込み（`io/console` など slash 区切りfeature名も対応）、generic、overload、interface、alias。`shellwords` の `String#shellescape` / `String#shellsplit` は、feature の `require` 後に推論し、RBS stdlibを使えない場合も補う。メソッド本体内のリテラル `require` は同じメソッド内の後続呼び出しにだけ適用する。class / module / singleton class body内の `require` は、singleton `require` の再定義や動的な `send` / `eval` がある場合はロード済みと推定しない。メソッド内の条件分岐の本体・block / lambda・rescue 内の `require` と動的な `require` もロード済みと推定しない。トップレベルの `require` 再定義ではfeatureを読み込まず、`require` のsource定義やaliasがある場合はメソッド本体内のrequireも推定しない
+- `.rbs` の自動発見、stdlib の lazy load、直接実行される文字列リテラル `require` のsource orderに応じた stdlib feature RBS の読み込み（`io/console` など slash 区切りfeature名も対応）、generic、overload、interface、alias。stdlib feature が core class に追加し core RBS にないメソッド（`pp` の `Kernel#pretty_inspect`、`abbrev` の `Array#abbrev`、`shellwords` の `String#shellescape` など）は、その `require` より後に実行される呼び出しだけで解決する。`shellwords` の `String#shellescape` / `String#shellsplit` は RBS stdlibを使えない場合も補う。メソッド本体内のリテラル `require` は同じメソッド内の後続呼び出しにだけ適用する。class / module / singleton class body内の `require` は、singleton `require` の再定義や動的な `send` / `eval` がある場合はロード済みと推定しない。メソッド内の条件分岐の本体・block / lambda・rescue 内の `require` と動的な `require` もロード済みと推定しない。トップレベルの `require` 再定義ではfeatureを読み込まず、`require` のsource定義やaliasがある場合はメソッド本体内のrequireも推定しない
 - inline RBS（`#:` / `# @rbs`）の単一・複数行宣言、block signature、type alias
 - `self` / `instance` を call site の受け手へ解決する factory 型
 
@@ -145,7 +147,7 @@ LSP は TypeProf VSCode 拡張が期待する起動・version・request 契約�
 
 - incremental text sync（full change も受理）
 - Hover、CodeLens、definition、typeDefinition、completion
-- method hover は呼び出し形に合う RBS overload を選び、推論済みの引数・戻り値から generic と block 型を具体化する。あとで解決する引数（parameter や未解決 receiver の呼び出し結果）は、受理する overload の戻り値が `nil` 以外で食い違うなら `untyped` にする（`["e"] * n` は `String` と決めない）
+- method hover は呼び出し形に合う RBS overload を選び、推論済みの引数・戻り値から generic と block 型を具体化する。あとで解決する引数（parameter や未解決 receiver の呼び出し結果。nil / truthy guard で絞った値も含む）は、受理する overload の戻り値が `nil` 以外で食い違うなら `untyped` にする（`["e"] * n` は `String` と決めない）
 - Playground は入力中の Ruby とユーザー RBS を debounce 解析し、RBS の変更も同じ hover / diagnostics に反映する
 - CodeLens は LSP と Playground で、クラスやモジュールの外にある未注釈の `def` にも推論シグネチャを表示する
 - Playground の Ruby エディタは Monaco の基本的なカーソル移動・編集、行操作、Find を有効にする。macOS の `Command+Backspace` は行頭まで削除、`Shift+Command+K` は行削除、`Command+F` はエディタ内検索

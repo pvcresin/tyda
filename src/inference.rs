@@ -3,7 +3,7 @@ use crate::rbs::ir as rbs_ir;
 use crate::sym::NamePath;
 use crate::types::Sym;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -36,6 +36,7 @@ use crate::types::{
     Type,
 };
 
+mod array_element_flow;
 mod block_flow;
 use block_flow::LiteralArg;
 mod deps;
@@ -60,6 +61,13 @@ use hover::{
 enum DynamicNamespaceKind {
     Class,
     Module,
+}
+
+/// How an explicit receiver relates to a private method that a call would resolve to.
+enum PrivateReach {
+    None,
+    Raises,
+    DefinedElsewhere,
 }
 
 enum ConstReceiverPath {
@@ -1017,6 +1025,7 @@ struct ActiveMethodBody {
     unresolved_block_receivers: DeferredBlockReceiverCandidates,
     has_case_class_dispatch: bool,
     has_super_call: bool,
+    suppressed_call_sites: Vec<(String, CallSite)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1024,6 +1033,9 @@ struct SourceCallContext {
     start_offset: usize,
     in_method_body: bool,
 }
+
+/// Method name -> (owner, singleton, feature) for methods a required stdlib feature adds.
+type StdlibFeatureExtensions = FxHashMap<String, Vec<(String, bool, String)>>;
 
 pub struct InferenceEngine<'a> {
     registry: TypeRegistry,
@@ -1036,6 +1048,12 @@ pub struct InferenceEngine<'a> {
     required_stdlib_feature_loads: Vec<(String, usize)>,
     method_required_stdlib_feature_loads: Vec<(usize, usize, String, usize)>,
     active_source_call: Option<SourceCallContext>,
+    stdlib_feature_extensions: StdlibFeatureExtensions,
+    /// Bare constant reads that did not resolve; a constant write whose value saw one is re-inferred after collection.
+    unresolved_constant_reads: usize,
+    /// Pending constant writes by start offset, with the scope seen at the write.
+    pending_constant_writes: FxHashMap<usize, Scope>,
+    pending_constant_names: FxHashSet<String>,
     external_rbs: Option<&'a TypeRegistry>,
     merged_external_classes: FxHashSet<String>,
     file_path: Option<SharedPath>,
@@ -1066,6 +1084,8 @@ pub struct InferenceEngine<'a> {
     inline_assertion_comments: Vec<InlineAssertionComment>,
     self_bind_comments: Vec<SorbetSelfBindComment>,
     deferred_method_bodies: Vec<DeferredMethodBody>,
+    /// Call sites a deferred body held back for its replay, keyed by the def's start offset.
+    suppressed_body_call_sites: BTreeMap<usize, Vec<(String, CallSite)>>,
     active_method_body: Option<ActiveMethodBody>,
     active_loop_entry_scopes: Option<HashMap<usize, Scope>>,
     module_function_mirrors: Vec<(String, String)>,
@@ -1617,6 +1637,11 @@ struct MethodParamHoverContext<'a> {
     is_singleton: bool,
 }
 
+struct CaseWhenClassTarget {
+    name: String,
+    exact: bool,
+}
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Scope {
     locals: Arc<HashMap<String, Type>>,
@@ -1642,6 +1667,7 @@ pub(crate) struct Scope {
     self_facts: Arc<HashMap<String, Type>>,
     array_first_facts: Arc<HashMap<ArrayGuardKey, Type>>,
     hash_key_facts: Arc<hash_key_flow::HashKeyFacts>,
+    array_element_facts: Arc<array_element_flow::ArrayElementFacts>,
     exclusive_receiver_facts: Arc<receiver_attr_flow::ExclusiveReceiverFacts>,
     runtime_facts: Arc<HashMap<String, RuntimeFact>>,
     respond_to_guards: Arc<HashMap<String, Vec<Vec<String>>>>,
@@ -1842,6 +1868,7 @@ impl Scope {
             self_facts: self.self_facts.clone(),
             array_first_facts: self.array_first_facts.clone(),
             hash_key_facts: self.hash_key_facts.clone(),
+            array_element_facts: self.array_element_facts.clone(),
             exclusive_receiver_facts: self.exclusive_receiver_facts.clone(),
             runtime_facts: self.runtime_facts.clone(),
             respond_to_guards: self.respond_to_guards.clone(),
@@ -1862,6 +1889,7 @@ impl Scope {
         scope.break_types.clear();
         scope.clear_array_first_facts();
         scope.hash_key_facts = Arc::default();
+        scope.array_element_facts = Arc::default();
         scope.exclusive_receiver_facts = Arc::default();
         scope
     }
@@ -2443,6 +2471,8 @@ impl<'a> InferenceEngine<'a> {
         for feature in &required_stdlib_features {
             lazy_loader.merge_feature_into(feature, &mut registry);
         }
+        let stdlib_feature_extensions =
+            Self::collect_stdlib_feature_extensions(lazy_loader, &required_stdlib_features);
         Self {
             registry,
             constants: HashMap::new(),
@@ -2454,6 +2484,10 @@ impl<'a> InferenceEngine<'a> {
             required_stdlib_feature_loads,
             method_required_stdlib_feature_loads,
             active_source_call: None,
+            stdlib_feature_extensions,
+            unresolved_constant_reads: 0,
+            pending_constant_writes: FxHashMap::default(),
+            pending_constant_names: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             file_path: meta.file_path,
@@ -2484,6 +2518,7 @@ impl<'a> InferenceEngine<'a> {
             inline_assertion_comments: Vec::new(),
             self_bind_comments: Vec::new(),
             deferred_method_bodies: Vec::new(),
+            suppressed_body_call_sites: BTreeMap::new(),
             active_method_body: None,
             active_loop_entry_scopes: None,
             module_function_mirrors: Vec::new(),
@@ -2538,6 +2573,10 @@ impl<'a> InferenceEngine<'a> {
             required_stdlib_feature_loads: Vec::new(),
             method_required_stdlib_feature_loads: Vec::new(),
             active_source_call: None,
+            stdlib_feature_extensions: FxHashMap::default(),
+            unresolved_constant_reads: 0,
+            pending_constant_writes: FxHashMap::default(),
+            pending_constant_names: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             file_path: None,
@@ -2568,6 +2607,7 @@ impl<'a> InferenceEngine<'a> {
             inline_assertion_comments: Vec::new(),
             self_bind_comments: Vec::new(),
             deferred_method_bodies: Vec::new(),
+            suppressed_body_call_sites: BTreeMap::new(),
             active_method_body: None,
             active_loop_entry_scopes: None,
             module_function_mirrors: Vec::new(),
@@ -2632,10 +2672,101 @@ impl<'a> InferenceEngine<'a> {
             }
         }
         if let Some(loader) = self.lazy_loader {
-            for feature in features {
-                loader.merge_feature_into(&feature, &mut self.registry);
+            for feature in &features {
+                loader.merge_feature_into(feature, &mut self.registry);
+            }
+            self.stdlib_feature_extensions =
+                Self::collect_stdlib_feature_extensions(loader, &self.required_stdlib_features);
+        }
+    }
+
+    fn collect_stdlib_feature_extensions(
+        loader: &LazyRbsLoader,
+        features: &[String],
+    ) -> StdlibFeatureExtensions {
+        let mut extensions = StdlibFeatureExtensions::default();
+        for feature in features {
+            for extension in loader.feature_extensions(feature).iter() {
+                extensions
+                    .entry(extension.method.clone())
+                    .or_default()
+                    .push((
+                        extension.owner.clone(),
+                        extension.is_singleton,
+                        feature.clone(),
+                    ));
             }
         }
+        extensions
+    }
+
+    /// A method that a required stdlib feature adds is hidden from calls that run before the require.
+    fn stdlib_feature_method_unloaded(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        if !self.stdlib_feature_extensions.contains_key(method_name) {
+            return false;
+        }
+        self.registry
+            .resolve_method_call_owners(class_name, method_name, is_singleton)
+            .into_iter()
+            .next()
+            .is_some_and(|(owner, owner_is_singleton)| {
+                self.stdlib_feature_owner_unloaded(&owner, method_name, owner_is_singleton)
+            })
+    }
+
+    /// A deferred call would later resolve without the call position, so settle it here.
+    fn drop_unloaded_stdlib_feature_refs(&self, ty: Type, method_name: &str) -> Type {
+        match ty {
+            Type::ReceiverMethodRef(receiver, name)
+                if name.as_str() == method_name
+                    && self
+                        .type_to_class_name(&receiver)
+                        .is_some_and(|class_name| {
+                            self.stdlib_feature_method_unloaded(
+                                &class_name,
+                                method_name,
+                                matches!(*receiver, Type::Singleton(_)),
+                            )
+                        }) =>
+            {
+                Type::Untyped
+            }
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
+                parts
+                    .into_iter()
+                    .map(|part| self.drop_unloaded_stdlib_feature_refs(part, method_name))
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
+    fn stdlib_feature_owner_unloaded(
+        &self,
+        owner: &str,
+        method_name: &str,
+        owner_is_singleton: bool,
+    ) -> bool {
+        let Some(extensions) = self.stdlib_feature_extensions.get(method_name) else {
+            return false;
+        };
+        let mut providers = extensions
+            .iter()
+            .filter(|(extension_owner, extension_singleton, _)| {
+                extension_owner == owner && *extension_singleton == owner_is_singleton
+            })
+            .peekable();
+        providers.peek().is_some()
+            && providers.all(|(_, _, feature)| !self.stdlib_feature_loaded(feature))
+            && self
+                .registry
+                .lookup_method_def(owner, method_name, owner_is_singleton)
+                .is_some_and(|method| method.rbs_file_source)
     }
 
     pub(crate) fn set_required_stdlib_feature_loads(&mut self, loads: Vec<(String, usize)>) {
@@ -4315,9 +4446,19 @@ impl<'a> InferenceEngine<'a> {
             // The syntax walk cannot resolve method-local ParamRefs; body replay records them with caller context.
             call_site.keyword_rest_shape = None;
         }
-        if self.dispatching_typed_receiver_arm
-            || (self.suppress_body_call_sites && Self::call_site_contains_param_ref(&call_site))
-        {
+        if self.dispatching_typed_receiver_arm {
+            return;
+        }
+        if self.suppress_body_call_sites && Self::call_site_contains_param_ref(&call_site) {
+            let is_self_call = call_site.caller_context.as_ref().is_some_and(|ctx| {
+                ctx.class_name.as_ref() == class_name
+                    && ctx.method_name == call_site.method_name
+                    && ctx.method_is_singleton == call_site.method_is_singleton
+            });
+            if !is_self_call && let Some(body) = self.active_method_body.as_mut() {
+                body.suppressed_call_sites
+                    .push((class_name.to_string(), call_site));
+            }
             return;
         }
         if self.suppress_external_merge {
@@ -4444,6 +4585,7 @@ impl<'a> InferenceEngine<'a> {
             merged.self_facts = Self::merge_branch_self_facts(then_scope, else_scope);
             merged.array_first_facts = Arc::default();
             merged.hash_key_facts = Arc::default();
+            merged.array_element_facts = Arc::default();
             merged.exclusive_receiver_facts = Arc::default();
             merged.initialized_record_keys = Arc::new(
                 then_scope
@@ -4515,6 +4657,10 @@ impl<'a> InferenceEngine<'a> {
             hash_key_facts: Arc::new(hash_key_flow::merge_hash_key_facts(
                 &then_scope.hash_key_facts,
                 &else_scope.hash_key_facts,
+            )),
+            array_element_facts: Arc::new(array_element_flow::merge_array_element_facts(
+                &then_scope.array_element_facts,
+                &else_scope.array_element_facts,
             )),
             exclusive_receiver_facts: Arc::new(receiver_attr_flow::merge_exclusive_receiver_facts(
                 &then_scope.exclusive_receiver_facts,
@@ -4882,6 +5028,7 @@ impl<'a> InferenceEngine<'a> {
             self_facts: Arc::default(),
             array_first_facts: Arc::default(),
             hash_key_facts: base.hash_key_facts.clone(),
+            array_element_facts: base.array_element_facts.clone(),
             exclusive_receiver_facts: base.exclusive_receiver_facts.clone(),
             runtime_facts: base.runtime_facts.clone(),
             respond_to_guards: Arc::default(),
@@ -7336,7 +7483,11 @@ impl<'a> InferenceEngine<'a> {
             if !Self::is_closed_case_subject_type(subject_type) {
                 return (None, true);
             }
-            return match self.analyze_case_class_when(subject_type, &[target_class]) {
+            let target = CaseWhenClassTarget {
+                name: target_class,
+                exact: true,
+            };
+            return match self.analyze_case_class_when(subject_type, &[target]) {
                 Some((Type::Bot, _)) => (Some(false), true),
                 Some((_, Type::Bot)) => (Some(true), true),
                 _ => (None, true),
@@ -7421,7 +7572,9 @@ impl<'a> InferenceEngine<'a> {
                 };
                 let (result, safe) = self.static_case_equality_result(&target_type, subject_type);
                 safe_to_narrow &= safe;
-                result
+                let inexact_class = Self::type_has_singleton_part(&target_type)
+                    && !Self::case_operand_names_class(&condition, &target_type);
+                result.filter(|&matched| !matched || !inexact_class)
             } else {
                 safe_to_narrow = false;
                 Self::syntactic_node_truthiness(&condition).or_else(|| {
@@ -13383,8 +13536,10 @@ impl<'a> InferenceEngine<'a> {
                         .insert(const_name.clone(), alias_type.clone());
                 } else {
                     let scope = self.top_level_scope.clone();
+                    let unresolved_before = self.unresolved_constant_reads;
                     let value_type =
                         self.infer_node_type("Object", &write_node.value(), parse_result, &scope);
+                    self.note_pending_constant_write(node, unresolved_before, &scope);
                     let value_type = self.forward_namespace_alias_type(
                         &const_name,
                         &write_node.value(),
@@ -13418,7 +13573,9 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::MultiWriteNode { .. } => {
                 let mut scope = Scope::default();
+                let unresolved_before = self.unresolved_constant_reads;
                 let _ = self.process_multi_write("Object", node, parse_result, &mut scope);
+                self.note_pending_constant_write(node, unresolved_before, &Scope::default());
             }
             Node::CallNode { .. } => {
                 let call_node = node.as_call_node().expect("must be CallNode");
@@ -13755,12 +13912,15 @@ impl<'a> InferenceEngine<'a> {
                 if mirror_as_module_function {
                     self.mirror_instance_method_as_singleton(&method_owner, &method_name);
                 }
-                if !mirror_as_module_function && let Some(visibility) = context.current_visibility {
-                    let is_singleton = context.in_singleton_class || def_node.receiver().is_some();
+                // A bare `private` section leaves `def self.x` public.
+                if !mirror_as_module_function
+                    && def_node.receiver().is_none()
+                    && let Some(visibility) = context.current_visibility
+                {
                     self.registry.set_method_visibility(
                         &method_owner,
                         &method_name,
-                        is_singleton,
+                        context.in_singleton_class,
                         Some(visibility),
                     );
                 }
@@ -14734,12 +14894,14 @@ impl<'a> InferenceEngine<'a> {
                         if mirror_as_module_function {
                             self.mirror_instance_method_as_singleton(&method_owner, &method_name);
                         }
-                        if !mirror_as_module_function && let Some(visibility) = current_visibility {
-                            let is_singleton = in_singleton_class || def_node.receiver().is_some();
+                        if !mirror_as_module_function
+                            && def_node.receiver().is_none()
+                            && let Some(visibility) = current_visibility
+                        {
                             self.registry.set_method_visibility(
                                 &method_owner,
                                 &method_name,
-                                is_singleton,
+                                in_singleton_class,
                                 Some(visibility),
                             );
                         }
@@ -15767,12 +15929,20 @@ impl<'a> InferenceEngine<'a> {
                             let const_owner = self.nesting_owner(class_name).to_string();
                             self.insert_class_body_constant(&const_owner, &const_name, alias_type);
                         } else {
+                            let unresolved_before = self.unresolved_constant_reads;
                             let value_type = self.infer_node_type(
                                 class_name,
                                 &write_node.value(),
                                 parse_result,
                                 &class_body_scope,
                             );
+                            if !in_singleton_class && self.nesting_owner(class_name) == class_name {
+                                self.note_pending_constant_write(
+                                    &node,
+                                    unresolved_before,
+                                    &class_body_scope,
+                                );
+                            }
                             let value_type = self.forward_namespace_alias_type(
                                 &const_name,
                                 &write_node.value(),
@@ -15834,12 +16004,21 @@ impl<'a> InferenceEngine<'a> {
                     }
                     Node::MultiWriteNode { .. } => {
                         pending_sigs.clear();
+                        let unresolved_before = self.unresolved_constant_reads;
+                        let scope_before = class_body_scope.clone();
                         let _ = self.process_multi_write(
                             class_name,
                             &node,
                             parse_result,
                             &mut class_body_scope,
                         );
+                        if !in_singleton_class && self.nesting_owner(class_name) == class_name {
+                            self.note_pending_constant_write(
+                                &node,
+                                unresolved_before,
+                                &scope_before,
+                            );
+                        }
                     }
                     Node::InstanceVariableWriteNode { .. }
                     | Node::InstanceVariableOrWriteNode { .. }
@@ -15963,6 +16142,13 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
     ) {
         let statements = program.statements();
+        if !self.pending_constant_writes.is_empty() {
+            let mut offsets: Vec<usize> = self.pending_constant_writes.keys().copied().collect();
+            offsets.sort_unstable();
+            self.refresh_pending_constant_writes_in("Object", &statements, parse_result, &offsets);
+            self.pending_constant_writes = FxHashMap::default();
+            self.pending_constant_names = FxHashSet::default();
+        }
         self.refresh_class_body_method_defaults(
             "Object",
             &statements,
@@ -15971,6 +16157,89 @@ impl<'a> InferenceEngine<'a> {
             &[],
             false,
         );
+    }
+
+    /// Re-infers pending constant writes in source order, so a constant that reads
+    /// an earlier pending constant sees its refreshed value.
+    fn refresh_pending_constant_writes_in(
+        &mut self,
+        class_name: &str,
+        statements: &ruby_prism::StatementsNode<'_>,
+        parse_result: &ParseResult<'_>,
+        offsets: &[usize],
+    ) {
+        for node in statements.body().iter() {
+            let loc = node.location();
+            let first = offsets.partition_point(|&offset| offset < loc.start_offset());
+            if offsets
+                .get(first)
+                .is_none_or(|&offset| offset >= loc.end_offset())
+            {
+                continue;
+            }
+            match &node {
+                Node::ConstantWriteNode { .. } | Node::MultiWriteNode { .. } => {
+                    self.refresh_pending_constant_write(class_name, &node, parse_result);
+                }
+                Node::IfNode { .. }
+                | Node::UnlessNode { .. }
+                | Node::BeginNode { .. }
+                | Node::CaseNode { .. }
+                | Node::CaseMatchNode { .. } => {
+                    for stmts in Self::class_body_branch_statement_nodes(&node) {
+                        self.refresh_pending_constant_writes_in(
+                            class_name,
+                            &stmts,
+                            parse_result,
+                            offsets,
+                        );
+                    }
+                }
+                Node::ClassNode { .. } | Node::ModuleNode { .. } => {
+                    let (constant_path, body) = if let Some(class_node) = node.as_class_node() {
+                        (class_node.constant_path(), class_node.body())
+                    } else {
+                        let module_node = node.as_module_node().expect("must be ModuleNode");
+                        (module_node.constant_path(), module_node.body())
+                    };
+                    let nested_name = self.resolve_nested_definition_name(
+                        class_name,
+                        &constant_path,
+                        parse_result,
+                    );
+                    if let Some(body) = body
+                        && let Some(stmts) = body.as_statements_node()
+                    {
+                        self.refresh_pending_constant_writes_in(
+                            &nested_name,
+                            &stmts,
+                            parse_result,
+                            offsets,
+                        );
+                    }
+                }
+                Node::CallNode { .. } => {
+                    let call_node = node.as_call_node().expect("must be CallNode");
+                    if let Some((owner, block, false)) = self.static_eval_block_info(
+                        class_name,
+                        &call_node,
+                        parse_result,
+                        false,
+                        true,
+                    ) && let Some(body) = block.body()
+                        && let Some(stmts) = body.as_statements_node()
+                    {
+                        self.refresh_pending_constant_writes_in(
+                            &owner,
+                            &stmts,
+                            parse_result,
+                            offsets,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn refresh_class_body_method_defaults(
@@ -16027,6 +16296,87 @@ impl<'a> InferenceEngine<'a> {
                 late_constant_unknown = true;
             }
         }
+    }
+
+    fn note_pending_constant_write(
+        &mut self,
+        node: &Node<'_>,
+        unresolved_before: usize,
+        scope: &Scope,
+    ) {
+        if self.unresolved_constant_reads <= unresolved_before {
+            return;
+        }
+        self.pending_constant_writes
+            .insert(node.location().start_offset(), scope.clone());
+        if let Some(write_node) = node.as_constant_write_node() {
+            self.pending_constant_names
+                .insert(String::from_utf8_lossy(write_node.name().as_slice()).to_string());
+        } else if let Some(multi_write) = node.as_multi_write_node() {
+            for target in multi_write.lefts().iter().chain(multi_write.rest()) {
+                let target = target
+                    .as_splat_node()
+                    .and_then(|splat| splat.expression())
+                    .unwrap_or(target);
+                if let Some(constant) = target.as_constant_target_node() {
+                    self.pending_constant_names
+                        .insert(String::from_utf8_lossy(constant.name().as_slice()).to_string());
+                }
+            }
+        }
+    }
+
+    /// A constant written from a constant defined later in the same file is inferred
+    /// again after collection, with the scope seen at the write.
+    fn refresh_pending_constant_write(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+    ) {
+        let Some(mut scope) = self
+            .pending_constant_writes
+            .remove(&node.location().start_offset())
+        else {
+            return;
+        };
+        let top_level = class_name == "Object";
+        let Some(write_node) = node.as_constant_write_node() else {
+            let _ = self.process_multi_write(class_name, node, parse_result, &mut scope);
+            return;
+        };
+        let const_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+        let value_type =
+            self.infer_node_type(class_name, &write_node.value(), parse_result, &scope);
+        let value_type = self.forward_namespace_alias_type(
+            &const_name,
+            &write_node.value(),
+            parse_result,
+            value_type,
+        );
+        if top_level {
+            self.constants
+                .insert(const_name.clone(), value_type.clone());
+        } else {
+            self.insert_class_body_constant(class_name, &const_name, value_type.clone());
+        }
+        let start = write_node.location().start_offset();
+        self.registry.set_constant(
+            class_name,
+            &const_name,
+            value_type.clone(),
+            Some(offset_to_location(parse_result.source(), start)),
+            self.file_path.as_deref(),
+        );
+        self.push_hover_snapshot(HoverSnapshot {
+            start,
+            end: start + write_node.name().as_slice().len(),
+            name: const_name,
+            target: HoverTarget::Value(value_type),
+            class_context: class_name.to_string(),
+            method_context: None,
+            method_context_singleton_dispatch: None,
+        });
     }
 
     fn push_unique_late_constant_name(names: &mut Vec<String>, name: String) {
@@ -18014,7 +18364,12 @@ impl<'a> InferenceEngine<'a> {
                 .then(|| self.scan_method_body_summary(class_name, &body, parse_result, &scope))
         });
         self.active_loop_entry_scopes = saved_active_loop_entry_scopes;
-        let (unresolved_block_receivers, has_case_class_dispatch, has_super_call) = self
+        let (
+            unresolved_block_receivers,
+            has_case_class_dispatch,
+            has_super_call,
+            suppressed_call_sites,
+        ) = self
             .active_method_body
             .take()
             .map(|body| {
@@ -18022,6 +18377,7 @@ impl<'a> InferenceEngine<'a> {
                     body.unresolved_block_receivers,
                     body.has_case_class_dispatch,
                     body.has_super_call,
+                    body.suppressed_call_sites,
                 )
             })
             .unwrap_or_default();
@@ -18160,10 +18516,19 @@ impl<'a> InferenceEngine<'a> {
             || needs_late_ivar_return
             || needs_late_hash_splat;
         let has_super_call = has_super_call || Self::def_has_bare_super_default(&def_node);
-        if (has_existing_defer_reason || has_deferred_block_receiver_return || has_super_call)
-            && !rbs_inline_annotated
-            && !sig_annotated
-        {
+        let defers_body =
+            (has_existing_defer_reason || has_deferred_block_receiver_return || has_super_call)
+                && !rbs_inline_annotated
+                && !sig_annotated;
+        if defers_body && !suppressed_call_sites.is_empty() {
+            self.suppressed_body_call_sites
+                .insert(def_node.location().start_offset(), suppressed_call_sites);
+        } else {
+            for (owner, site) in suppressed_call_sites {
+                self.registry.add_call_site(&owner, site);
+            }
+        }
+        if defers_body {
             self.deferred_method_bodies.push(DeferredMethodBody {
                 class_name: class_name.to_string(),
                 is_singleton,
@@ -21530,6 +21895,7 @@ impl<'a> InferenceEngine<'a> {
         let Some(_infer_guard) = InferNodeGuard::enter() else {
             return Type::Untyped;
         };
+        Self::invalidate_array_element_facts_for_statement(node, scope);
         if matches!(
             node,
             Node::IfNode { .. }
@@ -21581,8 +21947,13 @@ impl<'a> InferenceEngine<'a> {
                 return ty;
             }
         }
-        self.process_statement(class_name, node, parse_result, scope);
-        self.infer_node_type(class_name, node, parse_result, scope)
+        let (_, clears_self_facts) =
+            self.process_statement_keeping_read_facts(class_name, node, parse_result, scope);
+        let ty = self.infer_node_type(class_name, node, parse_result, scope);
+        if clears_self_facts {
+            scope.clear_self_facts();
+        }
+        ty
     }
 
     fn normal_flow_type_from_scope(scope: &Scope, implicit: Option<Type>) -> Type {
@@ -24951,11 +25322,29 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) -> bool {
+        let (statement_exits, clears_self_facts) =
+            self.process_statement_keeping_read_facts(class_name, node, parse_result, scope);
+        if clears_self_facts {
+            scope.clear_self_facts();
+        }
+        statement_exits
+    }
+
+    /// Also returns whether facts on self end after the statement. They still hold while its own
+    /// value is inferred, because the statement reads its operands before its last call.
+    fn process_statement_keeping_read_facts(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) -> (bool, bool) {
         if !scope.array_first_facts.is_empty()
             && !Self::statement_consumes_array_first_fact(node, &scope.array_first_facts)
         {
             scope.clear_array_first_facts();
         }
+        Self::invalidate_array_element_facts_for_statement(node, scope);
         if !scope.hash_key_facts.is_empty() {
             hash_key_flow::invalidate_hash_key_facts(
                 node,
@@ -24997,7 +25386,7 @@ impl<'a> InferenceEngine<'a> {
                 parse_result,
                 scope,
             );
-            return false;
+            return (false, defer_self_fact_invalidation);
         }
         let mut statement_exits = false;
         match node {
@@ -26176,11 +26565,8 @@ impl<'a> InferenceEngine<'a> {
                 );
             }
         }
-        if defer_self_fact_invalidation {
-            scope.clear_self_facts();
-        }
         scope.clear_array_first_facts();
-        statement_exits
+        (statement_exits, defer_self_fact_invalidation)
     }
 
     fn infer_node_type_with_scope(
@@ -26798,6 +27184,8 @@ impl<'a> InferenceEngine<'a> {
                             self.case_when_branch_class_narrowing(
                                 class_name,
                                 &when_node,
+                                parse_result,
+                                scope,
                                 &mut remaining_subject_type,
                             )
                         })
@@ -27006,6 +27394,7 @@ impl<'a> InferenceEngine<'a> {
                 let mut remaining_subject_type = subject_type.clone();
                 let mut remaining_subject_is_known = subject_type.is_some();
                 let mut literal_partitioning_enabled = subject_type.is_some();
+                let mut rejected_numeric_literals = Vec::new();
                 let mut fallthrough: Option<Scope> = None;
                 for condition in case_node.conditions().iter() {
                     if remaining_subject_is_known && remaining_subject_type.is_none() {
@@ -27032,6 +27421,13 @@ impl<'a> InferenceEngine<'a> {
                             literal_partitioning_enabled = false;
                             matched_type
                         } else if literal_partitioning_enabled {
+                            if Self::numeric_literal_arm_already_rejected(
+                                pattern,
+                                remaining_subject_type.as_ref(),
+                                &rejected_numeric_literals,
+                            ) {
+                                continue;
+                            }
                             if let Some((matched_type, unmatched_type)) = self
                                 .partition_case_pattern(
                                     class_name,
@@ -27040,6 +27436,11 @@ impl<'a> InferenceEngine<'a> {
                                     scope,
                                 )
                             {
+                                if guard.is_none()
+                                    && let Some(value) = Self::numeric_literal_arm_value(pattern)
+                                {
+                                    rejected_numeric_literals.push(value);
+                                }
                                 remaining_subject_type = unmatched_type;
                                 remaining_subject_is_known = true;
                                 let Some(matched_type) = matched_type else {
@@ -28067,13 +28468,7 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
     ) -> Type {
         if let Some(call_node) = node.as_call_node()
-            && self
-                .required_stdlib_features
-                .iter()
-                .any(|feature| feature == "shellwords")
-            && std::str::from_utf8(call_node.name().as_slice())
-                .ok()
-                .is_some_and(|method_name| matches!(method_name, "shellescape" | "shellsplit"))
+            && !self.required_stdlib_features.is_empty()
         {
             let previous = self.active_source_call;
             self.active_source_call = Some(SourceCallContext {
@@ -28081,6 +28476,12 @@ impl<'a> InferenceEngine<'a> {
                 in_method_body: scope.method_name.is_some(),
             });
             let inferred = self.infer_node_type_inner(class_name, node, parse_result, scope);
+            let inferred = match std::str::from_utf8(call_node.name().as_slice()) {
+                Ok(method_name) if self.stdlib_feature_extensions.contains_key(method_name) => {
+                    self.drop_unloaded_stdlib_feature_refs(inferred, method_name)
+                }
+                _ => inferred,
+            };
             self.active_source_call = previous;
             inferred
         } else {
@@ -28109,6 +28510,12 @@ impl<'a> InferenceEngine<'a> {
         }
         if !scope.hash_key_facts.is_empty()
             && let Some(inferred) = self.hash_key_fact_read(class_name, node, parse_result, scope)
+        {
+            return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
+        }
+        if !scope.array_element_facts.is_empty()
+            && let Some(inferred) =
+                self.array_element_fact_read(class_name, node, parse_result, scope)
         {
             return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
         }
@@ -29454,7 +29861,18 @@ impl<'a> InferenceEngine<'a> {
                                 &method_name,
                                 &call_node,
                             );
-                            if direct != Type::Untyped
+                            // An `untyped` arm may only mean the callee waits on a later definition; defer so it resolves at the end.
+                            let defer_unresolved_arm = matches!(
+                                &direct,
+                                Type::Union(parts) if parts.contains(&Type::Untyped)
+                            ) && self
+                                .source_method_return_waits_on_later_definition(
+                                    class_name,
+                                    &method_name,
+                                    scope.singleton_dispatch,
+                                );
+                            if !defer_unresolved_arm
+                                && direct != Type::Untyped
                                 && !matches!(
                                     &direct,
                                     Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..)
@@ -31800,10 +32218,8 @@ impl<'a> InferenceEngine<'a> {
                         let is_known_nil_predicate = method_name == "nil?"
                             && resolved == Type::Bool
                             && !self.source_method_name_is_defined("nil?");
-                        let is_known_rails_boolean_predicate = self.rails_feature_enabled()
-                            && matches!(method_name.as_str(), "blank?" | "present?")
-                            && resolved == Type::Bool
-                            && !self.source_method_name_is_defined(&method_name);
+                        let is_known_rails_boolean_predicate = resolved == Type::Bool
+                            && self.is_known_rails_boolean_predicate(&method_name);
                         let has_unknown_deferred_result = has_deferred_union_member
                             && !is_known_rails_boolean_predicate
                             && ((!can_defer_receiver_call && !is_known_nil_predicate)
@@ -31892,6 +32308,19 @@ impl<'a> InferenceEngine<'a> {
                             )
                         };
                         wrap(result)
+                    };
+                    // The call is still walked so its arguments reach a definition in another file.
+                    let result = match self.explicit_receiver_private_reach(
+                        &receiver,
+                        &safe_nav_receiver_type,
+                        &method_name,
+                    ) {
+                        PrivateReach::None => result,
+                        PrivateReach::Raises => wrap(Type::Untyped),
+                        PrivateReach::DefinedElsewhere => wrap(Type::ReceiverMethodRef(
+                            Box::new(safe_nav_receiver_type.clone()),
+                            Sym::new(&method_name),
+                        )),
                     };
                     let original_result = result;
                     let assignment_result = self.setter_assigned_value_type(
@@ -32255,6 +32684,8 @@ impl<'a> InferenceEngine<'a> {
                             self.case_when_branch_class_narrowing(
                                 class_name,
                                 &when_node,
+                                parse_result,
+                                scope,
                                 &mut remaining_subject_type,
                             )
                         })
@@ -32374,6 +32805,7 @@ impl<'a> InferenceEngine<'a> {
                     let mut remaining_subject_type = subject_type.clone();
                     let mut remaining_subject_is_known = subject_type.is_some();
                     let mut literal_partitioning_enabled = subject_type.is_some();
+                    let mut rejected_numeric_literals = Vec::new();
                     let mut fallthrough: Option<Scope> = None;
 
                     for condition in case_node.conditions().iter() {
@@ -32401,6 +32833,13 @@ impl<'a> InferenceEngine<'a> {
                                 literal_partitioning_enabled = false;
                                 matched_type
                             } else if literal_partitioning_enabled {
+                                if Self::numeric_literal_arm_already_rejected(
+                                    pattern,
+                                    remaining_subject_type.as_ref(),
+                                    &rejected_numeric_literals,
+                                ) {
+                                    continue;
+                                }
                                 if let Some((matched_type, unmatched_type)) = self
                                     .partition_case_pattern(
                                         class_name,
@@ -32409,6 +32848,12 @@ impl<'a> InferenceEngine<'a> {
                                         scope,
                                     )
                                 {
+                                    if guard.is_none()
+                                        && let Some(value) =
+                                            Self::numeric_literal_arm_value(pattern)
+                                    {
+                                        rejected_numeric_literals.push(value);
+                                    }
                                     remaining_subject_type = unmatched_type;
                                     remaining_subject_is_known = true;
                                     let Some(matched_type) = matched_type else {
@@ -32643,6 +33088,9 @@ impl<'a> InferenceEngine<'a> {
                     .expect("must be ConstantReadNode");
                 let name = String::from_utf8_lossy(const_node.name().as_slice()).to_string();
                 let ty = self.resolve_constant_type_in_scope(&name, class_name);
+                if ty == Type::Untyped || self.pending_constant_names.contains(&name) {
+                    self.unresolved_constant_reads += 1;
+                }
                 self.push_hover_snapshot(HoverSnapshot {
                     start: node.location().start_offset(),
                     end: node.location().end_offset(),
@@ -42008,7 +42456,8 @@ impl<'a> InferenceEngine<'a> {
             ));
         }
 
-        if Self::is_concrete(&method_return) {
+        // Without method type params the return only uses receiver types, which later resolve.
+        if Self::is_concrete(&method_return) || rbs_mt.method_type.type_params.is_empty() {
             Some(Self::include_optional_control_type(
                 method_return,
                 &block_break_type,
@@ -42107,6 +42556,7 @@ impl<'a> InferenceEngine<'a> {
             for name in &names_to_try {
                 if let Some(method) = self.registry.lookup_method_def(fallback, name, false)
                     && !method.rbs_method_types.is_empty()
+                    && !self.stdlib_feature_owner_unloaded(fallback, name, false)
                 {
                     overloads.extend(method.rbs_method_types.iter().cloned().map(|method_type| {
                         RbsMethodTypeWithOwner {
@@ -42130,6 +42580,9 @@ impl<'a> InferenceEngine<'a> {
         self.registry
             .resolve_method_call_owners(receiver_class, method_name, prefer_singleton)
             .into_iter()
+            .filter(|(owner, is_singleton)| {
+                !self.stdlib_feature_owner_unloaded(owner, method_name, *is_singleton)
+            })
             .filter_map(|(owner, is_singleton)| {
                 self.registry
                     .lookup_method_def(&owner, method_name, is_singleton)
@@ -46909,7 +47362,7 @@ impl<'a> InferenceEngine<'a> {
             matches!(receiver_type, Type::Singleton(_)),
             true,
         );
-        if receiver_class != "Kernel" && self.is_kernel_module_function(method_name) {
+        if receiver_class != "Kernel" && self.is_private_kernel_method(method_name) {
             overloads.retain(|overload| overload.owner_class != "Kernel");
         }
         if overloads.len() <= 1 {
@@ -48825,16 +49278,20 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn is_unresolved_call_arg_type(ty: &Type) -> bool {
-        matches!(
-            ty,
+        match ty {
             Type::Untyped
-                | Type::Todo
-                | Type::ParamRef(_)
-                | Type::KeywordParamRef(_)
-                | Type::ReceiverMethodRef(_, _)
-                | Type::DeferredSafeNavigation(_, _)
-                | Type::MethodReturnRef(_, _)
-        )
+            | Type::Todo
+            | Type::ParamRef(_)
+            | Type::KeywordParamRef(_)
+            | Type::ReceiverMethodRef(_, _)
+            | Type::DeferredSafeNavigation(_, _)
+            | Type::MethodReturnRef(_, _) => true,
+            // A flow projection of a deferred value is still unknown until the call site.
+            Type::NonNilProjection(inner)
+            | Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner) => Self::is_unresolved_call_arg_type(inner),
+            _ => false,
+        }
     }
 
     fn method_object_positional_param_count(method: &MethodDef) -> usize {
@@ -51129,7 +51586,7 @@ impl<'a> InferenceEngine<'a> {
 
         let prefer_singleton = matches!(receiver_type, Type::Singleton(_));
         let hide_kernel_function =
-            receiver_class != "Kernel" && self.is_kernel_module_function(method_name);
+            receiver_class != "Kernel" && self.is_private_kernel_method(method_name);
         let mut direct_overloads =
             self.collect_owned_rbs_overloads(&receiver_class, method_name, prefer_singleton, false);
         if hide_kernel_function {
@@ -51194,13 +51651,106 @@ impl<'a> InferenceEngine<'a> {
         )
     }
 
-    /// `def self?.x` makes `x` private on instances, so an explicit receiver cannot reach it.
-    fn is_kernel_module_function(&self, method_name: &str) -> bool {
-        [false, true].iter().all(|&is_singleton| {
-            self.registry
-                .lookup_method_def("Kernel", method_name, is_singleton)
-                .is_some_and(|method| method.rbs_file_source)
-        })
+    fn synthetic_framework_method_return(
+        &self,
+        receiver_type: &Type,
+        method_name: &str,
+    ) -> Option<Type> {
+        self.synthetic_active_record_method_return(receiver_type, method_name)
+            .or_else(|| self.synthetic_action_controller_method_return(receiver_type, method_name))
+            .or_else(|| self.synthetic_action_mailer_method_return(receiver_type, method_name))
+            .or_else(|| {
+                self.synthetic_active_support_hash_method_return(receiver_type, method_name)
+            })
+    }
+
+    /// Ruby raises NoMethodError when a receiver other than `self` calls a private method. A
+    /// class known only by name, or a workspace class from another file, may define the method
+    /// where this file cannot see it, so the call waits for that definition. A framework or DSL
+    /// plugin return for the method still applies.
+    fn explicit_receiver_private_reach(
+        &mut self,
+        receiver: &Node<'_>,
+        receiver_type: &Type,
+        method_name: &str,
+    ) -> PrivateReach {
+        if matches!(receiver, Node::SelfNode { .. }) {
+            return PrivateReach::None;
+        }
+        self.private_reach_on_type(receiver_type, method_name)
+    }
+
+    fn private_reach_on_type(&mut self, receiver_type: &Type, method_name: &str) -> PrivateReach {
+        if !matches!(
+            receiver_type,
+            Type::Class(_) | Type::Generic { .. } | Type::Singleton(_)
+        ) {
+            return PrivateReach::None;
+        }
+        let Some(class_name) = self.type_to_class_name(receiver_type) else {
+            return PrivateReach::None;
+        };
+        self.ensure_class_available(&class_name);
+        let is_singleton = matches!(receiver_type, Type::Singleton(_));
+        if Self::first_method_owner_is_private(
+            &self.registry,
+            &class_name,
+            method_name,
+            is_singleton,
+        ) != Some(true)
+            || self
+                .synthetic_framework_method_return(receiver_type, method_name)
+                .is_some()
+            || self
+                .dsl_plugin_method_return_override(receiver_type, method_name)
+                .is_some()
+            || self
+                .dsl_plugin_method_return(receiver_type, method_name)
+                .is_some()
+        {
+            return PrivateReach::None;
+        }
+        let Some(data) = self.registry.class_data_for(&class_name) else {
+            return PrivateReach::DefinedElsewhere;
+        };
+        let workspace_defined = data.user_defined
+            || self
+                .external_rbs
+                .and_then(|external| external.class_data_for(&class_name))
+                .is_some_and(|external| external.user_defined);
+        if !data.has_type_substance()
+            || (workspace_defined
+                && !self
+                    .registry
+                    .file_contribution_names()
+                    .contains(&class_name))
+        {
+            return PrivateReach::DefinedElsewhere;
+        }
+        PrivateReach::Raises
+    }
+
+    fn first_method_owner_is_private(
+        registry: &TypeRegistry,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<bool> {
+        registry
+            .resolve_method_call_owners(class_name, method_name, is_singleton)
+            .first()
+            .map(|(owner, singleton)| {
+                registry.method_visibility(owner, method_name, *singleton)
+                    == Some(Visibility::Private)
+            })
+    }
+
+    /// A private Kernel instance method, such as a `def self?.x` module function, cannot be
+    /// reached through an explicit receiver.
+    fn is_private_kernel_method(&self, method_name: &str) -> bool {
+        self.registry
+            .method_visibility("Kernel", method_name, false)
+            == Some(Visibility::Private)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -53443,7 +53993,14 @@ impl<'a> InferenceEngine<'a> {
             .filter(|part| !Self::is_unresolved_receiver(part) && **part != Type::Nil)
             .cloned()
             .collect();
-        if typed_arms.is_empty() {
+        // Without typed arms, a `nil` arm decides nothing when `NilClass` lacks the method. Safe
+        // navigation and Rails `try` keep their own `nil` result.
+        if typed_arms.is_empty()
+            && (call.is_safe_navigation()
+                || (self.rails_feature_enabled() && matches!(method_name.as_ref(), "try" | "try!"))
+                || !parts.contains(&Type::Nil)
+                || self.type_responds_to_method(&Type::Nil, &method_name) != Some(false))
+        {
             return None;
         }
         let saved_override =
@@ -53454,33 +54011,47 @@ impl<'a> InferenceEngine<'a> {
         if !self.dispatching_typed_receiver_arm {
             self.infer_node_type_inner(class_name, node, parse_result, scope);
         }
-        self.receiver_type_override = Some((start, end, Type::from_type_vec(typed_arms)));
-        let saved_snapshots = std::mem::replace(&mut self.record_hover_snapshots, false);
-        let saved_dispatching = std::mem::replace(&mut self.dispatching_typed_receiver_arm, true);
-        // The whole-union walk above already took the view without declared block types.
-        let saved_chain = std::mem::replace(&mut self.block_pass_chain, BlockPassChain::Bound);
-        let typed_result = self.infer_node_type_inner(class_name, node, parse_result, scope);
-        self.block_pass_chain = saved_chain;
-        self.dispatching_typed_receiver_arm = saved_dispatching;
-        self.record_hover_snapshots = saved_snapshots;
+        let mut results = Vec::new();
+        if !typed_arms.is_empty() {
+            self.receiver_type_override = Some((start, end, Type::from_type_vec(typed_arms)));
+            let saved_snapshots = std::mem::replace(&mut self.record_hover_snapshots, false);
+            let saved_dispatching =
+                std::mem::replace(&mut self.dispatching_typed_receiver_arm, true);
+            // The whole-union walk above already took the view without declared block types.
+            let saved_chain = std::mem::replace(&mut self.block_pass_chain, BlockPassChain::Bound);
+            results.push(self.infer_node_type_inner(class_name, node, parse_result, scope));
+            self.block_pass_chain = saved_chain;
+            self.dispatching_typed_receiver_arm = saved_dispatching;
+            self.record_hover_snapshots = saved_snapshots;
+        }
         self.receiver_type_override = saved_override;
 
         let can_defer = call.block().is_none()
             && call
                 .arguments()
                 .is_none_or(|arguments| arguments.arguments().iter().next().is_none());
-        let mut results = vec![typed_result];
+        let known_predicate = self.is_known_rails_boolean_predicate(&method_name);
         for part in parts
             .iter()
             .filter(|part| Self::is_unresolved_receiver(part))
         {
-            results.push(if *part == Type::Untyped || !can_defer {
+            results.push(if known_predicate {
+                Type::Bool
+            } else if *part == Type::Untyped || !can_defer {
                 Type::Untyped
             } else {
                 Type::ReceiverMethodRef(Box::new(part.clone()), Sym::new(&method_name))
             });
         }
         Some(Type::from_type_vec_preserve_untyped(results))
+    }
+
+    /// Rails `blank?` / `present?` return `bool` on any receiver, unknown ones included, unless
+    /// source redefines them.
+    fn is_known_rails_boolean_predicate(&self, method_name: &str) -> bool {
+        self.rails_feature_enabled()
+            && matches!(method_name, "blank?" | "present?")
+            && !self.source_method_name_is_defined(method_name)
     }
 
     fn receiver_union_flags(ty: &Type) -> (bool, bool) {
@@ -53870,22 +54441,7 @@ impl<'a> InferenceEngine<'a> {
             method_name
         };
         if let Some(result) =
-            self.synthetic_active_record_method_return(receiver_type, effective_method_name)
-        {
-            return result;
-        }
-        if let Some(result) =
-            self.synthetic_action_controller_method_return(receiver_type, effective_method_name)
-        {
-            return result;
-        }
-        if let Some(result) =
-            self.synthetic_action_mailer_method_return(receiver_type, effective_method_name)
-        {
-            return result;
-        }
-        if let Some(result) =
-            self.synthetic_active_support_hash_method_return(receiver_type, effective_method_name)
+            self.synthetic_framework_method_return(receiver_type, effective_method_name)
         {
             return result;
         }
@@ -53956,6 +54512,9 @@ impl<'a> InferenceEngine<'a> {
         let method_name_for_lookup =
             self.registry
                 .canonical_method_name(class_name, effective_method_name, is_singleton);
+        if self.stdlib_feature_method_unloaded(class_name, &method_name_for_lookup, is_singleton) {
+            return Type::Untyped;
+        }
         let lookup = self.registry.lookup_method_return_type_with_hint(
             class_name,
             &method_name_for_lookup,
@@ -54762,6 +55321,14 @@ impl<'a> InferenceEngine<'a> {
                     memo,
                     visiting,
                 );
+                // A private match here is usually a `Kernel` function standing in for a
+                // method defined in a file this pass cannot see yet.
+                if !matches!(
+                    self.private_reach_on_type(&resolved_receiver, method_name),
+                    PrivateReach::None
+                ) {
+                    return Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name);
+                }
                 if let Some(result) =
                     self.resolve_receiver_ref_overloaded_return(&resolved_receiver, method_name)
                 {
@@ -55023,6 +55590,49 @@ impl<'a> InferenceEngine<'a> {
                 .iter()
                 .any(|field| Self::type_contains_untyped(&field.value)),
             Type::Proc { return_type, .. } => Self::type_contains_untyped(return_type),
+            _ => false,
+        }
+    }
+
+    fn source_method_return_waits_on_later_definition(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        let Some(raw_return) = self
+            .registry
+            .lookup_method_def_for_dispatch(class_name, method_name, is_singleton)
+            .filter(|method| !method.rbs_file_source)
+            .map(|method| method.raw_return_type.clone())
+        else {
+            return false;
+        };
+        self.waits_on_later_definition(&raw_return)
+    }
+
+    /// A deferred call whose receiver class or target method is not defined yet.
+    fn waits_on_later_definition(&mut self, ty: &Type) -> bool {
+        match ty {
+            Type::Union(parts) => parts
+                .iter()
+                .any(|part| self.waits_on_later_definition(part)),
+            Type::ReceiverMethodRef(receiver, method_name) => match receiver.as_ref() {
+                Type::Singleton(name) | Type::Class(name) => {
+                    self.ensure_class_available(name.as_str());
+                    self.registry
+                        .resolve_method_call_owners(
+                            name.as_str(),
+                            method_name.as_str(),
+                            matches!(receiver.as_ref(), Type::Singleton(_)),
+                        )
+                        .is_empty()
+                }
+                other => self.waits_on_later_definition(other),
+            },
+            Type::MethodReturnRef(class_name, method_name) => !self
+                .registry
+                .has_any_method_variant(class_name.as_str(), method_name.as_str()),
             _ => false,
         }
     }
@@ -55491,40 +56101,108 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// Class targets of a `when` clause. A target is exact when the operand names the
+    /// class itself. Any other `singleton(C)` value may be a subclass of C, and a union
+    /// of singletons is only one of them, so such a match narrows the branch but does
+    /// not prove the subject always matches.
     fn case_when_class_targets(
         &mut self,
         class_name: &str,
         when_node: &ruby_prism::WhenNode<'_>,
-    ) -> Option<Vec<String>> {
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<Vec<CaseWhenClassTarget>> {
         let conditions = when_node.conditions();
-        let mut targets = Vec::new();
+        let mut targets: Vec<CaseWhenClassTarget> = Vec::new();
         for condition in conditions.iter() {
-            if !matches!(
-                condition,
-                Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
-            ) {
-                return None;
-            }
-            let path = String::from_utf8_lossy(condition.location().as_slice());
-            let resolved = self.resolve_constant_type_in_scope(&path, class_name);
-            let Type::Singleton(target) = resolved else {
-                return None;
+            let resolved = match condition {
+                Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
+                    let path = String::from_utf8_lossy(condition.location().as_slice());
+                    self.resolve_constant_type_in_scope(&path, class_name)
+                }
+                _ if Self::cannot_evaluate_to_class(&condition) => return None,
+                _ => self.infer_node_type(
+                    class_name,
+                    &condition,
+                    parse_result,
+                    &scope.fork_for_branch(),
+                ),
             };
-            let target = target.to_string();
-            self.ensure_class_available(&target);
-            let target_data = self.registry.class_data_for(&target)?;
-            let is_module = target_data.is_module;
-            let has_type_substance = target_data.has_type_substance();
-            let standard_equality = self.uses_standard_class_case_equality(&target);
-            if is_module || !has_type_substance {
-                return None;
+            let exact = Self::case_operand_names_class(&condition, &resolved);
+            let resolved = match resolved {
+                Type::Union(parts) => parts,
+                single => vec![single],
+            };
+            for part in resolved {
+                let Type::Singleton(target) = part else {
+                    return None;
+                };
+                let target = target.to_string();
+                self.ensure_class_available(&target);
+                let target_data = self.registry.class_data_for(&target)?;
+                if target_data.is_module || !target_data.has_type_substance() {
+                    return None;
+                }
+                if !self.uses_standard_class_case_equality(&target) {
+                    return None;
+                }
+                match targets.iter_mut().find(|existing| existing.name == target) {
+                    Some(existing) => existing.exact |= exact,
+                    None => targets.push(CaseWhenClassTarget {
+                        name: target,
+                        exact,
+                    }),
+                }
             }
-            if !standard_equality {
-                return None;
-            }
-            targets.push(target);
         }
         (!targets.is_empty()).then_some(targets)
+    }
+
+    /// Whether a `when` operand is a constant that names the class it resolves to.
+    fn case_operand_names_class(operand: &Node<'_>, resolved: &Type) -> bool {
+        let (
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. },
+            Type::Singleton(target),
+        ) = (operand, resolved)
+        else {
+            return false;
+        };
+        let path = operand.location().as_slice();
+        let operand_name = path.rsplit(|&byte| byte == b':').next().unwrap_or(path);
+        target.rsplit("::").next().unwrap_or(target).as_bytes() == operand_name
+    }
+
+    fn type_has_singleton_part(ty: &Type) -> bool {
+        match ty {
+            Type::Singleton(_) => true,
+            Type::Union(parts) => parts.iter().any(Self::type_has_singleton_part),
+            _ => false,
+        }
+    }
+
+    fn cannot_evaluate_to_class(node: &Node<'_>) -> bool {
+        matches!(
+            node,
+            Node::NilNode { .. }
+                | Node::TrueNode { .. }
+                | Node::FalseNode { .. }
+                | Node::IntegerNode { .. }
+                | Node::FloatNode { .. }
+                | Node::RationalNode { .. }
+                | Node::ImaginaryNode { .. }
+                | Node::StringNode { .. }
+                | Node::InterpolatedStringNode { .. }
+                | Node::XStringNode { .. }
+                | Node::SymbolNode { .. }
+                | Node::InterpolatedSymbolNode { .. }
+                | Node::RegularExpressionNode { .. }
+                | Node::InterpolatedRegularExpressionNode { .. }
+                | Node::RangeNode { .. }
+                | Node::ArrayNode { .. }
+                | Node::HashNode { .. }
+                | Node::LambdaNode { .. }
+                | Node::SplatNode { .. }
+        )
     }
 
     /// `when Foo` with a class defined later still proves something about the subject, so the
@@ -55586,11 +56264,11 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn case_when_targets_type(targets: &[String]) -> Type {
+    fn case_when_targets_type(targets: &[CaseWhenClassTarget]) -> Type {
         Type::from_type_vec_preserve_untyped(
             targets
                 .iter()
-                .map(|target| Type::Class(Sym::new(target)))
+                .map(|target| Type::Class(Sym::new(&target.name)))
                 .collect(),
         )
     }
@@ -55654,7 +56332,7 @@ impl<'a> InferenceEngine<'a> {
     fn analyze_case_class_when(
         &mut self,
         subject_type: &Type,
-        targets: &[String],
+        targets: &[CaseWhenClassTarget],
     ) -> Option<(Type, Type)> {
         if !Self::is_closed_case_subject_type(subject_type) {
             return None;
@@ -55670,7 +56348,10 @@ impl<'a> InferenceEngine<'a> {
             let mut possible_matches = Vec::new();
             let mut always_matches = false;
             for target in targets {
-                match self.case_class_relation(&subject_class, &subject_part, target) {
+                match self.case_class_relation(&subject_class, &subject_part, &target.name) {
+                    CaseClassRelation::Always if !target.exact => {
+                        possible_matches.push(subject_part.clone());
+                    }
                     CaseClassRelation::Always => {
                         always_matches = true;
                         possible_matches.push(subject_part.clone());
@@ -55770,6 +56451,8 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         class_name: &str,
         when_node: &ruby_prism::WhenNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
         remaining_subject_type: &mut Option<Type>,
     ) -> Option<Type> {
         if self.source_base_case_equality_override
@@ -55780,7 +56463,8 @@ impl<'a> InferenceEngine<'a> {
         }
         if !self.case_when_narrowing_enabled {
             let has_active_method = self.active_method_body.is_some();
-            let class_targets = self.case_when_class_targets(class_name, when_node);
+            let class_targets =
+                self.case_when_class_targets(class_name, when_node, parse_result, scope);
             let initial_subject_type = remaining_subject_type.clone();
             let has_class_dispatch = class_targets.is_some();
             if let Some(active_method_body) = self.active_method_body.as_mut() {
@@ -55800,7 +56484,9 @@ impl<'a> InferenceEngine<'a> {
                 _ => None,
             };
         }
-        let Some(targets) = self.case_when_class_targets(class_name, when_node) else {
+        let Some(targets) =
+            self.case_when_class_targets(class_name, when_node, parse_result, scope)
+        else {
             if remaining_subject_type.is_some() {
                 *remaining_subject_type = None;
             }
@@ -56748,7 +57434,7 @@ impl<'a> InferenceEngine<'a> {
                             self.resolve_subject_input_type(class_name, scope, &subject)?;
                         // File.exist? raises for nil, so a true result proves the path is non-nil.
                         let path_type = if Self::contains_unresolved_ref(&current) {
-                            Type::Untyped
+                            Type::project_non_nil(&current)
                         } else {
                             Self::remove_nil(&current)
                         };
@@ -58057,6 +58743,15 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn invalidate_array_element_facts_for_statement(node: &Node<'_>, scope: &mut Scope) {
+        if !scope.array_element_facts.is_empty() {
+            array_element_flow::invalidate_array_element_facts(
+                node,
+                Arc::make_mut(&mut scope.array_element_facts),
+            );
+        }
+    }
+
     fn statement_consumes_array_first_fact(
         node: &Node<'_>,
         facts: &HashMap<ArrayGuardKey, Type>,
@@ -58098,6 +58793,14 @@ impl<'a> InferenceEngine<'a> {
         target_scope: &mut Scope,
         is_true_branch: bool,
     ) {
+        self.apply_array_element_guard(
+            class_name,
+            predicate,
+            parse_result,
+            base_scope,
+            target_scope,
+            is_true_branch,
+        );
         if is_true_branch
             && let Some((key, element_type)) = self.array_guard_fact_from_conjunction(
                 class_name,
@@ -58738,6 +59441,8 @@ impl<'a> InferenceEngine<'a> {
         }
 
         let pattern_type = pattern_type?;
+        let numeric_pattern = matches!(class_name, "Integer" | "Float" | "Rational" | "Complex");
+        let pattern_is_non_real = Self::imaginary_literal_is_non_zero(pattern);
 
         let mut pending = vec![subject_type.clone()];
         let mut matched_types = Vec::new();
@@ -58764,18 +59469,15 @@ impl<'a> InferenceEngine<'a> {
                     }
                     _ => unmatched_types.push(Type::Bool),
                 },
-                Type::Integer if class_name == "Integer" => {
-                    matched_types.push(Type::Integer);
-                    unmatched_types.push(Type::Integer);
-                }
-                Type::Float if class_name == "Float" => {
-                    matched_types.push(Type::Float);
-                    unmatched_types.push(Type::Float);
-                }
-                Type::LiteralInteger(_) | Type::LiteralFloat(_)
-                    if matches!(class_name, "Integer" | "Float") =>
-                {
-                    let equality = Self::numeric_value_equality(&pattern_type, &subject);
+                // Numeric equality crosses classes: `1.0 === 1` and `1r === 1` are true.
+                subject if numeric_pattern && Self::is_numeric_value_type(&subject) => {
+                    let subject_is_real =
+                        !matches!(&subject, Type::Class(name) if name.as_str() == "Complex");
+                    let equality = if pattern_is_non_real && subject_is_real {
+                        Some(false)
+                    } else {
+                        Self::numeric_value_equality(&pattern_type, &subject)
+                    };
                     if equality != Some(false) {
                         matched_types.push(subject.clone());
                     }
@@ -58783,13 +59485,16 @@ impl<'a> InferenceEngine<'a> {
                         unmatched_types.push(subject);
                     }
                 }
-                Type::Class(name) if matches!(class_name, "Rational" | "Complex") => {
-                    if name.as_str() == class_name {
-                        matched_types.push(Type::Class(name));
-                        unmatched_types.push(Type::Class(name));
-                    } else {
-                        unmatched_types.push(Type::Class(name));
-                    }
+                Type::Class(ref name) | Type::Generic { base: ref name, .. }
+                    if numeric_pattern
+                        && self.class_is_or_subclass_of_target(
+                            name.as_str(),
+                            "Numeric",
+                            &mut HashSet::new(),
+                        ) =>
+                {
+                    matched_types.push(subject.clone());
+                    unmatched_types.push(subject);
                 }
                 Type::String
                 | Type::Symbol
@@ -58843,6 +59548,53 @@ impl<'a> InferenceEngine<'a> {
 
     fn is_irrefutable_variable_pattern(pattern: &Node<'_>) -> bool {
         matches!(pattern, Node::LocalVariableTargetNode { .. })
+    }
+
+    fn imaginary_literal_is_non_zero(node: &Node<'_>) -> bool {
+        if !matches!(node, Node::ImaginaryNode { .. }) {
+            return false;
+        }
+        let source = String::from_utf8_lossy(node.location().as_slice()).replace('_', "");
+        let coefficient = source.trim_end_matches('i').trim_end_matches('r');
+        coefficient
+            .parse::<f64>()
+            .is_ok_and(|value| value.is_finite() && value != 0.0)
+    }
+
+    /// The exact value of an unguarded numeric literal arm, as an Integer or Float literal type.
+    fn numeric_literal_arm_value(node: &Node<'_>) -> Option<Type> {
+        match node {
+            Node::IntegerNode { .. } | Node::FloatNode { .. } => {
+                Self::literal_singleton_type_from_node(node)
+            }
+            Node::RationalNode { .. } => {
+                let source = String::from_utf8_lossy(node.location().as_slice()).replace('_', "");
+                let value = source.strip_suffix('r')?.parse::<i64>().ok()?;
+                Some(Type::LiteralInteger(value))
+            }
+            _ => None,
+        }
+    }
+
+    /// Built-in numeric equality is exact, so a subject that failed `in 1` also fails `in 1.0`.
+    fn numeric_literal_arm_already_rejected(
+        pattern: &Node<'_>,
+        remaining_subject_type: Option<&Type>,
+        rejected: &[Type],
+    ) -> bool {
+        let Some(subject) = remaining_subject_type else {
+            return false;
+        };
+        let subject_is_numeric = match subject {
+            Type::Union(parts) => parts.iter().all(Self::is_numeric_value_type),
+            single => Self::is_numeric_value_type(single),
+        };
+        subject_is_numeric
+            && Self::numeric_literal_arm_value(pattern).is_some_and(|value| {
+                rejected
+                    .iter()
+                    .any(|seen| Self::numeric_value_equality(&value, seen) == Some(true))
+            })
     }
 
     fn uses_standard_literal_value_equality(&mut self, class_name: &str) -> bool {
@@ -60436,11 +61188,13 @@ impl<'a> InferenceEngine<'a> {
             Node::CallNode { .. } => {
                 matches!(ty, Type::Nil)
                     || value.as_call_node().is_some_and(|call| {
-                        call.name().as_slice() == b"dup"
-                            && call.receiver().is_some()
-                            && call
-                                .arguments()
-                                .is_none_or(|arguments| arguments.arguments().is_empty())
+                        // `dup` keeps the receiver type. Other calls depend only on a literal.
+                        call.receiver().is_some_and(|receiver| {
+                            call.name().as_slice() == b"dup"
+                                || Self::infer_context_free_node_type(&receiver).is_some()
+                        }) && call
+                            .arguments()
+                            .is_none_or(|arguments| arguments.arguments().is_empty())
                             && call.block().is_none()
                             && !matches!(ty, Type::Union(_))
                     })
@@ -60605,6 +61359,13 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'b>,
     ) {
         self.replay_deferred_method_bodies(program, parse_result, true);
+        // A body that was never replayed still made these calls; its callers' context resolves them.
+        for (owner, site) in std::mem::take(&mut self.suppressed_body_call_sites)
+            .into_values()
+            .flatten()
+        {
+            self.registry.add_call_site(&owner, site);
+        }
     }
 
     pub(crate) fn replay_deferred_block_receiver_bodies<'b>(
@@ -61380,12 +62141,17 @@ impl<'a> InferenceEngine<'a> {
                     }
                     _ => false,
                 });
+        // Calls that passed a parameter were held back for this replay; without callers they see `untyped`.
+        let has_suppressed_call_sites = self
+            .suppressed_body_call_sites
+            .contains_key(&def_node.location().start_offset());
         if !method_info.param_infos.is_empty()
             && !has_concrete
             && !has_keyword_sites
             && !receiver_replay_can_use_defaults
             && !replay.case_dispatch_needs_replay
             && !has_hash_splat
+            && !has_suppressed_call_sites
         {
             if let Some(saved) = saved_ctx {
                 self.enter_method_body_context(saved);
@@ -61393,6 +62159,8 @@ impl<'a> InferenceEngine<'a> {
             return;
         }
 
+        self.suppressed_body_call_sites
+            .remove(&def_node.location().start_offset());
         let mut scope = Scope {
             method_name: Some(method_name.clone()),
             singleton_dispatch: is_singleton,
@@ -61999,6 +62767,8 @@ mod tests {
             "@copy = defaults.dup\n",
             "@arg_copy = defaults.dup(flag)\n",
             "@block_copy = defaults.dup { nil }\n",
+            "@literal = [1, nil].compact\n",
+            "@negated = !@flag\n",
         );
         let parse_result = ruby_prism::parse(source.as_bytes());
         let program = parse_result.node().as_program_node().expect("program");
@@ -62061,6 +62831,24 @@ mod tests {
         assert!(!InferenceEngine::can_track_ivar_write_locally(
             &block_dup_value,
             &Type::Class(Sym::new("Hash")),
+        ));
+        let literal_value = nodes
+            .next()
+            .and_then(|node| node.as_instance_variable_write_node())
+            .expect("literal receiver call")
+            .value();
+        assert!(InferenceEngine::can_track_ivar_write_locally(
+            &literal_value,
+            &Type::Array(Some(Box::new(Type::Integer))),
+        ));
+        let negated_value = nodes
+            .next()
+            .and_then(|node| node.as_instance_variable_write_node())
+            .expect("ivar receiver call")
+            .value();
+        assert!(!InferenceEngine::can_track_ivar_write_locally(
+            &negated_value,
+            &Type::True,
         ));
     }
 

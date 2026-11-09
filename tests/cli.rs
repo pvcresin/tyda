@@ -2770,12 +2770,11 @@ fn union_member_missing_method_is_reported_by_standard_diagnostics() {
     assert!(message.contains("NilClass"), "message shape: {message}");
 }
 
-// Plain resolution misinfers `Oj.load` as `Kernel#load -> bool` via the universal
-// fallback, causing a false positive when a `bool` flows into an argument check that
-// expects a `Hash`. When the oj gem is declared, the plugin resolves it to untyped
-// (a JSON value can be anything), and the false positive disappears.
+// The oj plugin gives `Oj` module functions their types only when the gem is declared. `Oj` is
+// known only by name, so `Oj.load` never reaches the private `Kernel#load`, with or without the
+// gem. `Oj.dump` shows the gate: `String` with the gem, unresolved without it.
 #[test]
-fn diagnostics_suppress_argument_mismatch_for_oj_load_with_gem() {
+fn diagnostics_follow_oj_gem_declaration() {
     let source = concat!(
         "class Consumer\n",
         "  #: (Hash[String, untyped]) -> untyped\n",
@@ -2783,13 +2782,21 @@ fn diagnostics_suppress_argument_mismatch_for_oj_load_with_gem() {
         "    payload\n",
         "  end\n",
         "\n",
+        "  #: (Integer) -> untyped\n",
+        "  def count(size)\n",
+        "    size\n",
+        "  end\n",
+        "\n",
         "  def run(raw)\n",
         "    consume(Oj.load(raw))\n",
+        "  end\n",
+        "\n",
+        "  def emit(obj)\n",
+        "    count(Oj.dump(obj))\n",
         "  end\n",
         "end\n",
     );
 
-    // oj gem declared: the plugin resolves Oj.load -> untyped, so no false positive.
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("Gemfile.lock"),
@@ -2799,21 +2806,21 @@ fn diagnostics_suppress_argument_mismatch_for_oj_load_with_gem() {
     let rb_file = dir.path().join("codec.rb");
     fs::write(&rb_file, source).expect("failed to write");
     let diags = argument_type_mismatches(&rb_file);
-    assert!(
-        diags.is_empty(),
-        "Oj.load must not resolve to Kernel#load bool: {diags:?}"
+    assert_eq!(
+        diags.len(),
+        1,
+        "with the gem only Oj.dump -> String is flagged: {diags:?}"
     );
+    assert_eq!(diags[0]["method_name"], "count");
+    assert_eq!(diags[0]["actual_type"], "String");
 
-    // gem not declared: the plugin stays disabled (old behavior = bool
-    // misinference causes the mismatch). This confirms the plugin's gem gate works.
     let dir_no_gem = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file_no_gem = dir_no_gem.path().join("codec.rb");
     fs::write(&rb_file_no_gem, source).expect("failed to write");
     let diags_no_gem = argument_type_mismatches(&rb_file_no_gem);
-    assert_eq!(
-        diags_no_gem.len(),
-        1,
-        "without the gem the old bool misinference remains: {diags_no_gem:?}"
+    assert!(
+        diags_no_gem.is_empty(),
+        "without the gem the plugin stays off and Oj.load is not Kernel#load: {diags_no_gem:?}"
     );
 }
 
@@ -4683,5 +4690,109 @@ fn when_with_class_from_later_file_does_not_leak_other_arguments() {
     assert!(
         !link.contains("Integer"),
         "the `when Integer` branch must not reach link: {link}"
+    );
+}
+
+// The CLI analyzes each file without the others, so an explicit receiver whose class is defined
+// in another file must not resolve to the private `Kernel#load`.
+#[test]
+fn singleton_method_in_another_file_does_not_resolve_to_private_kernel() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a_spec.rb"),
+        "class LoadSpec\n  def self.load(path) = new\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("b_vendor.rb"),
+        "class LoadVendor\n  def add(path)\n    LoadSpec.load(path)\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("c_driver.rb"),
+        "module LoadDriver\n  module_function\n\n  def load(conf) = [1, \"a\"]\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("d_player.rb"),
+        concat!(
+            "class LoadPlayer\n",
+            "  def initialize(conf)\n",
+            "    @video, @audio = LoadDriver.load(conf)\n",
+            "  end\n",
+            "\n",
+            "  def video = @video\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("def add: (untyped path) -> LoadSpec\n"),
+        "singleton load in another file must resolve to LoadSpec: {stdout}"
+    );
+    assert!(
+        stdout.contains("def video: -> 1\n"),
+        "a destructured module_function load in another file must resolve to it: {stdout}"
+    );
+}
+
+// Known issue: the scenario runner and the LSP analyze the current file at full depth and infer
+// these (`ruby/control/loops.md`, `ruby/method/call_return.md`). The CLI keeps `file.read(len)`
+// as a call without arguments and resolves it after the merge, where the first `IO#read`
+// overload (`-> String`) wins. When a check fails, drop it.
+#[test]
+fn known_issue_io_read_through_parameters_in_a_single_file() {
+    let render = |source: &str| {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        fs::write(dir.path().join("source.rb"), source).expect("failed to write source");
+        let output = tyda_bin()
+            .arg(dir.path().to_str().unwrap())
+            .output()
+            .expect("failed to run");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    let yielded = render(concat!(
+        "class YieldReadParts\n",
+        "  def each_part(file, len)\n",
+        "    while len > 0\n",
+        "      part = file.read(len)\n",
+        "      break unless part\n",
+        "      len -= part.length\n",
+        "      yield part\n",
+        "    end\n",
+        "  end\n",
+        "\n",
+        "  def run\n",
+        "    each_part(File.open(\"x\"), 3) { |part| part }\n",
+        "  end\n",
+        "end\n",
+    ));
+    assert!(
+        yielded.contains("def each_part: (File file, Integer len) { (untyped) -> untyped } -> nil"),
+        "known issue fixed (yield after break unless); drop this check: {yielded}"
+    );
+
+    let read = render(concat!(
+        "class ReadLength\n",
+        "  def read_part(file, len)\n",
+        "    file.read(len)\n",
+        "  end\n",
+        "\n",
+        "  def run\n",
+        "    read_part(File.open(\"x\"), 3)\n",
+        "  end\n",
+        "end\n",
+    ));
+    assert!(
+        read.contains("def read_part: (File file, Integer len) -> String\n"),
+        "known issue fixed (IO#read through a parameter); drop this check: {read}"
     );
 }

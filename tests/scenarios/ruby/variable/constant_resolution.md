@@ -1528,3 +1528,92 @@ class Reader
   def self.label: -> "item"
 end
 ```
+
+## A constant defined later types the class body constants that use it
+
+### update
+
+```ruby
+module Clock
+  class Timer
+    FIRST, SECOND = (1..2).map { |i| i * RATE }
+    SCALED = 5 * RATE
+
+    def ticks = 5 * RATE
+  end
+end
+
+module Clock
+  RATE = 12
+end
+
+TOTAL = LATER + 1
+LATER = 3
+```
+
+### result
+
+```rbs
+TOTAL: Integer
+LATER: 3
+
+module Clock
+  RATE: 12
+end
+
+class Clock::Timer
+  FIRST: Integer?
+  SECOND: Integer?
+  SCALED: Integer
+
+  def ticks: -> Integer
+end
+```
+
+## A later constant re-inference keeps locals from the write position
+
+### update
+
+```ruby
+x = 1
+VALUES = [x, LATER_VALUE]
+x = "changed"
+LATER_VALUE = 3
+```
+
+### result
+
+```rbs
+VALUES: [1, 3]
+LATER_VALUE: 3
+```
+
+## Constants that read a later constant are refreshed in source order
+
+### update
+
+```ruby
+FIRST = [LATER]
+SECOND = [FIRST]
+LATER = 1
+
+module Settings
+  INNER = [INNER_LATER]
+  OUTER = [INNER]
+  INNER_LATER = 2
+end
+```
+
+### result
+
+```rbs
+FIRST: [1]
+SECOND: [[1]]
+LATER: 1
+
+module Settings
+  INNER: [2]
+  OUTER: [[2]]
+  INNER_LATER: 2
+end
+```
