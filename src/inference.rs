@@ -51674,12 +51674,17 @@ impl<'a> InferenceEngine<'a> {
         receiver_type: &Type,
         method_name: &str,
     ) -> PrivateReach {
-        if matches!(receiver, Node::SelfNode { .. })
-            || !matches!(
-                receiver_type,
-                Type::Class(_) | Type::Generic { .. } | Type::Singleton(_)
-            )
-        {
+        if matches!(receiver, Node::SelfNode { .. }) {
+            return PrivateReach::None;
+        }
+        self.private_reach_on_type(receiver_type, method_name)
+    }
+
+    fn private_reach_on_type(&mut self, receiver_type: &Type, method_name: &str) -> PrivateReach {
+        if !matches!(
+            receiver_type,
+            Type::Class(_) | Type::Generic { .. } | Type::Singleton(_)
+        ) {
             return PrivateReach::None;
         }
         let Some(class_name) = self.type_to_class_name(receiver_type) else {
@@ -55316,6 +55321,14 @@ impl<'a> InferenceEngine<'a> {
                     memo,
                     visiting,
                 );
+                // A private match here is usually a `Kernel` function standing in for a
+                // method defined in a file this pass cannot see yet.
+                if !matches!(
+                    self.private_reach_on_type(&resolved_receiver, method_name),
+                    PrivateReach::None
+                ) {
+                    return Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name);
+                }
                 if let Some(result) =
                     self.resolve_receiver_ref_overloaded_return(&resolved_receiver, method_name)
                 {

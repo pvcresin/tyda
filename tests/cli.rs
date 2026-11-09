@@ -4708,6 +4708,24 @@ fn singleton_method_in_another_file_does_not_resolve_to_private_kernel() {
         "class LoadVendor\n  def add(path)\n    LoadSpec.load(path)\n  end\nend\n",
     )
     .expect("failed to write source");
+    fs::write(
+        dir.path().join("c_driver.rb"),
+        "module LoadDriver\n  module_function\n\n  def load(conf) = [1, \"a\"]\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("d_player.rb"),
+        concat!(
+            "class LoadPlayer\n",
+            "  def initialize(conf)\n",
+            "    @video, @audio = LoadDriver.load(conf)\n",
+            "  end\n",
+            "\n",
+            "  def video = @video\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
     let output = tyda_bin()
         .arg(dir.path().to_str().unwrap())
         .output()
@@ -4717,6 +4735,10 @@ fn singleton_method_in_another_file_does_not_resolve_to_private_kernel() {
     assert!(
         stdout.contains("def add: (untyped path) -> LoadSpec\n"),
         "singleton load in another file must resolve to LoadSpec: {stdout}"
+    );
+    assert!(
+        stdout.contains("def video: -> 1\n"),
+        "a destructured module_function load in another file must resolve to it: {stdout}"
     );
 }
 
