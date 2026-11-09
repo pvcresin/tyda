@@ -1320,3 +1320,41 @@ class DynamicWhenSubject
   def run: -> DynamicWhenFirst?
 end
 ```
+
+## A class value in when may be a subclass and keeps later branches
+
+### update
+
+```ruby
+class WhenValueAnimal
+end
+
+class WhenValueDog < WhenValueAnimal
+end
+
+class WhenValueCat < WhenValueAnimal
+end
+
+class WhenClassValue
+  #: () -> singleton(WhenValueAnimal)
+  def kind = WhenValueDog
+
+  def classify
+    pet = WhenValueCat.new
+    target = kind
+    case pet
+    when target then :matched
+    when WhenValueCat then :cat
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class WhenClassValue
+  def kind: -> singleton(WhenValueAnimal)
+  def classify: -> :cat | :matched
+end
+```

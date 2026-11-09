@@ -1569,3 +1569,51 @@ class Clock::Timer
   def ticks: -> Integer
 end
 ```
+
+## A later constant re-inference keeps locals from the write position
+
+### update
+
+```ruby
+x = 1
+VALUES = [x, LATER_VALUE]
+x = "changed"
+LATER_VALUE = 3
+```
+
+### result
+
+```rbs
+VALUES: [1, 3]
+LATER_VALUE: 3
+```
+
+## Constants that read a later constant are refreshed in source order
+
+### update
+
+```ruby
+FIRST = [LATER]
+SECOND = [FIRST]
+LATER = 1
+
+module Settings
+  INNER = [INNER_LATER]
+  OUTER = [INNER]
+  INNER_LATER = 2
+end
+```
+
+### result
+
+```rbs
+FIRST: [1]
+SECOND: [[1]]
+LATER: 1
+
+module Settings
+  INNER: [2]
+  OUTER: [[2]]
+  INNER_LATER: 2
+end
+```

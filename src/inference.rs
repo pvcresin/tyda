@@ -1044,8 +1044,9 @@ pub struct InferenceEngine<'a> {
     stdlib_feature_extensions: StdlibFeatureExtensions,
     /// Bare constant reads that did not resolve; a constant write whose value saw one is re-inferred after collection.
     unresolved_constant_reads: usize,
-    pending_constant_writes: FxHashSet<usize>,
-    refreshing_program_after_collection: bool,
+    /// Pending constant writes by start offset, with the scope seen at the write.
+    pending_constant_writes: FxHashMap<usize, Scope>,
+    pending_constant_names: FxHashSet<String>,
     external_rbs: Option<&'a TypeRegistry>,
     merged_external_classes: FxHashSet<String>,
     file_path: Option<SharedPath>,
@@ -1627,6 +1628,11 @@ struct MethodParamHoverContext<'a> {
     class_name: &'a str,
     method_name: &'a str,
     is_singleton: bool,
+}
+
+struct CaseWhenClassTarget {
+    name: String,
+    exact: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -2473,8 +2479,8 @@ impl<'a> InferenceEngine<'a> {
             active_source_call: None,
             stdlib_feature_extensions,
             unresolved_constant_reads: 0,
-            pending_constant_writes: FxHashSet::default(),
-            refreshing_program_after_collection: false,
+            pending_constant_writes: FxHashMap::default(),
+            pending_constant_names: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             file_path: meta.file_path,
@@ -2562,8 +2568,8 @@ impl<'a> InferenceEngine<'a> {
             active_source_call: None,
             stdlib_feature_extensions: FxHashMap::default(),
             unresolved_constant_reads: 0,
-            pending_constant_writes: FxHashSet::default(),
-            refreshing_program_after_collection: false,
+            pending_constant_writes: FxHashMap::default(),
+            pending_constant_names: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             file_path: None,
@@ -7470,7 +7476,11 @@ impl<'a> InferenceEngine<'a> {
             if !Self::is_closed_case_subject_type(subject_type) {
                 return (None, true);
             }
-            return match self.analyze_case_class_when(subject_type, &[target_class]) {
+            let target = CaseWhenClassTarget {
+                name: target_class,
+                exact: true,
+            };
+            return match self.analyze_case_class_when(subject_type, &[target]) {
                 Some((Type::Bot, _)) => (Some(false), true),
                 Some((_, Type::Bot)) => (Some(true), true),
                 _ => (None, true),
@@ -7555,7 +7565,9 @@ impl<'a> InferenceEngine<'a> {
                 };
                 let (result, safe) = self.static_case_equality_result(&target_type, subject_type);
                 safe_to_narrow &= safe;
-                result
+                let inexact_class = Self::type_has_singleton_part(&target_type)
+                    && !Self::case_operand_names_class(&condition, &target_type);
+                result.filter(|&matched| !matched || !inexact_class)
             } else {
                 safe_to_narrow = false;
                 Self::syntactic_node_truthiness(&condition).or_else(|| {
@@ -13520,7 +13532,7 @@ impl<'a> InferenceEngine<'a> {
                     let unresolved_before = self.unresolved_constant_reads;
                     let value_type =
                         self.infer_node_type("Object", &write_node.value(), parse_result, &scope);
-                    self.note_pending_constant_write(node, unresolved_before);
+                    self.note_pending_constant_write(node, unresolved_before, &scope);
                     let value_type = self.forward_namespace_alias_type(
                         &const_name,
                         &write_node.value(),
@@ -13556,7 +13568,7 @@ impl<'a> InferenceEngine<'a> {
                 let mut scope = Scope::default();
                 let unresolved_before = self.unresolved_constant_reads;
                 let _ = self.process_multi_write("Object", node, parse_result, &mut scope);
-                self.note_pending_constant_write(node, unresolved_before);
+                self.note_pending_constant_write(node, unresolved_before, &Scope::default());
             }
             Node::CallNode { .. } => {
                 let call_node = node.as_call_node().expect("must be CallNode");
@@ -15918,7 +15930,11 @@ impl<'a> InferenceEngine<'a> {
                                 &class_body_scope,
                             );
                             if !in_singleton_class && self.nesting_owner(class_name) == class_name {
-                                self.note_pending_constant_write(&node, unresolved_before);
+                                self.note_pending_constant_write(
+                                    &node,
+                                    unresolved_before,
+                                    &class_body_scope,
+                                );
                             }
                             let value_type = self.forward_namespace_alias_type(
                                 &const_name,
@@ -15982,6 +15998,7 @@ impl<'a> InferenceEngine<'a> {
                     Node::MultiWriteNode { .. } => {
                         pending_sigs.clear();
                         let unresolved_before = self.unresolved_constant_reads;
+                        let scope_before = class_body_scope.clone();
                         let _ = self.process_multi_write(
                             class_name,
                             &node,
@@ -15989,7 +16006,11 @@ impl<'a> InferenceEngine<'a> {
                             &mut class_body_scope,
                         );
                         if !in_singleton_class && self.nesting_owner(class_name) == class_name {
-                            self.note_pending_constant_write(&node, unresolved_before);
+                            self.note_pending_constant_write(
+                                &node,
+                                unresolved_before,
+                                &scope_before,
+                            );
                         }
                     }
                     Node::InstanceVariableWriteNode { .. }
@@ -16114,7 +16135,13 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
     ) {
         let statements = program.statements();
-        self.refreshing_program_after_collection = true;
+        if !self.pending_constant_writes.is_empty() {
+            let mut offsets: Vec<usize> = self.pending_constant_writes.keys().copied().collect();
+            offsets.sort_unstable();
+            self.refresh_pending_constant_writes_in("Object", &statements, parse_result, &offsets);
+            self.pending_constant_writes = FxHashMap::default();
+            self.pending_constant_names = FxHashSet::default();
+        }
         self.refresh_class_body_method_defaults(
             "Object",
             &statements,
@@ -16123,8 +16150,89 @@ impl<'a> InferenceEngine<'a> {
             &[],
             false,
         );
-        self.refreshing_program_after_collection = false;
-        self.pending_constant_writes = FxHashSet::default();
+    }
+
+    /// Re-infers pending constant writes in source order, so a constant that reads
+    /// an earlier pending constant sees its refreshed value.
+    fn refresh_pending_constant_writes_in(
+        &mut self,
+        class_name: &str,
+        statements: &ruby_prism::StatementsNode<'_>,
+        parse_result: &ParseResult<'_>,
+        offsets: &[usize],
+    ) {
+        for node in statements.body().iter() {
+            let loc = node.location();
+            let first = offsets.partition_point(|&offset| offset < loc.start_offset());
+            if offsets
+                .get(first)
+                .is_none_or(|&offset| offset >= loc.end_offset())
+            {
+                continue;
+            }
+            match &node {
+                Node::ConstantWriteNode { .. } | Node::MultiWriteNode { .. } => {
+                    self.refresh_pending_constant_write(class_name, &node, parse_result);
+                }
+                Node::IfNode { .. }
+                | Node::UnlessNode { .. }
+                | Node::BeginNode { .. }
+                | Node::CaseNode { .. }
+                | Node::CaseMatchNode { .. } => {
+                    for stmts in Self::class_body_branch_statement_nodes(&node) {
+                        self.refresh_pending_constant_writes_in(
+                            class_name,
+                            &stmts,
+                            parse_result,
+                            offsets,
+                        );
+                    }
+                }
+                Node::ClassNode { .. } | Node::ModuleNode { .. } => {
+                    let (constant_path, body) = if let Some(class_node) = node.as_class_node() {
+                        (class_node.constant_path(), class_node.body())
+                    } else {
+                        let module_node = node.as_module_node().expect("must be ModuleNode");
+                        (module_node.constant_path(), module_node.body())
+                    };
+                    let nested_name = self.resolve_nested_definition_name(
+                        class_name,
+                        &constant_path,
+                        parse_result,
+                    );
+                    if let Some(body) = body
+                        && let Some(stmts) = body.as_statements_node()
+                    {
+                        self.refresh_pending_constant_writes_in(
+                            &nested_name,
+                            &stmts,
+                            parse_result,
+                            offsets,
+                        );
+                    }
+                }
+                Node::CallNode { .. } => {
+                    let call_node = node.as_call_node().expect("must be CallNode");
+                    if let Some((owner, block, false)) = self.static_eval_block_info(
+                        class_name,
+                        &call_node,
+                        parse_result,
+                        false,
+                        true,
+                    ) && let Some(body) = block.body()
+                        && let Some(stmts) = body.as_statements_node()
+                    {
+                        self.refresh_pending_constant_writes_in(
+                            &owner,
+                            &stmts,
+                            parse_result,
+                            offsets,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn refresh_class_body_method_defaults(
@@ -16142,11 +16250,6 @@ impl<'a> InferenceEngine<'a> {
 
         for node in body_nodes.into_iter().rev() {
             match &node {
-                Node::ConstantWriteNode { .. } | Node::MultiWriteNode { .. }
-                    if !in_singleton_class && self.refreshing_program_after_collection =>
-                {
-                    self.refresh_pending_constant_write(class_name, &node, parse_result);
-                }
                 Node::DefNode { .. } => {
                     let def_node = node.as_def_node().expect("must be DefNode");
                     self.refresh_method_default_types(
@@ -16188,33 +16291,49 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn note_pending_constant_write(&mut self, node: &Node<'_>, unresolved_before: usize) {
-        if self.unresolved_constant_reads > unresolved_before {
-            self.pending_constant_writes
-                .insert(node.location().start_offset());
+    fn note_pending_constant_write(
+        &mut self,
+        node: &Node<'_>,
+        unresolved_before: usize,
+        scope: &Scope,
+    ) {
+        if self.unresolved_constant_reads <= unresolved_before {
+            return;
+        }
+        self.pending_constant_writes
+            .insert(node.location().start_offset(), scope.clone());
+        if let Some(write_node) = node.as_constant_write_node() {
+            self.pending_constant_names
+                .insert(String::from_utf8_lossy(write_node.name().as_slice()).to_string());
+        } else if let Some(multi_write) = node.as_multi_write_node() {
+            for target in multi_write.lefts().iter().chain(multi_write.rest()) {
+                let target = target
+                    .as_splat_node()
+                    .and_then(|splat| splat.expression())
+                    .unwrap_or(target);
+                if let Some(constant) = target.as_constant_target_node() {
+                    self.pending_constant_names
+                        .insert(String::from_utf8_lossy(constant.name().as_slice()).to_string());
+                }
+            }
         }
     }
 
-    /// A constant written from a constant defined later (often in another file) is
-    /// inferred again once every definition is known.
+    /// A constant written from a constant defined later in the same file is inferred
+    /// again after collection, with the scope seen at the write.
     fn refresh_pending_constant_write(
         &mut self,
         class_name: &str,
         node: &Node<'_>,
         parse_result: &ParseResult<'_>,
     ) {
-        if !self
+        let Some(mut scope) = self
             .pending_constant_writes
             .remove(&node.location().start_offset())
-        {
+        else {
             return;
-        }
-        let top_level = class_name == "Object";
-        let mut scope = if top_level {
-            self.top_level_scope.clone()
-        } else {
-            Scope::default()
         };
+        let top_level = class_name == "Object";
         let Some(write_node) = node.as_constant_write_node() else {
             let _ = self.process_multi_write(class_name, node, parse_result, &mut scope);
             return;
@@ -32961,7 +33080,7 @@ impl<'a> InferenceEngine<'a> {
                     .expect("must be ConstantReadNode");
                 let name = String::from_utf8_lossy(const_node.name().as_slice()).to_string();
                 let ty = self.resolve_constant_type_in_scope(&name, class_name);
-                if ty == Type::Untyped {
+                if ty == Type::Untyped || self.pending_constant_names.contains(&name) {
                     self.unresolved_constant_reads += 1;
                 }
                 self.push_hover_snapshot(HoverSnapshot {
@@ -47235,7 +47354,7 @@ impl<'a> InferenceEngine<'a> {
             matches!(receiver_type, Type::Singleton(_)),
             true,
         );
-        if receiver_class != "Kernel" && self.is_kernel_module_function(method_name) {
+        if receiver_class != "Kernel" && self.is_private_kernel_method(method_name) {
             overloads.retain(|overload| overload.owner_class != "Kernel");
         }
         if overloads.len() <= 1 {
@@ -51455,7 +51574,7 @@ impl<'a> InferenceEngine<'a> {
 
         let prefer_singleton = matches!(receiver_type, Type::Singleton(_));
         let hide_kernel_function =
-            receiver_class != "Kernel" && self.is_kernel_module_function(method_name);
+            receiver_class != "Kernel" && self.is_private_kernel_method(method_name);
         let mut direct_overloads =
             self.collect_owned_rbs_overloads(&receiver_class, method_name, prefer_singleton, false);
         if hide_kernel_function {
@@ -51545,9 +51664,6 @@ impl<'a> InferenceEngine<'a> {
                 receiver_type,
                 Type::Class(_) | Type::Generic { .. } | Type::Singleton(_)
             )
-            || self
-                .synthetic_framework_method_return(receiver_type, method_name)
-                .is_some()
         {
             return false;
         }
@@ -51555,6 +51671,16 @@ impl<'a> InferenceEngine<'a> {
             return false;
         };
         self.ensure_class_available(&class_name);
+        let is_singleton = matches!(receiver_type, Type::Singleton(_));
+        if Self::first_method_owner_is_private(
+            &self.registry,
+            &class_name,
+            method_name,
+            is_singleton,
+        ) != Some(true)
+        {
+            return false;
+        }
         // A class known only by name, or a workspace class from another file, may define the
         // method where this file cannot see it.
         let Some(data) = self.registry.class_data_for(&class_name) else {
@@ -51574,18 +51700,11 @@ impl<'a> InferenceEngine<'a> {
         {
             return false;
         }
-        let is_singleton = matches!(receiver_type, Type::Singleton(_));
-        if Self::first_method_owner_is_private(
-            &self.registry,
-            &class_name,
-            method_name,
-            is_singleton,
-        ) != Some(true)
-        {
-            return false;
-        }
-        self.dsl_plugin_method_return_override(receiver_type, method_name)
+        self.synthetic_framework_method_return(receiver_type, method_name)
             .is_none()
+            && self
+                .dsl_plugin_method_return_override(receiver_type, method_name)
+                .is_none()
             && self
                 .dsl_plugin_method_return(receiver_type, method_name)
                 .is_none()
@@ -51606,13 +51725,12 @@ impl<'a> InferenceEngine<'a> {
             })
     }
 
-    /// `def self?.x` makes `x` private on instances, so an explicit receiver cannot reach it.
-    fn is_kernel_module_function(&self, method_name: &str) -> bool {
-        [false, true].iter().all(|&is_singleton| {
-            self.registry
-                .lookup_method_def("Kernel", method_name, is_singleton)
-                .is_some_and(|method| method.rbs_file_source)
-        })
+    /// A private Kernel instance method, such as a `def self?.x` module function, cannot be
+    /// reached through an explicit receiver.
+    fn is_private_kernel_method(&self, method_name: &str) -> bool {
+        self.registry
+            .method_visibility("Kernel", method_name, false)
+            == Some(Visibility::Private)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -55934,15 +56052,19 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// Class targets of a `when` clause. A target is exact when the operand names the
+    /// class itself. Any other `singleton(C)` value may be a subclass of C, and a union
+    /// of singletons is only one of them, so such a match narrows the branch but does
+    /// not prove the subject always matches.
     fn case_when_class_targets(
         &mut self,
         class_name: &str,
         when_node: &ruby_prism::WhenNode<'_>,
         parse_result: &ParseResult<'_>,
         scope: &Scope,
-    ) -> Option<Vec<String>> {
+    ) -> Option<Vec<CaseWhenClassTarget>> {
         let conditions = when_node.conditions();
-        let mut targets = Vec::new();
+        let mut targets: Vec<CaseWhenClassTarget> = Vec::new();
         for condition in conditions.iter() {
             let resolved = match condition {
                 Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
@@ -55950,7 +56072,6 @@ impl<'a> InferenceEngine<'a> {
                     self.resolve_constant_type_in_scope(&path, class_name)
                 }
                 _ if Self::cannot_evaluate_to_class(&condition) => return None,
-                // Any value of type `singleton(C)` is the class C, so `===` is `is_a?`.
                 _ => self.infer_node_type(
                     class_name,
                     &condition,
@@ -55958,6 +56079,7 @@ impl<'a> InferenceEngine<'a> {
                     &scope.fork_for_branch(),
                 ),
             };
+            let exact = Self::case_operand_names_class(&condition, &resolved);
             let resolved = match resolved {
                 Type::Union(parts) => parts,
                 single => vec![single],
@@ -55975,12 +56097,38 @@ impl<'a> InferenceEngine<'a> {
                 if !self.uses_standard_class_case_equality(&target) {
                     return None;
                 }
-                if !targets.contains(&target) {
-                    targets.push(target);
+                match targets.iter_mut().find(|existing| existing.name == target) {
+                    Some(existing) => existing.exact |= exact,
+                    None => targets.push(CaseWhenClassTarget {
+                        name: target,
+                        exact,
+                    }),
                 }
             }
         }
         (!targets.is_empty()).then_some(targets)
+    }
+
+    /// Whether a `when` operand is a constant that names the class it resolves to.
+    fn case_operand_names_class(operand: &Node<'_>, resolved: &Type) -> bool {
+        let (
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. },
+            Type::Singleton(target),
+        ) = (operand, resolved)
+        else {
+            return false;
+        };
+        let path = operand.location().as_slice();
+        let operand_name = path.rsplit(|&byte| byte == b':').next().unwrap_or(path);
+        target.rsplit("::").next().unwrap_or(target).as_bytes() == operand_name
+    }
+
+    fn type_has_singleton_part(ty: &Type) -> bool {
+        match ty {
+            Type::Singleton(_) => true,
+            Type::Union(parts) => parts.iter().any(Self::type_has_singleton_part),
+            _ => false,
+        }
     }
 
     fn cannot_evaluate_to_class(node: &Node<'_>) -> bool {
@@ -56067,11 +56215,11 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn case_when_targets_type(targets: &[String]) -> Type {
+    fn case_when_targets_type(targets: &[CaseWhenClassTarget]) -> Type {
         Type::from_type_vec_preserve_untyped(
             targets
                 .iter()
-                .map(|target| Type::Class(Sym::new(target)))
+                .map(|target| Type::Class(Sym::new(&target.name)))
                 .collect(),
         )
     }
@@ -56135,7 +56283,7 @@ impl<'a> InferenceEngine<'a> {
     fn analyze_case_class_when(
         &mut self,
         subject_type: &Type,
-        targets: &[String],
+        targets: &[CaseWhenClassTarget],
     ) -> Option<(Type, Type)> {
         if !Self::is_closed_case_subject_type(subject_type) {
             return None;
@@ -56151,7 +56299,10 @@ impl<'a> InferenceEngine<'a> {
             let mut possible_matches = Vec::new();
             let mut always_matches = false;
             for target in targets {
-                match self.case_class_relation(&subject_class, &subject_part, target) {
+                match self.case_class_relation(&subject_class, &subject_part, &target.name) {
+                    CaseClassRelation::Always if !target.exact => {
+                        possible_matches.push(subject_part.clone());
+                    }
                     CaseClassRelation::Always => {
                         always_matches = true;
                         possible_matches.push(subject_part.clone());

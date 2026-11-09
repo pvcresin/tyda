@@ -4686,9 +4686,10 @@ fn when_with_class_from_later_file_does_not_leak_other_arguments() {
     );
 }
 
-// Known issue: the scenario runner analyzes other files first, so it infers these
-// (`ruby/control/loops.md`, `ruby/method/call_return.md`). A CLI run on the file alone still
-// does not, so the result depends on what else was analyzed. When a check fails, drop it.
+// Known issue: the scenario runner and the LSP analyze the current file at full depth and infer
+// these (`ruby/control/loops.md`, `ruby/method/call_return.md`). The CLI keeps `file.read(len)`
+// as a call without arguments and resolves it after the merge, where the first `IO#read`
+// overload (`-> String`) wins. When a check fails, drop it.
 #[test]
 fn known_issue_io_read_through_parameters_in_a_single_file() {
     let render = |source: &str| {
