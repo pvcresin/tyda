@@ -31,7 +31,17 @@ pub struct LazyRbsLoader {
     file_cache: Mutex<BoundedFileCache<PathBuf, StdlibFileRegistrySlot>>,
     shared_shapes: Mutex<FxHashMap<String, SharedShapeSlot>>,
     shared_features: Mutex<FxHashMap<String, SharedShapeSlot>>,
+    feature_extensions: Mutex<FxHashMap<String, Arc<[FeatureExtension]>>>,
+    stdlib_paths: FxHashSet<PathBuf>,
     alias_dependencies: Mutex<FxHashMap<PathBuf, Arc<AliasDependency>>>,
+}
+
+/// A method that a stdlib feature adds to a core class, absent from core RBS.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeatureExtension {
+    pub owner: String,
+    pub method: String,
+    pub is_singleton: bool,
 }
 
 /// What a file contributes when another file depends on its type aliases.
@@ -52,6 +62,7 @@ impl LazyRbsLoader {
     pub fn from_rbs_roots(roots: Vec<PathBuf>) -> Self {
         let mut class_to_files = FxHashMap::default();
         let mut feature_to_files: FxHashMap<String, Vec<PathBuf>> = FxHashMap::default();
+        let mut stdlib_paths = FxHashSet::default();
 
         for root in roots {
             if !root.exists() {
@@ -67,6 +78,9 @@ impl LazyRbsLoader {
                     .is_some_and(|n| n == "stdlib");
             let rbs_files = collect_rbs_files(std::slice::from_ref(&root));
             for path in rbs_files {
+                if is_stdlib_root {
+                    stdlib_paths.insert(path.clone());
+                }
                 if is_stdlib_root && let Some(feature) = stdlib_feature_for_path(&root, &path) {
                     let feature_paths = feature_to_files.entry(feature).or_default();
                     if !feature_paths.contains(&path) {
@@ -161,6 +175,8 @@ impl LazyRbsLoader {
             file_cache: Mutex::new(BoundedFileCache::with_cap(stdlib_file_cache_cap())),
             shared_shapes: Mutex::new(FxHashMap::default()),
             shared_features: Mutex::new(FxHashMap::default()),
+            feature_extensions: Mutex::new(FxHashMap::default()),
+            stdlib_paths,
             alias_dependencies: Mutex::new(FxHashMap::default()),
         }
     }
@@ -294,18 +310,74 @@ impl LazyRbsLoader {
     }
 
     pub fn merge_feature_into(&self, feature: &str, target: &mut TypeRegistry) -> bool {
-        let shape = self.shared_feature_shape(feature).or_else(|| {
-            feature
-                .contains('/')
-                .then(|| feature.replace('/', "-"))
-                .and_then(|normalized| self.shared_feature_shape(&normalized))
-        });
-        let Some(shape) = shape else {
+        let Some(shape) = self.resolved_feature_shape(feature) else {
             return false;
         };
         target.merge_stdlib_rbs_registry(&shape);
         crate::rbs::import::finalize_pending_method_aliases(target);
         true
+    }
+
+    /// Methods that `feature` adds to core classes and that core RBS does not declare.
+    /// They exist only once the feature is required.
+    pub fn feature_extensions(&self, feature: &str) -> Arc<[FeatureExtension]> {
+        if let Some(cached) = self
+            .feature_extensions
+            .lock()
+            .expect("stdlib feature extensions poisoned")
+            .get(feature)
+        {
+            return Arc::clone(cached);
+        }
+        let extensions: Arc<[FeatureExtension]> = self
+            .resolved_feature_shape(feature)
+            .map(|shape| self.collect_feature_extensions(&shape))
+            .unwrap_or_default()
+            .into();
+        self.feature_extensions
+            .lock()
+            .expect("stdlib feature extensions poisoned")
+            .insert(feature.to_string(), Arc::clone(&extensions));
+        extensions
+    }
+
+    fn collect_feature_extensions(&self, shape: &TypeRegistry) -> Vec<FeatureExtension> {
+        let mut extensions = Vec::new();
+        for (class_name, data) in shape.iter_class_data() {
+            if !CORE_OWNED_CLASSES.contains(&class_name.as_str()) {
+                continue;
+            }
+            let core_registries: Vec<Arc<TypeRegistry>> = self
+                .class_to_files
+                .get(class_name.as_str())
+                .into_iter()
+                .flatten()
+                .filter(|path| !self.stdlib_paths.contains(*path))
+                .map(|path| self.load_file_registry(path))
+                .collect();
+            for method in &data.methods {
+                let declared_by_core = core_registries.iter().any(|registry| {
+                    registry.has_method_variant(class_name, &method.name, method.is_singleton)
+                });
+                if !declared_by_core {
+                    extensions.push(FeatureExtension {
+                        owner: class_name.to_string(),
+                        method: method.name.to_string(),
+                        is_singleton: method.is_singleton,
+                    });
+                }
+            }
+        }
+        extensions
+    }
+
+    fn resolved_feature_shape(&self, feature: &str) -> Option<Arc<TypeRegistry>> {
+        self.shared_feature_shape(feature).or_else(|| {
+            feature
+                .contains('/')
+                .then(|| feature.replace('/', "-"))
+                .and_then(|normalized| self.shared_feature_shape(&normalized))
+        })
     }
 
     fn shared_class_shape(&self, class_name: &str) -> Option<Arc<TypeRegistry>> {
@@ -1451,6 +1523,37 @@ mod tests {
             registry.lookup_method_return_type("Time", "httpdate"),
             Some(crate::types::Type::String)
         );
+    }
+
+    #[test]
+    fn feature_extensions_skip_methods_core_already_declares() {
+        let dir = tempdir().expect("tempdir");
+        let vendor = dir.path().join("vendor").join("rbs");
+        let core_dir = vendor.join("core");
+        let feature_dir = vendor.join("stdlib").join("abbrev").join("0");
+        std::fs::create_dir_all(&core_dir).expect("mkdir core");
+        std::fs::create_dir_all(&feature_dir).expect("mkdir abbrev");
+        std::fs::write(
+            core_dir.join("array.rbs"),
+            "class Array[unchecked out E]\n  def first: () -> E?\nend\n",
+        )
+        .expect("write core array");
+        std::fs::write(
+            feature_dir.join("array.rbs"),
+            "class Array[unchecked out E]\n  def abbrev: () -> Hash[String, String]\n  def first: () -> E?\nend\n",
+        )
+        .expect("write abbrev array");
+
+        let loader = LazyRbsLoader::for_ruby_version(vendor, RubyVersion::new(3, 4, 0));
+        assert_eq!(
+            loader.feature_extensions("abbrev").to_vec(),
+            vec![FeatureExtension {
+                owner: "Array".to_string(),
+                method: "abbrev".to_string(),
+                is_singleton: false,
+            }]
+        );
+        assert!(loader.feature_extensions("not_a_feature").is_empty());
     }
 
     #[test]

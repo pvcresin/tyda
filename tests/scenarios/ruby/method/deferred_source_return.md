@@ -470,3 +470,35 @@ class RevisionReader
   def self.revision_file: -> Pathname
 end
 ```
+
+## A self call keeps the guarded return of a class defined later
+
+### update
+
+```ruby
+class Finder
+  def conversation(uri)
+    return unless uri.start_with?("x")
+    Conversation.lookup(uri)
+  end
+
+  def direct(uri) = conversation(uri)
+end
+
+class Conversation
+  def self.lookup(uri) = new
+end
+```
+
+### result
+
+```rbs
+class Conversation
+  def self.lookup: (untyped uri) -> Conversation
+end
+
+class Finder
+  def conversation: (untyped uri) -> Conversation?
+  def direct: (untyped uri) -> Conversation?
+end
+```

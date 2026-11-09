@@ -1026,6 +1026,9 @@ struct SourceCallContext {
     in_method_body: bool,
 }
 
+/// Method name -> (owner, singleton, feature) for methods a required stdlib feature adds.
+type StdlibFeatureExtensions = FxHashMap<String, Vec<(String, bool, String)>>;
+
 pub struct InferenceEngine<'a> {
     registry: TypeRegistry,
     constants: HashMap<String, Type>,
@@ -1037,6 +1040,11 @@ pub struct InferenceEngine<'a> {
     required_stdlib_feature_loads: Vec<(String, usize)>,
     method_required_stdlib_feature_loads: Vec<(usize, usize, String, usize)>,
     active_source_call: Option<SourceCallContext>,
+    stdlib_feature_extensions: StdlibFeatureExtensions,
+    /// Bare constant reads that did not resolve; a constant write whose value saw one is re-inferred after collection.
+    unresolved_constant_reads: usize,
+    pending_constant_writes: FxHashSet<usize>,
+    refreshing_program_after_collection: bool,
     external_rbs: Option<&'a TypeRegistry>,
     merged_external_classes: FxHashSet<String>,
     file_path: Option<SharedPath>,
@@ -2447,6 +2455,8 @@ impl<'a> InferenceEngine<'a> {
         for feature in &required_stdlib_features {
             lazy_loader.merge_feature_into(feature, &mut registry);
         }
+        let stdlib_feature_extensions =
+            Self::collect_stdlib_feature_extensions(lazy_loader, &required_stdlib_features);
         Self {
             registry,
             constants: HashMap::new(),
@@ -2458,6 +2468,10 @@ impl<'a> InferenceEngine<'a> {
             required_stdlib_feature_loads,
             method_required_stdlib_feature_loads,
             active_source_call: None,
+            stdlib_feature_extensions,
+            unresolved_constant_reads: 0,
+            pending_constant_writes: FxHashSet::default(),
+            refreshing_program_after_collection: false,
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             file_path: meta.file_path,
@@ -2542,6 +2556,10 @@ impl<'a> InferenceEngine<'a> {
             required_stdlib_feature_loads: Vec::new(),
             method_required_stdlib_feature_loads: Vec::new(),
             active_source_call: None,
+            stdlib_feature_extensions: FxHashMap::default(),
+            unresolved_constant_reads: 0,
+            pending_constant_writes: FxHashSet::default(),
+            refreshing_program_after_collection: false,
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             file_path: None,
@@ -2636,10 +2654,101 @@ impl<'a> InferenceEngine<'a> {
             }
         }
         if let Some(loader) = self.lazy_loader {
-            for feature in features {
-                loader.merge_feature_into(&feature, &mut self.registry);
+            for feature in &features {
+                loader.merge_feature_into(feature, &mut self.registry);
+            }
+            self.stdlib_feature_extensions =
+                Self::collect_stdlib_feature_extensions(loader, &self.required_stdlib_features);
+        }
+    }
+
+    fn collect_stdlib_feature_extensions(
+        loader: &LazyRbsLoader,
+        features: &[String],
+    ) -> StdlibFeatureExtensions {
+        let mut extensions = StdlibFeatureExtensions::default();
+        for feature in features {
+            for extension in loader.feature_extensions(feature).iter() {
+                extensions
+                    .entry(extension.method.clone())
+                    .or_default()
+                    .push((
+                        extension.owner.clone(),
+                        extension.is_singleton,
+                        feature.clone(),
+                    ));
             }
         }
+        extensions
+    }
+
+    /// A method that a required stdlib feature adds is hidden from calls that run before the require.
+    fn stdlib_feature_method_unloaded(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        if !self.stdlib_feature_extensions.contains_key(method_name) {
+            return false;
+        }
+        self.registry
+            .resolve_method_call_owners(class_name, method_name, is_singleton)
+            .into_iter()
+            .next()
+            .is_some_and(|(owner, owner_is_singleton)| {
+                self.stdlib_feature_owner_unloaded(&owner, method_name, owner_is_singleton)
+            })
+    }
+
+    /// A deferred call would later resolve without the call position, so settle it here.
+    fn drop_unloaded_stdlib_feature_refs(&self, ty: Type, method_name: &str) -> Type {
+        match ty {
+            Type::ReceiverMethodRef(receiver, name)
+                if name.as_str() == method_name
+                    && self
+                        .type_to_class_name(&receiver)
+                        .is_some_and(|class_name| {
+                            self.stdlib_feature_method_unloaded(
+                                &class_name,
+                                method_name,
+                                matches!(*receiver, Type::Singleton(_)),
+                            )
+                        }) =>
+            {
+                Type::Untyped
+            }
+            Type::Union(parts) => Type::from_type_vec_preserve_untyped(
+                parts
+                    .into_iter()
+                    .map(|part| self.drop_unloaded_stdlib_feature_refs(part, method_name))
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
+    fn stdlib_feature_owner_unloaded(
+        &self,
+        owner: &str,
+        method_name: &str,
+        owner_is_singleton: bool,
+    ) -> bool {
+        let Some(extensions) = self.stdlib_feature_extensions.get(method_name) else {
+            return false;
+        };
+        let mut providers = extensions
+            .iter()
+            .filter(|(extension_owner, extension_singleton, _)| {
+                extension_owner == owner && *extension_singleton == owner_is_singleton
+            })
+            .peekable();
+        providers.peek().is_some()
+            && providers.all(|(_, _, feature)| !self.stdlib_feature_loaded(feature))
+            && self
+                .registry
+                .lookup_method_def(owner, method_name, owner_is_singleton)
+                .is_some_and(|method| method.rbs_file_source)
     }
 
     pub(crate) fn set_required_stdlib_feature_loads(&mut self, loads: Vec<(String, usize)>) {
@@ -13393,8 +13502,10 @@ impl<'a> InferenceEngine<'a> {
                         .insert(const_name.clone(), alias_type.clone());
                 } else {
                     let scope = self.top_level_scope.clone();
+                    let unresolved_before = self.unresolved_constant_reads;
                     let value_type =
                         self.infer_node_type("Object", &write_node.value(), parse_result, &scope);
+                    self.note_pending_constant_write(node, unresolved_before);
                     let value_type = self.forward_namespace_alias_type(
                         &const_name,
                         &write_node.value(),
@@ -13428,7 +13539,9 @@ impl<'a> InferenceEngine<'a> {
             }
             Node::MultiWriteNode { .. } => {
                 let mut scope = Scope::default();
+                let unresolved_before = self.unresolved_constant_reads;
                 let _ = self.process_multi_write("Object", node, parse_result, &mut scope);
+                self.note_pending_constant_write(node, unresolved_before);
             }
             Node::CallNode { .. } => {
                 let call_node = node.as_call_node().expect("must be CallNode");
@@ -15777,12 +15890,16 @@ impl<'a> InferenceEngine<'a> {
                             let const_owner = self.nesting_owner(class_name).to_string();
                             self.insert_class_body_constant(&const_owner, &const_name, alias_type);
                         } else {
+                            let unresolved_before = self.unresolved_constant_reads;
                             let value_type = self.infer_node_type(
                                 class_name,
                                 &write_node.value(),
                                 parse_result,
                                 &class_body_scope,
                             );
+                            if !in_singleton_class && self.nesting_owner(class_name) == class_name {
+                                self.note_pending_constant_write(&node, unresolved_before);
+                            }
                             let value_type = self.forward_namespace_alias_type(
                                 &const_name,
                                 &write_node.value(),
@@ -15844,12 +15961,16 @@ impl<'a> InferenceEngine<'a> {
                     }
                     Node::MultiWriteNode { .. } => {
                         pending_sigs.clear();
+                        let unresolved_before = self.unresolved_constant_reads;
                         let _ = self.process_multi_write(
                             class_name,
                             &node,
                             parse_result,
                             &mut class_body_scope,
                         );
+                        if !in_singleton_class && self.nesting_owner(class_name) == class_name {
+                            self.note_pending_constant_write(&node, unresolved_before);
+                        }
                     }
                     Node::InstanceVariableWriteNode { .. }
                     | Node::InstanceVariableOrWriteNode { .. }
@@ -15973,6 +16094,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
     ) {
         let statements = program.statements();
+        self.refreshing_program_after_collection = true;
         self.refresh_class_body_method_defaults(
             "Object",
             &statements,
@@ -15981,6 +16103,8 @@ impl<'a> InferenceEngine<'a> {
             &[],
             false,
         );
+        self.refreshing_program_after_collection = false;
+        self.pending_constant_writes = FxHashSet::default();
     }
 
     fn refresh_class_body_method_defaults(
@@ -15998,6 +16122,11 @@ impl<'a> InferenceEngine<'a> {
 
         for node in body_nodes.into_iter().rev() {
             match &node {
+                Node::ConstantWriteNode { .. } | Node::MultiWriteNode { .. }
+                    if !in_singleton_class && self.refreshing_program_after_collection =>
+                {
+                    self.refresh_pending_constant_write(class_name, &node, parse_result);
+                }
                 Node::DefNode { .. } => {
                     let def_node = node.as_def_node().expect("must be DefNode");
                     self.refresh_method_default_types(
@@ -16037,6 +16166,71 @@ impl<'a> InferenceEngine<'a> {
                 late_constant_unknown = true;
             }
         }
+    }
+
+    fn note_pending_constant_write(&mut self, node: &Node<'_>, unresolved_before: usize) {
+        if self.unresolved_constant_reads > unresolved_before {
+            self.pending_constant_writes
+                .insert(node.location().start_offset());
+        }
+    }
+
+    /// A constant written from a constant defined later (often in another file) is
+    /// inferred again once every definition is known.
+    fn refresh_pending_constant_write(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+    ) {
+        if !self
+            .pending_constant_writes
+            .remove(&node.location().start_offset())
+        {
+            return;
+        }
+        let top_level = class_name == "Object";
+        let mut scope = if top_level {
+            self.top_level_scope.clone()
+        } else {
+            Scope::default()
+        };
+        let Some(write_node) = node.as_constant_write_node() else {
+            let _ = self.process_multi_write(class_name, node, parse_result, &mut scope);
+            return;
+        };
+        let const_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+        let value_type =
+            self.infer_node_type(class_name, &write_node.value(), parse_result, &scope);
+        let value_type = self.forward_namespace_alias_type(
+            &const_name,
+            &write_node.value(),
+            parse_result,
+            value_type,
+        );
+        if top_level {
+            self.constants
+                .insert(const_name.clone(), value_type.clone());
+        } else {
+            self.insert_class_body_constant(class_name, &const_name, value_type.clone());
+        }
+        let start = write_node.location().start_offset();
+        self.registry.set_constant(
+            class_name,
+            &const_name,
+            value_type.clone(),
+            Some(offset_to_location(parse_result.source(), start)),
+            self.file_path.as_deref(),
+        );
+        self.push_hover_snapshot(HoverSnapshot {
+            start,
+            end: start + write_node.name().as_slice().len(),
+            name: const_name,
+            target: HoverTarget::Value(value_type),
+            class_context: class_name.to_string(),
+            method_context: None,
+            method_context_singleton_dispatch: None,
+        });
     }
 
     fn push_unique_late_constant_name(names: &mut Vec<String>, name: String) {
@@ -28113,13 +28307,7 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
     ) -> Type {
         if let Some(call_node) = node.as_call_node()
-            && self
-                .required_stdlib_features
-                .iter()
-                .any(|feature| feature == "shellwords")
-            && std::str::from_utf8(call_node.name().as_slice())
-                .ok()
-                .is_some_and(|method_name| matches!(method_name, "shellescape" | "shellsplit"))
+            && !self.required_stdlib_features.is_empty()
         {
             let previous = self.active_source_call;
             self.active_source_call = Some(SourceCallContext {
@@ -28127,6 +28315,12 @@ impl<'a> InferenceEngine<'a> {
                 in_method_body: scope.method_name.is_some(),
             });
             let inferred = self.infer_node_type_inner(class_name, node, parse_result, scope);
+            let inferred = match std::str::from_utf8(call_node.name().as_slice()) {
+                Ok(method_name) if self.stdlib_feature_extensions.contains_key(method_name) => {
+                    self.drop_unloaded_stdlib_feature_refs(inferred, method_name)
+                }
+                _ => inferred,
+            };
             self.active_source_call = previous;
             inferred
         } else {
@@ -29506,7 +29700,18 @@ impl<'a> InferenceEngine<'a> {
                                 &method_name,
                                 &call_node,
                             );
-                            if direct != Type::Untyped
+                            // An `untyped` arm may only mean the callee waits on a later definition; defer so it resolves at the end.
+                            let defer_unresolved_arm = matches!(
+                                &direct,
+                                Type::Union(parts) if parts.contains(&Type::Untyped)
+                            ) && self
+                                .source_method_return_waits_on_later_definition(
+                                    class_name,
+                                    &method_name,
+                                    scope.singleton_dispatch,
+                                );
+                            if !defer_unresolved_arm
+                                && direct != Type::Untyped
                                 && !matches!(
                                     &direct,
                                     Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..)
@@ -32711,6 +32916,9 @@ impl<'a> InferenceEngine<'a> {
                     .expect("must be ConstantReadNode");
                 let name = String::from_utf8_lossy(const_node.name().as_slice()).to_string();
                 let ty = self.resolve_constant_type_in_scope(&name, class_name);
+                if ty == Type::Untyped {
+                    self.unresolved_constant_reads += 1;
+                }
                 self.push_hover_snapshot(HoverSnapshot {
                     start: node.location().start_offset(),
                     end: node.location().end_offset(),
@@ -42175,6 +42383,7 @@ impl<'a> InferenceEngine<'a> {
             for name in &names_to_try {
                 if let Some(method) = self.registry.lookup_method_def(fallback, name, false)
                     && !method.rbs_method_types.is_empty()
+                    && !self.stdlib_feature_owner_unloaded(fallback, name, false)
                 {
                     overloads.extend(method.rbs_method_types.iter().cloned().map(|method_type| {
                         RbsMethodTypeWithOwner {
@@ -42198,6 +42407,9 @@ impl<'a> InferenceEngine<'a> {
         self.registry
             .resolve_method_call_owners(receiver_class, method_name, prefer_singleton)
             .into_iter()
+            .filter(|(owner, is_singleton)| {
+                !self.stdlib_feature_owner_unloaded(owner, method_name, *is_singleton)
+            })
             .filter_map(|(owner, is_singleton)| {
                 self.registry
                     .lookup_method_def(&owner, method_name, is_singleton)
@@ -54024,6 +54236,9 @@ impl<'a> InferenceEngine<'a> {
         let method_name_for_lookup =
             self.registry
                 .canonical_method_name(class_name, effective_method_name, is_singleton);
+        if self.stdlib_feature_method_unloaded(class_name, &method_name_for_lookup, is_singleton) {
+            return Type::Untyped;
+        }
         let lookup = self.registry.lookup_method_return_type_with_hint(
             class_name,
             &method_name_for_lookup,
@@ -55091,6 +55306,49 @@ impl<'a> InferenceEngine<'a> {
                 .iter()
                 .any(|field| Self::type_contains_untyped(&field.value)),
             Type::Proc { return_type, .. } => Self::type_contains_untyped(return_type),
+            _ => false,
+        }
+    }
+
+    fn source_method_return_waits_on_later_definition(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        let Some(raw_return) = self
+            .registry
+            .lookup_method_def_for_dispatch(class_name, method_name, is_singleton)
+            .filter(|method| !method.rbs_file_source)
+            .map(|method| method.raw_return_type.clone())
+        else {
+            return false;
+        };
+        self.waits_on_later_definition(&raw_return)
+    }
+
+    /// A deferred call whose receiver class or target method is not defined yet.
+    fn waits_on_later_definition(&mut self, ty: &Type) -> bool {
+        match ty {
+            Type::Union(parts) => parts
+                .iter()
+                .any(|part| self.waits_on_later_definition(part)),
+            Type::ReceiverMethodRef(receiver, method_name) => match receiver.as_ref() {
+                Type::Singleton(name) | Type::Class(name) => {
+                    self.ensure_class_available(name.as_str());
+                    self.registry
+                        .resolve_method_call_owners(
+                            name.as_str(),
+                            method_name.as_str(),
+                            matches!(receiver.as_ref(), Type::Singleton(_)),
+                        )
+                        .is_empty()
+                }
+                other => self.waits_on_later_definition(other),
+            },
+            Type::MethodReturnRef(class_name, method_name) => !self
+                .registry
+                .has_any_method_variant(class_name.as_str(), method_name.as_str()),
             _ => false,
         }
     }

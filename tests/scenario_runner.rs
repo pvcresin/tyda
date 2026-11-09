@@ -354,7 +354,8 @@ fn test_all_scenarios() {
         panic!("Scenario directory not found: {}", scenario_dir.display());
     }
 
-    let core_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs/core");
+    let vendor_rbs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/rbs");
+    let rbs_roots = vec![vendor_rbs.join("core"), vendor_rbs.join("stdlib")];
 
     let filter = std::env::var("TYDA_SCENARIO_FILTER").ok();
     let md_files: Vec<PathBuf> = WalkDir::new(scenario_dir)
@@ -388,7 +389,7 @@ fn test_all_scenarios() {
     let all_results: Vec<FileRun> = md_files
         .par_iter()
         .map(|path| {
-            let loader = LazyRbsLoader::new(core_dir.clone());
+            let loader = LazyRbsLoader::from_rbs_roots(rbs_roots.clone());
             let scenario_path = path.strip_prefix(scenario_dir).unwrap_or(path);
             let rails_mode = scenario_path.starts_with("rails");
             let dsl_mode = scenario_path.starts_with(&rails_dsl_dir);

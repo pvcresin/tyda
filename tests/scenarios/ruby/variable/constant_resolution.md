@@ -1528,3 +1528,44 @@ class Reader
   def self.label: -> "item"
 end
 ```
+
+## A constant defined later types the class body constants that use it
+
+### update
+
+```ruby
+module Clock
+  class Timer
+    FIRST, SECOND = (1..2).map { |i| i * RATE }
+    SCALED = 5 * RATE
+
+    def ticks = 5 * RATE
+  end
+end
+
+module Clock
+  RATE = 12
+end
+
+TOTAL = LATER + 1
+LATER = 3
+```
+
+### result
+
+```rbs
+TOTAL: Integer
+LATER: 3
+
+module Clock
+  RATE: 12
+end
+
+class Clock::Timer
+  FIRST: Integer?
+  SECOND: Integer?
+  SCALED: Integer
+
+  def ticks: -> Integer
+end
+```
