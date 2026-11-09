@@ -31,21 +31,3 @@ class UnionArgTarget
   def detail: -> 1
 end
 ```
-
-## A call on an untyped receiver that may be nil stays untyped
-
-```ruby
-class MaybeUntypedReceiver
-  def mapped(x) = (x ? x.y : nil).map(&:path)
-  def plain(x) = x.y.map(&:path)
-end
-```
-
-### result
-
-```rbs
-class MaybeUntypedReceiver
-  def mapped: (untyped x) -> untyped
-  def plain: (untyped x) -> untyped
-end
-```

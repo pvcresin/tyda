@@ -12,7 +12,7 @@
 
 | 分野 | 状態 | 代表的な範囲 |
 | --- | --- | --- |
-| 定義・dispatch・visibility | supported | class / module / mixin / constant / method / `super`。`self` 以外の明示 receiver から private method（RBS の `def self?.` で定義された Kernel 関数を含む）は呼べないため `untyped`（workspace の class はこの file に定義があるものに限る）。bare な `private` は `def self.x` に影響しない |
+| 定義・dispatch・visibility | supported | class / module / mixin / constant / method / `super`。`self` 以外の明示 receiver から private method（RBS の `def self?.` で定義された Kernel 関数を含む）は呼べないため `untyped`。別 file の workspace class や名前だけ知られた class は、見えない定義が後で解決できるよう呼び出しを遅延参照として残す。bare な `private` は `def self.x` に影響しない |
 | 変数・flow | supported | local / ivar（method 内の再代入・分岐・複合代入） / 多重代入 / narrowing（標準 `Class#===` による postfix の local 代入と、閉じた subject の case。`when` の operand は定数参照に限らず、型が `singleton(C)`（またはその union）なら class として絞り込む） / 分岐間のlocal相関 / rescue。`x = Foo.new` の local が生成 attr 以外に使われない間は、最後の生成 writer の値を reader で読む（形が変わる collection は対象外） |
 | block・高階 API | supported | Proc、lambda、yield、Enumerable、Enumerator、Lazy。source method が block を実行しない / 必ず実行する / 実行し得るかを本文の flow から要約し（引数の値には依存しない）、block 内で代入した外側 local を保持 / 置換 / join する（定義順で未解析の callee は join） |
 | collection shape | supported | Array、Hash、Set、Tuple、Record（静的 symbol key を持つキーワード splat の Record union を含む）。local Hash へ書いた key は receiver / 非静的 key の別用途まで存在するものとして読み、`{}` から始まる local は異なる静的 key を不在とする。Hash の union では、key と value の型がどちらも別の Hash メンバーに含まれるメンバーを吸収し、条件付きの `h[k] = v` が続いても union を倍増させない |

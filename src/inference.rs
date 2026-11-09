@@ -63,6 +63,13 @@ enum DynamicNamespaceKind {
     Module,
 }
 
+/// How an explicit receiver relates to a private method that a call would resolve to.
+enum PrivateReach {
+    None,
+    Raises,
+    DefinedElsewhere,
+}
+
 enum ConstReceiverPath {
     Static(String),
     DynamicResolved(String),
@@ -32303,14 +32310,17 @@ impl<'a> InferenceEngine<'a> {
                         wrap(result)
                     };
                     // The call is still walked so its arguments reach a definition in another file.
-                    let result = if self.explicit_receiver_reaches_private_method(
+                    let result = match self.explicit_receiver_private_reach(
                         &receiver,
                         &safe_nav_receiver_type,
                         &method_name,
                     ) {
-                        wrap(Type::Untyped)
-                    } else {
-                        result
+                        PrivateReach::None => result,
+                        PrivateReach::Raises => wrap(Type::Untyped),
+                        PrivateReach::DefinedElsewhere => wrap(Type::ReceiverMethodRef(
+                            Box::new(safe_nav_receiver_type.clone()),
+                            Sym::new(&method_name),
+                        )),
                     };
                     let original_result = result;
                     let assignment_result = self.setter_assigned_value_type(
@@ -51654,23 +51664,26 @@ impl<'a> InferenceEngine<'a> {
             })
     }
 
-    /// Ruby raises NoMethodError when a receiver other than `self` calls a private method.
-    fn explicit_receiver_reaches_private_method(
+    /// Ruby raises NoMethodError when a receiver other than `self` calls a private method. A
+    /// class known only by name, or a workspace class from another file, may define the method
+    /// where this file cannot see it, so the call waits for that definition. A framework or DSL
+    /// plugin return for the method still applies.
+    fn explicit_receiver_private_reach(
         &mut self,
         receiver: &Node<'_>,
         receiver_type: &Type,
         method_name: &str,
-    ) -> bool {
+    ) -> PrivateReach {
         if matches!(receiver, Node::SelfNode { .. })
             || !matches!(
                 receiver_type,
                 Type::Class(_) | Type::Generic { .. } | Type::Singleton(_)
             )
         {
-            return false;
+            return PrivateReach::None;
         }
         let Some(class_name) = self.type_to_class_name(receiver_type) else {
-            return false;
+            return PrivateReach::None;
         };
         self.ensure_class_available(&class_name);
         let is_singleton = matches!(receiver_type, Type::Singleton(_));
@@ -51680,13 +51693,20 @@ impl<'a> InferenceEngine<'a> {
             method_name,
             is_singleton,
         ) != Some(true)
+            || self
+                .synthetic_framework_method_return(receiver_type, method_name)
+                .is_some()
+            || self
+                .dsl_plugin_method_return_override(receiver_type, method_name)
+                .is_some()
+            || self
+                .dsl_plugin_method_return(receiver_type, method_name)
+                .is_some()
         {
-            return false;
+            return PrivateReach::None;
         }
-        // A class known only by name, or a workspace class from another file, may define the
-        // method where this file cannot see it.
         let Some(data) = self.registry.class_data_for(&class_name) else {
-            return false;
+            return PrivateReach::DefinedElsewhere;
         };
         let workspace_defined = data.user_defined
             || self
@@ -51700,16 +51720,9 @@ impl<'a> InferenceEngine<'a> {
                     .file_contribution_names()
                     .contains(&class_name))
         {
-            return false;
+            return PrivateReach::DefinedElsewhere;
         }
-        self.synthetic_framework_method_return(receiver_type, method_name)
-            .is_none()
-            && self
-                .dsl_plugin_method_return_override(receiver_type, method_name)
-                .is_none()
-            && self
-                .dsl_plugin_method_return(receiver_type, method_name)
-                .is_none()
+        PrivateReach::Raises
     }
 
     fn first_method_owner_is_private(
@@ -53975,7 +53988,14 @@ impl<'a> InferenceEngine<'a> {
             .filter(|part| !Self::is_unresolved_receiver(part) && **part != Type::Nil)
             .cloned()
             .collect();
-        if typed_arms.is_empty() {
+        // Without typed arms, a `nil` arm decides nothing when `NilClass` lacks the method. Safe
+        // navigation and Rails `try` keep their own `nil` result.
+        if typed_arms.is_empty()
+            && (call.is_safe_navigation()
+                || (self.rails_feature_enabled() && matches!(method_name.as_ref(), "try" | "try!"))
+                || !parts.contains(&Type::Nil)
+                || self.type_responds_to_method(&Type::Nil, &method_name) != Some(false))
+        {
             return None;
         }
         let saved_override =
@@ -53986,15 +54006,19 @@ impl<'a> InferenceEngine<'a> {
         if !self.dispatching_typed_receiver_arm {
             self.infer_node_type_inner(class_name, node, parse_result, scope);
         }
-        self.receiver_type_override = Some((start, end, Type::from_type_vec(typed_arms)));
-        let saved_snapshots = std::mem::replace(&mut self.record_hover_snapshots, false);
-        let saved_dispatching = std::mem::replace(&mut self.dispatching_typed_receiver_arm, true);
-        // The whole-union walk above already took the view without declared block types.
-        let saved_chain = std::mem::replace(&mut self.block_pass_chain, BlockPassChain::Bound);
-        let typed_result = self.infer_node_type_inner(class_name, node, parse_result, scope);
-        self.block_pass_chain = saved_chain;
-        self.dispatching_typed_receiver_arm = saved_dispatching;
-        self.record_hover_snapshots = saved_snapshots;
+        let mut results = Vec::new();
+        if !typed_arms.is_empty() {
+            self.receiver_type_override = Some((start, end, Type::from_type_vec(typed_arms)));
+            let saved_snapshots = std::mem::replace(&mut self.record_hover_snapshots, false);
+            let saved_dispatching =
+                std::mem::replace(&mut self.dispatching_typed_receiver_arm, true);
+            // The whole-union walk above already took the view without declared block types.
+            let saved_chain = std::mem::replace(&mut self.block_pass_chain, BlockPassChain::Bound);
+            results.push(self.infer_node_type_inner(class_name, node, parse_result, scope));
+            self.block_pass_chain = saved_chain;
+            self.dispatching_typed_receiver_arm = saved_dispatching;
+            self.record_hover_snapshots = saved_snapshots;
+        }
         self.receiver_type_override = saved_override;
 
         let can_defer = call.block().is_none()
@@ -54002,7 +54026,6 @@ impl<'a> InferenceEngine<'a> {
                 .arguments()
                 .is_none_or(|arguments| arguments.arguments().iter().next().is_none());
         let known_predicate = self.is_known_rails_boolean_predicate(&method_name);
-        let mut results = vec![typed_result];
         for part in parts
             .iter()
             .filter(|part| Self::is_unresolved_receiver(part))
