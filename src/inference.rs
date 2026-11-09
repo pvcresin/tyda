@@ -36,6 +36,7 @@ use crate::types::{
     Type,
 };
 
+mod array_element_flow;
 mod block_flow;
 use block_flow::LiteralArg;
 mod deps;
@@ -1642,6 +1643,7 @@ pub(crate) struct Scope {
     self_facts: Arc<HashMap<String, Type>>,
     array_first_facts: Arc<HashMap<ArrayGuardKey, Type>>,
     hash_key_facts: Arc<hash_key_flow::HashKeyFacts>,
+    array_element_facts: Arc<array_element_flow::ArrayElementFacts>,
     exclusive_receiver_facts: Arc<receiver_attr_flow::ExclusiveReceiverFacts>,
     runtime_facts: Arc<HashMap<String, RuntimeFact>>,
     respond_to_guards: Arc<HashMap<String, Vec<Vec<String>>>>,
@@ -1842,6 +1844,7 @@ impl Scope {
             self_facts: self.self_facts.clone(),
             array_first_facts: self.array_first_facts.clone(),
             hash_key_facts: self.hash_key_facts.clone(),
+            array_element_facts: self.array_element_facts.clone(),
             exclusive_receiver_facts: self.exclusive_receiver_facts.clone(),
             runtime_facts: self.runtime_facts.clone(),
             respond_to_guards: self.respond_to_guards.clone(),
@@ -1862,6 +1865,7 @@ impl Scope {
         scope.break_types.clear();
         scope.clear_array_first_facts();
         scope.hash_key_facts = Arc::default();
+        scope.array_element_facts = Arc::default();
         scope.exclusive_receiver_facts = Arc::default();
         scope
     }
@@ -4444,6 +4448,7 @@ impl<'a> InferenceEngine<'a> {
             merged.self_facts = Self::merge_branch_self_facts(then_scope, else_scope);
             merged.array_first_facts = Arc::default();
             merged.hash_key_facts = Arc::default();
+            merged.array_element_facts = Arc::default();
             merged.exclusive_receiver_facts = Arc::default();
             merged.initialized_record_keys = Arc::new(
                 then_scope
@@ -4515,6 +4520,10 @@ impl<'a> InferenceEngine<'a> {
             hash_key_facts: Arc::new(hash_key_flow::merge_hash_key_facts(
                 &then_scope.hash_key_facts,
                 &else_scope.hash_key_facts,
+            )),
+            array_element_facts: Arc::new(array_element_flow::merge_array_element_facts(
+                &then_scope.array_element_facts,
+                &else_scope.array_element_facts,
             )),
             exclusive_receiver_facts: Arc::new(receiver_attr_flow::merge_exclusive_receiver_facts(
                 &then_scope.exclusive_receiver_facts,
@@ -4882,6 +4891,7 @@ impl<'a> InferenceEngine<'a> {
             self_facts: Arc::default(),
             array_first_facts: Arc::default(),
             hash_key_facts: base.hash_key_facts.clone(),
+            array_element_facts: base.array_element_facts.clone(),
             exclusive_receiver_facts: base.exclusive_receiver_facts.clone(),
             runtime_facts: base.runtime_facts.clone(),
             respond_to_guards: Arc::default(),
@@ -21530,6 +21540,7 @@ impl<'a> InferenceEngine<'a> {
         let Some(_infer_guard) = InferNodeGuard::enter() else {
             return Type::Untyped;
         };
+        Self::invalidate_array_element_facts_for_statement(node, scope);
         if matches!(
             node,
             Node::IfNode { .. }
@@ -21581,8 +21592,13 @@ impl<'a> InferenceEngine<'a> {
                 return ty;
             }
         }
-        self.process_statement(class_name, node, parse_result, scope);
-        self.infer_node_type(class_name, node, parse_result, scope)
+        let (_, clears_self_facts) =
+            self.process_statement_keeping_read_facts(class_name, node, parse_result, scope);
+        let ty = self.infer_node_type(class_name, node, parse_result, scope);
+        if clears_self_facts {
+            scope.clear_self_facts();
+        }
+        ty
     }
 
     fn normal_flow_type_from_scope(scope: &Scope, implicit: Option<Type>) -> Type {
@@ -24951,11 +24967,29 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) -> bool {
+        let (statement_exits, clears_self_facts) =
+            self.process_statement_keeping_read_facts(class_name, node, parse_result, scope);
+        if clears_self_facts {
+            scope.clear_self_facts();
+        }
+        statement_exits
+    }
+
+    /// Also returns whether facts on self end after the statement. They still hold while its own
+    /// value is inferred, because the statement reads its operands before its last call.
+    fn process_statement_keeping_read_facts(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) -> (bool, bool) {
         if !scope.array_first_facts.is_empty()
             && !Self::statement_consumes_array_first_fact(node, &scope.array_first_facts)
         {
             scope.clear_array_first_facts();
         }
+        Self::invalidate_array_element_facts_for_statement(node, scope);
         if !scope.hash_key_facts.is_empty() {
             hash_key_flow::invalidate_hash_key_facts(
                 node,
@@ -24997,7 +25031,7 @@ impl<'a> InferenceEngine<'a> {
                 parse_result,
                 scope,
             );
-            return false;
+            return (false, defer_self_fact_invalidation);
         }
         let mut statement_exits = false;
         match node {
@@ -26176,11 +26210,8 @@ impl<'a> InferenceEngine<'a> {
                 );
             }
         }
-        if defer_self_fact_invalidation {
-            scope.clear_self_facts();
-        }
         scope.clear_array_first_facts();
-        statement_exits
+        (statement_exits, defer_self_fact_invalidation)
     }
 
     fn infer_node_type_with_scope(
@@ -28124,6 +28155,12 @@ impl<'a> InferenceEngine<'a> {
         }
         if !scope.hash_key_facts.is_empty()
             && let Some(inferred) = self.hash_key_fact_read(class_name, node, parse_result, scope)
+        {
+            return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
+        }
+        if !scope.array_element_facts.is_empty()
+            && let Some(inferred) =
+                self.array_element_fact_read(class_name, node, parse_result, scope)
         {
             return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
         }
@@ -56822,7 +56859,7 @@ impl<'a> InferenceEngine<'a> {
                             self.resolve_subject_input_type(class_name, scope, &subject)?;
                         // File.exist? raises for nil, so a true result proves the path is non-nil.
                         let path_type = if Self::contains_unresolved_ref(&current) {
-                            Type::Untyped
+                            Type::project_non_nil(&current)
                         } else {
                             Self::remove_nil(&current)
                         };
@@ -58131,6 +58168,15 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn invalidate_array_element_facts_for_statement(node: &Node<'_>, scope: &mut Scope) {
+        if !scope.array_element_facts.is_empty() {
+            array_element_flow::invalidate_array_element_facts(
+                node,
+                Arc::make_mut(&mut scope.array_element_facts),
+            );
+        }
+    }
+
     fn statement_consumes_array_first_fact(
         node: &Node<'_>,
         facts: &HashMap<ArrayGuardKey, Type>,
@@ -58172,6 +58218,14 @@ impl<'a> InferenceEngine<'a> {
         target_scope: &mut Scope,
         is_true_branch: bool,
     ) {
+        self.apply_array_element_guard(
+            class_name,
+            predicate,
+            parse_result,
+            base_scope,
+            target_scope,
+            is_true_branch,
+        );
         if is_true_branch
             && let Some((key, element_type)) = self.array_guard_fact_from_conjunction(
                 class_name,
@@ -60559,11 +60613,13 @@ impl<'a> InferenceEngine<'a> {
             Node::CallNode { .. } => {
                 matches!(ty, Type::Nil)
                     || value.as_call_node().is_some_and(|call| {
-                        call.name().as_slice() == b"dup"
-                            && call.receiver().is_some()
-                            && call
-                                .arguments()
-                                .is_none_or(|arguments| arguments.arguments().is_empty())
+                        // `dup` keeps the receiver type. Other calls depend only on a literal.
+                        call.receiver().is_some_and(|receiver| {
+                            call.name().as_slice() == b"dup"
+                                || Self::infer_context_free_node_type(&receiver).is_some()
+                        }) && call
+                            .arguments()
+                            .is_none_or(|arguments| arguments.arguments().is_empty())
                             && call.block().is_none()
                             && !matches!(ty, Type::Union(_))
                     })
@@ -62122,6 +62178,8 @@ mod tests {
             "@copy = defaults.dup\n",
             "@arg_copy = defaults.dup(flag)\n",
             "@block_copy = defaults.dup { nil }\n",
+            "@literal = [1, nil].compact\n",
+            "@negated = !@flag\n",
         );
         let parse_result = ruby_prism::parse(source.as_bytes());
         let program = parse_result.node().as_program_node().expect("program");
@@ -62184,6 +62242,24 @@ mod tests {
         assert!(!InferenceEngine::can_track_ivar_write_locally(
             &block_dup_value,
             &Type::Class(Sym::new("Hash")),
+        ));
+        let literal_value = nodes
+            .next()
+            .and_then(|node| node.as_instance_variable_write_node())
+            .expect("literal receiver call")
+            .value();
+        assert!(InferenceEngine::can_track_ivar_write_locally(
+            &literal_value,
+            &Type::Array(Some(Box::new(Type::Integer))),
+        ));
+        let negated_value = nodes
+            .next()
+            .and_then(|node| node.as_instance_variable_write_node())
+            .expect("ivar receiver call")
+            .value();
+        assert!(!InferenceEngine::can_track_ivar_write_locally(
+            &negated_value,
+            &Type::True,
         ));
     }
 

@@ -24,7 +24,7 @@
 - [ ] block callback の副作用解析を一般化し、外側で nil check 済みのivarがcallback内で誤って `nil` と診断されるケースを見直す（Redmine `Attachment#files_to_final_location` の `sha.update(@temp_file)`）。実際のmutationは引き続きnarrowingを無効化し、クラス・メソッド固有の例外は追加しない
 - [ ] CLI のファイル単位推論で、後のファイルや後方の定義に依存する型を遅延参照として保ち、全体の集約後に解決する。self 呼び出しの戻り値が `nil | untyped` に潰れる、後で定義される定数を使う式が `untyped` になる、別ファイルの model への `find(1)` が `untyped` になる、後のファイルで定義されるクラスの `when` が引数を `untyped` にする、の4件（`known-issues/later_definitions.md`、`tests/cli.rs` の `when_with_class_from_later_file_does_not_leak_other_arguments`）。シナリオ runner は他ファイルを先に解析するため、ファイル間の順序に依存する2件は CLI でのみ再現する
 - [ ] 明示的なレシーバでの `Kernel` の private な関数（`obj.select(x)` など）を、レシーバのクラスが定義しない限り解決しない（`known-issues/kernel_functions.md`）
-- [ ] 制御フロー上の値を保つ。自己再帰する述語の戻り値が `bool` に `untyped` を含む、`nonzero? || x` が `Integer` にならない、`break unless part` の後の `yield part` が `String` にならない、の3件（`known-issues/flow_values.md`）
+- [ ] 制御フロー上の値を保つ。自己再帰する述語の戻り値が `bool` に `untyped` を含む（`known-issues/flow_values.md`）。また、単一ファイルの CLI では `File` を渡す呼び出しがあっても `break unless part` の後の `yield part` が `String` にならず、parameter 経由の `IO#read(len)` が `String?` でなく `String` になる。先に解析した内容で結果が変わる（`tests/cli.rs` の `known_issue_io_read_through_parameters_in_a_single_file`）
 - [ ] nil の誤検出を減らす。メソッド内で代入した ivar が self 呼び出しの後に nil になる、ivar の truthy ガードが入れ子の修飾子 `if` に届かない、reader の nil ガードが同じメソッドの block に届かない、`*xs.partition` の多重代入が nil になる、の4件（`tests/flow_diagnostics.rs` の `known_issue_nil_false_positives_still_reported`）
 - [ ] PR 154 の subject 差分で見つけたが、最小再現ができていない後退を調べる。Redmine `link_to_project` の引数が `(Project | untyped)?` から `untyped?` になる。`respond_to?` を確かめる述語メソッドや `before_action` など、別メソッドのガードを越えた nil・missing method の誤検出
 - [ ] Ruby / Rails version、framework DSL、scenario coverage を継続する

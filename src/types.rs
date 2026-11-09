@@ -1000,6 +1000,10 @@ impl Type {
     pub fn append_union_parts(types: &mut Vec<Type>, new_type: Type) {
         let tail_start = types.len();
         Self::collect_union_parts(new_type, types);
+        Self::drop_untyped_tail(types, tail_start);
+    }
+
+    fn drop_untyped_tail(types: &mut Vec<Type>, tail_start: usize) {
         let mut idx = tail_start;
         while idx < types.len() {
             if types[idx] == Type::Untyped {
@@ -1011,6 +1015,30 @@ impl Type {
         if types.len() > Self::UNION_DEDUP_FLUSH_LIMIT {
             Self::sort_dedup_parts(types);
         }
+    }
+
+    /// `append_union_parts` for a call-site argument. A `bot` argument comes from an unreachable
+    /// call and adds no part. Like `from_type_vec`, `untyped | nil` stays unknown, so it keeps
+    /// `untyped` beside `nil`.
+    pub fn append_argument_parts(types: &mut Vec<Type>, argument: Type) {
+        let tail_start = types.len();
+        Self::collect_union_parts(argument, types);
+        let tail = &types[tail_start..];
+        if tail.iter().all(|ty| *ty == Type::Bot) {
+            types.truncate(tail_start);
+            return;
+        }
+        if tail.contains(&Type::Untyped)
+            && tail.contains(&Type::Nil)
+            && tail
+                .iter()
+                .all(|ty| matches!(ty, Type::Untyped | Type::Nil | Type::Bot))
+        {
+            types.truncate(tail_start);
+            types.extend([Type::Untyped, Type::Nil]);
+            return;
+        }
+        Self::drop_untyped_tail(types, tail_start);
     }
 
     pub fn merge_into_vec(types: &mut Vec<Type>, new_type: Type) {

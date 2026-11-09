@@ -1105,3 +1105,78 @@ class NumericEqualityNarrowing
   def float_against_integer: -> Float?
 end
 ```
+
+## A nil guard on a self call reaches the argument of a later call
+
+### update
+
+```ruby
+class GuardedSelfCallValue
+  def value = 1
+end
+
+class GuardedSelfCallArgument
+  def run
+    consume(source) if source
+  end
+
+  def source
+    GuardedSelfCallValue.new if rand > 0.5
+  end
+
+  def consume(value)
+    value.value
+  end
+end
+```
+
+### result
+
+```rbs
+class GuardedSelfCallArgument
+  def run: -> 1?
+  def source: -> GuardedSelfCallValue?
+  def consume: (GuardedSelfCallValue value) -> 1
+end
+
+class GuardedSelfCallValue
+  def value: -> 1
+end
+```
+
+## A File.exist? guard keeps a memoized reader path
+
+### update
+
+```ruby
+class ExistingPathReader
+  def initialize(path)
+    @path = path
+  end
+
+  def run
+    return unless File.exist?(real_path)
+
+    report(real_path)
+  end
+
+  def report(path) = path
+
+  private
+
+  def real_path
+    @real_path ||= File.realpath(@path)
+  end
+end
+```
+
+### result
+
+```rbs
+class ExistingPathReader
+  def initialize: (untyped path) -> void
+  def run: -> String?
+  def report: (String path) -> String
+  private def real_path: -> String
+end
+```

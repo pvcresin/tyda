@@ -26,26 +26,3 @@ class RecursiveTopValue
   def x: -> 1
 end
 ```
-
-## A value checked by break unless is yielded as non-nil
-
-```ruby
-class YieldReadParts
-  def each_part(file, len)
-    while len > 0
-      part = file.read(len)
-      break unless part
-      len -= part.length
-      yield part
-    end
-  end
-end
-```
-
-### result
-
-```rbs
-class YieldReadParts
-  def each_part: (untyped file, untyped len) { (String) -> untyped } -> nil
-end
-```

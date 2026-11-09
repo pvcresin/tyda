@@ -34,3 +34,66 @@ class Guards
   def or_default: (untyped flag) -> (0 | "value")
 end
 ```
+
+## An argument that may be an untyped value or nil stays untyped
+
+### update
+
+```ruby
+class OptionalUntypedArgument
+  def positional(x)
+    take(x ? x : nil)
+  end
+
+  def keyword(x)
+    take_keyword(project: x || nil)
+  end
+
+  def take(project) = project
+  def take_keyword(project:) = project
+end
+```
+
+### result
+
+```rbs
+class OptionalUntypedArgument
+  def positional: (untyped x) -> untyped
+  def keyword: (untyped x) -> untyped
+  def take: (untyped project) -> untyped
+  def take_keyword: (project: untyped) -> untyped
+end
+```
+
+## A call in an unreachable branch adds nothing to the parameter
+
+### update
+
+```ruby
+class UnreachableArgument
+  def run
+    value = nil
+    take(value) if value
+  end
+
+  def mixed
+    value = nil
+    take_mixed(value) if value
+    take_mixed("text")
+  end
+
+  def take(value) = value
+  def take_mixed(value) = value
+end
+```
+
+### result
+
+```rbs
+class UnreachableArgument
+  def run: -> nil
+  def mixed: -> String
+  def take: (untyped value) -> untyped
+  def take_mixed: (String value) -> String
+end
+```

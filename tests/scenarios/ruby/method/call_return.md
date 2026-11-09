@@ -694,3 +694,28 @@ class BlockOverloadReturn
   def without_block: -> Enumerator["a", Array[untyped]]
 end
 ```
+
+## A length read through a parameter keeps the nil of IO#read
+
+### update
+
+```ruby
+class ReadLength
+  def read_part(file, len)
+    file.read(len)
+  end
+
+  def run
+    read_part(File.open("x"), 3)
+  end
+end
+```
+
+### result
+
+```rbs
+class ReadLength
+  def read_part: (File file, Integer len) -> String?
+  def run: -> String?
+end
+```

@@ -38,8 +38,10 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - `if` の単一 `&&` 条件で、左辺が local read、右辺が直接の local assignment の場合は、短絡時の未代入経路と右辺代入値のtruthy / falsy projectionを分岐 local に反映する。guardと代入先が同じlocalの場合も分岐ごとの値を保つ。右辺内で別localを変更する副作用はbranch scopeへ反映しない。入れ子の複合条件や別の左辺 / 右辺構文は対象外
 - optional parameter の `nil?` / `== nil` guard 後は、遅延参照から `nil` だけを除き、`false` は残す
 - 標準の no-block `Array#any?` と `Array#all?(Class)` を同じ `&&` 条件で確認した直後は、同じ local Array / `Hash#values` の `first` を非空かつ class 型で絞る。block・source override・refinement を含む場合や、間に別の文がある場合は絞らない
-- 多重代入、右辺型を使った RBS operator overload の選択と source-defined operator を優先する operator-write、method 内の instance variable 再代入、文字列・シンボル補間（静的な literal / union の展開を含む）
+- `Array[T]` の local に対する標準の `size` / `length` の比較・`!empty?` guard と truthy な `values[i]` 条件は、要素 fact として残す。範囲内の literal index の `[]` は `T`（truthy 条件の添字は `nil` / `false` を除く）、範囲内から始まる `[start..]` / `[start, length]` は `Array[T]` にする。local の別用途・再代入・任意の call / `yield` / `super` を含む文や source override・singleton method がある場合は fact を捨てる
+- 多重代入、右辺型を使った RBS operator overload の選択と source-defined operator を優先する operator-write、method 内の instance variable 再代入（literal を receiver にする引数・block なしの call の結果も含む。式が読む fact は末尾の call より先に評価される）、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播。Queue は未解決の要素型を既知の sentinel 要素で上書きしない
+- 呼び出し側の引数から parameter 型を集める。`untyped` だけの引数は型を加えず、`untyped` と `nil` の union は `untyped` のまま保ち、到達不能な分岐の `bot` 引数は加えない
 - 静的に名前を求められる `alias` / `define_method` / `attr_*`（Record / Tuple の静的 iterator 内で束縛された属性名、静的に判定できる `next if` / `next unless`、束縛やDSLに影響しない条件付き代入を含む。receiver上でiterator methodが上書きされている場合は展開しない。生成 writer の戻り値は引数型に一致し、代入値は対応する reader にも反映） /
   `Struct.new` / `Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） / `Forwardable` / `send` / `const_get`
 

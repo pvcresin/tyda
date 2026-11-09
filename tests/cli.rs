@@ -4685,3 +4685,57 @@ fn when_with_class_from_later_file_does_not_leak_other_arguments() {
         "the `when Integer` branch must not reach link: {link}"
     );
 }
+
+// Known issue: the scenario runner analyzes other files first, so it infers these
+// (`ruby/control/loops.md`, `ruby/method/call_return.md`). A CLI run on the file alone still
+// does not, so the result depends on what else was analyzed. When a check fails, drop it.
+#[test]
+fn known_issue_io_read_through_parameters_in_a_single_file() {
+    let render = |source: &str| {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        fs::write(dir.path().join("source.rb"), source).expect("failed to write source");
+        let output = tyda_bin()
+            .arg(dir.path().to_str().unwrap())
+            .output()
+            .expect("failed to run");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    let yielded = render(concat!(
+        "class YieldReadParts\n",
+        "  def each_part(file, len)\n",
+        "    while len > 0\n",
+        "      part = file.read(len)\n",
+        "      break unless part\n",
+        "      len -= part.length\n",
+        "      yield part\n",
+        "    end\n",
+        "  end\n",
+        "\n",
+        "  def run\n",
+        "    each_part(File.open(\"x\"), 3) { |part| part }\n",
+        "  end\n",
+        "end\n",
+    ));
+    assert!(
+        yielded.contains("def each_part: (File file, Integer len) { (untyped) -> untyped } -> nil"),
+        "known issue fixed (yield after break unless); drop this check: {yielded}"
+    );
+
+    let read = render(concat!(
+        "class ReadLength\n",
+        "  def read_part(file, len)\n",
+        "    file.read(len)\n",
+        "  end\n",
+        "\n",
+        "  def run\n",
+        "    read_part(File.open(\"x\"), 3)\n",
+        "  end\n",
+        "end\n",
+    ));
+    assert!(
+        read.contains("def read_part: (File file, Integer len) -> String\n"),
+        "known issue fixed (IO#read through a parameter); drop this check: {read}"
+    );
+}

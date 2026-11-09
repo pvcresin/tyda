@@ -90,3 +90,62 @@ class CompoundFlow
   def operator_assign: -> String
 end
 ```
+
+## An ivar assigned from a no-argument call keeps that value in the same method
+
+### update
+
+```ruby
+class IvarCallValue
+  def reset
+    @items = nil
+  end
+
+  def build
+    @items = [1, nil].compact
+    consume(@items)
+  end
+
+  def consume(items) = items
+end
+```
+
+### result
+
+```rbs
+class IvarCallValue
+  def reset: -> nil
+  def build: -> Array[Integer]
+  def consume: (Array[Integer] items) -> Array[Integer]
+end
+```
+
+## A self call after a no-argument call write ends the local value
+
+### update
+
+```ruby
+class IvarCallValueAfterSelfCall
+  def reset
+    @items = nil
+  end
+
+  def build
+    @items = [1, nil].compact
+    helper
+    @items
+  end
+
+  def helper = 1
+end
+```
+
+### result
+
+```rbs
+class IvarCallValueAfterSelfCall
+  def reset: -> nil
+  def build: -> [1]?
+  def helper: -> 1
+end
+```

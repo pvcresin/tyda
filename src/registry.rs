@@ -391,11 +391,25 @@ struct TypeSlotAccumulator {
     parts: rustc_hash::FxHashSet<Type>,
     // exceeding the union cap sticks to untyped regardless of merge order.
     saturated: bool,
+    argument: bool,
 }
 
 impl TypeSlotAccumulator {
     fn from_type(ty: Type) -> Self {
         let mut acc = Self::default();
+        acc.add(ty);
+        acc
+    }
+
+    fn argument_slot() -> Self {
+        Self {
+            argument: true,
+            ..Self::default()
+        }
+    }
+
+    fn from_argument(ty: Type) -> Self {
+        let mut acc = Self::argument_slot();
         acc.add(ty);
         acc
     }
@@ -407,7 +421,11 @@ impl TypeSlotAccumulator {
         // append_union_parts flattens nested unions and drops Untyped
         // (but keeps the empty signal meaning "call site told us nothing").
         let mut flattened = Vec::new();
-        Type::append_union_parts(&mut flattened, ty);
+        if self.argument {
+            Type::append_argument_parts(&mut flattened, ty);
+        } else {
+            Type::append_union_parts(&mut flattened, ty);
+        }
         for part in flattened {
             self.parts.insert(part);
         }
@@ -439,12 +457,12 @@ impl CallSiteSummaryAccumulator {
         let arg_slots = site
             .arg_types
             .drain(..)
-            .map(TypeSlotAccumulator::from_type)
+            .map(TypeSlotAccumulator::from_argument)
             .collect();
         let keyword_slots = site
             .keyword_arg_types
             .drain()
-            .map(|(name, ty)| (name, TypeSlotAccumulator::from_type(ty)))
+            .map(|(name, ty)| (name, TypeSlotAccumulator::from_argument(ty)))
             .collect();
         let keyword_rest_shape = site
             .keyword_rest_shape
@@ -474,7 +492,7 @@ impl CallSiteSummaryAccumulator {
         if self.arg_slots.len() < other.arg_types.len() {
             // fill missing positional-argument observations as Untyped (i.e. an empty slot).
             self.arg_slots
-                .resize_with(other.arg_types.len(), TypeSlotAccumulator::default);
+                .resize_with(other.arg_types.len(), TypeSlotAccumulator::argument_slot);
         }
         for (idx, ty) in other.arg_types.into_iter().enumerate() {
             self.arg_slots[idx].add(ty);
@@ -485,7 +503,7 @@ impl CallSiteSummaryAccumulator {
                     entry.get_mut().add(ty);
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(TypeSlotAccumulator::from_type(ty));
+                    entry.insert(TypeSlotAccumulator::from_argument(ty));
                 }
             }
         }
@@ -3337,7 +3355,7 @@ impl TypeRegistry {
         let bound = Self::bind_positional_arguments(&positional_infos, arg_types);
         for (slot, arg_types) in param_types.iter_mut().zip(bound) {
             for arg_type in arg_types {
-                Type::append_union_parts(slot, arg_type);
+                Type::append_argument_parts(slot, arg_type);
             }
         }
     }
@@ -11127,7 +11145,7 @@ impl TypeRegistry {
             {
                 let resolved =
                     self.resolve_call_site_type_from_caller_context(call_site, ty, visiting);
-                Type::append_union_parts(&mut types, resolved);
+                Type::append_argument_parts(&mut types, resolved);
             }
         }
         if types.is_empty() {
