@@ -32211,10 +32211,8 @@ impl<'a> InferenceEngine<'a> {
                         let is_known_nil_predicate = method_name == "nil?"
                             && resolved == Type::Bool
                             && !self.source_method_name_is_defined("nil?");
-                        let is_known_rails_boolean_predicate = self.rails_feature_enabled()
-                            && matches!(method_name.as_str(), "blank?" | "present?")
-                            && resolved == Type::Bool
-                            && !self.source_method_name_is_defined(&method_name);
+                        let is_known_rails_boolean_predicate = resolved == Type::Bool
+                            && self.is_known_rails_boolean_predicate(&method_name);
                         let has_unknown_deferred_result = has_deferred_union_member
                             && !is_known_rails_boolean_predicate
                             && ((!can_defer_receiver_call && !is_known_nil_predicate)
@@ -54003,18 +54001,29 @@ impl<'a> InferenceEngine<'a> {
             && call
                 .arguments()
                 .is_none_or(|arguments| arguments.arguments().iter().next().is_none());
+        let known_predicate = self.is_known_rails_boolean_predicate(&method_name);
         let mut results = vec![typed_result];
         for part in parts
             .iter()
             .filter(|part| Self::is_unresolved_receiver(part))
         {
-            results.push(if *part == Type::Untyped || !can_defer {
+            results.push(if known_predicate {
+                Type::Bool
+            } else if *part == Type::Untyped || !can_defer {
                 Type::Untyped
             } else {
                 Type::ReceiverMethodRef(Box::new(part.clone()), Sym::new(&method_name))
             });
         }
         Some(Type::from_type_vec_preserve_untyped(results))
+    }
+
+    /// Rails `blank?` / `present?` return `bool` on any receiver, unknown ones included, unless
+    /// source redefines them.
+    fn is_known_rails_boolean_predicate(&self, method_name: &str) -> bool {
+        self.rails_feature_enabled()
+            && matches!(method_name, "blank?" | "present?")
+            && !self.source_method_name_is_defined(method_name)
     }
 
     fn receiver_union_flags(ty: &Type) -> (bool, bool) {
