@@ -1427,6 +1427,22 @@ fn known_issue_nil_false_positives_still_reported() {
             "NilClass#start_with?",
         ),
         (
+            "an ivar nil guard survives a self call that does not write it",
+            concat!(
+                "class GuardedIvarAfterCall\n",
+                "  def run\n",
+                "    return unless @conn\n",
+                "    helper\n",
+                "    @conn.close\n",
+                "  end\n",
+                "  def helper = 1\n",
+                "  def open = @conn = File.open(\"x\")\n",
+                "  def reset = @conn = nil\n",
+                "end\n",
+            ),
+            "NilClass#close",
+        ),
+        (
             "a splatted partition assigns both arrays",
             concat!(
                 "class SplatPartition\n",

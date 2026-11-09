@@ -4686,6 +4686,34 @@ fn when_with_class_from_later_file_does_not_leak_other_arguments() {
     );
 }
 
+// Known issue: when the receiver class is defined in another file, the CLI resolves `X.load`
+// to the private `Kernel#load` (`-> bool`) instead of the source singleton method. The scenario
+// runner analyzes project files first and infers it. When the check fails, drop this test.
+#[test]
+fn known_issue_singleton_method_in_another_file_resolves_to_kernel() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a_spec.rb"),
+        "class LoadSpec\n  def self.load(path) = new\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("b_vendor.rb"),
+        "class LoadVendor\n  def add(path)\n    LoadSpec.load(path)\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("def add: (untyped path) -> bool\n"),
+        "known issue fixed (singleton load in another file); drop this test: {stdout}"
+    );
+}
+
 // Known issue: the scenario runner and the LSP analyze the current file at full depth and infer
 // these (`ruby/control/loops.md`, `ruby/method/call_return.md`). The CLI keeps `file.read(len)`
 // as a call without arguments and resolves it after the merge, where the first `IO#read`
