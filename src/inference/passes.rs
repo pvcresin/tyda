@@ -545,6 +545,7 @@ impl<'a> InferenceEngine<'a> {
                     if let Some(ret) = ret
                         && Self::is_concrete_for_method_ref_resolve(&ret)
                     {
+                        let ret = TypeRegistry::deferred_self_return(&ret, &resolved_receiver);
                         let resolved = Self::resolve_general_method_refs_depth(
                             registry,
                             &receiver_class,

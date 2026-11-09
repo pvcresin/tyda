@@ -417,3 +417,75 @@ class Object < BasicObject
   def combine: (Symbol _prefix, [Integer, Array[Integer]], Array[Integer]) -> 6
 end
 ```
+
+## A rest parameter keeps Array through a filtering block
+
+```ruby
+class RestParameterFilter
+  def rejected(*keys)
+    keys.reject { |key| key }
+  end
+end
+```
+
+### result
+
+```rbs
+class RestParameterFilter
+  def rejected: (*untyped keys) -> Array[untyped]
+end
+```
+
+## A tuple argument with an unknown element keeps the declared return
+
+```ruby
+module TupleJoinHelper
+  def self.joined(parts)
+    parts.join(" ")
+  end
+end
+
+class TupleJoinCaller
+  def run(value)
+    parts = ["a"]
+    parts << value.name
+    TupleJoinHelper.joined(parts)
+  end
+end
+```
+
+### result
+
+```rbs
+class TupleJoinCaller
+  def run: (untyped value) -> String
+end
+
+module TupleJoinHelper
+  def self.joined: ([String, untyped] parts) -> String
+end
+```
+
+## A method without callers still passes its other arguments
+
+```ruby
+module Pair
+  def self.second(_first, second) = second
+end
+
+class PairCaller
+  def run(value) = Pair.second(value, 1)
+end
+```
+
+### result
+
+```rbs
+module Pair
+  def self.second: (untyped _first, Integer second) -> Integer
+end
+
+class PairCaller
+  def run: (untyped value) -> Integer
+end
+```

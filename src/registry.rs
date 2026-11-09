@@ -7109,9 +7109,8 @@ impl TypeRegistry {
                             if types.is_empty() {
                                 Type::Untyped
                             } else {
-                                finalize(Self::replace_forwarded_markers(
+                                finalize(Self::erase_forwarded_markers(
                                     Type::from_type_vec(types).widen_arg_for_param(),
-                                    &Type::Untyped,
                                 ))
                             }
                         })
@@ -7282,6 +7281,35 @@ impl TypeRegistry {
                 *subject.as_ref() == Type::Untyped || Self::is_projection_of_unknown(subject)
             }
             _ => false,
+        }
+    }
+
+    /// An unknown marker inside a container erases only its own slot, so the known slots keep their types.
+    fn erase_forwarded_markers(ty: Type) -> Type {
+        match ty {
+            Type::Tuple(elems) => Type::Tuple(
+                elems
+                    .into_iter()
+                    .map(Self::erase_forwarded_markers)
+                    .collect(),
+            ),
+            Type::Array(Some(inner)) => {
+                Type::Array(Some(Box::new(Self::erase_forwarded_markers(*inner))))
+            }
+            Type::Hash(key, value) => Type::Hash(
+                key.map(|key| Box::new(Self::erase_forwarded_markers(*key))),
+                value.map(|value| Box::new(Self::erase_forwarded_markers(*value))),
+            ),
+            Type::Record(fields) => Type::Record(
+                fields
+                    .into_iter()
+                    .map(|field| RecordField {
+                        value: Self::erase_forwarded_markers(field.value),
+                        ..field
+                    })
+                    .collect(),
+            ),
+            ty => Self::replace_forwarded_markers(ty, &Type::Untyped),
         }
     }
 
@@ -9155,7 +9183,7 @@ impl TypeRegistry {
 
     /// A deferred call keeps no arguments and may have written to the tuple, so `self` is only known
     /// to be an array of it.
-    fn deferred_self_return(ret: &Type, receiver: &Type) -> Type {
+    pub(crate) fn deferred_self_return(ret: &Type, receiver: &Type) -> Type {
         match receiver {
             Type::Tuple(_) => {
                 Self::substitute_self_type(ret, &receiver.clone().widen_tuple_to_array())

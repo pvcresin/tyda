@@ -3,7 +3,7 @@ use crate::rbs::ir as rbs_ir;
 use crate::sym::NamePath;
 use crate::types::Sym;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1018,6 +1018,7 @@ struct ActiveMethodBody {
     unresolved_block_receivers: DeferredBlockReceiverCandidates,
     has_case_class_dispatch: bool,
     has_super_call: bool,
+    suppressed_call_sites: Vec<(String, CallSite)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1075,6 +1076,8 @@ pub struct InferenceEngine<'a> {
     inline_assertion_comments: Vec<InlineAssertionComment>,
     self_bind_comments: Vec<SorbetSelfBindComment>,
     deferred_method_bodies: Vec<DeferredMethodBody>,
+    /// Call sites a deferred body held back for its replay, keyed by the def's start offset.
+    suppressed_body_call_sites: BTreeMap<usize, Vec<(String, CallSite)>>,
     active_method_body: Option<ActiveMethodBody>,
     active_loop_entry_scopes: Option<HashMap<usize, Scope>>,
     module_function_mirrors: Vec<(String, String)>,
@@ -2502,6 +2505,7 @@ impl<'a> InferenceEngine<'a> {
             inline_assertion_comments: Vec::new(),
             self_bind_comments: Vec::new(),
             deferred_method_bodies: Vec::new(),
+            suppressed_body_call_sites: BTreeMap::new(),
             active_method_body: None,
             active_loop_entry_scopes: None,
             module_function_mirrors: Vec::new(),
@@ -2590,6 +2594,7 @@ impl<'a> InferenceEngine<'a> {
             inline_assertion_comments: Vec::new(),
             self_bind_comments: Vec::new(),
             deferred_method_bodies: Vec::new(),
+            suppressed_body_call_sites: BTreeMap::new(),
             active_method_body: None,
             active_loop_entry_scopes: None,
             module_function_mirrors: Vec::new(),
@@ -4428,9 +4433,19 @@ impl<'a> InferenceEngine<'a> {
             // The syntax walk cannot resolve method-local ParamRefs; body replay records them with caller context.
             call_site.keyword_rest_shape = None;
         }
-        if self.dispatching_typed_receiver_arm
-            || (self.suppress_body_call_sites && Self::call_site_contains_param_ref(&call_site))
-        {
+        if self.dispatching_typed_receiver_arm {
+            return;
+        }
+        if self.suppress_body_call_sites && Self::call_site_contains_param_ref(&call_site) {
+            let is_self_call = call_site.caller_context.as_ref().is_some_and(|ctx| {
+                ctx.class_name.as_ref() == class_name
+                    && ctx.method_name == call_site.method_name
+                    && ctx.method_is_singleton == call_site.method_is_singleton
+            });
+            if !is_self_call && let Some(body) = self.active_method_body.as_mut() {
+                body.suppressed_call_sites
+                    .push((class_name.to_string(), call_site));
+            }
             return;
         }
         if self.suppress_external_merge {
@@ -13878,12 +13893,15 @@ impl<'a> InferenceEngine<'a> {
                 if mirror_as_module_function {
                     self.mirror_instance_method_as_singleton(&method_owner, &method_name);
                 }
-                if !mirror_as_module_function && let Some(visibility) = context.current_visibility {
-                    let is_singleton = context.in_singleton_class || def_node.receiver().is_some();
+                // A bare `private` section leaves `def self.x` public.
+                if !mirror_as_module_function
+                    && def_node.receiver().is_none()
+                    && let Some(visibility) = context.current_visibility
+                {
                     self.registry.set_method_visibility(
                         &method_owner,
                         &method_name,
-                        is_singleton,
+                        context.in_singleton_class,
                         Some(visibility),
                     );
                 }
@@ -14857,12 +14875,14 @@ impl<'a> InferenceEngine<'a> {
                         if mirror_as_module_function {
                             self.mirror_instance_method_as_singleton(&method_owner, &method_name);
                         }
-                        if !mirror_as_module_function && let Some(visibility) = current_visibility {
-                            let is_singleton = in_singleton_class || def_node.receiver().is_some();
+                        if !mirror_as_module_function
+                            && def_node.receiver().is_none()
+                            && let Some(visibility) = current_visibility
+                        {
                             self.registry.set_method_visibility(
                                 &method_owner,
                                 &method_name,
-                                is_singleton,
+                                in_singleton_class,
                                 Some(visibility),
                             );
                         }
@@ -18218,7 +18238,12 @@ impl<'a> InferenceEngine<'a> {
                 .then(|| self.scan_method_body_summary(class_name, &body, parse_result, &scope))
         });
         self.active_loop_entry_scopes = saved_active_loop_entry_scopes;
-        let (unresolved_block_receivers, has_case_class_dispatch, has_super_call) = self
+        let (
+            unresolved_block_receivers,
+            has_case_class_dispatch,
+            has_super_call,
+            suppressed_call_sites,
+        ) = self
             .active_method_body
             .take()
             .map(|body| {
@@ -18226,6 +18251,7 @@ impl<'a> InferenceEngine<'a> {
                     body.unresolved_block_receivers,
                     body.has_case_class_dispatch,
                     body.has_super_call,
+                    body.suppressed_call_sites,
                 )
             })
             .unwrap_or_default();
@@ -18364,10 +18390,19 @@ impl<'a> InferenceEngine<'a> {
             || needs_late_ivar_return
             || needs_late_hash_splat;
         let has_super_call = has_super_call || Self::def_has_bare_super_default(&def_node);
-        if (has_existing_defer_reason || has_deferred_block_receiver_return || has_super_call)
-            && !rbs_inline_annotated
-            && !sig_annotated
-        {
+        let defers_body =
+            (has_existing_defer_reason || has_deferred_block_receiver_return || has_super_call)
+                && !rbs_inline_annotated
+                && !sig_annotated;
+        if defers_body && !suppressed_call_sites.is_empty() {
+            self.suppressed_body_call_sites
+                .insert(def_node.location().start_offset(), suppressed_call_sites);
+        } else {
+            for (owner, site) in suppressed_call_sites {
+                self.registry.add_call_site(&owner, site);
+            }
+        }
+        if defers_body {
             self.deferred_method_bodies.push(DeferredMethodBody {
                 class_name: class_name.to_string(),
                 is_singleton,
@@ -32150,6 +32185,16 @@ impl<'a> InferenceEngine<'a> {
                         };
                         wrap(result)
                     };
+                    // The call is still walked so its arguments reach a definition in another file.
+                    let result = if self.explicit_receiver_reaches_private_method(
+                        &receiver,
+                        &safe_nav_receiver_type,
+                        &method_name,
+                    ) {
+                        wrap(Type::Untyped)
+                    } else {
+                        result
+                    };
                     let original_result = result;
                     let assignment_result = self.setter_assigned_value_type(
                         class_name,
@@ -42284,7 +42329,8 @@ impl<'a> InferenceEngine<'a> {
             ));
         }
 
-        if Self::is_concrete(&method_return) {
+        // Without method type params the return only uses receiver types, which later resolve.
+        if Self::is_concrete(&method_return) || rbs_mt.method_type.type_params.is_empty() {
             Some(Self::include_optional_control_type(
                 method_return,
                 &block_break_type,
@@ -51474,6 +51520,92 @@ impl<'a> InferenceEngine<'a> {
         )
     }
 
+    fn synthetic_framework_method_return(
+        &self,
+        receiver_type: &Type,
+        method_name: &str,
+    ) -> Option<Type> {
+        self.synthetic_active_record_method_return(receiver_type, method_name)
+            .or_else(|| self.synthetic_action_controller_method_return(receiver_type, method_name))
+            .or_else(|| self.synthetic_action_mailer_method_return(receiver_type, method_name))
+            .or_else(|| {
+                self.synthetic_active_support_hash_method_return(receiver_type, method_name)
+            })
+    }
+
+    /// Ruby raises NoMethodError when a receiver other than `self` calls a private method.
+    fn explicit_receiver_reaches_private_method(
+        &mut self,
+        receiver: &Node<'_>,
+        receiver_type: &Type,
+        method_name: &str,
+    ) -> bool {
+        if matches!(receiver, Node::SelfNode { .. })
+            || !matches!(
+                receiver_type,
+                Type::Class(_) | Type::Generic { .. } | Type::Singleton(_)
+            )
+            || self
+                .synthetic_framework_method_return(receiver_type, method_name)
+                .is_some()
+        {
+            return false;
+        }
+        let Some(class_name) = self.type_to_class_name(receiver_type) else {
+            return false;
+        };
+        self.ensure_class_available(&class_name);
+        // A class known only by name, or a workspace class from another file, may define the
+        // method where this file cannot see it.
+        let Some(data) = self.registry.class_data_for(&class_name) else {
+            return false;
+        };
+        let workspace_defined = data.user_defined
+            || self
+                .external_rbs
+                .and_then(|external| external.class_data_for(&class_name))
+                .is_some_and(|external| external.user_defined);
+        if !data.has_type_substance()
+            || (workspace_defined
+                && !self
+                    .registry
+                    .file_contribution_names()
+                    .contains(&class_name))
+        {
+            return false;
+        }
+        let is_singleton = matches!(receiver_type, Type::Singleton(_));
+        if Self::first_method_owner_is_private(
+            &self.registry,
+            &class_name,
+            method_name,
+            is_singleton,
+        ) != Some(true)
+        {
+            return false;
+        }
+        self.dsl_plugin_method_return_override(receiver_type, method_name)
+            .is_none()
+            && self
+                .dsl_plugin_method_return(receiver_type, method_name)
+                .is_none()
+    }
+
+    fn first_method_owner_is_private(
+        registry: &TypeRegistry,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<bool> {
+        registry
+            .resolve_method_call_owners(class_name, method_name, is_singleton)
+            .first()
+            .map(|(owner, singleton)| {
+                registry.method_visibility(owner, method_name, *singleton)
+                    == Some(Visibility::Private)
+            })
+    }
+
     /// `def self?.x` makes `x` private on instances, so an explicit receiver cannot reach it.
     fn is_kernel_module_function(&self, method_name: &str) -> bool {
         [false, true].iter().all(|&is_singleton| {
@@ -54150,22 +54282,7 @@ impl<'a> InferenceEngine<'a> {
             method_name
         };
         if let Some(result) =
-            self.synthetic_active_record_method_return(receiver_type, effective_method_name)
-        {
-            return result;
-        }
-        if let Some(result) =
-            self.synthetic_action_controller_method_return(receiver_type, effective_method_name)
-        {
-            return result;
-        }
-        if let Some(result) =
-            self.synthetic_action_mailer_method_return(receiver_type, effective_method_name)
-        {
-            return result;
-        }
-        if let Some(result) =
-            self.synthetic_active_support_hash_method_return(receiver_type, effective_method_name)
+            self.synthetic_framework_method_return(receiver_type, effective_method_name)
         {
             return result;
         }
@@ -61042,6 +61159,13 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'b>,
     ) {
         self.replay_deferred_method_bodies(program, parse_result, true);
+        // A body that was never replayed still made these calls; its callers' context resolves them.
+        for (owner, site) in std::mem::take(&mut self.suppressed_body_call_sites)
+            .into_values()
+            .flatten()
+        {
+            self.registry.add_call_site(&owner, site);
+        }
     }
 
     pub(crate) fn replay_deferred_block_receiver_bodies<'b>(
@@ -61817,12 +61941,17 @@ impl<'a> InferenceEngine<'a> {
                     }
                     _ => false,
                 });
+        // Calls that passed a parameter were held back for this replay; without callers they see `untyped`.
+        let has_suppressed_call_sites = self
+            .suppressed_body_call_sites
+            .contains_key(&def_node.location().start_offset());
         if !method_info.param_infos.is_empty()
             && !has_concrete
             && !has_keyword_sites
             && !receiver_replay_can_use_defaults
             && !replay.case_dispatch_needs_replay
             && !has_hash_splat
+            && !has_suppressed_call_sites
         {
             if let Some(saved) = saved_ctx {
                 self.enter_method_body_context(saved);
@@ -61830,6 +61959,8 @@ impl<'a> InferenceEngine<'a> {
             return;
         }
 
+        self.suppressed_body_call_sites
+            .remove(&def_node.location().start_offset());
         let mut scope = Scope {
             method_name: Some(method_name.clone()),
             singleton_dispatch: is_singleton,

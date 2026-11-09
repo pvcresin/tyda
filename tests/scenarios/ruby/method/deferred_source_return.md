@@ -502,3 +502,29 @@ class Finder
   def direct: (untyped uri) -> Conversation?
 end
 ```
+
+## A deferred write on a tuple-returning method returns an array once Array is loaded
+
+```ruby
+class LoadedBreadcrumbs
+  def size_hint = [1].size
+
+  def add(name)
+    crumbs << [name]
+  end
+
+  def crumbs
+    []
+  end
+end
+```
+
+### result
+
+```rbs
+class LoadedBreadcrumbs
+  def size_hint: -> 1
+  def add: (untyped name) -> Array[untyped]
+  def crumbs: -> [ ]
+end
+```

@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::rbs::convert::{convert_rbs_builtin_alias, convert_rbs_type};
-use crate::registry::{MethodDef, MixinKind as RegistryMixinKind, ParamInfo, TypeRegistry};
+use crate::registry::{
+    MethodDef, MixinKind as RegistryMixinKind, ParamInfo, TypeRegistry, Visibility,
+};
 use crate::types::{ParamKind, RecordField, RecordKey, Type};
 
 #[derive(Debug, Clone)]
@@ -1592,6 +1594,15 @@ fn add_methods_to_registry(
                     extra_overloads: Vec::new(),
                     loc: None,
                 },
+            );
+        }
+        // `def self?.x` is a module function: the instance side is private.
+        if matches!(method.kind, rbs_sys::MethodKind::SingletonInstance) {
+            registry.set_method_visibility(
+                class_name,
+                &method.name,
+                false,
+                Some(Visibility::Private),
             );
         }
     }

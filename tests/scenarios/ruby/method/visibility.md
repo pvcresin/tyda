@@ -209,3 +209,33 @@ class A
   private def self.hidden: -> 2
 end
 ```
+
+## A bare private section leaves def self methods public
+
+### update
+
+```ruby
+class A
+  private
+
+  def self.token = "token"
+  def hidden = 1
+end
+
+class B
+  def read = A.token
+end
+```
+
+### result
+
+```rbs
+class A
+  def self.token: -> "token"
+  private def hidden: -> 1
+end
+
+class B
+  def read: -> "token"
+end
+```

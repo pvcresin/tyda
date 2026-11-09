@@ -383,7 +383,7 @@ class ExplicitBlockInvocation
   def mutation_in_repeated_block_widens: -> Array[1]
   def guarded_yield: (?untyped &block) -> :done
   def guarded_yield_updates_outer_local: -> :after
-  def early_return_before_yield: (untyped flag) { () -> untyped } -> untyped
+  def early_return_before_yield: (untyped flag) { () -> :after } -> (:after | :early)
   def early_return_joins_outer_local: (untyped flag) -> (:after | :before)
   def escaped_block: (?untyped &block) -> :stored
   def escaped_block_joins_outer_local: -> :after | :before
