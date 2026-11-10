@@ -118,3 +118,31 @@ class Inflections
   def date: -> Date
 end
 ```
+
+## String to_date returns nil for a blank string
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```rbs
+class DateInput
+  def raw: -> String
+end
+```
+
+```ruby
+class DateInput
+  def date = raw.to_date
+end
+```
+
+### result
+
+```rbs
+class DateInput
+  def date: -> Date?
+end
+```

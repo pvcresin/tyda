@@ -269,7 +269,7 @@ class PredicateWithUnrelatedNames
   def maybe_string: -> String?
   def present?: (String? value) -> bool
   def self.present?: (untyped _value) -> true
-  def checked: -> (String | :none)
+  def checked: -> String | :none
 end
 ```
 

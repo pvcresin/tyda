@@ -2605,7 +2605,7 @@ class Store
 end
 ```
 
-## Range assignment adds the assigned elements, not the array
+## Start and length assignment adds the assigned elements, not the array
 
 ```yaml
 known_issue: true

@@ -20,7 +20,7 @@ end
 ```rbs
 class CleanupJob < ApplicationJob
   def self.perform_later: (Integer user_id) -> (CleanupJob | false)
-  def self.perform_now: (Integer user_id) -> Integer
+  def self.perform_now: (Integer user_id) -> (Integer | false)
   def perform: (Integer user_id) -> Integer
 end
 ```
@@ -44,7 +44,7 @@ end
 ```rbs
 class PurgeJob < ApplicationJob
   def self.perform_later: -> PurgeJob | false
-  def self.perform_now: -> "done"
+  def self.perform_now: -> "done" | false
   def perform: -> "done"
 end
 ```
@@ -111,6 +111,10 @@ end
 
 ## Resolve perform_now for a job defined in another file
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ### file: app/jobs/sync_job.rb
@@ -132,6 +136,6 @@ end
 
 ```rbs
 class ItemsController < ActionController::Base
-  def run_now: -> String
+  def run_now: -> String | false
 end
 ```

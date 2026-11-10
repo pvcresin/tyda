@@ -119,7 +119,7 @@ class Object < BasicObject
 end
 ```
 
-## Integer divided by a Rational literal is Rational
+## Integer arithmetic with Rational and Float literals
 
 ### update
 

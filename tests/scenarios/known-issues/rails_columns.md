@@ -40,6 +40,8 @@ end
 
 ```rbs
 module Listable
+  extend ActiveSupport::Concern
+
   def title: -> String
 end
 ```
@@ -75,7 +77,7 @@ class EntriesController < ApplicationController
   end
 
   def entry
-    Entry.find_by(id: params[:id])
+    @entry ||= Entry.find_by(id: params[:id])
   end
 
   def render_title(found)
@@ -108,7 +110,6 @@ rails_version: 7.1.0
 ```ruby
 ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
   create_table "posts", force: :cascade do |t|
-    t.datetime "published_at", null: false
     t.timestamps
   end
 end
@@ -123,7 +124,6 @@ end
 
 ```ruby
 class PostTimes
-  def published = Post.new.published_at
   def created = Post.new.created_at
   def updated = Post.new.updated_at
 end
@@ -133,7 +133,6 @@ end
 
 ```rbs
 class PostTimes
-  def published: -> ActiveSupport::TimeWithZone
   def created: -> ActiveSupport::TimeWithZone
   def updated: -> ActiveSupport::TimeWithZone
 end

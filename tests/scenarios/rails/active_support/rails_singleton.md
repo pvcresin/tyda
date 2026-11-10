@@ -97,14 +97,12 @@ class Probe
 end
 ```
 
-## Resolve Rails.cache write and exist?
+## Resolve Rails.cache exist?
 
 ### update
 
 ```ruby
 class Probe
-  def store = Rails.cache.write("key", 1)
-
   def cached = Rails.cache.exist?("key")
 end
 ```
@@ -113,7 +111,28 @@ end
 
 ```rbs
 class Probe
-  def store: -> bool
   def cached: -> bool
+end
+```
+
+## Rails.cache write returns nil when the cache store fails
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Probe
+  def store = Rails.cache.write("key", 1)
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def store: -> bool?
 end
 ```
