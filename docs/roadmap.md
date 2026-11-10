@@ -17,6 +17,28 @@
 
 - [ ] coverage を file / source-site 単位で base/head 比較し、aggregate では隠れる局所的な `typed` → `untyped` / `unknown` 化をCIで検出する
 
+### AI agent 支援
+
+agent が自ら使うのは、grep・ファイル全体の読み込み・テストによる誤り探しを、少ない token と手順で置き換える機能だけである。入口は少数に絞り、編集後の hook など context に直接返す経路を優先する。誤検出を出さない現在の診断方針は維持する。
+
+- [ ] 常駐 server を用意し、CLI・MCP・hook が LSP と同じ `WorkspaceState` に接続する。毎回の全体解析をやめ、編集ごとの応答をミリ秒単位にする
+- [ ] MCP を workspace 対応にする。現在は渡された source と同梱 stdlib RBS だけを解析するため、実プロジェクトでは agent が snippet を組み立てる必要がある
+- [ ] MCP の位置指定に、行・UTF-16 列に加えてシンボル名（`User#full_name`）を受け付ける
+- [ ] 推論シグネチャを RBS 形式で返すファイル / クラス outline を MCP と CLI に追加する
+- [ ] レシーバ型で絞った references / callers を LSP と MCP に追加する。名前一致の候補とは「確実 / 可能性あり」で区別する
+- [ ] 変更ファイルと影響範囲だけを検査し、前回から増えた診断だけを短いテキストと exit code で返す check を追加する。agent 向けの hook テンプレートも用意する
+- [ ] `explain_type_at_position` を workspace 全体に広げ、`untyped` がどこから流れ込んだかを示す
+- [ ] シグネチャ変更で影響を受ける呼び出し箇所を返す
+- [ ] クエリごとに時間の予算を設け、超過した部分は `untyped` と diagnostic を返す（固定の深さ制限は使わない）
+- [ ] MCP 設定・hook・agent 向け指示をまとめて生成する導入コマンドを追加する
+- [ ] subject 上の修正タスクで、tyda の有無による token 数・tool 呼び出し回数・成功率を比べる評価を用意し、tool の追加や説明文の改善はこの結果で判断する
+
+### Tyda 開発の高速化
+
+- [ ] 型が決まるまでの規則・deferred ref・SCC の経路を出力する `trace` を追加する（上記の explain と同じ基盤）
+- [ ] subject 差分の後退から最小シナリオを自動で切り出す
+- [ ] `inference.rs`・`registry.rs`・`lsp.rs` を責務ごとに分割し、agent の読み込みとビルドの負荷を下げる
+
 ## 中
 
 - [ ] Concern の includer 依存 DSL を拡張する（schema fallback、Devise、AMS など）
