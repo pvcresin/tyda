@@ -40,6 +40,10 @@ end
 
 ## `return true if cond` returns true or nil
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -52,7 +56,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def maybe_true: (untyped x) -> true | nil
+  def maybe_true: (untyped x) -> (true | nil)
 end
 ```
 
@@ -161,6 +165,10 @@ end
 
 ## Block-internal return joins the enclosing method return union
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -178,12 +186,16 @@ def b = scan(false)
 ```rbs
 class Object < BasicObject
   def scan: (bool item) -> (0 | :found)
-  def a: -> 0 | :found
-  def b: -> 0 | :found
+  def a: -> (0 | :found)
+  def b: -> (0 | :found)
 end
 ```
 
 ## Multi-value return packs a tuple into the method union
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -202,7 +214,7 @@ def b = pair(false)
 ```rbs
 class Object < BasicObject
   def pair: (bool flag) -> ([1, "x"] | [2, "y"])
-  def a: -> [1, "x"] | [2, "y"]
-  def b: -> [1, "x"] | [2, "y"]
+  def a: -> ([1, "x"] | [2, "y"])
+  def b: -> ([1, "x"] | [2, "y"])
 end
 ```

@@ -81,7 +81,7 @@ end
 
 ```rbs
 class RangeWhen
-  def label: -> :low | :other
+  def label: -> (:low | :other)
 end
 ```
 
@@ -170,7 +170,7 @@ end
 
 ```rbs
 class NumberPattern
-  def number: -> Integer | Float
+  def number: -> (Integer | Float)
 end
 ```
 

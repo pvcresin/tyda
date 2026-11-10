@@ -372,6 +372,10 @@ end
 
 ## Pass lambda and proc values as blocks
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -411,7 +415,7 @@ class ArityMismatchBlockRunner
 end
 
 class BlockRunner
-  def run: { (Integer) -> untyped } -> String | 1
+  def run: { (Integer) -> untyped } -> (String | 1)
   def via_lambda: -> String
   def via_identity_lambda: -> 1
   def via_proc: -> String

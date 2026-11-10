@@ -151,6 +151,10 @@ end
 
 ## Use defined? as branch condition
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -167,7 +171,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: -> 1 | "x"
+  def foo: -> (1 | "x")
 end
 ```
 

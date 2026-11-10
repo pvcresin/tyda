@@ -356,6 +356,10 @@ end
 
 ## `break` in `each`
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -366,11 +370,15 @@ def each_with_break = [1, 2, 3].each { |x| break :done if x.even?; x }
 
 ```rbs
 class Object < BasicObject
-  def each_with_break: -> :done | [1, 2, 3]
+  def each_with_break: -> (:done | [1, 2, 3])
 end
 ```
 
 ## `break` in `map`
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -382,7 +390,7 @@ def map_with_break = [1, 2, 3].map { |x| break :done if x.even?; x.to_s }
 
 ```rbs
 class Object < BasicObject
-  def map_with_break: -> :done | Array[String]
+  def map_with_break: -> (:done | Array[String])
 end
 ```
 

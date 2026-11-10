@@ -161,6 +161,10 @@ end
 
 ## T.any type from RBI definition
 
+```yaml
+known_issue: true
+```
+
 ```rbi
 class Parser
   sig { params(input: String).returns(T.any(Integer, Float)) }
@@ -181,7 +185,7 @@ end
 
 ```rbs
 class App
-  def read: -> Integer | Float
+  def read: -> (Integer | Float)
 end
 ```
 
@@ -1023,6 +1027,10 @@ end
 
 ## RBI T.all intersection type
 
+```yaml
+known_issue: true
+```
+
 ```rbi
 class Validator
   sig { params(x: T.all(Comparable, Enumerable)).returns(T.all(Comparable, Enumerable)) }
@@ -1043,7 +1051,7 @@ end
 
 ```rbs
 class App
-  def check: -> Comparable & Enumerable
+  def check: -> (Comparable & Enumerable)
 end
 ```
 

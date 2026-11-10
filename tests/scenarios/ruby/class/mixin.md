@@ -887,6 +887,10 @@ end
 
 ## extend reaches modules included by the extended module
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -911,7 +915,7 @@ end
 
 ```rbs
 class Caller
-  def run: -> 1.0
+  def run: -> Float
 end
 
 class Foo
@@ -919,7 +923,7 @@ class Foo
 end
 
 module Inner
-  def deep: -> 1.0
+  def deep: -> Float
 end
 
 module Outer

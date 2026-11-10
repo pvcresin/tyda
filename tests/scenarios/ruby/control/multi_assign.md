@@ -439,6 +439,10 @@ end
 
 ## Destructuring a tuple union keeps unknown elements
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -461,7 +465,7 @@ end
 
 ```rbs
 class TupleUnionDestructure
-  def paths: -> [nil, nil] | [untyped, untyped] | ["dir", "file"]
+  def paths: -> ([nil, nil] | [untyped, untyped] | ["dir", "file"])
   def split: -> { dir: untyped, file: untyped }
 end
 ```

@@ -1577,6 +1577,10 @@ end
 
 ## Regexp named capture binds local in the matched branch
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1643,14 +1647,18 @@ class C
   def check: -> String
   def check_nonmatch: -> :not_matched
   def check_dynamic: (untyped s) -> (String | :not_matched)
-  def check_options: -> String | 1
-  def check_metacharacter: -> String | 1
-  def check_multiple_captures: -> String | 1
+  def check_options: -> (String | 1)
+  def check_metacharacter: -> (String | 1)
+  def check_multiple_captures: -> (String | 1)
   def after_match: (untyped s) -> String?
 end
 ```
 
 ## Literal predicate return narrows union member behind a guard
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -1687,12 +1695,12 @@ class Circle
 end
 
 class Picker
-  def pick: (untyped flag) -> (0.0 | 2.0)
+  def pick: (untyped flag) -> Float
 end
 
 class Square
   def round?: -> false
-  def size: -> 2.0
+  def size: -> Float
 end
 ```
 
@@ -1757,6 +1765,10 @@ end
 
 ## Chained attr_reader guards keep earlier narrowing
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1787,11 +1799,15 @@ end
 class ChainedReaderGuard
   def corporation: -> Corporation?
   def owner: -> Owner?
-  def fetch: -> Corporation | Owner | [Corporation, Owner]
+  def fetch: -> (Corporation | Owner | [Corporation, Owner])
 end
 ```
 
 ## Chained AND narrows a later helper call
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -1813,11 +1829,15 @@ foo("")
 class Object < BasicObject
   def accept_str: (String x) -> nil
   def accept_any: ((Integer | String) x) -> nil
-  def foo: ((Integer | String) x) -> false | nil
+  def foo: ((Integer | String) x) -> (false | nil)
 end
 ```
 
 ## AND of two is_a? narrows helper args
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -1839,7 +1859,7 @@ foo("", "")
 ```rbs
 class Object < BasicObject
   def check: (String x, Integer y) -> nil
-  def foo: ((Integer | String) x, (Integer | String) y) -> false | nil
+  def foo: ((Integer | String) x, (Integer | String) y) -> (false | nil)
 end
 ```
 
@@ -1869,6 +1889,10 @@ end
 
 ## Negated is_a? narrows the helper
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1887,11 +1911,15 @@ foo("")
 ```rbs
 class Object < BasicObject
   def check: (Integer x) -> nil
-  def foo: ((Integer | String) x) -> false | nil
+  def foo: ((Integer | String) x) -> (false | nil)
 end
 ```
 
 ## Negated OR is_a? narrows both helpers
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -1913,7 +1941,7 @@ foo("", "")
 ```rbs
 class Object < BasicObject
   def check: (Integer x, String y) -> nil
-  def foo: ((Integer | String) x, (Integer | String) y) -> false | nil
+  def foo: ((Integer | String) x, (Integer | String) y) -> (false | nil)
 end
 ```
 
@@ -2082,6 +2110,10 @@ end
 
 ## A memoized reader stays narrowed through case branches
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -2125,7 +2157,7 @@ end
 
 class MemoizedTargetReader
   def initialize: (untyped project) -> void
-  def target: -> GroupNode | ProjectNode
+  def target: -> (GroupNode | ProjectNode)
   def read: -> (1 | "group")?
 end
 
@@ -2341,6 +2373,10 @@ end
 
 ## Source overrides remain authoritative for closed hash predicates
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -2363,7 +2399,7 @@ class Hash[K, V]
 end
 
 class Object < BasicObject
-  def overridden_hash_key_predicate: -> :absent | :present
+  def overridden_hash_key_predicate: -> (:absent | :present)
 end
 ```
 

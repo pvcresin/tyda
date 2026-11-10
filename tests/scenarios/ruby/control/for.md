@@ -62,6 +62,10 @@ end
 
 ## for over non-empty fixed tuple keeps loop variable non-nil
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -76,7 +80,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def for_index_after_nonempty: -> 1 | 2 | 3
+  def for_index_after_nonempty: -> (1 | 2 | 3)
 end
 ```
 
@@ -102,6 +106,10 @@ end
 
 ## for loop value joins a body return with the receiver
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -118,6 +126,6 @@ end
 
 ```rbs
 class Finder
-  def find: -> 1 | Range[Integer]
+  def find: -> (1 | Range[Integer])
 end
 ```

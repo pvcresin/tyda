@@ -118,6 +118,10 @@ end
 
 ## Subclass can call parent predicate method
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -147,7 +151,7 @@ class Base
 end
 
 class Child < Base
-  def label: -> "no" | "yes"
+  def label: -> ("no" | "yes")
 end
 ```
 

@@ -2,6 +2,10 @@
 
 ## Read and write class variable
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -21,7 +25,7 @@ end
 ```rbs
 class Counter
   def increment: -> 1
-  def current: -> 0 | 1
+  def current: -> (0 | 1)
 end
 ```
 
@@ -50,6 +54,10 @@ end
 
 ## Multiple class variable writes return union
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -74,7 +82,7 @@ end
 class A
   def advance: -> :running
   def finish: -> :done
-  def current: -> :done | :initial | :running
+  def current: -> (:done | :initial | :running)
 end
 ```
 

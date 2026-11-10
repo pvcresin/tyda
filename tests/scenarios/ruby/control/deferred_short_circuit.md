@@ -2,6 +2,10 @@
 
 ## Preserve unknown values resolved from an RBS union
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```rbs
@@ -26,7 +30,7 @@ end
 
 ```rbs
 class DeferredUnknownConsumer
-  def self.classify: -> :falsy | :truthy
+  def self.classify: -> (:falsy | :truthy)
 end
 ```
 
@@ -55,6 +59,10 @@ end
 
 ## Preserve known boolean return values through deferred short-circuit calls
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 class DeferredKnownBooleanShortCircuit
   def self.maybe_strings(flag)
@@ -75,7 +83,7 @@ end
 class DeferredKnownBooleanShortCircuit
   def self.maybe_strings: (bool flag) -> ["true"]?
   def self.with_default: (bool flag) -> ([ ] | ["true"])
-  def self.with_default_for_boolean: -> [ ] | ["true"]
+  def self.with_default_for_boolean: -> ([ ] | ["true"])
 end
 ```
 

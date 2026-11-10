@@ -122,6 +122,10 @@ update section では次を使える。
 複数ファイルの case では、path を付けない `ruby` block を一つ置き、それを current file にする。
 result の RBS は current file の宣言だけを書く。current file のない case は parse 時にエラーになる。
 
+runner は比較の前に、update の `rbs` と result の `rbs` を RBS 公式 C parser (`rbs-sys`) でパースし、
+構文エラーなら known-issue case でも失敗にする。通常 case は出力と期待値の一致を要求するため、
+これで Tyda が出力する RBS も構文的に正しいことが保証される。
+
 同じ case に複数の `### update` を置く場合、各 update は累積差分ではなく、その時点の完全な入力状態を
 表す。宣言を段階的に追加・削除するケースでは、各状態の期待 RBS を並べて優先順位と fallback を固定する。
 

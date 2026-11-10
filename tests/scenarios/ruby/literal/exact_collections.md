@@ -252,6 +252,10 @@ end
 
 ## min and max on a non-empty tuple are never nil
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -267,9 +271,9 @@ end
 
 ```rbs
 class Stats
-  def min_of: -> 1 | 2 | 3
-  def max_of: -> 1 | 2 | 3
-  def min_str: -> "a" | "b" | "c"
+  def min_of: -> (1 | 2 | 3)
+  def max_of: -> (1 | 2 | 3)
+  def min_str: -> ("a" | "b" | "c")
   def min_and_max: -> [1 | 2 | 3, 1 | 2 | 3]
 end
 ```

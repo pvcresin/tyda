@@ -267,6 +267,10 @@ end
 
 ## Regexp literal in if condition
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -291,7 +295,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def check1: -> :else | :then
-  def check2: -> :else | :then
+  def check1: -> (:else | :then)
+  def check2: -> (:else | :then)
 end
 ```

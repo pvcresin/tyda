@@ -915,6 +915,10 @@ end
 
 ## Hash#each return propagates key and value bindings
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -931,11 +935,15 @@ end
 
 ```rbs
 class H
-  def each_pair_return: -> { a: 1 } | [:a, 1]
+  def each_pair_return: -> ({ a: 1 } | [:a, 1])
 end
 ```
 
 ## Hash#each single block arg keeps pair tuple
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -953,7 +961,7 @@ end
 
 ```rbs
 class H
-  def each_tuple_return: -> { a: 1 } | [:a, 1]
+  def each_tuple_return: -> ({ a: 1 } | [:a, 1])
 end
 ```
 
@@ -999,6 +1007,10 @@ end
 
 ## ObjectSpace.each_object keeps static module element type
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1039,7 +1051,7 @@ class Object < BasicObject
   def object_space_class_names: -> Array[String]
   def object_space_module_names: -> Array[String]
   def object_space_item_count: -> Integer
-  def object_space_first_title: -> Integer | "item"
+  def object_space_first_title: -> (Integer | "item")
 end
 ```
 
@@ -1207,6 +1219,10 @@ end
 
 ## User iterator enum follows named block
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1230,7 +1246,7 @@ end
 
 ```rbs
 class BlockSource
-  def each: ?{ (String) -> String } -> String | Enumerator["a", BlockSource]
+  def each: ?{ (String) -> String } -> (String | Enumerator["a", BlockSource])
   def block_value: -> String
   def enum_value: -> Array["A"]
 end

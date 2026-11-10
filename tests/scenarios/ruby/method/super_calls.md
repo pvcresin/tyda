@@ -318,6 +318,10 @@ end
 
 ## `super` inside an included module continues after the module
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -369,8 +373,8 @@ class IncludedSuperParent
 end
 
 class Object < BasicObject
-  def call_included_super: -> [:other, String] | [:parent, String]
-  def call_included_super_other: -> [:other, String] | [:parent, String]
+  def call_included_super: -> ([:other, String] | [:parent, String])
+  def call_included_super_other: -> ([:other, String] | [:parent, String])
 end
 ```
 

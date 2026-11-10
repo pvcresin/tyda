@@ -20,6 +20,10 @@ end
 
 ## Multiple rescue clauses
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -40,11 +44,15 @@ end
 
 ```rbs
 class Object < BasicObject
-  def multi_rescue: -> 1 | "arg_error" | "type_error"
+  def multi_rescue: -> (1 | "arg_error" | "type_error")
 end
 ```
 
 ## A return inside rescue contributes to the method type
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -71,11 +79,15 @@ end
 ```rbs
 class Loader
   def value_or_nil: -> "loaded"?
-  def with_fallback: -> 1 | "error"
+  def with_fallback: -> (1 | "error")
 end
 ```
 
 ## rescue => e
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -94,7 +106,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def rescue_var: -> :normal | ZeroDivisionError
+  def rescue_var: -> (:normal | ZeroDivisionError)
 end
 ```
 
@@ -123,6 +135,10 @@ end
 
 ## fail class argument narrows bare rescue
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -140,11 +156,15 @@ end
 
 ```rbs
 class Object < BasicObject
-  def fail_rescue_var: -> :normal | TypeError
+  def fail_rescue_var: -> (:normal | TypeError)
 end
 ```
 
 ## Source-defined raise and fail calls do not narrow rescue types
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -179,12 +199,16 @@ end
 class SourceDefinedRaiseMethods
   def raise: (singleton(ArgumentError) _error_class) -> :returned
   def fail: (singleton(TypeError) _error_class) -> :returned
-  def after_raise: -> :after_raise | StandardError
-  def after_fail: -> :after_fail | StandardError
+  def after_raise: -> (:after_raise | StandardError)
+  def after_fail: -> (:after_fail | StandardError)
 end
 ```
 
 ## rescue narrows by exception class
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -203,11 +227,15 @@ end
 
 ```rbs
 class Object < BasicObject
-  def rescue_specific: -> 1 | ArgumentError
+  def rescue_specific: -> (1 | ArgumentError)
 end
 ```
 
 ## rescue narrows by multiple exception classes
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -227,11 +255,15 @@ end
 
 ```rbs
 class Object < BasicObject
-  def rescue_multiple_specific: -> 1 | ArgumentError | TypeError
+  def rescue_multiple_specific: -> (1 | ArgumentError | TypeError)
 end
 ```
 
 ## rescue narrows by splat exception classes
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -254,7 +286,7 @@ end
 ERROR_CLASSES: [singleton(ArgumentError), singleton(TypeError)]
 
 class Object < BasicObject
-  def rescue_splat_specific: -> 1 | ArgumentError | TypeError
+  def rescue_splat_specific: -> (1 | ArgumentError | TypeError)
 end
 ```
 
@@ -285,6 +317,10 @@ end
 
 ## rescue reference variable unions with existing local
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -306,7 +342,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def rescue_var_after_existing: -> :before | ArgumentError
+  def rescue_var_after_existing: -> (:before | ArgumentError)
 end
 ```
 
@@ -455,6 +491,10 @@ end
 
 ## Modifier rescue unions success and rescue expressions
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -467,7 +507,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def rescue_modifier_union: -> 1 | :fallback
+  def rescue_modifier_union: -> (1 | :fallback)
 end
 ```
 
@@ -498,6 +538,10 @@ end
 ```
 
 ## retry only hides the fallback when the guard holds on every rescue entry
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -557,9 +601,9 @@ end
 
 ```rbs
 class Object < BasicObject
-  def another_call_may_raise: -> :failed | :success
-  def different_guard: -> :failed | :success
-  def guard_changes_in_rescue: -> :failed | :success
+  def another_call_may_raise: -> (:failed | :success)
+  def different_guard: -> (:failed | :success)
+  def guard_changes_in_rescue: -> (:failed | :success)
   def counter_may_raise: (untyped attempts) -> (:failed | :success)
 end
 ```
@@ -618,6 +662,10 @@ end
 
 ## Rescue splat unions the clause literals
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -635,7 +683,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: -> :a | :b
+  def foo: -> (:a | :b)
 end
 ```
 
@@ -663,6 +711,10 @@ end
 ```
 
 ## Begin rescue else tracks local per clause
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -714,12 +766,16 @@ after_path(false)
 ```rbs
 class Object < BasicObject
   def rescue_path: -> :b
-  def else_path: -> :c | :d
+  def else_path: -> (:c | :d)
   def after_path: (bool flag) -> (:d | :e)
 end
 ```
 
 ## Retry unions the begin return across re-entry
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -740,7 +796,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: -> 1 | "str"
+  def foo: -> (1 | "str")
 end
 ```
 

@@ -43,8 +43,8 @@ end
 
 ```rbs
 class PurgeJob < ApplicationJob
-  def self.perform_later: -> PurgeJob | false
-  def self.perform_now: -> "done" | false
+  def self.perform_later: -> (PurgeJob | false)
+  def self.perform_now: -> ("done" | false)
   def perform: -> "done"
 end
 ```
@@ -105,7 +105,7 @@ end
 
 ```rbs
 class ItemsController < ActionController::Base
-  def enqueue: -> SyncJob | false
+  def enqueue: -> (SyncJob | false)
 end
 ```
 
@@ -136,6 +136,6 @@ end
 
 ```rbs
 class ItemsController < ActionController::Base
-  def run_now: -> String | false
+  def run_now: -> (String | false)
 end
 ```

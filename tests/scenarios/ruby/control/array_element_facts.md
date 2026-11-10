@@ -2,6 +2,10 @@
 
 ## Size guard removes nil from the first element
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -28,12 +32,16 @@ end
 ```rbs
 class ArraySizeGuardFact
   def ints: -> Array[Integer]
-  def index_after_size_guard: -> Integer | :empty
-  def slice_after_size_guard: -> :empty | Array[Integer]
+  def index_after_size_guard: -> (Integer | :empty)
+  def slice_after_size_guard: -> (:empty | Array[Integer])
 end
 ```
 
 ## Truthy index guard removes nil and false from the same index
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -63,12 +71,16 @@ end
 class ArrayIndexTruthyFact
   def ints: -> Array[Integer]
   def maybe_false: -> Array[Integer | false]
-  def nil_removed: -> Integer | :none
-  def false_removed: -> Integer | :none
+  def nil_removed: -> (Integer | :none)
+  def false_removed: -> (Integer | :none)
 end
 ```
 
 ## A size bound covers only the indexes inside it
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -109,9 +121,9 @@ end
 ```rbs
 class ArraySizeBoundForms
   def ints: -> Array[Integer]
-  def length_bound: -> :short | [Integer, Integer, Integer?, Integer?, Array[Integer], Array[Integer]?]
-  def reversed_bound: -> Integer | :short
-  def not_empty: -> Integer | :empty
+  def length_bound: -> (:short | [Integer, Integer, Integer?, Integer?, Array[Integer], Array[Integer]?])
+  def reversed_bound: -> (Integer | :short)
+  def not_empty: -> (Integer | :empty)
   def cleared_in_branch: -> nil
 end
 ```

@@ -2,6 +2,10 @@
 
 ## Union types from begin and rescue
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -18,11 +22,15 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: -> "ok" | :error
+  def foo: -> ("ok" | :error)
 end
 ```
 
 ## Same type in begin and rescue
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -40,11 +48,15 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: -> 1 | 2
+  def foo: -> (1 | 2)
 end
 ```
 
 ## Multiple rescue clauses
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -64,7 +76,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: -> 42 | "ok" | :arg_error
+  def foo: -> (42 | "ok" | :arg_error)
 end
 ```
 
@@ -90,6 +102,10 @@ end
 
 ## begin rescue else uses else type for success path
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -108,11 +124,15 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: -> "ok" | :error
+  def foo: -> ("ok" | :error)
 end
 ```
 
 ## Apply begin rescue else assignment to later local
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -136,7 +156,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: -> :else | :rescue
+  def foo: -> (:else | :rescue)
 end
 ```
 

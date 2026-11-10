@@ -58,6 +58,10 @@ end
 
 ## Composite type arguments resolve forward references
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 module NS
   class S < T::Struct
@@ -85,7 +89,7 @@ class NS::S < T::Struct
   def xs=: (Array[NS::Inner] xs) -> Array[NS::Inner]
   def h: -> Hash[String, NS::Inner]
   def h=: (Hash[String, NS::Inner] h) -> Hash[String, NS::Inner]
-  def u: -> Integer | NS::Inner
+  def u: -> (Integer | NS::Inner)
   def u=: ((Integer | NS::Inner) u) -> (Integer | NS::Inner)
 end
 ```

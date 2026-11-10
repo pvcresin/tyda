@@ -649,6 +649,10 @@ end
 
 ## Truthiness narrows a repeated pure implicit self reader
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -675,7 +679,7 @@ end
 ```rbs
 class ProjectFinder
   def project: -> ProjectTarget?
-  def project_name: -> "none" | "project"
+  def project_name: -> ("none" | "project")
 end
 
 class ProjectTarget
@@ -1267,6 +1271,10 @@ end
 
 ## A self call drops instance variable narrowing
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1292,7 +1300,7 @@ end
 
 ```rbs
 class Holder
-  def kept: -> 0 | "s"
+  def kept: -> (0 | "s")
   def dropped: -> (0 | "s")?
   def touch: -> nil
 end

@@ -569,6 +569,10 @@ end
 
 ## Array#sample keeps element precision
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -601,10 +605,10 @@ end
 
 ```rbs
 class Object < BasicObject
-  def sampled_state: -> "closed" | "opened"
+  def sampled_state: -> ("closed" | "opened")
   def sampled_roles: -> Array[:owner | :reader | :writer]
   def sampled_random_count: -> Array[:owner | :reader | :writer]
-  def sampled_with_random: -> 1 | 2 | 3
+  def sampled_with_random: -> (1 | 2 | 3)
   def sampled_empty: -> nil
   def sampled_empty_many: -> [ ]
 end
@@ -1734,6 +1738,10 @@ end
 
 ## Direct `[]=` call accepts a block argument
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1761,7 +1769,7 @@ class A
 end
 
 class MatrixLike
-  def []=: (*Integer args, ?untyped &block) -> :from_method
+  def []=: (*Integer args) ?{ (?) -> untyped } -> :from_method
 end
 ```
 

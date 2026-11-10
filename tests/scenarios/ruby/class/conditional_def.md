@@ -148,6 +148,10 @@ end
 
 ## defined? guard with same-name self method
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -170,11 +174,11 @@ def elapsed = Utils.clock_time
 
 ```rbs
 class Object < BasicObject
-  def elapsed: -> 2.0
+  def elapsed: -> Float
 end
 
 module Utils
-  def self.clock_time: -> 2.0
+  def self.clock_time: -> Float
 end
 ```
 

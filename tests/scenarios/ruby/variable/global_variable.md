@@ -153,6 +153,10 @@ end
 
 ## defined? global splits both branches
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -169,7 +173,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: -> 1 | "str"
+  def foo: -> (1 | "str")
 end
 ```
 

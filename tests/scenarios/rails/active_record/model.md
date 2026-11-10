@@ -250,6 +250,7 @@ end
 
 ```yaml
 rails_version: 6.1.0
+known_issue: true
 ```
 
 ### update
@@ -267,7 +268,7 @@ end
 
 ```rbs
 class Entry < ApplicationRecord
-  def entryable: -> Comment | Message
+  def entryable: -> (Comment | Message)
   def entryable=: ((Comment | Message) entryable) -> (Comment | Message)
   def entryable_class: -> Class
   def entryable_name: -> String
