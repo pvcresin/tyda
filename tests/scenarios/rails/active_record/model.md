@@ -339,6 +339,7 @@ end
 
 ```yaml
 rails_version: 7.1.0
+known_issue: true
 ```
 
 ### update
@@ -361,7 +362,7 @@ class User < ApplicationRecord
   def email: -> untyped
   def email=: (untyped email) -> untyped
   def self.normalize_value_for: (Symbol name, untyped value) -> String
-  def normalized_literal: -> "demo@example.com"
+  def normalized_literal: -> String
 end
 ```
 

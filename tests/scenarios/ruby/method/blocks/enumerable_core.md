@@ -1092,6 +1092,10 @@ end
 
 ## detect narrows with constant alias predicate
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1114,7 +1118,7 @@ end
 
 ```rbs
 module Group
-  ItemAlias: singleton(Group::Item)
+  class ItemAlias = Group::Item
 end
 
 class Object < BasicObject

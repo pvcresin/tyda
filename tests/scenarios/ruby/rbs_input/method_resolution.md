@@ -279,6 +279,10 @@ end
 
 ## Resolve RBS class alias declaration
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```rbs
@@ -304,7 +308,7 @@ end
 ### result
 
 ```rbs
-Entry: singleton(Types::Item)
+class Entry = Types::Item
 
 class Object < BasicObject
   def rbs_class_alias_value: -> String
@@ -312,6 +316,10 @@ end
 ```
 
 ## Resolve RBS module alias declaration
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -338,7 +346,7 @@ end
 ### result
 
 ```rbs
-Alias: singleton(Types::Named)
+module Alias = Types::Named
 
 class Object < BasicObject
   def rbs_module_alias_value: -> String

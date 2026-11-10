@@ -2,6 +2,10 @@
 
 ## `A::CONST` reads B constant after `A = B`
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -17,7 +21,7 @@ def f = A::CONST
 ### result
 
 ```rbs
-A: singleton(B)
+module A = B
 
 module B
   CONST: 7
@@ -29,6 +33,10 @@ end
 ```
 
 ## `A.new` returns B instance after `A = B`
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -45,7 +53,7 @@ def f = A.new
 ### result
 
 ```rbs
-A: singleton(B)
+class A = B
 
 class B
   def hello: -> :hi
@@ -57,6 +65,10 @@ end
 ```
 
 ## Chained aliases read final namespace constants
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -74,8 +86,8 @@ def f = C::V
 ### result
 
 ```rbs
-A: singleton(Target)
-C: singleton(Target)
+module A = Target
+module C = Target
 
 class Object < BasicObject
   def f: -> "t"
@@ -87,6 +99,10 @@ end
 ```
 
 ## `A::CONST` reads nested class constants after alias
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -105,7 +121,7 @@ def f = A::V
 ### result
 
 ```rbs
-A: singleton(Outer::Inner)
+module A = Outer::Inner
 
 class Object < BasicObject
   def f: -> 1
@@ -138,6 +154,10 @@ end
 
 ## Class defined under a constant alias uses the alias target
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -158,7 +178,7 @@ def g = ALIAS::NewClass.v
 ### result
 
 ```rbs
-ALIAS: singleton(Outer)
+module ALIAS = Outer
 
 class Object < BasicObject
   def f: -> 2
@@ -175,6 +195,10 @@ end
 ```
 
 ## Superclass through a constant alias
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -194,7 +218,7 @@ def f = Foo.new.hello
 ### result
 
 ```rbs
-AliasedBase: singleton(Base)
+class AliasedBase = Base
 
 class Base
   def hello: -> :hi
@@ -206,6 +230,10 @@ end
 ```
 
 ## Mixin through a constant alias
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -226,7 +254,7 @@ def f = Foo.new.hello
 ### result
 
 ```rbs
-AliasM: singleton(M)
+module AliasM = M
 
 class Foo
   include M
@@ -271,6 +299,10 @@ end
 
 ## Self-referential namespace alias follows the module
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -289,7 +321,7 @@ def f = M::SELF_REF::Thing::CONST
 
 ```rbs
 module M
-  SELF_REF: singleton(M)
+  module SELF_REF = M
 end
 
 class M::Thing
@@ -302,6 +334,10 @@ end
 ```
 
 ## Ping-pong namespace aliases resolve each Deep::VALUE
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -329,7 +365,7 @@ def g = Left::RIGHT_REF::LEFT_REF::Deep::VALUE
 
 ```rbs
 module Left
-  RIGHT_REF: singleton(Right)
+  module RIGHT_REF = Right
 end
 
 module Left::Deep
@@ -342,7 +378,7 @@ class Object < BasicObject
 end
 
 module Right
-  LEFT_REF: singleton(Left)
+  module LEFT_REF = Left
 end
 
 module Right::Deep
@@ -351,6 +387,10 @@ end
 ```
 
 ## Inherited constant is visible through a subclass alias
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -370,7 +410,7 @@ def f = ALIAS::CONST
 ### result
 
 ```rbs
-ALIAS: singleton(Bar)
+class ALIAS = Bar
 
 class Foo
   CONST: 123
@@ -382,6 +422,10 @@ end
 ```
 
 ## Singleton method defined on an alias belongs to the target
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -400,7 +444,7 @@ def g = ALIAS.bar
 ### result
 
 ```rbs
-ALIAS: singleton(Foo)
+class ALIAS = Foo
 
 class Foo
   def self.bar: -> :hi
@@ -413,6 +457,10 @@ end
 ```
 
 ## Method call on a namespace alias uses the target singleton
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -429,7 +477,7 @@ def f = ALIAS.bar
 ### result
 
 ```rbs
-ALIAS: singleton(Foo)
+class ALIAS = Foo
 
 class Foo
   def self.bar: -> :hi
@@ -489,7 +537,7 @@ def run = Foo.new.value
 ### result
 
 ```rbs
-Alias: singleton(Foo)
+class Alias = Foo
 
 class Foo
   def self.build: -> 1

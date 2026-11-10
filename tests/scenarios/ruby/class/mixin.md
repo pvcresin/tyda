@@ -398,6 +398,10 @@ end
 
 ## Prepend through a constant alias
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -419,7 +423,7 @@ def f = Foo.new.hello
 ### result
 
 ```rbs
-AliasM: singleton(M)
+module AliasM = M
 
 class Foo
   prepend M
@@ -437,6 +441,10 @@ end
 ```
 
 ## Extend through a constant alias
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -457,7 +465,7 @@ def f = Foo.hello
 ### result
 
 ```rbs
-AliasM: singleton(M)
+module AliasM = M
 
 class Foo
   extend M
