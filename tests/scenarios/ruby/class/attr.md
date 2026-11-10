@@ -752,6 +752,10 @@ end
 
 ## Class body locals stay visible to lambdas passed to writers
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -777,7 +781,7 @@ TOP_LEVEL_SOURCES: Array[String]
 class ClassBodyLambdaCapture
   FILTER: Proc
 
-  def self.filter: -> untyped
+  def self.filter: -> Proc
   def self.filter=: (Proc filter) -> Proc
 end
 ```

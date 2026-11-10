@@ -172,3 +172,31 @@ class Object < BasicObject
   def foo: -> 1 | "str"
 end
 ```
+
+## Special global variables use their RBS types
+
+### update
+
+```ruby
+class SpecialGlobals
+  def program = $PROGRAM_NAME
+  def last_error = $!
+  def field_separator = $;
+  def output_separator = $,
+  def input_line_number = $.
+  def last_read_line = $_
+end
+```
+
+### result
+
+```rbs
+class SpecialGlobals
+  def program: -> String
+  def last_error: -> Exception?
+  def field_separator: -> (String | Regexp)?
+  def output_separator: -> String?
+  def input_line_number: -> Integer
+  def last_read_line: -> String?
+end
+```

@@ -398,6 +398,10 @@ end
 
 ## Prepend through a constant alias
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -419,7 +423,7 @@ def f = Foo.new.hello
 ### result
 
 ```rbs
-AliasM: singleton(M)
+module AliasM = M
 
 class Foo
   prepend M
@@ -437,6 +441,10 @@ end
 ```
 
 ## Extend through a constant alias
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -457,7 +465,7 @@ def f = Foo.hello
 ### result
 
 ```rbs
-AliasM: singleton(M)
+module AliasM = M
 
 class Foo
   extend M
@@ -751,5 +759,208 @@ end
 
 module PrependSecond
   def value: -> 2
+end
+```
+
+## Subclass inherits class methods added by extend
+
+### update
+
+```ruby
+module Mixin
+  def value = 1
+end
+
+class Foo
+  extend Mixin
+end
+
+class Bar < Foo
+end
+
+def run = Bar.value
+```
+
+### result
+
+```rbs
+class Foo
+  extend Mixin
+end
+
+module Mixin
+  def value: -> 1
+end
+
+class Object < BasicObject
+  def run: -> 1
+end
+```
+
+## Including a module already in the ancestors keeps its position
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+module Shared
+  def value = :shared
+end
+
+module Wrapper
+  include Shared
+
+  def value = :wrapper
+end
+
+class Foo
+  include Wrapper
+  include Shared
+end
+
+def run = Foo.new.value
+```
+
+### result
+
+```rbs
+class Foo
+  include Wrapper
+  include Shared
+end
+
+class Object < BasicObject
+  def run: -> :wrapper
+end
+
+module Shared
+  def value: -> :shared
+end
+
+module Wrapper
+  include Shared
+
+  def value: -> :wrapper
+end
+```
+
+## Own singleton method wins over an extended module method
+
+### update
+
+```ruby
+module Greeting
+  def hello = "module"
+end
+
+class Foo
+  extend Greeting
+
+  def self.hello = 42
+end
+
+class Caller
+  def run = Foo.hello
+end
+```
+
+### result
+
+```rbs
+class Caller
+  def run: -> 42
+end
+
+class Foo
+  extend Greeting
+
+  def self.hello: -> 42
+end
+
+module Greeting
+  def hello: -> "module"
+end
+```
+
+## extend reaches modules included by the extended module
+
+### update
+
+```ruby
+module Inner
+  def deep = 1.0
+end
+
+module Outer
+  include Inner
+end
+
+class Foo
+  extend Outer
+end
+
+class Caller
+  def run = Foo.deep
+end
+```
+
+### result
+
+```rbs
+class Caller
+  def run: -> 1.0
+end
+
+class Foo
+  extend Outer
+end
+
+module Inner
+  def deep: -> 1.0
+end
+
+module Outer
+  include Inner
+end
+```
+
+## Module extends a nested module that includes it back
+
+### update
+
+```ruby
+module Foo
+  module Util
+    include Foo
+
+    def helper = "h"
+  end
+
+  extend Util
+end
+
+class Caller
+  def run = Foo.helper
+end
+```
+
+### result
+
+```rbs
+class Caller
+  def run: -> "h"
+end
+
+module Foo
+  extend Util
+end
+
+module Foo::Util
+  include Foo
+
+  def helper: -> "h"
 end
 ```

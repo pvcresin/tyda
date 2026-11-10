@@ -1398,3 +1398,191 @@ class YieldReadParts
   def run: -> nil
 end
 ```
+
+## A while loop with an assignment condition collects read lines
+
+### update
+
+```ruby
+class LineReader
+  def read_lines
+    lines = []
+    while (line = $stdin.gets)
+      lines << line.chomp
+    end
+    lines
+  end
+end
+```
+
+### result
+
+```rbs
+class LineReader
+  def read_lines: -> Array[String]
+end
+```
+
+## Conditional break in times unions with the receiver
+
+### update
+
+```ruby
+class Counter
+  def pick = 3.times { |i| break i.to_s if i == 2 }
+end
+```
+
+### result
+
+```rbs
+class Counter
+  def pick: -> String | 3
+end
+```
+
+## Break index from each_with_index unions with the receiver
+
+### update
+
+```ruby
+class Finder
+  def index_of_two
+    [1, 2].each_with_index do |value, index|
+      break index if value == 2
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Finder
+  def index_of_two: -> Integer | [1, 2]
+end
+```
+
+## While body assignment before next reaches the loop exit
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Scanner
+  def run
+    found = nil
+    i = 0
+    while i < 3
+      i += 1
+      if i == 1
+        found = "a"
+        next
+      end
+      i += 1
+    end
+    found
+  end
+end
+```
+
+### result
+
+```rbs
+class Scanner
+  def run: -> "a"?
+end
+```
+
+## For body assignment before next reaches the loop exit
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Scanner
+  def run
+    found = nil
+    for item in [1, 2]
+      if item == 1
+        found = :hit
+        next
+      end
+    end
+    found
+  end
+end
+```
+
+### result
+
+```rbs
+class Scanner
+  def run: -> :hit?
+end
+```
+
+## Block assignment before next reaches code after each
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Scanner
+  def run
+    found = nil
+    [1, 2].each do |item|
+      if item == 1
+        found = :hit
+        next
+      end
+    end
+    found
+  end
+end
+```
+
+### result
+
+```rbs
+class Scanner
+  def run: -> :hit?
+end
+```
+
+## While loop that walks into a tuple exits with nil
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Walker
+  def run
+    node = [[nil]]
+    while node
+      node = node[0]
+    end
+    node
+  end
+end
+```
+
+### result
+
+```rbs
+class Walker
+  def run: -> nil
+end
+```

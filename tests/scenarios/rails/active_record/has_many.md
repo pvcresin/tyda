@@ -180,3 +180,110 @@ class Team < ApplicationRecord
   def first_person: -> Person?
 end
 ```
+
+## Query a has_many proxy with finders and builders
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "posts", force: :cascade do |t|
+    t.string "title", null: false
+    t.bigint "account_id", null: false
+  end
+end
+```
+
+### file: app/models/account.rb
+
+```ruby
+class Account < ApplicationRecord
+  has_many :posts
+end
+```
+
+### file: app/models/post.rb
+
+```ruby
+class Post < ApplicationRecord
+  belongs_to :account
+end
+```
+
+```ruby
+class AccountPosts
+  def titles = Account.find(1).posts.where(id: 1).pluck(:title)
+  def by_title = Account.find(1).posts.find_by(title: "a")
+  def by_id = Account.find(1).posts.find(1)
+  def created = Account.find(1).posts.create!(title: "a")
+  def built = Account.find(1).posts.new
+  def found_or_created = Account.find(1).posts.find_or_create_by(title: "a")
+  def any = Account.find(1).posts.exists?
+  def total = Account.find(1).posts.size
+  def newest = Account.find(1).posts.order(:id).last
+end
+```
+
+### result
+
+```rbs
+class AccountPosts
+  def titles: -> Array[String]
+  def by_title: -> Post?
+  def by_id: -> Post
+  def created: -> Post
+  def built: -> Post
+  def found_or_created: -> Post
+  def any: -> bool
+  def total: -> Integer
+  def newest: -> Post?
+end
+```
+
+## Scoped has_many with class_name uses the named class
+
+### update
+
+```ruby
+class Account < ApplicationRecord
+  has_many :drafts, -> { where(published_at: nil) }, class_name: "Post"
+end
+```
+
+### result
+
+```rbs
+class Account < ApplicationRecord
+  def drafts: -> ActiveRecord::Associations::CollectionProxy[Post]
+  def draft_ids: -> Array[Integer]
+  def draft_ids=: (Array[Integer] draft_ids) -> Array[Integer]
+  def drafts=: (Array[Post] drafts) -> ActiveRecord::Associations::CollectionProxy[Post]
+end
+```
+
+## Polymorphic has_many with as and class_name uses the named class
+
+### update
+
+```ruby
+class Post < ApplicationRecord
+  has_many :replies, as: :commentable, class_name: "Comment", dependent: :destroy
+end
+```
+
+### result
+
+```rbs
+class Post < ApplicationRecord
+  def replies: -> ActiveRecord::Associations::CollectionProxy[Comment]
+  def reply_ids: -> Array[Integer]
+  def reply_ids=: (Array[Integer] reply_ids) -> Array[Integer]
+  def replies=: (Array[Comment] replies) -> ActiveRecord::Associations::CollectionProxy[Comment]
+end
+```

@@ -145,3 +145,51 @@ class Object < BasicObject
   def converted_date: -> :custom
 end
 ```
+
+## Nested prepend puts the inner module before the outer one
+
+### update
+
+```ruby
+module First
+  def value = :first
+end
+
+module Second
+  prepend First
+
+  def value = :second
+end
+
+class Foo
+  prepend Second
+
+  def value = :foo
+end
+
+def run = Foo.new.value
+```
+
+### result
+
+```rbs
+module First
+  def value: -> :first
+end
+
+class Foo
+  prepend Second
+
+  def value: -> :foo
+end
+
+class Object < BasicObject
+  def run: -> :first
+end
+
+module Second
+  prepend First
+
+  def value: -> :second
+end
+```

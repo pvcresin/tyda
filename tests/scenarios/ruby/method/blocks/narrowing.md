@@ -749,6 +749,10 @@ end
 
 ## select narrows project constant aliases
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -779,7 +783,7 @@ end
 
 ```rbs
 module Group
-  ItemAlias: singleton(Group::Item)
+  class ItemAlias = Group::Item
 end
 
 class Object < BasicObject

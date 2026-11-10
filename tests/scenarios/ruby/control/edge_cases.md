@@ -204,3 +204,28 @@ class Object < BasicObject
   def defined_nested: -> String?
 end
 ```
+
+## Empty parentheses evaluate to nil
+
+### update
+
+```ruby
+class Foo
+  def empty = ()
+  def in_array = [()]
+
+  def in_condition
+    if (); 1; end
+  end
+end
+```
+
+### result
+
+```rbs
+class Foo
+  def empty: -> nil
+  def in_array: -> [nil]
+  def in_condition: -> nil
+end
+```

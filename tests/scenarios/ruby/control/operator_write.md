@@ -138,3 +138,79 @@ class Object < BasicObject
   def folded: -> Integer
 end
 ```
+
+## Index operator assignment on a typed Hash
+
+### update
+
+```rbs
+class Tally
+  def counts: -> Hash[Symbol, Integer]
+end
+```
+
+```ruby
+class Tally
+  def ensure_key
+    counts[:a] ||= 0
+  end
+
+  def bump
+    counts[:a] += 1
+  end
+end
+```
+
+### result
+
+```rbs
+class Tally
+  def ensure_key: -> Integer
+  def bump: -> Integer
+end
+```
+
+## Attribute operator writes pass the new value to the writer
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Tally
+  def count = 0
+
+  def count=(value)
+    value
+  end
+
+  def label = :none
+
+  def label=(value)
+    value
+  end
+
+  def bump
+    self.count += 1
+  end
+
+  def relabel
+    self.label &&= :done
+  end
+end
+```
+
+### result
+
+```rbs
+class Tally
+  def count: -> 0
+  def count=: (Integer value) -> Integer
+  def label: -> :none
+  def label=: (Symbol value) -> Symbol
+  def bump: -> Integer
+  def relabel: -> :done
+end
+```

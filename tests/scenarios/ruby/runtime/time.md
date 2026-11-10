@@ -53,3 +53,25 @@ class Probe
   def strftime: -> String
 end
 ```
+
+## Monotonic clock difference is Float
+
+### update
+
+```ruby
+class Stopwatch
+  def measure
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    yield
+    Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+  end
+end
+```
+
+### result
+
+```rbs
+class Stopwatch
+  def measure: { () -> untyped } -> Float
+end
+```

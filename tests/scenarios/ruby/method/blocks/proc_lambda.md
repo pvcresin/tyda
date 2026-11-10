@@ -134,3 +134,257 @@ class Calculator
   def staged: -> String
 end
 ```
+
+## Empty lambda parameter does not change an outer local
+
+### update
+
+```ruby
+class Runner
+  def run
+    value = 1
+    callback = ->(value) { }
+    callback.call("text")
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: -> 1
+end
+```
+
+## Lambda optional parameter uses its default value
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run
+    callback = ->(first, second = 2) { second }
+    callback.call(1)
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: -> 2
+end
+```
+
+## Lambda rest parameter collects the call arguments
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run
+    callback = ->(*items) { items }
+    callback.call(1, "text")
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: -> [1, "text"]
+end
+```
+
+## Lambda post parameter takes the last call argument
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run
+    callback = ->(first, *middle, last) { last }
+    callback.call(1, 2, :done)
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: -> :done
+end
+```
+
+## Lambda keyword parameter takes the call keyword or its default
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def passed
+    callback = ->(key: 1) { key }
+    callback.call(key: "text")
+  end
+
+  def defaulted
+    callback = ->(key: 1) { key }
+    callback.call
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def passed: -> "text"
+  def defaulted: -> 1
+end
+```
+
+## Lambda block parameter receives the call block
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run
+    callback = ->(&block) { block }
+    callback.call { 1 }
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: -> Proc
+end
+```
+
+## Lambda positional parameter receives keyword arguments as a hash
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run
+    callback = ->(options) { options }
+    callback.call(key: 1)
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: -> { key: 1 }
+end
+```
+
+## Proc spreads a single array argument over its parameters
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run
+    callback = proc { |first, second| second }
+    callback.call([1, "text"])
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: -> "text"
+end
+```
+
+## return inside a lambda leaves only the lambda
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run
+    callback = -> { return 1 }
+    callback.call
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: -> 1
+end
+```
+
+## break inside a lambda leaves only the lambda
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run
+    callback = -> { break "text" }
+    callback.call
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: -> "text"
+end
+```

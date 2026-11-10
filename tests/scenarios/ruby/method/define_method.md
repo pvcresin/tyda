@@ -702,3 +702,53 @@ class Object < BasicObject
   def create_group: -> :group
 end
 ```
+
+## define_method called on a class constant adds an instance method
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Foo
+  def value = 1
+end
+
+Foo.define_method(:other) { 2 }
+```
+
+### result
+
+```rbs
+class Foo
+  def value: -> 1
+  def other: -> 2
+end
+```
+
+## define_method block body uses the call-site argument type
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Doubler
+  define_method(:double) { |value| value * 2 }
+
+  def run = double(1)
+end
+```
+
+### result
+
+```rbs
+class Doubler
+  def double: (Integer value) -> Integer
+  def run: -> Integer
+end
+```

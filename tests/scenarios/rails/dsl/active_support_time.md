@@ -51,3 +51,48 @@ class Calendar
 end
 ```
 
+
+## Resolve Time.zone factories and calendar helpers
+
+### update
+
+```ruby
+class Clock
+  def zone = Time.zone
+
+  def now = Time.zone.now
+
+  def today = Time.zone.today
+
+  def parsed = Time.zone.parse("2024-01-01")
+
+  def tokyo = Time.current.in_time_zone("Tokyo")
+
+  def month_start = Date.current.beginning_of_month
+
+  def week_end = Date.current.end_of_week
+
+  def day_end = Time.current.end_of_day
+
+  def yesterday_at = Time.current.ago(1.day)
+
+  def label = Time.current.to_fs(:db)
+end
+```
+
+### result
+
+```rbs
+class Clock
+  def zone: -> ActiveSupport::TimeZone
+  def now: -> ActiveSupport::TimeWithZone
+  def today: -> Date
+  def parsed: -> ActiveSupport::TimeWithZone?
+  def tokyo: -> ActiveSupport::TimeWithZone
+  def month_start: -> Date
+  def week_end: -> Date
+  def day_end: -> ActiveSupport::TimeWithZone
+  def yesterday_at: -> ActiveSupport::TimeWithZone
+  def label: -> String
+end
+```

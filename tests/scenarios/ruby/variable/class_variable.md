@@ -258,3 +258,32 @@ class Reader
   def present: -> bool
 end
 ```
+
+## Class variable compound write widens across calls
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Counter
+  @@count = 0
+
+  def self.increment
+    @@count += 1
+  end
+
+  def self.count = @@count
+end
+```
+
+### result
+
+```rbs
+class Counter
+  def self.increment: -> Integer
+  def self.count: -> Integer
+end
+```

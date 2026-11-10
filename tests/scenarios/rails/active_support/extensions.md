@@ -74,3 +74,75 @@ class JsonExtension
   def value_json: (untyped value) -> String
 end
 ```
+
+## Resolve string inflection and filter extensions
+
+### update
+
+```ruby
+class Inflections
+  def squished = "a  b".squish
+  def slug = "A b".parameterize
+  def title = "a b".titleize
+  def plural = "post".pluralize
+  def singular = "posts".singularize
+  def base_name = "A::B".demodulize
+  def class_name = "post".classify
+  def table_name = "Post".tableize
+  def dashed = "a_b".dasherize
+  def key_name = "Post".foreign_key
+  def removed = "a-b".remove("-")
+  def words = "a b c".truncate_words(2)
+  def excluded = "abc".exclude?("d")
+  def date = "2024-01-01".to_date
+end
+```
+
+### result
+
+```rbs
+class Inflections
+  def squished: -> String
+  def slug: -> String
+  def title: -> String
+  def plural: -> String
+  def singular: -> String
+  def base_name: -> String
+  def class_name: -> String
+  def table_name: -> String
+  def dashed: -> String
+  def key_name: -> String
+  def removed: -> String
+  def words: -> String
+  def excluded: -> bool
+  def date: -> Date
+end
+```
+
+## String to_date returns nil for a blank string
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```rbs
+class DateInput
+  def raw: -> String
+end
+```
+
+```ruby
+class DateInput
+  def date = raw.to_date
+end
+```
+
+### result
+
+```rbs
+class DateInput
+  def date: -> Date?
+end
+```

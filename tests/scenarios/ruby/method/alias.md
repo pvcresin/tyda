@@ -406,3 +406,122 @@ class UnknownAliasChain
   alias original_value value
 end
 ```
+
+## alias_method inside class << self aliases a class method
+
+### update
+
+```ruby
+class Foo
+  def self.find = 1
+
+  class << self
+    alias_method :lookup, :find
+  end
+end
+```
+
+### result
+
+```rbs
+class Foo
+  def self.find: -> 1
+  alias self.lookup self.find
+end
+```
+
+## self.alias_method aliases an instance method
+
+### update
+
+```ruby
+class Foo
+  def run = 1
+  self.alias_method :execute, :run
+end
+```
+
+### result
+
+```rbs
+class Foo
+  def run: -> 1
+  alias execute run
+end
+```
+
+## alias_method accepts string names
+
+### update
+
+```ruby
+class Foo
+  def run = 1
+  alias_method "execute", "run"
+end
+```
+
+### result
+
+```rbs
+class Foo
+  def run: -> 1
+  alias execute run
+end
+```
+
+## alias of an attr_reader keeps the reader
+
+### update
+
+```ruby
+class Foo
+  def initialize = @value = 1
+  attr_reader :value
+  alias current value
+end
+```
+
+### result
+
+```rbs
+class Foo
+  def initialize: -> void
+  def value: -> 1
+  alias current value
+end
+```
+
+## Implicit super reaches a method aliased in the superclass
+
+### update
+
+```ruby
+class Base
+  def value = 42
+end
+
+class Middle < Base
+  alias label value
+end
+
+class Leaf < Middle
+  def label = super
+end
+```
+
+### result
+
+```rbs
+class Base
+  def value: -> 42
+end
+
+class Leaf < Middle
+  def label: -> 42
+end
+
+class Middle < Base
+  def label: -> 42
+end
+```

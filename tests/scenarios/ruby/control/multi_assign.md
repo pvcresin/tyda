@@ -465,3 +465,67 @@ class TupleUnionDestructure
   def split: -> { dir: untyped, file: untyped }
 end
 ```
+
+## A trailing comma target takes the first element
+
+### update
+
+```ruby
+class FirstOnly
+  def first
+    head, = [1, "rest"]
+    head
+  end
+end
+```
+
+### result
+
+```rbs
+class FirstOnly
+  def first: -> 1
+end
+```
+
+## Multiple assignment passes values to writer targets
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Store
+  def []=(index, value)
+    @value = value
+  end
+
+  def name=(value)
+    @name = value
+  end
+end
+
+class Loader
+  def load(store)
+    first, store[0], store.name = 1, "text", :done
+    first
+  end
+
+  def run = load(Store.new)
+end
+```
+
+### result
+
+```rbs
+class Loader
+  def load: (Store store) -> 1
+  def run: -> 1
+end
+
+class Store
+  def []=: (Integer index, String value) -> String
+  def name=: (Symbol value) -> Symbol
+end
+```

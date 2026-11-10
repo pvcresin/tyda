@@ -288,3 +288,31 @@ class A
   def self.entry: -> 42
 end
 ```
+
+## class << self method calls an inherited class method
+
+### update
+
+```ruby
+class Base
+  def self.build = new
+end
+
+class Foo < Base
+  class << self
+    def make = build
+  end
+end
+```
+
+### result
+
+```rbs
+class Base
+  def self.build: -> Base
+end
+
+class Foo < Base
+  def self.make: -> Foo
+end
+```

@@ -184,6 +184,7 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
 
         if trimmed == "### update" || trimmed.starts_with("### ") {
             flush_step(
+                current_case_name.as_deref(),
                 &mut current_steps,
                 &mut rbs_inputs,
                 &mut rbi_inputs,
@@ -198,6 +199,7 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
 
         if let Some(heading) = trimmed.strip_prefix("## ") {
             flush_step(
+                current_case_name.as_deref(),
                 &mut current_steps,
                 &mut rbs_inputs,
                 &mut rbi_inputs,
@@ -239,6 +241,7 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
     }
 
     flush_step(
+        current_case_name.as_deref(),
         &mut current_steps,
         &mut rbs_inputs,
         &mut rbi_inputs,
@@ -292,6 +295,7 @@ fn inline_code_path(line: &str) -> Option<String> {
 }
 
 fn flush_step(
+    case_name: Option<&str>,
     steps: &mut Vec<Step>,
     rbs_inputs: &mut Vec<String>,
     rbi_inputs: &mut Vec<String>,
@@ -301,7 +305,14 @@ fn flush_step(
 ) {
     let ruby = match current_ruby.take() {
         Some(r) => r,
-        None => return,
+        None => {
+            assert!(
+                result_rbs.is_none(),
+                "Scenario case `{}` has a result but no current-file ruby block; leave the path off one ruby block",
+                case_name.unwrap_or("<unnamed>")
+            );
+            return;
+        }
     };
 
     let expected = match result_rbs.take() {
@@ -372,6 +383,34 @@ end
                 .contains("def foo: -> Integer")
         );
         assert!(file.cases[0].steps[0].rbs_input.is_none());
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Scenario case `only files` has a result but no current-file ruby block"
+    )]
+    fn test_parse_rejects_case_without_current_file() {
+        let content = r#"# Files only
+
+## only files
+
+### update
+
+### file: lib/a.rb
+
+```ruby
+class A; end
+```
+
+### result
+
+```rbs
+class A
+end
+```
+"#;
+
+        parse_scenario_file("test", content);
     }
 
     #[test]

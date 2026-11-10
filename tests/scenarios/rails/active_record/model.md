@@ -339,6 +339,7 @@ end
 
 ```yaml
 rails_version: 7.1.0
+known_issue: true
 ```
 
 ### update
@@ -361,7 +362,7 @@ class User < ApplicationRecord
   def email: -> untyped
   def email=: (untyped email) -> untyped
   def self.normalize_value_for: (Symbol name, untyped value) -> String
-  def normalized_literal: -> "demo@example.com"
+  def normalized_literal: -> String
 end
 ```
 
@@ -1112,5 +1113,201 @@ end
 ```rbs
 class EntryLookup
   def first_entry: -> Entry
+end
+```
+
+## STI subclass queries return the subclass and read parent columns
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "posts", force: :cascade do |t|
+    t.string "type"
+    t.string "title", null: false
+  end
+end
+```
+
+### file: app/models/post.rb
+
+```ruby
+class Post < ApplicationRecord
+end
+```
+
+### file: app/models/featured_post.rb
+
+```ruby
+class FeaturedPost < Post
+end
+```
+
+```ruby
+class FeaturedPosts
+  def all_featured = FeaturedPost.where(id: 1)
+  def first_featured = FeaturedPost.first
+  def featured_title = FeaturedPost.new.title
+  def sti_type = FeaturedPost.new.type
+end
+```
+
+### result
+
+```rbs
+class FeaturedPosts
+  def all_featured: -> ActiveRecord::Relation[FeaturedPost]
+  def first_featured: -> FeaturedPost?
+  def featured_title: -> String
+  def sti_type: -> String?
+end
+```
+
+## Delegate to associations reads schema column types
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "accounts", force: :cascade do |t|
+    t.string "name"
+    t.string "email", null: false
+  end
+  create_table "profiles", force: :cascade do |t|
+    t.bigint "post_id"
+    t.string "bio", null: false
+  end
+  create_table "posts", force: :cascade do |t|
+    t.bigint "account_id", null: false
+  end
+end
+```
+
+### file: app/models/account.rb
+
+```ruby
+class Account < ApplicationRecord
+end
+```
+
+### file: app/models/profile.rb
+
+```ruby
+class Profile < ApplicationRecord
+end
+```
+
+```ruby
+class Post < ApplicationRecord
+  belongs_to :account
+  has_one :profile
+  delegate :name, :email, to: :account, prefix: true
+  delegate :bio, to: :profile, allow_nil: true
+end
+```
+
+### result
+
+```rbs
+class Post < ApplicationRecord
+  def account: -> Account
+  def account=: (Account account) -> Account
+  def build_account: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def create_account: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def create_account!: (?Hash[String | Symbol, untyped] attributes) -> Account
+  def profile: -> Profile?
+  def profile=: (Profile profile) -> Profile
+  def build_profile: (?Hash[String | Symbol, untyped] attributes) -> Profile
+  def create_profile: (?Hash[String | Symbol, untyped] attributes) -> Profile
+  def create_profile!: (?Hash[String | Symbol, untyped] attributes) -> Profile
+  def account_name: -> String?
+  def account_email: -> String
+  def bio: -> String?
+end
+```
+
+## Store accessors stay untyped
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: app/models/post.rb
+
+```ruby
+class Post < ApplicationRecord
+  store :data, accessors: [:color, :size], coder: JSON
+end
+```
+
+```ruby
+class PostStore
+  def color = Post.new.color
+  def size = Post.new.size
+end
+```
+
+### result
+
+```rbs
+class PostStore
+  def color: -> untyped
+  def size: -> untyped
+end
+```
+
+## Attribute API types map to accessor types
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: app/models/post.rb
+
+```ruby
+class Post < ApplicationRecord
+  attribute :weight, :float
+  attribute :due_on, :date
+  attribute :price, :decimal
+  attribute :flag, :boolean
+  attribute :labels, :string, array: true
+end
+```
+
+```ruby
+class PostAttributes
+  def weight = Post.new.weight
+  def due_on = Post.new.due_on
+  def price = Post.new.price
+  def flag = Post.new.flag
+  def labels = Post.new.labels
+end
+```
+
+### result
+
+```rbs
+class PostAttributes
+  def weight: -> Float?
+  def due_on: -> Date?
+  def price: -> BigDecimal?
+  def flag: -> bool?
+  def labels: -> Array[String]?
 end
 ```

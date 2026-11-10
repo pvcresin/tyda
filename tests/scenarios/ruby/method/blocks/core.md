@@ -592,3 +592,70 @@ class Object < BasicObject
   def make_lambda: -> Proc
 end
 ```
+
+## yield inside begin with retry returns the block value
+
+### update
+
+```ruby
+class Retrier
+  def attempt(limit = 3)
+    tries = 0
+    begin
+      tries += 1
+      yield tries
+    rescue IOError
+      retry if tries < limit
+      raise
+    end
+  end
+end
+
+class RetrierUser
+  def run = Retrier.new.attempt { |n| n.to_s }
+end
+```
+
+### result
+
+```rbs
+class Retrier
+  def attempt: (?Integer limit) { (Integer) -> String } -> String
+end
+
+class RetrierUser
+  def run: -> String
+end
+```
+
+## yield self in a configure method passes the receiver
+
+### update
+
+```ruby
+class Settings
+  def configure
+    yield self
+    self
+  end
+
+  def name = "settings"
+end
+
+class SettingsUser
+  def run = Settings.new.configure { |s| s.name }
+end
+```
+
+### result
+
+```rbs
+class Settings
+  def configure: { (Settings) -> "settings" } -> Settings
+  def name: -> "settings"
+end
+
+class SettingsUser
+  def run: -> Settings
+end
+```

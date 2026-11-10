@@ -261,3 +261,62 @@ class Foo
   def self.baz: -> untyped
 end
 ```
+
+## `class << Outer::Foo` opens the scoped class singleton
+
+### update
+
+```ruby
+module Outer
+  class Foo
+  end
+end
+
+class << Outer::Foo
+  def build = 1
+end
+```
+
+### result
+
+```rbs
+class Outer::Foo
+  def self.build: -> 1
+end
+```
+
+## `singleton_class.include` adds class methods like extend
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+module Mixin
+  def value = 1
+end
+
+class Foo
+  singleton_class.include(Mixin)
+end
+
+def run = Foo.value
+```
+
+### result
+
+```rbs
+class Foo
+  extend Mixin
+end
+
+module Mixin
+  def value: -> 1
+end
+
+class Object < BasicObject
+  def run: -> 1
+end
+```

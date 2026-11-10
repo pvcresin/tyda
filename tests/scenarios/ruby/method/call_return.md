@@ -745,3 +745,62 @@ class ReadLength
   def run: -> String?
 end
 ```
+
+## A call site in another file types an operator through an inner call
+
+### update
+
+### file: lib/caller.rb
+
+```ruby
+class Caller
+  def run = TwoHop.new.outer(3)
+end
+```
+
+```ruby
+class TwoHop
+  def outer(value) = inner(value)
+  def inner(value) = value * 2
+end
+```
+
+### result
+
+```rbs
+class TwoHop
+  def outer: (Integer value) -> Integer
+  def inner: (Integer value) -> Integer
+end
+```
+
+## new on a union of class parameters returns the union of instances
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Factory
+  def build(klass) = klass.new
+end
+
+class Foo
+end
+
+class Bar
+end
+
+Factory.new.build(Foo)
+Factory.new.build(Bar)
+```
+
+### result
+
+```rbs
+class Factory
+  def build: ((singleton(Bar) | singleton(Foo)) klass) -> (Bar | Foo)
+end
+```

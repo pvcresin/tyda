@@ -93,3 +93,30 @@ class A
   def f: -> 1 | 2 | 3
 end
 ```
+
+## Calling a lambda applies its captured local write
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Closure
+  def run
+    x = 1
+    setter = -> { x = "a" }
+    setter.call
+    x
+  end
+end
+```
+
+### result
+
+```rbs
+class Closure
+  def run: -> 1 | "a"
+end
+```

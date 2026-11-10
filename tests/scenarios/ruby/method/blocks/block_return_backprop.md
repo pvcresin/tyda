@@ -132,3 +132,35 @@ class C
   def self.from_string: -> String
 end
 ```
+
+## Block passed to new records its return in initialize
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Foo
+  def initialize(n)
+    yield "x"
+  end
+end
+
+class Builder
+  def build = Foo.new(1) { |x| x.size }
+end
+```
+
+### result
+
+```rbs
+class Builder
+  def build: -> Foo
+end
+
+class Foo
+  def initialize: (Integer n) { (String) -> Integer } -> void
+end
+```

@@ -195,3 +195,24 @@ class Object < BasicObject
   def test: (bool cond, String val) -> (Integer | String)
 end
 ```
+
+## A parenthesized rescue modifier in an assignment
+
+### update
+
+```ruby
+class SafeParse
+  def parse(text)
+    number = (Integer(text) rescue 0)
+    number
+  end
+end
+```
+
+### result
+
+```rbs
+class SafeParse
+  def parse: (untyped text) -> Integer
+end
+```

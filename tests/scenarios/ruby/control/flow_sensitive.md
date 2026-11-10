@@ -2590,8 +2590,6 @@ class Child < Parent
 end
 ```
 
-### file: checker.rb
-
 ```ruby
 class Checker
   def child_value
@@ -2605,15 +2603,8 @@ end
 ### result
 
 ```rbs
-class Child < Parent
-  def child_only: -> String
-end
-
 class Checker
   def child_value: -> String?
-end
-
-class Parent
 end
 ```
 
@@ -2959,5 +2950,37 @@ class NonzeroFallback
   def width: -> Integer
   def stty: -> Integer
   def tput: -> Integer
+end
+```
+
+## is_a? else branch narrows the argument of an instance helper
+
+### update
+
+```ruby
+class Parser
+  def take_int(v) = nil
+  def take_str(v) = nil
+
+  def run(value)
+    if value.is_a?(String)
+      take_str(value)
+    else
+      take_int(value)
+    end
+  end
+end
+
+Parser.new.run(1)
+Parser.new.run("x")
+```
+
+### result
+
+```rbs
+class Parser
+  def take_int: (Integer v) -> nil
+  def take_str: (String v) -> nil
+  def run: ((Integer | String) value) -> nil
 end
 ```

@@ -295,3 +295,43 @@ class Object < BasicObject
   def bar: (String a, *Integer b, **Integer c) -> [String, Array[Integer], { x: 4, y: 5 }]
 end
 ```
+
+## Literal lead arg before forwarded args stays out of the callee rest
+
+### update
+
+```ruby
+def lead(...) = wrap("s", ...)
+def wrap(a, *b) = b
+
+lead(2)
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def lead: (*Integer, **untyped, ?untyped &block) -> Array[Integer]
+  def wrap: (String a, *Integer b) -> Array[Integer]
+end
+```
+
+## Optional param before forwarded args keeps the callee rest type
+
+### update
+
+```ruby
+def run(head = 1, ...) = gather(...)
+def gather(*rest) = rest
+
+run(:a, "x")
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def run: (?(Integer | Symbol) head, *String, **untyped, ?untyped &block) -> Array[String]
+  def gather: (*String rest) -> Array[String]
+end
+```

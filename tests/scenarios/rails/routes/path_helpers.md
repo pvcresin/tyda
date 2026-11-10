@@ -151,3 +151,114 @@ class AdminLinks
   def dashboard: -> String
 end
 ```
+
+## Resolve root and url helpers
+
+### update
+
+`config/routes.rb`
+
+```ruby
+Rails.application.routes.draw do
+  root "home#index"
+  resources :posts, only: [:index, :show]
+end
+```
+
+```ruby
+class Links
+  def home = root_path
+
+  def home_url = root_url
+
+  def posts_full = posts_url
+
+  def post_json(post) = post_path(post, format: :json)
+
+  def paged_posts = posts_path(page: 2)
+end
+```
+
+### result
+
+```rbs
+class Links
+  def home: -> String
+  def home_url: -> String
+  def posts_full: -> String
+  def post_json: (untyped post) -> String
+  def paged_posts: -> String
+end
+```
+
+## Resolve helpers under scope and nested namespace
+
+### update
+
+`config/routes.rb`
+
+```ruby
+Rails.application.routes.draw do
+  scope module: :admin do
+    resources :reports
+  end
+  scope "/settings", as: "settings" do
+    resource :profile
+  end
+  namespace :api do
+    namespace :v1 do
+      resources :items
+    end
+  end
+end
+```
+
+```ruby
+class Links
+  def reports = reports_path
+
+  def settings_profile = settings_profile_path
+
+  def items = api_v1_items_path
+end
+```
+
+### result
+
+```rbs
+class Links
+  def reports: -> String
+  def settings_profile: -> String
+  def items: -> String
+end
+```
+
+## Keep resource names with path and param options
+
+### update
+
+`config/routes.rb`
+
+```ruby
+Rails.application.routes.draw do
+  resources :books, path: "library"
+  resources :users, param: :username
+end
+```
+
+```ruby
+class Links
+  def books = books_path
+
+  def user(name) = user_path(name)
+end
+```
+
+### result
+
+```rbs
+class Links
+  def books: -> String
+  def user: (untyped name) -> String
+end
+```

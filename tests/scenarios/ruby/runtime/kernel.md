@@ -165,3 +165,25 @@ class Object < BasicObject
   def wrap_untyped: (untyped values) -> Array[untyped]
 end
 ```
+
+## Kernel Array converts a range through to_a
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Builder
+  def build = Array(1..5)
+end
+```
+
+### result
+
+```rbs
+class Builder
+  def build: -> Array[Integer]
+end
+```

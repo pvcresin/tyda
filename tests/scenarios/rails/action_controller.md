@@ -218,3 +218,147 @@ class Admin::PostsController < ActionController::Base
   def assign_role: -> void
 end
 ```
+
+## Keep controller class DSL calls from changing actions
+
+### update
+
+```ruby
+class ReportsController < ActionController::Base
+  rescue_from ActiveRecord::RecordNotFound, with: :not_found
+  skip_before_action :verify_authenticity_token
+  around_action :with_locale
+  protect_from_forgery with: :exception
+  layout "admin"
+
+  def not_found = head(:not_found)
+
+  def index = params
+end
+```
+
+### result
+
+```rbs
+class ReportsController < ActionController::Base
+  def not_found: -> void
+  def index: -> ActionController::Parameters
+end
+```
+
+## Resolve strong parameter helpers
+
+### update
+
+```ruby
+class ItemsController < ActionController::Base
+  def permitted = params.permit(:page)
+
+  def sliced = params.slice(:page, :per)
+
+  def without_page = params.except(:page)
+
+  def merged = params.merge(owner: 1)
+
+  def expected = params.expect(item: [:name])
+
+  def has_page = params.key?(:page)
+
+  def includes_page = params.include?(:page)
+
+  def no_params = params.empty?
+end
+```
+
+### result
+
+```rbs
+class ItemsController < ActionController::Base
+  def permitted: -> ActionController::Parameters
+  def sliced: -> ActionController::Parameters
+  def without_page: -> ActionController::Parameters
+  def merged: -> ActionController::Parameters
+  def expected: -> ActionController::Parameters
+  def has_page: -> bool
+  def includes_page: -> bool
+  def no_params: -> bool
+end
+```
+
+## Resolve request URL and verb helpers
+
+### update
+
+```ruby
+class PagesController < ActionController::Base
+  def current_path = request.path
+
+  def current_url = request.url
+
+  def full_path = request.fullpath
+
+  def original_url = request.original_url
+
+  def host = request.host
+
+  def verb = request.method
+
+  def ajax = request.xhr?
+
+  def posted = request.post?
+
+  def secure = request.ssl?
+
+  def local = request.local?
+end
+```
+
+### result
+
+```rbs
+class PagesController < ActionController::Base
+  def current_path: -> String
+  def current_url: -> String
+  def full_path: -> String
+  def original_url: -> String
+  def host: -> String
+  def verb: -> String
+  def ajax: -> bool
+  def posted: -> bool
+  def secure: -> bool
+  def local: -> bool
+end
+```
+
+## Resolve controller metadata and response helpers
+
+### update
+
+```ruby
+class StatusController < ActionController::Base
+  def action = action_name
+
+  def name = controller_name
+
+  def path = controller_path
+
+  def done = performed?
+
+  def status = response.status
+
+  def link = url_for(only_path: true)
+end
+```
+
+### result
+
+```rbs
+class StatusController < ActionController::Base
+  def action: -> String
+  def name: -> String
+  def path: -> String
+  def done: -> bool
+  def status: -> Integer
+  def link: -> String
+end
+```

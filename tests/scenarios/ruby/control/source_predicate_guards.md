@@ -269,7 +269,7 @@ class PredicateWithUnrelatedNames
   def maybe_string: -> String?
   def present?: (String? value) -> bool
   def self.present?: (untyped _value) -> true
-  def checked: -> (String | :none)
+  def checked: -> String | :none
 end
 ```
 
@@ -311,8 +311,6 @@ end
 
 ### update
 
-### file: base.rb
-
 ```ruby
 class PredicateCrossFileBase
   #: () -> String?
@@ -350,14 +348,6 @@ class PredicateCrossFileBase
   def maybe_string: -> String?
   def present?: (String? value) -> bool
   def checked: -> (String | :none)?
-end
-
-class PredicateCrossFileChild < PredicateCrossFileBase
-  include PredicateCrossFileOverride
-end
-
-module PredicateCrossFileOverride
-  def present?: (untyped _value) -> true
 end
 ```
 

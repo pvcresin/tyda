@@ -119,6 +119,9 @@ update section では次を使える。
 | `schema` / `sql` | Rails schema fixture |
 | result の `rbs` | 期待する RBS |
 
+複数ファイルの case では、path を付けない `ruby` block を一つ置き、それを current file にする。
+result の RBS は current file の宣言だけを書く。current file のない case は parse 時にエラーになる。
+
 同じ case に複数の `### update` を置く場合、各 update は累積差分ではなく、その時点の完全な入力状態を
 表す。宣言を段階的に追加・削除するケースでは、各状態の期待 RBS を並べて優先順位と fallback を固定する。
 
