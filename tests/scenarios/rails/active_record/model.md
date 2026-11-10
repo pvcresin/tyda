@@ -485,6 +485,8 @@ end
 
 ## find returns the model type
 
+### update
+
 `db/schema.rb`
 
 ```ruby
@@ -506,10 +508,9 @@ class PostService
 end
 ```
 
-```rbs
-class Post < ApplicationRecord
-end
+### result
 
+```rbs
 class PostService
   def find_post: (untyped id) -> Post
   def find_and_title: (untyped id) -> String?
@@ -517,6 +518,8 @@ end
 ```
 
 ## find with many ids returns Array[Model]
+
+### update
 
 `db/schema.rb`
 
@@ -536,23 +539,55 @@ class PostService
   def find_array = Post.find([1, 2, 3])
   def find_many = Post.find(1, 2, 3)
   def find_splat_single = Post.find(*[1])
-  def find_splat_many = Post.find(*[1, 2])
   def first_n = Post.first(5)
   def last_n = Post.last(3)
 end
 ```
 
-```rbs
-class Post < ApplicationRecord
-end
+### result
 
+```rbs
 class PostService
   def find_array: -> Array[Post]
   def find_many: -> Array[Post]
   def find_splat_single: -> Post
-  def find_splat_many: -> Array[Post]
   def first_n: -> Array[Post]
   def last_n: -> Array[Post]
+end
+```
+
+## find with a multi-element splat returns Array[Model]
+
+```yaml
+known_issue: true
+```
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema.define(version: 2024_01_01) do
+  create_table "posts" do |t|
+    t.string "title"
+  end
+end
+```
+
+```ruby
+class Post < ApplicationRecord
+end
+
+class PostService
+  def find_splat_many = Post.find(*[1, 2])
+end
+```
+
+### result
+
+```rbs
+class PostService
+  def find_splat_many: -> Array[Post]
 end
 ```
 

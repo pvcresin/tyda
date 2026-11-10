@@ -207,9 +207,8 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
                 &mut current_ruby,
                 &mut result_rbs,
             );
-            if let Some(case_name) = current_case_name.take()
-                && !current_steps.is_empty()
-            {
+            if let Some(case_name) = current_case_name.take() {
+                assert_case_has_steps(&case_name, &current_steps);
                 cases.push(TestCase {
                     name: case_name,
                     config: std::mem::take(&mut current_case_config),
@@ -250,6 +249,9 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
         &mut result_rbs,
     );
 
+    if let Some(case_name) = &current_case_name {
+        assert_case_has_steps(case_name, &current_steps);
+    }
     if !current_steps.is_empty() {
         let case_name = current_case_name.unwrap_or_else(|| file_description.clone());
         cases.push(TestCase {
@@ -294,6 +296,13 @@ fn inline_code_path(line: &str) -> Option<String> {
     Some(inner.to_string())
 }
 
+fn assert_case_has_steps(case_name: &str, steps: &[Step]) {
+    assert!(
+        !steps.is_empty(),
+        "Scenario case `{case_name}` has no update/result step"
+    );
+}
+
 fn flush_step(
     case_name: Option<&str>,
     steps: &mut Vec<Step>,
@@ -315,9 +324,11 @@ fn flush_step(
         }
     };
 
-    let expected = match result_rbs.take() {
-        Some(e) => e,
-        None => return,
+    let Some(expected) = result_rbs.take() else {
+        panic!(
+            "Scenario case `{}` has a ruby block without a following result",
+            case_name.unwrap_or("<unnamed>")
+        );
     };
 
     let rbs_input = if rbs_inputs.is_empty() {
@@ -846,7 +857,10 @@ end
     }
 
     #[test]
-    fn test_missing_result_section_produces_no_step() {
+    #[should_panic(
+        expected = "Scenario case `No result section` has a ruby block without a following result"
+    )]
+    fn test_parse_rejects_case_without_result() {
         let content = r#"# Test
 
 ## No result section
@@ -860,7 +874,33 @@ end
 ```
 "#;
 
-        let file = parse_scenario_file("test", content);
-        assert_eq!(file.cases.len(), 0);
+        parse_scenario_file("test", content);
+    }
+
+    #[test]
+    #[should_panic(expected = "Scenario case `Empty` has no update/result step")]
+    fn test_parse_rejects_case_without_steps() {
+        let content = r#"# Test
+
+## Empty
+
+## Next
+
+### update
+
+```ruby
+def foo = 1
+```
+
+### result
+
+```rbs
+class Object < BasicObject
+  def foo: -> 1
+end
+```
+"#;
+
+        parse_scenario_file("test", content);
     }
 }

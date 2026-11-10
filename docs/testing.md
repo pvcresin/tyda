@@ -121,6 +121,7 @@ update section では次を使える。
 
 複数ファイルの case では、path を付けない `ruby` block を一つ置き、それを current file にする。
 result の RBS は current file の宣言だけを書く。current file のない case は parse 時にエラーになる。
+ruby block の後に result のない step や、step が一つもない case も parse 時にエラーになる。
 
 runner は比較の前に、update の `rbs` と result の `rbs` を RBS 公式 C parser (`rbs-sys`) でパースし、
 構文エラーなら known-issue case でも失敗にする。通常 case は出力と期待値の一致を要求するため、
