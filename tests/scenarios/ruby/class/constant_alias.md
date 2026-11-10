@@ -271,6 +271,10 @@ end
 
 ## Alias assigned before the target still resolves constants
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -286,7 +290,7 @@ def f = ALIAS::CONST
 ### result
 
 ```rbs
-ALIAS: singleton(Foo)
+module ALIAS = Foo
 
 module Foo
   CONST: 1

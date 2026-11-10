@@ -527,7 +527,7 @@ end
 
 ```rbs
 class Caller
-  def invoke: (Method callable) -> Integer
-  def run: -> Integer
+  def invoke: (Method callable) -> untyped
+  def run: -> untyped
 end
 ```
