@@ -129,14 +129,34 @@ class ParametersController < ActionController::Base
 end
 ```
 
-## Resolve text and number helpers in helper modules
+## The truncate helper returns nil for a nil text
+
+```yaml
+known_issue: true
+```
 
 ### update
 
 ```ruby
 module FormatHelper
   def short(text) = truncate(text, length: 10)
+end
+```
 
+### result
+
+```rbs
+module FormatHelper
+  def short: (untyped text) -> String?
+end
+```
+
+## Resolve text and number helpers in helper modules
+
+### update
+
+```ruby
+module FormatHelper
   def ago(time) = time_ago_in_words(time)
 
   def count = number_with_delimiter(1000)
@@ -159,7 +179,6 @@ end
 
 ```rbs
 module FormatHelper
-  def short: (untyped text) -> String
   def ago: (untyped time) -> String
   def count: -> String
   def posts_label: -> String

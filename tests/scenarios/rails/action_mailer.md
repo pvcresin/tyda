@@ -42,7 +42,11 @@ class UserMailer < ApplicationMailer
 end
 ```
 
-## deliver_later! returns ActionMailer::MessageDelivery
+## deliver_later! returns the enqueued delivery job or false
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -65,11 +69,15 @@ class NotifyMailer < ApplicationMailer
 end
 
 class NotifyService
-  def notify: (untyped user) -> ActionMailer::MessageDelivery
+  def notify: (untyped user) -> ActionMailer::MailDeliveryJob | false
 end
 ```
 
 ## Resolve mailers from namespace scope
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -89,7 +97,7 @@ end
 
 ```rbs
 class Admin::Notifier
-  def send_alert: (untyped user) -> ActionMailer::MessageDelivery
+  def send_alert: (untyped user) -> ActionMailer::MailDeliveryJob | false
 end
 
 class AlertMailer < ApplicationMailer
