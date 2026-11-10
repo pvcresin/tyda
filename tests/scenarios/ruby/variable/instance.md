@@ -631,7 +631,7 @@ end
 
 ```rbs
 class Base
-  def value: -> (:base | :child)
+  def value: -> (:base | :child)?
   def assign: -> :base
 end
 

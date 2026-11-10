@@ -201,7 +201,7 @@ class LaterSetup
 end
 ```
 
-## A singleton attr_accessor reader follows the writer type
+## A singleton attr_accessor reader set outside the class body is nilable
 
 ```ruby
 class Level
@@ -217,7 +217,7 @@ Level.current = 3
 
 ```rbs
 class Level
-  def self.current: -> Integer
+  def self.current: -> Integer?
   def self.current=: (Integer current) -> Integer
 end
 ```
