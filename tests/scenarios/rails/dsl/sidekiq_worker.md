@@ -1,6 +1,10 @@
 # Rails / DSL / Sidekiq Worker
 
-## Generate perform class methods
+## Generate Sidekiq perform class methods without Active Job helpers
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -16,12 +20,12 @@ end
 class Job
   include Sidekiq::Worker
 
-  def self.perform_later: -> Job
-  def self.perform_now: -> untyped
   def self.perform_async: -> String
   def self.perform_in: -> String
   def self.perform_at: -> String
   def self.perform_bulk: -> Array[String]
+  def self.perform_inline: -> true?
+  def self.perform_sync: -> true?
 end
 ```
 
