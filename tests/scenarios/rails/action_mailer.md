@@ -188,3 +188,29 @@ class ParamsMailer < ApplicationMailer
   def self.message_params: -> ActionMailer::MessageDelivery
 end
 ```
+
+## Resolve mailer class helpers defined in another file
+
+### update
+
+### file: app/mailers/notice_mailer.rb
+
+```ruby
+class NoticeMailer < ApplicationMailer
+  def ping(user) = mail
+end
+```
+
+```ruby
+class ItemsController < ActionController::Base
+  def notice_delivery = NoticeMailer.ping(1)
+end
+```
+
+### result
+
+```rbs
+class ItemsController < ActionController::Base
+  def notice_delivery: -> ActionMailer::MessageDelivery
+end
+```

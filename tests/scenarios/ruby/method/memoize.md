@@ -71,3 +71,27 @@ class UserFinder
   def target_users: -> String
 end
 ```
+
+## Memoize with a defined? ivar guard
+
+### update
+
+```ruby
+class DefinedMemo
+  def items
+    return @items if defined?(@items)
+    @items = load_items
+  end
+
+  def load_items = [1, 2]
+end
+```
+
+### result
+
+```rbs
+class DefinedMemo
+  def items: -> [1, 2]
+  def load_items: -> [1, 2]
+end
+```

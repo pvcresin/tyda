@@ -719,3 +719,69 @@ module UpdateStatistics
   def statistics_changed?: -> untyped
 end
 ```
+
+## Resolve params in a controller concern through the includer
+
+### update
+
+```ruby
+module Paginated
+  extend ActiveSupport::Concern
+
+  def page_params = params.permit(:page)
+end
+
+class PostsController < ActionController::Base
+  include Paginated
+
+  def index = page_params
+end
+```
+
+### result
+
+```rbs
+module Paginated
+  extend ActiveSupport::Concern
+
+  def page_params: -> ActionController::Parameters
+end
+
+class PostsController < ActionController::Base
+  include Paginated
+
+  def index: -> ActionController::Parameters
+end
+```
+
+## Resolve params in a concern included by a controller in another file
+
+### update
+
+### file: app/controllers/posts_controller.rb
+
+```ruby
+class PostsController < ActionController::Base
+  include Paginated
+
+  def index = page_params
+end
+```
+
+```ruby
+module Paginated
+  extend ActiveSupport::Concern
+
+  def page_params = params.permit(:page)
+end
+```
+
+### result
+
+```rbs
+module Paginated
+  extend ActiveSupport::Concern
+
+  def page_params: -> ActionController::Parameters
+end
+```

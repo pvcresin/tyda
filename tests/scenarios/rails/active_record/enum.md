@@ -503,3 +503,32 @@ class EnumReceiver < ActiveRecord::Base
   def self.shipped: -> ActiveRecord::Relation[EnumReceiver]
 end
 ```
+
+## Apply a named enum prefix to string values
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Post < ApplicationRecord
+  enum :kind, { note: "note", article: "article" }, prefix: :kind_of, validate: true, default: :note
+end
+```
+
+### result
+
+```rbs
+class Post < ApplicationRecord
+  def kind: -> String
+  def self.kinds: -> Hash[String, untyped]
+  def kind_of_note?: -> bool
+  def kind_of_note!: -> bool
+  def self.kind_of_note: -> ActiveRecord::Relation[Post]
+  def kind_of_article?: -> bool
+  def kind_of_article!: -> bool
+  def self.kind_of_article: -> ActiveRecord::Relation[Post]
+end
+```

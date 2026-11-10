@@ -176,3 +176,27 @@ class Object < BasicObject
   def dir: -> String
 end
 ```
+
+## Dir helpers return paths and the block value
+
+### update
+
+```ruby
+class DirProbe
+  def current = Dir.pwd
+  def ruby_files = Dir.glob("*.rb")
+  def inside = Dir.chdir("lib") { :done }
+  def home = Dir.home
+end
+```
+
+### result
+
+```rbs
+class DirProbe
+  def current: -> String
+  def ruby_files: -> Array[String]
+  def inside: -> :done
+  def home: -> String
+end
+```

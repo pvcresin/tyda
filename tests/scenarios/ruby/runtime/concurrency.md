@@ -82,3 +82,32 @@ class Object < BasicObject
   def queue_unknown_items: (Array[untyped] values) -> untyped
 end
 ```
+
+## Mutex and Monitor synchronize return the block value
+
+### update
+
+```ruby
+require "monitor"
+
+class SyncBox
+  def initialize
+    @lock = Mutex.new
+    @monitor = Monitor.new
+    @items = [1]
+  end
+
+  def count = @lock.synchronize { @items.size }
+  def label = @monitor.synchronize { "ready" }
+end
+```
+
+### result
+
+```rbs
+class SyncBox
+  def initialize: -> void
+  def count: -> Integer
+  def label: -> "ready"
+end
+```

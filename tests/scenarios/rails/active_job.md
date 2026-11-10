@@ -65,3 +65,33 @@ class NotifyJob < ApplicationJob
   def perform: (String message) -> void
 end
 ```
+
+## Resolve perform_later for a job defined in another file
+
+### update
+
+### file: app/jobs/sync_job.rb
+
+```ruby
+class SyncJob < ApplicationJob
+  #: (Integer id) -> String
+  def perform(id) = id.to_s
+end
+```
+
+```ruby
+class ItemsController < ActionController::Base
+  def enqueue = SyncJob.perform_later(1)
+
+  def run_now = SyncJob.perform_now(1)
+end
+```
+
+### result
+
+```rbs
+class ItemsController < ActionController::Base
+  def enqueue: -> SyncJob
+  def run_now: -> String
+end
+```

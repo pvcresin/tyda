@@ -628,3 +628,29 @@ class WhileYieldSource
   def each_value: ((String | Symbol)? value) { ((String | Symbol)) -> String? } -> nil
 end
 ```
+
+## Block passed through to a block.call method keeps the call-site return
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run(&block) = invoke(&block)
+  def invoke(&block) = block.call(1.0)
+end
+
+Runner.new.run { |n| "s" }
+```
+
+### result
+
+```rbs
+class Runner
+  def run: { (Float) -> "s" } -> "s"
+  def invoke: { (Float) -> "s" } -> "s"
+end
+```

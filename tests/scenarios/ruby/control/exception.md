@@ -981,3 +981,33 @@ class RescueResponse
   def status: -> :ok
 end
 ```
+
+## Rescue with a non-class constant does not become a type
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+NotError = :x
+
+class Loader
+  def run(n)
+    1
+  rescue NotError => e
+    e
+  end
+end
+```
+
+### result
+
+```rbs
+NotError: :x
+
+class Loader
+  def run: (untyped n) -> 1
+end
+```

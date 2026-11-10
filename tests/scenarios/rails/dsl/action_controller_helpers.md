@@ -128,3 +128,45 @@ class ParametersController < ActionController::Base
   def deleted_value: -> untyped
 end
 ```
+
+## Resolve text and number helpers in helper modules
+
+### update
+
+```ruby
+module FormatHelper
+  def short(text) = truncate(text, length: 10)
+
+  def ago(time) = time_ago_in_words(time)
+
+  def count = number_with_delimiter(1000)
+
+  def posts_label = pluralize(2, "post")
+
+  def joined = safe_join(["a", "b"])
+
+  def box = content_tag(:div, "x")
+
+  def logo = image_tag("logo.png")
+
+  def body = simple_format("text")
+
+  def clean = sanitize("<b>x</b>")
+end
+```
+
+### result
+
+```rbs
+module FormatHelper
+  def short: (untyped text) -> String
+  def ago: (untyped time) -> String
+  def count: -> String
+  def posts_label: -> String
+  def joined: -> String
+  def box: -> String
+  def logo: -> String
+  def body: -> String
+  def clean: -> String
+end
+```

@@ -132,3 +132,30 @@ class ReturnCycles
   def nested: (untyped flag) -> ([untyped] | [1])
 end
 ```
+
+## Direct recursive instance method resolves to Integer
+
+### update
+
+```ruby
+class Calculator
+  def fact(n)
+    if n <= 1
+      1
+    else
+      n * fact(n - 1)
+    end
+  end
+
+  def run = fact(5)
+end
+```
+
+### result
+
+```rbs
+class Calculator
+  def fact: (Integer n) -> Integer
+  def run: -> Integer
+end
+```

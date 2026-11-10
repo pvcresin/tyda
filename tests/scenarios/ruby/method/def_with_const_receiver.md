@@ -133,3 +133,28 @@ class Foo
   def self.demo: -> 1
 end
 ```
+
+## `def (Outer::Foo).name` registers a singleton method
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+module Outer
+  class Foo
+  end
+end
+
+def (Outer::Foo).make = 2
+```
+
+### result
+
+```rbs
+class Outer::Foo
+  def self.make: -> 2
+end
+```

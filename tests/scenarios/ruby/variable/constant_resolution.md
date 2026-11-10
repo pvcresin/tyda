@@ -479,7 +479,11 @@ class P
 end
 ```
 
-## `class A::B::C` reads own lexical and ancestor constants
+## `class A::B::C` does not see constants of A::B
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -503,7 +507,7 @@ module A::B
 end
 
 class A::B::C
-  def f: -> "b"
+  def f: -> untyped
 end
 ```
 
@@ -1615,5 +1619,139 @@ module Settings
   INNER: [2]
   OUTER: [[2]]
   INNER_LATER: 2
+end
+```
+
+## Superclass constant defined in another file
+
+### update
+
+### file: lib/base.rb
+
+```ruby
+class Base
+  LIMIT = 1
+end
+```
+
+```ruby
+class Foo < Base
+  def run = LIMIT
+end
+```
+
+### result
+
+```rbs
+class Foo < Base
+  def run: -> 1
+end
+```
+
+## Nested form sees an outer constant defined in another file
+
+### update
+
+### file: lib/outer.rb
+
+```ruby
+module Outer
+  LIMIT = 1
+end
+```
+
+```ruby
+module Outer
+  class Inner
+    def run = LIMIT
+  end
+end
+```
+
+### result
+
+```rbs
+module Outer
+  LIMIT: 1
+end
+
+class Outer::Inner
+  def run: -> 1
+end
+```
+
+## Compact class path skips the outer module constant
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Base
+  LIMIT = 1
+end
+
+module Outer
+  LIMIT = "outer"
+end
+
+class Outer::Foo < Base
+  def run = LIMIT
+end
+```
+
+### result
+
+```rbs
+class Base
+  LIMIT: 1
+end
+
+module Outer
+  LIMIT: "outer"
+end
+
+class Outer::Foo < Base
+  def run: -> 1
+end
+```
+
+## Scoped constant found through include names the defining class
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+module Mod
+  class Inner
+    def value = 1
+  end
+end
+
+class Foo
+  include Mod
+end
+
+def run = Foo::Inner.new
+```
+
+### result
+
+```rbs
+class Foo
+  include Mod
+end
+
+class Mod::Inner
+  def value: -> 1
+end
+
+class Object < BasicObject
+  def run: -> Mod::Inner
 end
 ```

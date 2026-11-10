@@ -1052,3 +1052,149 @@ class Object < BasicObject
   def rbs_mixin_alias_value: -> Symbol
 end
 ```
+
+## Select an RBS overload by keyword argument type
+
+### update
+
+```rbs
+class Lookup
+  def find: (key: Integer) -> Integer
+          | (key: String) -> String
+end
+```
+
+```ruby
+class Client
+  def by_number = Lookup.new.find(key: 1)
+  def by_name = Lookup.new.find(key: "name")
+end
+```
+
+### result
+
+```rbs
+class Client
+  def by_number: -> Integer
+  def by_name: -> String
+end
+```
+
+## Select an RBS overload by keyword rest value type
+
+### update
+
+```rbs
+class Lookup
+  def find: (**Integer) -> Integer
+          | (**String) -> String
+end
+```
+
+```ruby
+class Client
+  def by_numbers = Lookup.new.find(a: 1, b: 2)
+  def by_names = Lookup.new.find(a: "x", b: "y")
+end
+```
+
+### result
+
+```rbs
+class Client
+  def by_numbers: -> Integer
+  def by_names: -> String
+end
+```
+
+## Implicit self call selects the matching RBS overload
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```rbs
+class Lookup
+  def find: (Integer) -> Integer
+          | (String) -> String
+end
+```
+
+```ruby
+class Lookup
+  def by_number = find(1)
+  def by_name = find("name")
+end
+```
+
+### result
+
+```rbs
+class Lookup
+  def by_number: -> Integer
+  def by_name: -> String
+end
+```
+
+## Splatted fixed tuple skips an overload with fewer parameters
+
+### update
+
+```rbs
+class Picker
+  def pick: (Integer) -> Integer
+          | (*Integer) -> String
+end
+```
+
+```ruby
+class Client
+  def single = Picker.new.pick(1)
+
+  def spread
+    items = [1, 2]
+    Picker.new.pick(*items)
+  end
+end
+```
+
+### result
+
+```rbs
+class Client
+  def single: -> Integer
+  def spread: -> String
+end
+```
+
+## Block literal on explicit super reaches an RBS parent method
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```rbs
+class Base
+  def run: () { (Integer) -> Integer } -> :ok
+end
+```
+
+```ruby
+class Child < Base
+  def run
+    super() { |value| value + 1 }
+  end
+end
+```
+
+### result
+
+```rbs
+class Child < Base
+  def run: -> :ok
+end
+```

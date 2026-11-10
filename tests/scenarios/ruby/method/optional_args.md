@@ -126,3 +126,69 @@ class Object < BasicObject
   def g: -> Integer
 end
 ```
+
+## Splat arg element read keeps the element type
+
+### update
+
+```ruby
+class SplatReader
+  def head(*values) = values.first
+end
+
+SplatReader.new.head("a")
+```
+
+### result
+
+```rbs
+class SplatReader
+  def head: (*String values) -> String?
+end
+```
+
+## Splat argument after required args fills the optional parameter
+
+### update
+
+```ruby
+class Runner
+  def run(a, b, c = :default) = c
+end
+
+items = ["x"].to_a
+Runner.new.run(:a, :b, *items)
+```
+
+### result
+
+```rbs
+class Runner
+  def run: (Symbol a, Symbol b, ?(String | Symbol) c) -> (String | :default)
+end
+```
+
+## Splat argument that covers a required arg can also fill the optional parameter
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run(a, b, c = 1) = c
+end
+
+items = ["x"].to_a
+Runner.new.run(:a, *items)
+```
+
+### result
+
+```rbs
+class Runner
+  def run: (Symbol a, String b, ?(Integer | String) c) -> (String | 1)
+end
+```

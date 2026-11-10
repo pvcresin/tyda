@@ -489,3 +489,45 @@ class PairCaller
   def run: (untyped value) -> Integer
 end
 ```
+
+## All parameter kinds keep their signature order
+
+### update
+
+```ruby
+class Foo
+  def run(a, b = 1, *rest, c:, d: 2, **opts, &blk) = nil
+end
+```
+
+### result
+
+```rbs
+class Foo
+  def run: (untyped a, ?Integer b, *untyped rest, c: untyped, ?d: Integer, **untyped opts, ?untyped &blk) -> nil
+end
+```
+
+## Method object argument keeps the Method parameter type
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Caller
+  def invoke(callable) = callable.call(1)
+  def run = invoke(1.method(:+))
+end
+```
+
+### result
+
+```rbs
+class Caller
+  def invoke: (Method callable) -> Integer
+  def run: -> Integer
+end
+```

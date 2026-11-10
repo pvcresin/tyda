@@ -99,3 +99,25 @@ class Object < BasicObject
   def for_index_after_empty: -> nil
 end
 ```
+
+## for loop value joins a body return with the receiver
+
+### update
+
+```ruby
+class Finder
+  def find
+    for i in 1..10
+      return 1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Finder
+  def find: -> 1 | Range[Integer]
+end
+```

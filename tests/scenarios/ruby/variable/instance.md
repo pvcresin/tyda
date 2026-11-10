@@ -576,3 +576,66 @@ class SingletonConfigFlow
   def self.load: -> Hash[untyped, untyped]
 end
 ```
+
+## Ivar from initialize passed to a helper types the helper parameter
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Holder
+  def initialize(value)
+    @value = value
+  end
+
+  def run = take(@value)
+  def take(v) = v
+end
+
+Holder.new(1)
+```
+
+### result
+
+```rbs
+class Holder
+  def initialize: (Integer value) -> void
+  def run: -> Integer
+  def take: (Integer v) -> Integer
+end
+```
+
+## Superclass reader sees instance variable writes from a subclass
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Base
+  def value = @value
+  def assign = (@value = :base)
+end
+
+class Child < Base
+  def assign = (@value = :child)
+end
+```
+
+### result
+
+```rbs
+class Base
+  def value: -> (:base | :child)
+  def assign: -> :base
+end
+
+class Child < Base
+  def assign: -> :child
+end
+```

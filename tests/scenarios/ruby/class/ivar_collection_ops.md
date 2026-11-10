@@ -186,3 +186,29 @@ class Numbers
   def total: -> Integer
 end
 ```
+
+## Same-method read sees an instance variable string append
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Builder
+  def run
+    @text = "a"
+    @text << "b"
+    @text
+  end
+end
+```
+
+### result
+
+```rbs
+class Builder
+  def run: -> String
+end
+```

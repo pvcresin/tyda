@@ -43,3 +43,38 @@ class A
   def create_item!: (?Hash[String | Symbol, untyped] attributes) -> B
 end
 ```
+
+## has_one through resolves the source target
+
+### update
+
+### file: app/models/account.rb
+
+```ruby
+class Account < ApplicationRecord
+  has_one :profile
+end
+```
+
+### file: app/models/post.rb
+
+```ruby
+class Post < ApplicationRecord
+  belongs_to :account
+  has_one :profile, through: :account
+end
+```
+
+```ruby
+class PostProfile
+  def profile_of = Post.find(1).profile
+end
+```
+
+### result
+
+```rbs
+class PostProfile
+  def profile_of: -> Profile?
+end
+```

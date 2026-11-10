@@ -463,3 +463,40 @@ class Object < BasicObject
   def g: -> untyped
 end
 ```
+
+## `class Alias` reopens the aliased class
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Foo
+  def self.build = 1
+end
+
+Alias = Foo
+
+class Alias
+  def value = 2
+end
+
+def run = Foo.new.value
+```
+
+### result
+
+```rbs
+Alias: singleton(Foo)
+
+class Foo
+  def self.build: -> 1
+  def value: -> 2
+end
+
+class Object < BasicObject
+  def run: -> 2
+end
+```

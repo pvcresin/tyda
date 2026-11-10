@@ -118,3 +118,44 @@ class Object < BasicObject
   def parts: -> [Integer, Integer]
 end
 ```
+
+## Integer divided by a Rational literal is Rational
+
+### update
+
+```ruby
+class Ratio
+  def half = 1 / 2r
+  def mixed = 1 + 1.5
+end
+```
+
+### result
+
+```rbs
+class Ratio
+  def half: -> Rational
+  def mixed: -> Float
+end
+```
+
+## divmod destructuring binds Integer parts
+
+### update
+
+```ruby
+class Splitter
+  def remainder
+    _quotient, rest = 7.divmod(2)
+    rest
+  end
+end
+```
+
+### result
+
+```rbs
+class Splitter
+  def remainder: -> Integer
+end
+```

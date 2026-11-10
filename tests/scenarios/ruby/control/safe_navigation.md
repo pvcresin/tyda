@@ -158,3 +158,79 @@ class Object < BasicObject
   def in_and: (untyped flag) -> (0 | 3)
 end
 ```
+
+## Chained safe navigation keeps nil through each call
+
+### update
+
+```rbs
+class OptionalName
+  def name: -> String?
+end
+```
+
+```ruby
+class OptionalName
+  def blank_name? = name&.strip&.empty?
+end
+```
+
+### result
+
+```rbs
+class OptionalName
+  def blank_name?: -> bool?
+end
+```
+
+## Return on a nil safe-nav chain narrows the receiver after it
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Cleaner
+  # @rbs value: String?
+  def run(value)
+    return "" if value&.strip.nil?
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class Cleaner
+  def run: (String? value) -> String
+end
+```
+
+## Return on safe-nav not equal to a literal narrows the receiver
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Checker
+  # @rbs value: String?
+  def run(value)
+    return "" if value&.size != 3
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class Checker
+  def run: (String? value) -> String
+end
+```

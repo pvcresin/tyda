@@ -574,3 +574,57 @@ class ClassBodyPairConsumer
   RESULT: untyped
 end
 ```
+
+## Hash#transform_keys with a mapping hash
+
+### update
+
+```ruby
+class Renamer
+  def run = { a: 1, b: 2 }.transform_keys(a: :x)
+end
+```
+
+### result
+
+```rbs
+class Renamer
+  def run: -> { x: 1, b: 2 }
+end
+```
+
+## Hash#reduce with a destructured pair parameter
+
+### update
+
+```ruby
+class Totals
+  def run = { a: 1, b: 2 }.reduce(0) { |acc, (_key, value)| acc + value }
+end
+```
+
+### result
+
+```rbs
+class Totals
+  def run: -> Integer
+end
+```
+
+## Hash#each_with_object with a destructured pair parameter
+
+### update
+
+```ruby
+class Keys
+  def run = { a: 1 }.each_with_object([]) { |(key, _value), acc| acc << key }
+end
+```
+
+### result
+
+```rbs
+class Keys
+  def run: -> Array[:a]
+end
+```

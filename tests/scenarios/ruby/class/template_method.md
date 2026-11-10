@@ -173,3 +173,65 @@ class BaseAction
   def execute: -> "done"
 end
 ```
+
+## Parent call through an abstract raise uses the subclass method
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Base
+  def run = name
+  def name = raise(NotImplementedError)
+end
+
+class Child < Base
+  def name = "world"
+end
+```
+
+### result
+
+```rbs
+class Base
+  def run: -> "world"
+  def name: -> bot
+end
+
+class Child < Base
+  def name: -> "world"
+end
+```
+
+## Parent call passes its arguments to a subclass method
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Base
+  def run = step(1)
+end
+
+class Child < Base
+  def step(value) = value.to_s
+end
+```
+
+### result
+
+```rbs
+class Base
+  def run: -> String
+end
+
+class Child < Base
+  def step: (Integer value) -> String
+end
+```

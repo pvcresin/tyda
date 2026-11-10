@@ -245,3 +245,36 @@ class Point
   def self.members: -> Array[:x | :y]
 end
 ```
+
+## Struct bracket constructor returns the struct and types its members
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+Pair = Struct.new(:left, :right)
+
+class Builder
+  def build = Pair[1, 2]
+end
+```
+
+### result
+
+```rbs
+class Builder
+  def build: -> Pair
+end
+
+class Pair
+  def left: -> Integer
+  def left=: (Integer left) -> Integer
+  def right: -> Integer
+  def right=: (Integer right) -> Integer
+  def initialize: (Integer left, Integer right) -> void
+  def self.members: -> Array[:left | :right]
+end
+```

@@ -1208,3 +1208,145 @@ class GuardedFileHeader
   def first_line: (untyped path) -> String?
 end
 ```
+
+## A nil-or-empty guard narrows the rest of the method
+
+### update
+
+```rbs
+class BlankGuard
+  def name: -> String?
+end
+```
+
+```ruby
+class BlankGuard
+  def display_name
+    value = name
+    return "none" if value.nil? || value.empty?
+    value
+  end
+end
+```
+
+### result
+
+```rbs
+class BlankGuard
+  def display_name: -> String
+end
+```
+
+## A nil check with and return narrows the rest of the method
+
+### update
+
+```rbs
+class AndReturnGuard
+  def name: -> String?
+end
+```
+
+```ruby
+class AndReturnGuard
+  def name_length
+    value = name
+    value.nil? and return 0
+    value.length
+  end
+end
+```
+
+### result
+
+```rbs
+class AndReturnGuard
+  def name_length: -> Integer
+end
+```
+
+## A self call drops instance variable narrowing
+
+### update
+
+```ruby
+class Holder
+  def kept
+    @value = rand > 0.5 ? "s" : nil
+    return 0 unless @value
+    @value
+  end
+
+  def dropped
+    @value = rand > 0.5 ? "s" : nil
+    return 0 unless @value
+    touch
+    @value
+  end
+
+  def touch = nil
+end
+```
+
+### result
+
+```rbs
+class Holder
+  def kept: -> 0 | "s"
+  def dropped: -> (0 | "s")?
+  def touch: -> nil
+end
+```
+
+## Hash index truthiness guard narrows the same index read
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Options
+  # @rbs opts: Hash[Symbol, String?]
+  def run(opts)
+    return "" unless opts[:name]
+    opts[:name]
+  end
+end
+```
+
+### result
+
+```rbs
+class Options
+  def run: (Hash[Symbol, String?] opts) -> String
+end
+```
+
+## Or raise removes nil from an optional return
+
+### update
+
+```ruby
+class Store
+  #: -> Integer?
+  def find = nil
+end
+
+class Loader
+  def run = Store.new.find || raise
+end
+```
+
+### result
+
+```rbs
+class Loader
+  def run: -> Integer
+end
+
+class Store
+  def find: -> Integer?
+end
+```

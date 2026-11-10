@@ -1601,3 +1601,200 @@ class Object < BasicObject
   def float_matches_integer_pattern: -> :matched
 end
 ```
+
+## A catch-all binding after a nil pattern excludes nil
+
+### update
+
+```rbs
+class NilFirstMatcher
+  def value: -> (Integer | String)?
+end
+```
+
+```ruby
+class NilFirstMatcher
+  def run
+    case value
+    in nil then 0
+    in other then other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class NilFirstMatcher
+  def run: -> Integer | String
+end
+```
+
+## A range pattern on an Integer keeps both branches
+
+### update
+
+```rbs
+class RangePatternMatcher
+  def score: -> Integer
+end
+```
+
+```ruby
+class RangePatternMatcher
+  def label
+    case score
+    in 1..5 then :low
+    else :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class RangePatternMatcher
+  def label: -> :low | :other
+end
+```
+
+## Alternative pattern narrows the subject
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Matcher
+  # @rbs value: Integer | String | Symbol
+  def run(value)
+    case value
+    in Integer | String then value
+    else nil
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Matcher
+  def run: ((Integer | String | Symbol) value) -> (Integer | String)?
+end
+```
+
+## Array pattern element capture binds the matched class
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Matcher
+  # @rbs values: Array[Integer | String]
+  def run(values)
+    case values
+    in [Integer => first, *] then first
+    else nil
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Matcher
+  def run: (Array[Integer | String] values) -> Integer?
+end
+```
+
+## Find pattern capture binds the matched class
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Matcher
+  # @rbs values: Array[Integer | String]
+  def run(values)
+    case values
+    in [*, String => found, *] then found
+    else nil
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Matcher
+  def run: (Array[Integer | String] values) -> String?
+end
+```
+
+## Hash pattern value capture binds the matched class
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Matcher
+  # @rbs data: Hash[Symbol, Integer | String]
+  def run(data)
+    case data
+    in { name: String => name } then name
+    else nil
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Matcher
+  def run: (Hash[Symbol, Integer | String] data) -> String?
+end
+```
+
+## Lambda pattern matches through case equality
+
+### update
+
+```ruby
+class Classifier
+  def classify(value)
+    case value
+    in ->(n) { n.zero? }
+      :zero
+    in Integer
+      :number
+    end
+  end
+end
+
+Classifier.new.classify(0)
+```
+
+### result
+
+```rbs
+class Classifier
+  def classify: (Integer value) -> (:number | :zero)
+end
+```

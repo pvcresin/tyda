@@ -2471,3 +2471,162 @@ class UnknownKeyDig
   def call_extract: -> "a"?
 end
 ```
+
+## Index or-assign seeds a slot that later pushes extend
+
+### update
+
+```ruby
+class Params
+  def run
+    params = {}
+    params[:f] ||= []
+    params[:f] << :status
+    params
+  end
+end
+```
+
+### result
+
+```rbs
+class Params
+  def run: -> Hash[:f, Array[:status]]
+end
+```
+
+## Splat of an object uses its to_a tuple
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Pair
+  def to_a = [1, "x"]
+end
+
+class Unpacker
+  def run = [*Pair.new]
+end
+```
+
+### result
+
+```rbs
+class Pair
+  def to_a: -> [1, "x"]
+end
+
+class Unpacker
+  def run: -> [1, "x"]
+end
+```
+
+## Splat of an object without to_a wraps the object
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Item
+end
+
+class Box
+  def wrap(value) = [*value]
+end
+
+Box.new.wrap(Item.new)
+```
+
+### result
+
+```rbs
+class Box
+  def wrap: (Item value) -> Array[Item]
+end
+```
+
+## Splat of an optional array drops nil
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Box
+  def wrap(value) = [*value]
+end
+
+Box.new.wrap([1].to_a)
+Box.new.wrap(nil)
+```
+
+### result
+
+```rbs
+class Box
+  def wrap: (Array[Integer]? value) -> Array[Integer]
+end
+```
+
+## Push of a splatted array keeps an open element count
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Store
+  def fill(items)
+    list = []
+    list.push(*items)
+    list
+  end
+end
+
+Store.new.fill([1, 2].to_a)
+```
+
+### result
+
+```rbs
+class Store
+  def fill: (Array[Integer] items) -> Array[Integer]
+end
+```
+
+## Range assignment adds the assigned elements, not the array
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Store
+  def fill
+    list = [0] * 3
+    list[0, 2] = [1, 2]
+    list
+  end
+end
+```
+
+### result
+
+```rbs
+class Store
+  def fill: -> Array[0 | 1 | 2]
+end
+```

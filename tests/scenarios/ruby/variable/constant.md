@@ -339,3 +339,22 @@ module M
   def self.cached: -> Integer
 end
 ```
+
+## Constant write under a dynamic module keeps only the static constant
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+holder = Module.new
+VALUE = holder::Item = 42
+```
+
+### result
+
+```rbs
+VALUE: 42
+```

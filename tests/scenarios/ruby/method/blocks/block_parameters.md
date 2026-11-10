@@ -716,3 +716,192 @@ class A
   def pn: -> Integer
 end
 ```
+
+## Hash iteration with a single parameter yields the pair
+
+### update
+
+```ruby
+class Pairs
+  def collect
+    out = []
+    { a: 1 }.each { |pair| out << pair }
+    out
+  end
+end
+```
+
+### result
+
+```rbs
+class Pairs
+  def collect: -> Array[[:a, 1]]
+end
+```
+
+## Hash map with only _1 or it yields the pair
+
+### update
+
+```ruby
+class Pairs
+  def numbered = { a: 1 }.map { _1 }
+  def implicit = { a: 1 }.map { it }
+  def second = { a: 1 }.map { _2 }
+end
+```
+
+### result
+
+```rbs
+class Pairs
+  def numbered: -> Array[[:a, 1]]
+  def implicit: -> Array[[:a, 1]]
+  def second: -> Array[1]
+end
+```
+
+## next inside a case arm joins the map result
+
+### update
+
+```ruby
+class Labels
+  def run
+    [1, 2, 3].map do |x|
+      case x
+      when 1 then next :one
+      when 2 then :two
+      else "many"
+      end
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Labels
+  def run: -> Array["many" | :one | :two]
+end
+```
+
+## Bare next joins nil into the map result
+
+### update
+
+```ruby
+class Doubler
+  def run = [1, nil].map { |x| next unless x; x * 2 }
+end
+```
+
+### result
+
+```rbs
+class Doubler
+  def run: -> Array[Integer?]
+end
+```
+
+## Trailing comma block parameter takes the first yielded value
+
+### update
+
+```ruby
+class Runner
+  def pair
+    yield 1, 2
+  end
+
+  def first
+    pair { |x,| return x }
+    nil
+  end
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def pair: { (Integer, Integer) -> bot } -> bot
+  def first: -> 1
+end
+```
+
+## Block keyword default can call a method
+
+### update
+
+```ruby
+class Runner
+  def helper(a, b) = a
+  def run = [1].each { |x: helper(1, 2)| x }
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def helper: (Integer a, Integer b) -> Integer
+  def run: -> [1]
+end
+```
+
+## Yielded tuple splats into several block parameters of a source method
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Pairs
+  def each_pair
+    yield [1, "x"]
+  end
+
+  def first_key = each_pair { |key, _value| key }
+end
+```
+
+### result
+
+```rbs
+class Pairs
+  def each_pair: { ([Integer, String]) -> 1 } -> 1
+  def first_key: -> 1
+end
+```
+
+## Bare break in a block makes a source yield method call nilable
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Runner
+  def run
+    yield 1
+    "done"
+  end
+
+  def stop(flag) = run { |n| break if flag; n }
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: { (Integer) -> 1 } -> "done"
+  def stop: (untyped flag) -> "done"?
+end
+```

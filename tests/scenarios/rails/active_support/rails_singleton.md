@@ -71,3 +71,49 @@ class Probe
   def delete_cache: -> bool
 end
 ```
+
+## Resolve environment predicates from environment files
+
+### update
+
+### file: config/environments/staging.rb
+
+```ruby
+Rails.application.configure do
+end
+```
+
+```ruby
+class Probe
+  def staging = Rails.env.staging?
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def staging: -> bool
+end
+```
+
+## Resolve Rails.cache write and exist?
+
+### update
+
+```ruby
+class Probe
+  def store = Rails.cache.write("key", 1)
+
+  def cached = Rails.cache.exist?("key")
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def store: -> bool
+  def cached: -> bool
+end
+```
