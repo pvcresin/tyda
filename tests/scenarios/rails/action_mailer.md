@@ -69,7 +69,7 @@ class NotifyMailer < ApplicationMailer
 end
 
 class NotifyService
-  def notify: (untyped user) -> ActionMailer::MailDeliveryJob | false
+  def notify: (untyped user) -> (ActionMailer::MailDeliveryJob | false)
 end
 ```
 
@@ -97,7 +97,7 @@ end
 
 ```rbs
 class Admin::Notifier
-  def send_alert: (untyped user) -> ActionMailer::MailDeliveryJob | false
+  def send_alert: (untyped user) -> (ActionMailer::MailDeliveryJob | false)
 end
 
 class AlertMailer < ApplicationMailer

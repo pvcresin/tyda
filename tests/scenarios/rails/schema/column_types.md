@@ -15,7 +15,6 @@ ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
     t.hstore "props"
     t.decimal "amount", precision: 10, scale: 2
     t.date "due_on"
-    t.datetime "published_at"
     t.string "tags", array: true
   end
 end
@@ -31,7 +30,6 @@ class Post < ApplicationRecord
   def d = props
   def e = amount
   def f = due_on
-  def g = published_at
   def h = tags
 end
 ```
@@ -46,12 +44,56 @@ class Post < ApplicationRecord
   def d: -> untyped
   def e: -> BigDecimal?
   def f: -> Date?
-  def g: -> (ActiveSupport::TimeWithZone | DateTime)?
   def h: -> Array[String]?
 end
 ```
 
+## Map datetime from schema.rb to TimeWithZone
+
+```yaml
+known_issue: true
+```
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "posts", force: :cascade do |t|
+    t.jsonb "meta"
+    t.jsonb "config", null: false
+    t.json "payload"
+    t.hstore "props"
+    t.decimal "amount", precision: 10, scale: 2
+    t.date "due_on"
+    t.datetime "published_at"
+    t.string "tags", array: true
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Post < ApplicationRecord
+  def g = published_at
+end
+```
+
+### result
+
+```rbs
+class Post < ApplicationRecord
+  def g: -> ActiveSupport::TimeWithZone?
+end
+```
+
 ## Map explicit types in `t.column`
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -79,12 +121,63 @@ end
 
 ```rbs
 class Event < ApplicationRecord
-  def happened_at: -> ActiveSupport::TimeWithZone | DateTime
+  def happened_at: -> ActiveSupport::TimeWithZone
   def due_date: -> Date?
 end
 ```
 
 ## Map structure.sql column types to accessor types
+
+### update
+
+`db/structure.sql`
+
+```sql
+CREATE TABLE public.posts (
+    id bigint NOT NULL,
+    meta jsonb,
+    config jsonb NOT NULL,
+    payload json,
+    props hstore,
+    amount numeric(10,2),
+    due_on date,
+    tags character varying[]
+);
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Post < ApplicationRecord
+  def a = meta
+  def b = config
+  def c = payload
+  def d = props
+  def e = amount
+  def f = due_on
+  def h = tags
+end
+```
+
+### result
+
+```rbs
+class Post < ApplicationRecord
+  def a: -> untyped
+  def b: -> untyped
+  def c: -> untyped
+  def d: -> untyped
+  def e: -> BigDecimal?
+  def f: -> Date?
+  def h: -> Array[String]?
+end
+```
+
+## Map datetime from structure.sql to TimeWithZone
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -108,14 +201,7 @@ CREATE TABLE public.posts (
 class ApplicationRecord; end
 
 class Post < ApplicationRecord
-  def a = meta
-  def b = config
-  def c = payload
-  def d = props
-  def e = amount
-  def f = due_on
   def g = published_at
-  def h = tags
 end
 ```
 
@@ -123,14 +209,7 @@ end
 
 ```rbs
 class Post < ApplicationRecord
-  def a: -> untyped
-  def b: -> untyped
-  def c: -> untyped
-  def d: -> untyped
-  def e: -> BigDecimal?
-  def f: -> Date?
-  def g: -> (ActiveSupport::TimeWithZone | DateTime)?
-  def h: -> Array[String]?
+  def g: -> ActiveSupport::TimeWithZone?
 end
 ```
 

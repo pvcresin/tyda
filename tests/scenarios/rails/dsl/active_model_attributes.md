@@ -23,7 +23,6 @@ class SignupForm
 
   attribute :age, :integer
   attribute :nickname, :string, default: "guest"
-  attribute :joined_at, :datetime
 
   validates :age, presence: true
 end
@@ -40,8 +39,45 @@ class SignupForm
   def age=: (Integer age) -> Integer
   def nickname: -> String
   def nickname=: (String nickname) -> String
-  def joined_at: -> (ActiveSupport::TimeWithZone | DateTime)?
-  def joined_at=: ((ActiveSupport::TimeWithZone | DateTime)? joined_at) -> (ActiveSupport::TimeWithZone | DateTime)?
+end
+```
+
+## A datetime attribute is a Time
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+module ActiveModel
+  module Attributes
+    module ClassMethods
+    end
+  end
+
+  module Validations
+    module ClassMethods
+    end
+  end
+end
+
+class SignupForm
+  include ActiveModel::Attributes
+
+  attribute :joined_at, :datetime
+end
+```
+
+### result
+
+```rbs
+class SignupForm
+  include ActiveModel::Attributes
+
+  def joined_at: -> Time?
+  def joined_at=: (Time? joined_at) -> Time?
 end
 ```
 

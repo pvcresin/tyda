@@ -19,7 +19,7 @@ end
 
 ```rbs
 class CleanupJob < ApplicationJob
-  def self.perform_later: (Integer user_id) -> CleanupJob | false
+  def self.perform_later: (Integer user_id) -> (CleanupJob | false)
   def self.perform_now: (Integer user_id) -> Integer
   def perform: (Integer user_id) -> Integer
 end
@@ -72,7 +72,7 @@ end
 
 ```rbs
 class NotifyJob < ApplicationJob
-  def self.perform_later: (String message) -> NotifyJob | false
+  def self.perform_later: (String message) -> (NotifyJob | false)
   def self.perform_now: (String message) -> void
   def perform: (String message) -> void
 end

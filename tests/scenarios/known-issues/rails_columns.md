@@ -133,9 +133,9 @@ end
 
 ```rbs
 class PostTimes
-  def published: -> ActiveSupport::TimeWithZone | DateTime
-  def created: -> ActiveSupport::TimeWithZone | DateTime
-  def updated: -> ActiveSupport::TimeWithZone | DateTime
+  def published: -> ActiveSupport::TimeWithZone
+  def created: -> ActiveSupport::TimeWithZone
+  def updated: -> ActiveSupport::TimeWithZone
 end
 ```
 
