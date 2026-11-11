@@ -144,7 +144,8 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
                             || current_case_config != ScenarioConfig::default()
                         {
                             panic!(
-                                "Scenario yaml config must appear immediately after a case heading"
+                                "Scenario yaml config must appear immediately after a case heading ({})",
+                                case_label(name, current_case_name.as_deref())
                             );
                         }
                         current_case_config = parse_scenario_config(&block_content);
@@ -184,7 +185,7 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
 
         if trimmed == "### update" || trimmed.starts_with("### ") {
             flush_step(
-                current_case_name.as_deref(),
+                &case_label(name, current_case_name.as_deref()),
                 &mut current_steps,
                 &mut rbs_inputs,
                 &mut rbi_inputs,
@@ -199,7 +200,7 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
 
         if let Some(heading) = trimmed.strip_prefix("## ") {
             flush_step(
-                current_case_name.as_deref(),
+                &case_label(name, current_case_name.as_deref()),
                 &mut current_steps,
                 &mut rbs_inputs,
                 &mut rbi_inputs,
@@ -208,7 +209,7 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
                 &mut result_rbs,
             );
             if let Some(case_name) = current_case_name.take() {
-                assert_case_has_steps(&case_name, &current_steps);
+                assert_case_has_steps(&case_label(name, Some(&case_name)), &current_steps);
                 cases.push(TestCase {
                     name: case_name,
                     config: std::mem::take(&mut current_case_config),
@@ -240,7 +241,7 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
     }
 
     flush_step(
-        current_case_name.as_deref(),
+        &case_label(name, current_case_name.as_deref()),
         &mut current_steps,
         &mut rbs_inputs,
         &mut rbi_inputs,
@@ -250,7 +251,7 @@ pub fn parse_scenario_file(name: &str, content: &str) -> ScenarioFile {
     );
 
     if let Some(case_name) = &current_case_name {
-        assert_case_has_steps(case_name, &current_steps);
+        assert_case_has_steps(&case_label(name, Some(case_name)), &current_steps);
     }
     if !current_steps.is_empty() {
         let case_name = current_case_name.unwrap_or_else(|| file_description.clone());
@@ -296,15 +297,22 @@ fn inline_code_path(line: &str) -> Option<String> {
     Some(inner.to_string())
 }
 
-fn assert_case_has_steps(case_name: &str, steps: &[Step]) {
+fn case_label(file_name: &str, case_name: Option<&str>) -> String {
+    format!(
+        "{file_name} > {}",
+        case_name.unwrap_or("<before first case>")
+    )
+}
+
+fn assert_case_has_steps(label: &str, steps: &[Step]) {
     assert!(
         !steps.is_empty(),
-        "Scenario case `{case_name}` has no update/result step"
+        "Scenario case `{label}` has no update/result step"
     );
 }
 
 fn flush_step(
-    case_name: Option<&str>,
+    label: &str,
     steps: &mut Vec<Step>,
     rbs_inputs: &mut Vec<String>,
     rbi_inputs: &mut Vec<String>,
@@ -317,18 +325,14 @@ fn flush_step(
         None => {
             assert!(
                 result_rbs.is_none(),
-                "Scenario case `{}` has a result but no current-file ruby block; leave the path off one ruby block",
-                case_name.unwrap_or("<unnamed>")
+                "Scenario case `{label}` has a result but no current-file ruby block; leave the path off one ruby block"
             );
             return;
         }
     };
 
     let Some(expected) = result_rbs.take() else {
-        panic!(
-            "Scenario case `{}` has a ruby block without a following result",
-            case_name.unwrap_or("<unnamed>")
-        );
+        panic!("Scenario case `{label}` has a ruby block without a following result");
     };
 
     let rbs_input = if rbs_inputs.is_empty() {
@@ -398,7 +402,7 @@ end
 
     #[test]
     #[should_panic(
-        expected = "Scenario case `only files` has a result but no current-file ruby block"
+        expected = "Scenario case `test > only files` has a result but no current-file ruby block"
     )]
     fn test_parse_rejects_case_without_current_file() {
         let content = r#"# Files only
@@ -858,7 +862,7 @@ end
 
     #[test]
     #[should_panic(
-        expected = "Scenario case `No result section` has a ruby block without a following result"
+        expected = "Scenario case `test > No result section` has a ruby block without a following result"
     )]
     fn test_parse_rejects_case_without_result() {
         let content = r#"# Test
@@ -878,7 +882,7 @@ end
     }
 
     #[test]
-    #[should_panic(expected = "Scenario case `Empty` has no update/result step")]
+    #[should_panic(expected = "Scenario case `test > Empty` has no update/result step")]
     fn test_parse_rejects_case_without_steps() {
         let content = r#"# Test
 
