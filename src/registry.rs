@@ -326,7 +326,7 @@ pub struct RegistryBreakdownTotals {
 
 use crate::types::{
     ClassInfo, ConstantSig, HoverBlockSig, MethodAliasSig, MethodSig, OverloadSig, Param,
-    ParamKind, RecordField, RecordKey, SharedName, SharedPath, SourceLocation, Type,
+    ParamKind, RecordField, RecordKey, SharedName, SharedPath, SourceLocation, SplatToA, Type,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,6 +359,7 @@ fn call_site_fingerprint(call_site: &CallSite) -> u64 {
     keyword_acc.hash(&mut hasher);
     call_site.keyword_rest_shape.hash(&mut hasher);
     call_site.block.hash(&mut hasher);
+    call_site.open_splat.hash(&mut hasher);
     if let Some(context) = call_site.caller_context.as_deref() {
         context.class_name.hash(&mut hasher);
         context.method_name.hash(&mut hasher);
@@ -379,6 +380,8 @@ pub struct CallSite {
     pub block: Option<Box<HoverBlockSig>>,
     // same for `caller_context` (generic param forwarding is rare).
     pub caller_context: Option<Box<CallSiteCallerContext>>,
+    // Index in `arg_types` of a splat whose element count is unknown; that entry holds its element type.
+    pub open_splat: Option<u16>,
 }
 
 type CallSiteCallerContextKey = (SharedName, SharedName, bool);
@@ -3335,12 +3338,18 @@ impl TypeRegistry {
         param_infos: &[ParamInfo],
     ) {
         let arg_types = Self::synthesize_keyword_hash_arg(call_site, param_infos);
-        Self::merge_resolved_positional_arg_types(param_types, &arg_types, param_infos);
+        Self::merge_resolved_positional_arg_types(
+            param_types,
+            &arg_types,
+            call_site.open_splat,
+            param_infos,
+        );
     }
 
     fn merge_resolved_positional_arg_types(
         param_types: &mut [Vec<Type>],
         arg_types: &[Type],
+        open_splat: Option<u16>,
         param_infos: &[ParamInfo],
     ) {
         let positional_infos: Vec<&ParamInfo> = param_infos
@@ -3352,7 +3361,14 @@ impl TypeRegistry {
                 )
             })
             .collect();
-        let bound = Self::bind_positional_arguments(&positional_infos, arg_types);
+        let bound = match open_splat {
+            Some(index) => Self::bind_positional_arguments_with_open_splat(
+                &positional_infos,
+                arg_types,
+                usize::from(index),
+            ),
+            None => Self::bind_positional_arguments(&positional_infos, arg_types),
+        };
         for (slot, arg_types) in param_types.iter_mut().zip(bound) {
             for arg_type in arg_types {
                 Type::append_argument_parts(slot, arg_type);
@@ -3392,6 +3408,62 @@ impl TypeRegistry {
                 _ => args.next().into_iter().collect(),
             })
             .collect()
+    }
+
+    /// The splat at `open_index` may give any number of its element, so each arity-valid count
+    /// binds once and the parameters take the union.
+    pub(crate) fn bind_positional_arguments_with_open_splat(
+        params: &[&ParamInfo],
+        args: &[Type],
+        open_index: usize,
+    ) -> Vec<Vec<Type>> {
+        let Some(open_elem) = args.get(open_index) else {
+            return Self::bind_positional_arguments(params, args);
+        };
+        let required = params
+            .iter()
+            .filter(|param| matches!(param.kind, ParamKind::Required))
+            .count();
+        let optional = params
+            .iter()
+            .filter(|param| matches!(param.kind, ParamKind::Optional))
+            .count();
+        let has_rest = params
+            .iter()
+            .any(|param| matches!(param.kind, ParamKind::Rest));
+        let fixed = args.len() - 1;
+        // Past `required + optional` only the rest grows, which a single extra element already covers.
+        let max_count = (required + optional + usize::from(has_rest)).saturating_sub(fixed);
+        let mut merged: Vec<Vec<Type>> = vec![Vec::new(); params.len()];
+        let mut bound_any = false;
+        for count in 0..=max_count {
+            let total = fixed + count;
+            if total < required || (!has_rest && total > required + optional) {
+                continue;
+            }
+            let expanded: Vec<Type> = args[..open_index]
+                .iter()
+                .cloned()
+                .chain(std::iter::repeat_n(open_elem.clone(), count))
+                .chain(args[open_index + 1..].iter().cloned())
+                .collect();
+            for (slot, bound) in merged
+                .iter_mut()
+                .zip(Self::bind_positional_arguments(params, &expanded))
+            {
+                for ty in bound {
+                    if !slot.contains(&ty) {
+                        slot.push(ty);
+                    }
+                }
+            }
+            bound_any = true;
+        }
+        if bound_any {
+            merged
+        } else {
+            Self::bind_positional_arguments(params, args)
+        }
     }
 
     pub fn new() -> Self {
@@ -7280,6 +7352,12 @@ impl TypeRegistry {
             | Type::NonNilProjection(subject) => {
                 *subject.as_ref() == Type::Untyped || Self::is_projection_of_unknown(subject)
             }
+            Type::SplatRef(parts) => match parts.as_ref() {
+                Type::Tuple(parts) => parts
+                    .iter()
+                    .any(|part| *part == Type::Untyped || Self::is_projection_of_unknown(part)),
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -7404,6 +7482,14 @@ impl TypeRegistry {
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner) => {
                 self.collect_deferred_receiver_classes(inner, classes);
+            }
+            Type::SplatRef(parts) => {
+                if let Type::Tuple(parts) = parts.as_ref() {
+                    for part in parts {
+                        self.collect_receiver_owner_classes(part, "to_a", classes);
+                    }
+                }
+                self.collect_deferred_receiver_classes(parts, classes);
             }
             _ => {}
         }
@@ -7624,7 +7710,8 @@ impl TypeRegistry {
             | Type::ReceiverMethodRef(subject, _)
             | Type::TruthyProjection(subject)
             | Type::FalsyProjection(subject)
-            | Type::NonNilProjection(subject) => Self::type_contains_param_ref_static(subject),
+            | Type::NonNilProjection(subject)
+            | Type::SplatRef(subject) => Self::type_contains_param_ref_static(subject),
             Type::DeferredSafeNavigation(receiver, result) => {
                 Self::type_contains_param_ref_static(receiver)
                     || Self::type_contains_param_ref_static(result)
@@ -7908,7 +7995,8 @@ impl TypeRegistry {
             | Type::PatternKeyRestRef(inner, _)
             | Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => Self::type_contains_subclass_ref_candidate(inner),
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => Self::type_contains_subclass_ref_candidate(inner),
             Type::Proc { return_type, .. } => {
                 Self::type_contains_subclass_ref_candidate(return_type)
             }
@@ -8058,6 +8146,14 @@ impl TypeRegistry {
                     Type::PatternRestRef(Box::new(resolved_subject))
                 } else {
                     Self::resolve_pattern_rest_ref(&resolved_subject)
+                }
+            }
+            Type::SplatRef(subject) => {
+                let resolved_subject = self.resolve_subclass_refs_in_type(subject);
+                if Self::type_contains_subclass_ref_candidate(&resolved_subject) {
+                    Type::SplatRef(Box::new(resolved_subject))
+                } else {
+                    self.resolve_splat_parts(&resolved_subject)
                 }
             }
             Type::PatternTrailingRef(subject, from_end) => {
@@ -8298,6 +8394,7 @@ impl TypeRegistry {
             | Type::TruthyProjection(subject)
             | Type::FalsyProjection(subject)
             | Type::NonNilProjection(subject) => Self::global_type_contains_ref(subject),
+            Type::SplatRef(_) => true,
             _ => false,
         }
     }
@@ -8901,6 +8998,24 @@ impl TypeRegistry {
                     Self::resolve_pattern_rest_ref(&resolved_subject)
                 }
             }
+            Type::SplatRef(subject) => {
+                let resolved_subject = self.resolve_global_refs(
+                    context_class,
+                    subject,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
+                if Self::global_type_contains_ref(&resolved_subject) {
+                    Type::SplatRef(Box::new(resolved_subject))
+                } else {
+                    self.resolve_splat_parts(&resolved_subject)
+                }
+            }
             Type::PatternTrailingRef(subject, from_end) => {
                 let resolved_subject = self.resolve_global_refs(
                     context_class,
@@ -9036,6 +9151,10 @@ impl TypeRegistry {
                 let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
                 Self::resolve_pattern_rest_ref(&resolved_subject)
             }
+            Type::SplatRef(subject) => {
+                let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
+                self.resolve_splat_parts(&resolved_subject)
+            }
             Type::PatternTrailingRef(subject, from_end) => {
                 let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
                 Self::resolve_pattern_trailing_ref(&resolved_subject, *from_end)
@@ -9155,7 +9274,8 @@ impl TypeRegistry {
             | Type::PatternKeyRestRef(..)
             | Type::TruthyProjection(..)
             | Type::FalsyProjection(..)
-            | Type::NonNilProjection(..) => true,
+            | Type::NonNilProjection(..)
+            | Type::SplatRef(_) => true,
             Type::Union(parts) | Type::Intersection(parts) => parts
                 .iter()
                 .any(|part| Self::type_needs_deferred_resolution_depth(part, depth + 1)),
@@ -9274,7 +9394,8 @@ impl TypeRegistry {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
-            | Type::PatternKeyRestRef(subject, _) => Self::type_is_memo_small(subject, budget),
+            | Type::PatternKeyRestRef(subject, _)
+            | Type::SplatRef(subject) => Self::type_is_memo_small(subject, budget),
             Type::DeferredSafeNavigation(receiver, result) => {
                 Self::type_is_memo_small(receiver, budget)
                     && Self::type_is_memo_small(result, budget)
@@ -9547,6 +9668,17 @@ impl TypeRegistry {
                     visiting,
                 );
                 Self::resolve_pattern_rest_ref(&resolved_subject)
+            }
+            Type::SplatRef(subject) => {
+                let resolved_subject = self.resolve_deferred_refs_depth(
+                    class_name,
+                    singleton_context,
+                    subject,
+                    depth + 1,
+                    memo,
+                    visiting,
+                );
+                self.resolve_splat_parts(&resolved_subject)
             }
             Type::PatternTrailingRef(subject, from_end) => {
                 let resolved_subject = self.resolve_deferred_refs_depth(
@@ -10140,7 +10272,8 @@ impl TypeRegistry {
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _)
-            | Type::ReceiverMethodRef(subject, _) => {
+            | Type::ReceiverMethodRef(subject, _)
+            | Type::SplatRef(subject) => {
                 Self::call_site_walk_is_identity(subject, resolve_method_return_refs)
             }
             Type::Proc { return_type, .. } => {
@@ -10181,9 +10314,8 @@ impl TypeRegistry {
             | Type::PatternKeyRestRef(inner, _)
             | Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => {
-                Self::type_contains_receiver_method_ref(inner, method_name)
-            }
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => Self::type_contains_receiver_method_ref(inner, method_name),
             Type::Proc { return_type, .. } => {
                 Self::type_contains_receiver_method_ref(return_type, method_name)
             }
@@ -10335,6 +10467,9 @@ impl TypeRegistry {
                 *index,
             ),
             Type::PatternRestRef(subject) => Type::PatternRestRef(Box::new(
+                self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
+            )),
+            Type::SplatRef(subject) => Type::SplatRef(Box::new(
                 self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
             )),
             Type::PatternTrailingRef(subject, from_end) => Type::PatternTrailingRef(
@@ -10927,6 +11062,7 @@ impl TypeRegistry {
                 Self::merge_resolved_positional_arg_types(
                     &mut param_types,
                     &resolved_arg_types,
+                    call_site.open_splat,
                     &method.param_infos,
                 );
             }
@@ -11597,6 +11733,7 @@ impl TypeRegistry {
                     keyword_rest_shape: None,
                     block: None,
                     caller_context: None,
+                    open_splat: None,
                 },
             );
         }
@@ -12106,7 +12243,8 @@ impl TypeRegistry {
                 .any(|field| Self::type_contains_param_ref(&field.value)),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
-            | Type::PatternTrailingRef(subject, _) => Self::type_contains_param_ref(subject),
+            | Type::PatternTrailingRef(subject, _)
+            | Type::SplatRef(subject) => Self::type_contains_param_ref(subject),
             Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
                 Self::type_contains_param_ref(subject)
             }
@@ -12438,6 +12576,7 @@ impl TypeRegistry {
                     Self::resolve_pattern_rest_ref(&resolved_subject)
                 }
             }
+            Type::SplatRef(parts) => Type::SplatRef(Box::new(recur(parts))),
             Type::PatternTrailingRef(subject, from_end) => {
                 let resolved_subject = recur(subject);
                 if Self::type_contains_param_ref_static(&resolved_subject) {
@@ -12488,6 +12627,34 @@ impl TypeRegistry {
         } else {
             Type::from_type_vec_preserve_untyped(found)
         }
+    }
+
+    /// What `to_a` gives for a splatted value, as far as the loaded declarations tell.
+    pub(crate) fn splat_to_a(&self, ty: &Type) -> SplatToA {
+        let Some(class_name) = Self::type_to_class_name(ty) else {
+            return SplatToA::Unknown;
+        };
+        let prefer_singleton = matches!(ty, Type::Singleton(_));
+        if self
+            .resolve_method_call_owner_ref(&class_name, "to_a", prefer_singleton)
+            .is_none()
+        {
+            return if self.method_surface_knowledge_complete(&class_name, false) {
+                SplatToA::Missing
+            } else {
+                SplatToA::Unknown
+            };
+        }
+        match self.lookup_argless_receiver_return(&class_name, "to_a", prefer_singleton) {
+            Some(ret) => SplatToA::Returns(Self::deferred_self_return(&ret, ty)),
+            None => SplatToA::Unknown,
+        }
+    }
+
+    /// Resolves the parts of a `SplatRef`, keeping it deferred while a part is still unknown.
+    pub(crate) fn resolve_splat_parts(&self, parts: &Type) -> Type {
+        Type::resolve_splat_ref(parts, &mut |ty| self.splat_to_a(ty))
+            .unwrap_or_else(|| Type::SplatRef(Box::new(parts.clone())))
     }
 
     pub(crate) fn resolve_pattern_rest_ref(subject: &Type) -> Type {
@@ -12597,6 +12764,45 @@ impl TypeRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn positional_param(name: &str, kind: ParamKind) -> ParamInfo {
+        ParamInfo {
+            name: name.to_string(),
+            kind,
+            default_type: None,
+        }
+    }
+
+    #[test]
+    fn open_splat_binds_every_arity_valid_count() {
+        let params = [
+            positional_param("a", ParamKind::Required),
+            positional_param("b", ParamKind::Required),
+            positional_param("c", ParamKind::Optional),
+        ];
+        let params: Vec<&ParamInfo> = params.iter().collect();
+        let bound = TypeRegistry::bind_positional_arguments_with_open_splat(
+            &params,
+            &[Type::Symbol, Type::String],
+            1,
+        );
+        assert_eq!(
+            bound,
+            vec![vec![Type::Symbol], vec![Type::String], vec![Type::String]]
+        );
+    }
+
+    #[test]
+    fn open_splat_without_a_valid_count_binds_one_element() {
+        let params = [positional_param("a", ParamKind::Required)];
+        let params: Vec<&ParamInfo> = params.iter().collect();
+        let bound = TypeRegistry::bind_positional_arguments_with_open_splat(
+            &params,
+            &[Type::Symbol, Type::Symbol, Type::String],
+            2,
+        );
+        assert_eq!(bound, vec![vec![Type::Symbol]]);
+    }
 
     /// pin the `ClassData` shell at 264B (tens of thousands live at once -> directly impacts LSP footprint; evict to cold or a box when exceeded).
     #[test]
@@ -12737,6 +12943,7 @@ mod tests {
             keyword_rest_shape: None,
             block: None,
             caller_context: None,
+            open_splat: None,
         }
     }
 
@@ -13387,6 +13594,7 @@ mod tests {
                 keyword_rest_shape: None,
                 block: None,
                 caller_context: None,
+                open_splat: None,
             },
         );
         registry.set_file_path("Child", "child.rb");

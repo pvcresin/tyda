@@ -853,10 +853,6 @@ end
 
 ## Yielded tuple splats into several block parameters of a source method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

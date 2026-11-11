@@ -882,9 +882,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(inner)
             | Type::PatternIndexRef(inner, _)
             | Type::PatternKeyRef(inner, _)
-            | Type::PatternKeyRestRef(inner, _) => {
-                Self::type_contains_subclass_ref_candidate(inner)
-            }
+            | Type::PatternKeyRestRef(inner, _)
+            | Type::SplatRef(inner) => Self::type_contains_subclass_ref_candidate(inner),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_subclass_ref_candidate),
             Type::Hash(Some(key), Some(value)) => {
                 Self::type_contains_subclass_ref_candidate(key)
@@ -1030,9 +1029,9 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_contains_param_ref(&field.value)),
-            Type::PatternIndexRef(subject, _) | Type::PatternRestRef(subject) => {
-                Self::type_contains_param_ref(subject)
-            }
+            Type::PatternIndexRef(subject, _)
+            | Type::PatternRestRef(subject)
+            | Type::SplatRef(subject) => Self::type_contains_param_ref(subject),
             Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
                 Self::type_contains_param_ref(subject)
             }
@@ -1863,6 +1862,9 @@ impl<'a> InferenceEngine<'a> {
                     Self::resolve_pattern_rest_ref(&resolved_subject)
                 }
             }
+            Type::SplatRef(parts) => Type::SplatRef(Box::new(
+                Self::substitute_param_refs_with_keywords(parts, param_types, keyword_types),
+            )),
             Type::PatternKeyRef(subject, key) => {
                 let resolved_subject =
                     Self::substitute_param_refs_with_keywords(subject, param_types, keyword_types);

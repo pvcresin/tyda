@@ -170,10 +170,6 @@ end
 
 ## Splat argument that covers a required arg can also fill the optional parameter
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
