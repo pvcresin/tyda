@@ -71,7 +71,7 @@ fn write_rbs_from_classes<W: Write>(
         first_entry = false;
     }
     for constant in top_level_constants {
-        writeln!(writer, "{}: {}", constant.name, constant.const_type)?;
+        write_constant(writer, "", constant)?;
     }
 
     let non_empty: Vec<_> = classes
@@ -102,7 +102,7 @@ fn write_rbs_from_registry<W: Write>(
         first_entry = false;
     }
     for constant in &top_level_constants {
-        writeln!(writer, "{}: {}", constant.name, constant.const_type)?;
+        write_constant(writer, "", constant)?;
     }
 
     // Chunked parallel render writes classes out in order, so output is byte-stable (the `resolve_params` cache is pure).
@@ -178,7 +178,7 @@ fn write_class_body<W: Write>(
         writer.write_all(b"\n")?;
     }
     for constant in renderable_constants {
-        writeln!(writer, "  {}: {}", constant.name, constant.const_type)?;
+        write_constant(writer, "  ", constant)?;
     }
     if !renderable_constants.is_empty() && !renderable_methods.is_empty() {
         writer.write_all(b"\n")?;
@@ -193,6 +193,23 @@ fn write_class_body<W: Write>(
         write_alias(writer, alias)?;
     }
     writer.write_all(b"end\n")
+}
+
+// A class/module alias is its own RBS declaration (`class A = B`), not a constant entry.
+fn write_constant<W: Write>(
+    writer: &mut W,
+    indent: &str,
+    constant: &ConstantSig,
+) -> io::Result<()> {
+    match (constant.alias_kind, &constant.const_type) {
+        (Some(kind), Type::Singleton(target)) => writeln!(
+            writer,
+            "{indent}{} {} = {target}",
+            kind.keyword(),
+            constant.name
+        ),
+        _ => writeln!(writer, "{indent}{}: {}", constant.name, constant.const_type),
+    }
 }
 
 fn write_alias<W: Write>(writer: &mut W, alias: &MethodAliasSig) -> io::Result<()> {
@@ -451,6 +468,7 @@ fn write_return_type<W: Write>(writer: &mut W, ty: &Type) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::NamespaceAliasKind;
 
     #[test]
     fn signature_formats_empty_tuple_as_rbs_empty_tuple() {
@@ -462,5 +480,43 @@ mod tests {
         assert!(
             rbs_sys::parse_signature(&format!("class A\n  def empty: {rendered}\nend\n")).is_ok()
         );
+    }
+
+    fn constant(name: &str, target: &str, alias_kind: Option<NamespaceAliasKind>) -> ConstantSig {
+        ConstantSig {
+            name: name.to_string(),
+            const_type: Type::Singleton(target.into()),
+            alias_kind,
+            loc: None,
+            file_path: None,
+        }
+    }
+
+    #[test]
+    fn namespace_alias_constants_render_as_alias_declarations() {
+        let mut buf = Vec::new();
+        write_constant(
+            &mut buf,
+            "",
+            &constant("A", "Foo", Some(NamespaceAliasKind::Class)),
+        )
+        .unwrap();
+        writeln!(buf, "module Outer").unwrap();
+        write_constant(
+            &mut buf,
+            "  ",
+            &constant("M", "Mod", Some(NamespaceAliasKind::Module)),
+        )
+        .unwrap();
+        write_constant(&mut buf, "  ", &constant("V", "Foo", None)).unwrap();
+        writeln!(buf, "end").unwrap();
+        let rendered = String::from_utf8(buf).unwrap();
+
+        assert_eq!(
+            rendered,
+            "class A = Foo\nmodule Outer\n  module M = Mod\n  V: singleton(Foo)\nend\n"
+        );
+        let with_targets = format!("class Foo\nend\nmodule Mod\nend\n{rendered}");
+        assert!(rbs_sys::parse_signature(&with_targets).is_ok());
     }
 }

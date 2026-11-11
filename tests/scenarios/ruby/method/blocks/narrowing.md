@@ -749,10 +749,6 @@ end
 
 ## select narrows project constant aliases
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

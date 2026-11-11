@@ -1614,8 +1614,29 @@ pub struct Param {
 pub struct ConstantSig {
     pub name: std::string::String,
     pub const_type: Type,
+    /// Set when the constant names a class/module object and renders as an RBS alias declaration.
+    pub alias_kind: Option<NamespaceAliasKind>,
     pub loc: Option<SourceLocation>,
     pub file_path: Option<std::string::String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NamespaceAliasKind {
+    Class,
+    Module,
+}
+
+impl NamespaceAliasKind {
+    pub fn of(is_module: bool) -> Self {
+        if is_module { Self::Module } else { Self::Class }
+    }
+
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::Class => "class",
+            Self::Module => "module",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

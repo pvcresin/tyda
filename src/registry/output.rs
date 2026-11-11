@@ -169,12 +169,7 @@ impl TypeRegistry {
                     .values()
                     // lazy stdlib constants are lookup-only and are never emitted in the output.
                     .filter(|constant| !constant.external_source)
-                    .map(|constant| ConstantSig {
-                        name: constant.name.to_string(),
-                        const_type: constant.const_type.clone(),
-                        loc: constant.loc,
-                        file_path: constant.file_path.as_deref().map(str::to_string),
-                    })
+                    .map(|constant| self.output_constant_sig(constant))
                     .collect()
             })
             .unwrap_or_default();
@@ -185,6 +180,33 @@ impl TypeRegistry {
                 .then(a.name.cmp(&b.name))
         });
         constants
+    }
+
+    fn output_constant_sig(&self, constant: &ConstantDef) -> ConstantSig {
+        ConstantSig {
+            name: constant.name.to_string(),
+            const_type: constant.const_type.clone(),
+            alias_kind: self.namespace_alias_kind(constant),
+            loc: constant.loc,
+            file_path: constant.file_path.as_deref().map(str::to_string),
+        }
+    }
+
+    /// The keyword must match the target's declaration; an alias whose target kind is
+    /// unknown stays a `singleton(...)` constant, which is still valid RBS.
+    fn namespace_alias_kind(&self, constant: &ConstantDef) -> Option<NamespaceAliasKind> {
+        let recorded = match constant.alias {
+            ConstantAlias::None => return None,
+            ConstantAlias::Namespace => None,
+            ConstantAlias::NamespaceOf(kind) => Some(kind),
+        };
+        let Type::Singleton(target) = &constant.const_type else {
+            return None;
+        };
+        self.class_data
+            .get(target.as_str())
+            .map(|data| NamespaceAliasKind::of(data.is_module))
+            .or(recorded)
     }
 
     /// `Sym: Ord` compares by string content, so this keeps the byte-stable
@@ -275,12 +297,7 @@ impl TypeRegistry {
             .filter(|constant| {
                 file_filter.is_none_or(|file_path| constant.file_path.as_deref() == Some(file_path))
             })
-            .map(|constant| ConstantSig {
-                name: constant.name.to_string(),
-                const_type: constant.const_type.clone(),
-                loc: constant.loc,
-                file_path: constant.file_path.as_deref().map(str::to_string),
-            })
+            .map(|constant| self.output_constant_sig(constant))
             .collect();
         constants.sort_by(|a, b| {
             a.loc
@@ -1021,5 +1038,46 @@ mod tests {
 
         assert_eq!(instance.return_type, Type::Bool);
         assert_eq!(singleton.return_type, Type::True);
+    }
+
+    fn top_level_alias_kind(registry: &TypeRegistry, name: &str) -> Option<NamespaceAliasKind> {
+        registry
+            .build_output_top_level_constants()
+            .into_iter()
+            .find(|constant| constant.name == name)
+            .expect("constant")
+            .alias_kind
+    }
+
+    fn set_alias(registry: &mut TypeRegistry, name: &str, target: &str, alias: ConstantAlias) {
+        let ty = Type::Singleton(Sym::new(target));
+        registry.set_constant_entry("Object", name, ty, None, None, alias);
+    }
+
+    #[test]
+    fn namespace_alias_kind_prefers_output_declaration_over_recorded_kind() {
+        let mut registry = TypeRegistry::new();
+        registry.set_is_module("Target", true);
+        let recorded = ConstantAlias::NamespaceOf(NamespaceAliasKind::Class);
+        set_alias(&mut registry, "A", "Target", recorded);
+        set_alias(&mut registry, "Ext", "External", recorded);
+        set_alias(
+            &mut registry,
+            "Unknown",
+            "External",
+            ConstantAlias::Namespace,
+        );
+        set_alias(&mut registry, "Value", "Target", ConstantAlias::None);
+
+        assert_eq!(
+            top_level_alias_kind(&registry, "A"),
+            Some(NamespaceAliasKind::Module)
+        );
+        assert_eq!(
+            top_level_alias_kind(&registry, "Ext"),
+            Some(NamespaceAliasKind::Class)
+        );
+        assert_eq!(top_level_alias_kind(&registry, "Unknown"), None);
+        assert_eq!(top_level_alias_kind(&registry, "Value"), None);
     }
 }

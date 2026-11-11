@@ -238,6 +238,7 @@ fn hash_export_constant(entry: (&Sym, &ConstantDef)) -> u64 {
     let mut hasher = FxHasher::default();
     entry.0.hash(&mut hasher);
     entry.1.const_type.hash(&mut hasher);
+    entry.1.alias.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -247,6 +248,7 @@ fn hash_registry_constant(entry: (&Sym, &ConstantDef)) -> u64 {
     entry.1.const_type.hash(&mut hasher);
     entry.1.loc.hash(&mut hasher);
     entry.1.file_path.hash(&mut hasher);
+    entry.1.alias.hash(&mut hasher);
     hasher.finish()
 }
 
