@@ -127,6 +127,10 @@ end
 
 ## String interpolation expands an annotated instance variable union
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -145,7 +149,7 @@ end
 ```rbs
 class User
   def initialize: (("a" | "b") name) -> void
-  def greeting: -> "hello, a" | "hello, b"
+  def greeting: -> ("hello, a" | "hello, b")
 end
 ```
 
@@ -306,6 +310,10 @@ end
 
 ## String interpolation expands integer literal union from method condition
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -319,11 +327,15 @@ end
 
 ```rbs
 class Object < BasicObject
-  def interpolated_integer_from_comparison: -> "1" | "2"
+  def interpolated_integer_from_comparison: -> ("1" | "2")
 end
 ```
 
 ## Conditional inside string interpolation expands to integer literal union
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -337,7 +349,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def interpolated_direct_integer_comparison: -> "1" | "2"
+  def interpolated_direct_integer_comparison: -> ("1" | "2")
 end
 ```
 

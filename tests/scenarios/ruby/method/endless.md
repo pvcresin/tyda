@@ -36,6 +36,10 @@ end
 
 ## Endless method inside class
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -48,6 +52,6 @@ end
 
 ```rbs
 class Calc
-  def pi: -> 3.14
+  def pi: -> Float
 end
 ```

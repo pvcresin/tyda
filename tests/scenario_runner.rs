@@ -11,7 +11,7 @@ use tyda::analysis::{
 };
 use tyda::project::{DslActivation, DslLibrary, ProjectVersions};
 use tyda::rails::load_project_types_with_activation;
-use tyda::rbs::import::load_rbs_string;
+use tyda::rbs::import::{load_rbs_string, rbs_parses};
 use tyda::rbs::render::{RenderOptions, render_rbs_with_options};
 use tyda::rbs::stdlib_loader::LazyRbsLoader;
 use tyda::registry::TypeRegistry;
@@ -80,6 +80,16 @@ fn run_scenario_file(
     for case in &scenario_file.cases {
         let known_issue = path_known_issue || case.config.known_issue;
         for (i, step) in case.steps.iter().enumerate() {
+            let syntax_errors = rbs_syntax_errors(step);
+            if !syntax_errors.is_empty() {
+                failures.push(TestResult {
+                    file_name: file_name.clone(),
+                    case_name: case.name.clone(),
+                    step: i + 1,
+                    error: syntax_errors.join(""),
+                });
+                continue;
+            }
             let prepared =
                 prepare_step_context(&case.config, step, stdlib_loader, rails_mode, dsl_mode);
             let actual_rbs = render_rbs_with_options(
@@ -122,6 +132,27 @@ fn run_scenario_file(
         failures,
         unexpected_passes,
     }
+}
+
+// Passing cases require actual == expected, so a syntax check on the expected
+// block also guarantees Tyda's emitted RBS parses with the official RBS parser.
+fn rbs_syntax_errors(step: &Step) -> Vec<String> {
+    let mut errors = Vec::new();
+    if !rbs_parses(&step.expected_rbs) {
+        errors.push(format!(
+            "\nexpected RBS is not valid RBS syntax:\n{}",
+            step.expected_rbs.trim_end()
+        ));
+    }
+    if let Some(input) = &step.rbs_input
+        && !rbs_parses(input)
+    {
+        errors.push(format!(
+            "\ninput RBS is not valid RBS syntax:\n{}",
+            input.trim_end()
+        ));
+    }
+    errors
 }
 
 fn is_known_issue_path(file_name: &str) -> bool {

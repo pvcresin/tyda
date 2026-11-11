@@ -148,6 +148,10 @@ end
 
 ## Union optional positional default and call-site types
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -168,7 +172,7 @@ end
 class A
   include Shared
 
-  def bar: -> String | 1
+  def bar: -> (String | 1)
 end
 
 module Shared

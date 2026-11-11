@@ -405,6 +405,10 @@ end
 
 ## Collect attr inside visibility wrappers
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -435,7 +439,7 @@ item.label
 class Item
   def initialize: -> void
   private def name: -> "item"
-  private def count: -> 1 | 2
+  private def count: -> (1 | 2)
   private def count=: (Integer count) -> Integer
   def set_count: -> 2
   def label: -> "item"
@@ -514,6 +518,10 @@ end
 
 ## attr_accessor getter reflects external setter writes
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -533,13 +541,17 @@ Account.new.balance = "frozen"
 
 ```rbs
 class Account
-  def balance: -> Integer | String
+  def balance: -> (Integer | String)
   def balance=: ((Integer | String) balance) -> (Integer | String)
   def initialize: -> void
 end
 ```
 
 ## Local receiver setter refines a later getter
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -633,7 +645,7 @@ end
 
 ```rbs
 class DirectStore
-  def value: -> Integer | String | Symbol
+  def value: -> (Integer | String | Symbol)
   def value=: ((Integer | String | Symbol) value) -> (Integer | String | Symbol)
   def other: -> [ ]
   def other=: ([ ] other) -> [ ]
@@ -657,6 +669,10 @@ end
 ```
 
 ## Attribute readers preserve known record shape around untyped fields
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -689,7 +705,7 @@ end
 
 ```rbs
 class AttributeRecordHolder
-  def options: -> Hash[untyped, untyped] | { fixed: bool, dynamic: untyped }
+  def options: -> (Hash[untyped, untyped] | { fixed: bool, dynamic: untyped })
   def initialize: (?options: (Hash[untyped, untyped] | { fixed: bool, dynamic: bool })) -> void
 end
 

@@ -118,6 +118,10 @@ end
 
 ## Match-last-line and flip-flop predicates do not erase branch types
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -142,7 +146,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def match_last_line_branch: -> 1 | "no"
+  def match_last_line_branch: -> (1 | "no")
   def flip_flop_branch: (untyped x) -> ("inside" | "outside")
 end
 ```

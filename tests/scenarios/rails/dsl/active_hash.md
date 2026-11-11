@@ -2,6 +2,10 @@
 
 ## Infer field accessors and finders from self.data
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -20,7 +24,7 @@ end
 
 ```rbs
 class Country < ActiveHash::Base
-  def code: -> :fr | :jp
+  def code: -> (:fr | :jp)
   def code=: (Symbol code) -> (:fr | :jp)
   def code?: -> bool
   def self.find_by_code: (Symbol code) -> Country?
@@ -30,12 +34,12 @@ class Country < ActiveHash::Base
   def enabled?: -> bool
   def self.find_by_enabled: (bool enabled) -> Country?
   def self.find_all_by_enabled: (bool enabled) -> Array[Country]
-  def id: -> 1 | 2
+  def id: -> (1 | 2)
   def id=: (Integer id) -> (1 | 2)
   def id?: -> bool
   def self.find_by_id: (Integer id) -> Country?
   def self.find_all_by_id: (Integer id) -> Array[Country]
-  def name: -> "France" | "Japan"
+  def name: -> ("France" | "Japan")
   def name=: (String name) -> ("France" | "Japan")
   def name?: -> bool
   def self.find_by_name: (String name) -> Country?

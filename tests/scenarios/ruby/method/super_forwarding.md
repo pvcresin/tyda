@@ -32,6 +32,10 @@ end
 
 ## Forwarded arguments through explicit super ellipsis
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -50,7 +54,7 @@ def call_ellipsis = EllipsisChild.new.call("value", optional: :set)
 
 ```rbs
 class EllipsisChild < EllipsisParent
-  def call: (*String, **Symbol, ?untyped &block) -> [String, Symbol]
+  def call: (*String, **Symbol) ?{ (?) -> untyped } -> [String, Symbol]
 end
 
 class EllipsisParent

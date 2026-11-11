@@ -369,6 +369,10 @@ end
 
 ## alias_method keeps the definition it captured before a redefinition
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -397,7 +401,7 @@ class AliasBase
 end
 
 class InheritedAliasChain < AliasBase
-  def value: -> 1 | "s"
+  def value: -> (1 | "s")
   alias original_value value
 end
 

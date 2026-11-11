@@ -745,6 +745,10 @@ end
 
 ## class case preserves the local subject after a later Module equality override
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -775,7 +779,7 @@ module Module
 end
 
 class Object < BasicObject
-  def module_override_class_case: -> "other" | "text"
+  def module_override_class_case: -> ("other" | "text")
 end
 ```
 
@@ -966,6 +970,10 @@ end
 
 ## Narrow a memoized receiver in a class case
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 class ClusterCaseProject
   def id = "project"
@@ -1010,7 +1018,7 @@ end
 
 class ClusterCaseService
   def clusterable: -> (ClusterCaseGroup | ClusterCaseProject)?
-  def lookup: -> 1 | "project" | :other
+  def lookup: -> (1 | "project" | :other)
 end
 ```
 
@@ -1213,6 +1221,10 @@ end
 
 ## A reader with a later writer keeps every branch
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 class ReaderWriters
   attr_accessor :state
@@ -1271,7 +1283,7 @@ class ReaderWriters
   def name: -> untyped
   def initialize: -> void
   def by_state: -> (1 | "a")?
-  def by_name: -> 1 | "known"
+  def by_name: -> (1 | "known")
   def rename: (untyped arg) -> untyped
 end
 ```
@@ -1323,6 +1335,10 @@ end
 
 ## A class value in when may be a subclass and keeps later branches
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1355,6 +1371,6 @@ end
 ```rbs
 class WhenClassValue
   def kind: -> singleton(WhenValueAnimal)
-  def classify: -> :cat | :matched
+  def classify: -> (:cat | :matched)
 end
 ```

@@ -326,6 +326,10 @@ end
 
 ## Resolve class-local alias
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```rbs
@@ -346,7 +350,7 @@ end
 
 ```rbs
 class A
-  def bar: -> Integer | String
+  def bar: -> (Integer | String)
 end
 ```
 

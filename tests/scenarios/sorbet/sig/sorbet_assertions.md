@@ -271,6 +271,10 @@ end
 
 ## T.all T.let keeps intersection
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -293,7 +297,7 @@ end
 
 ```rbs
 class AllLetIntersection
-  def item: -> NamedItem & Named
+  def item: -> (NamedItem & Named)
 end
 
 module Named

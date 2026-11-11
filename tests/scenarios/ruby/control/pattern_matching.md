@@ -282,6 +282,10 @@ end
 
 ## Non-literal numeric subjects can match numeric literal patterns of another class
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -318,12 +322,16 @@ end
 class CrossClassNumericPattern
   def int: -> Integer
   def float: -> Float
-  def integer_against_float: -> :float | :other
-  def float_against_integer: -> :int | :other
+  def integer_against_float: -> (:float | :other)
+  def float_against_integer: -> (:int | :other)
 end
 ```
 
 ## Numeric literal patterns stay reachable for other numeric subjects
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -380,9 +388,9 @@ class OtherNumericPattern
   def number: -> Numeric
   def ratio: -> Rational
   def int: -> Integer
-  def numeric_against_integer: -> :one | :other
-  def rational_against_integer: -> :one | :other
-  def guarded_value_stays_open: -> :float | :guarded | :other
+  def numeric_against_integer: -> (:one | :other)
+  def rational_against_integer: -> (:one | :other)
+  def guarded_value_stays_open: -> (:float | :guarded | :other)
 end
 ```
 
@@ -1148,6 +1156,10 @@ end
 
 ## Keep both case arms because the literal guard is not evaluated
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1168,7 +1180,7 @@ end
 
 ```rbs
 class PatternMatchLiteralGuard
-  def capture_in_statically_matched_guard_else: -> -1 | :matched
+  def capture_in_statically_matched_guard_else: -> (-1 | :matched)
 end
 ```
 
@@ -1426,6 +1438,10 @@ end
 
 ## Check the class before narrowing a hash pattern
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1525,15 +1541,19 @@ end
 class PatternHashClassPatterns
   def self.hash_base: -> :matched
   def self.unrelated_class: -> :other
-  def self.hash_subclass: -> :matched | :other
+  def self.hash_subclass: -> (:matched | :other)
   def self.nested_unrelated_class: -> :other
-  def self.class_equality_override: -> :matched | :other
-  def self.unresolved_constant: -> :matched | :other
-  def self.hash_subclass_deconstruction: -> :matched | :other
+  def self.class_equality_override: -> (:matched | :other)
+  def self.unresolved_constant: -> (:matched | :other)
+  def self.hash_subclass_deconstruction: -> (:matched | :other)
 end
 ```
 
 ## Keep class pattern branches open under an active equality refinement
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -1565,7 +1585,7 @@ end
 
 ```rbs
 class RefinedHashPatternProbe
-  def self.classify: -> :matched | :other
+  def self.classify: -> (:matched | :other)
 end
 ```
 
@@ -1604,6 +1624,10 @@ end
 
 ## A catch-all binding after a nil pattern excludes nil
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```rbs
@@ -1627,11 +1651,15 @@ end
 
 ```rbs
 class NilFirstMatcher
-  def run: -> Integer | String
+  def run: -> (Integer | String)
 end
 ```
 
 ## A range pattern on an Integer keeps both branches
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -1656,7 +1684,7 @@ end
 
 ```rbs
 class RangePatternMatcher
-  def label: -> :low | :other
+  def label: -> (:low | :other)
 end
 ```
 

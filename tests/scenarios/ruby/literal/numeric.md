@@ -25,6 +25,10 @@ end
 
 ## Float literal
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -39,7 +43,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def float_literals: -> 1.0
+  def float_literals: -> Float
 end
 ```
 
@@ -83,6 +87,10 @@ end
 
 ## clamp and between? on Integer literals
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -96,9 +104,9 @@ def between = 5.between?(0, 10)
 
 ```rbs
 class Object < BasicObject
-  def low: -> -5 | 0 | 10
-  def mid: -> 0 | 5 | 10
-  def high: -> 0 | 10 | 100
+  def low: -> (-5 | 0 | 10)
+  def mid: -> (0 | 5 | 10)
+  def high: -> (0 | 10 | 100)
   def between: -> bool
 end
 ```

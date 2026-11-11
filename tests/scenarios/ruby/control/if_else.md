@@ -223,6 +223,10 @@ end
 
 ## Narrow an instance variable on the right of a short-circuit like a local
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -255,8 +259,8 @@ end
 class IvarShortCircuitNarrowing
   def initialize: (untyped options) -> void
   def with_and: -> untyped
-  def with_ternary: -> false | [bool]
-  def with_if: -> false | [bool]
+  def with_ternary: -> (false | [bool])
+  def with_if: -> (false | [bool])
   def with_local: -> untyped
 end
 ```

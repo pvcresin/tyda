@@ -220,6 +220,10 @@ end
 
 ## T.all to intersection type
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 class Foo
   sig { params(x: T.all(Comparable, Enumerable)).returns(T.all(Comparable, Enumerable)) }
@@ -231,7 +235,7 @@ end
 
 ```rbs
 class Foo
-  def process: (Comparable & Enumerable x) -> Comparable & Enumerable
+  def process: (Comparable & Enumerable x) -> (Comparable & Enumerable)
 end
 ```
 

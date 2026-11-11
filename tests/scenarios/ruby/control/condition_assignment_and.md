@@ -1,5 +1,9 @@
 ## Narrow a right-hand condition assignment in the true branch
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -102,7 +106,7 @@ class IfAndAssignment
   def nil_assignment_does_not_enter_body: (untyped guard) -> :before?
   def same_local_guard_and_assignment: ((String | bool) value) -> (String | false)?
   def same_local_guard_and_assignment_examples: -> (String | false)?
-  def same_local_guard_and_falsy_assignment: ((String | bool) value) -> false | nil
-  def same_local_guard_and_falsy_assignment_examples: -> false | nil
+  def same_local_guard_and_falsy_assignment: ((String | bool) value) -> (false | nil)
+  def same_local_guard_and_falsy_assignment_examples: -> (false | nil)
 end
 ```

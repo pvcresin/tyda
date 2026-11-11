@@ -2,6 +2,10 @@
 
 ## `dup` and `clone` preserve user class receiver type
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -21,7 +25,7 @@ end
 ```rbs
 class Container
   def initialize: ((Integer | String) value) -> void
-  def value: -> Integer | String
+  def value: -> (Integer | String)
 end
 
 class Probe

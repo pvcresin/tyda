@@ -2,6 +2,10 @@
 
 ## Forward all args with ...
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -12,7 +16,7 @@ def forward_all(...) = target(...)
 
 ```rbs
 class Object < BasicObject
-  def forward_all: (*untyped, **untyped, ?untyped &block) -> untyped
+  def forward_all: (*untyped, **untyped) ?{ (?) -> untyped } -> untyped
 end
 ```
 
@@ -50,6 +54,10 @@ end
 
 ## Forward all parameter kinds
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -60,7 +68,7 @@ def combined_forward(*args, **opts, &block) = other(*args, **opts, &block)
 
 ```rbs
 class Object < BasicObject
-  def combined_forward: (*untyped args, **untyped opts, ?untyped &block) -> untyped
+  def combined_forward: (*untyped args, **untyped opts) ?{ (?) -> untyped } -> untyped
 end
 ```
 
@@ -184,6 +192,10 @@ end
 
 ## lead arg + `...` forwarding
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -196,11 +208,15 @@ head_forward(1, "a")
 
 ```rbs
 class Object < BasicObject
-  def head_forward: (Integer x, *String, **untyped, ?untyped &block) -> untyped
+  def head_forward: (Integer x, *String, **untyped) ?{ (?) -> untyped } -> untyped
 end
 ```
 
 ## literal lead arg + `...` forwarding
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -216,11 +232,15 @@ foo("a", k: 2) { 3 }
 
 ```rbs
 class Object < BasicObject
-  def foo: (*String, **Integer, ?untyped &block) -> untyped
+  def foo: (*String, **Integer) ?{ (?) -> untyped } -> untyped
 end
 ```
 
 ## Forward all args to a defined method resolves its return
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -241,11 +261,15 @@ foo(42)
 ```rbs
 class Object < BasicObject
   def bar: (Integer x) -> Integer
-  def foo: (*Integer, **untyped, ?untyped &block) -> Integer
+  def foo: (*Integer, **untyped) ?{ (?) -> untyped } -> Integer
 end
 ```
 
 ## Forward all args distributes the first positional to the callee
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -266,11 +290,15 @@ foo(1, "s")
 ```rbs
 class Object < BasicObject
   def bar: ((Integer | String) a, untyped b) -> [Integer | String, untyped]
-  def foo: (*(Integer | String), **untyped, ?untyped &block) -> [Integer | String, untyped]
+  def foo: (*(Integer | String), **untyped) ?{ (?) -> untyped } -> [Integer | String, untyped]
 end
 ```
 
 ## Forwarding prepends an extra positional
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -291,12 +319,16 @@ foo(2, x: 4, y: 5)
 
 ```rbs
 class Object < BasicObject
-  def foo: (*Integer, **Integer, ?untyped &block) -> [String, Array[Integer], { x: 4, y: 5 }]
+  def foo: (*Integer, **Integer) ?{ (?) -> untyped } -> [String, Array[Integer], { x: 4, y: 5 }]
   def bar: (String a, *Integer b, **Integer c) -> [String, Array[Integer], { x: 4, y: 5 }]
 end
 ```
 
 ## Literal lead arg before forwarded args stays out of the callee rest
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -311,12 +343,16 @@ lead(2)
 
 ```rbs
 class Object < BasicObject
-  def lead: (*Integer, **untyped, ?untyped &block) -> Array[Integer]
+  def lead: (*Integer, **untyped) ?{ (?) -> untyped } -> Array[Integer]
   def wrap: (String a, *Integer b) -> Array[Integer]
 end
 ```
 
 ## Optional param before forwarded args keeps the callee rest type
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -331,7 +367,7 @@ run(:a, "x")
 
 ```rbs
 class Object < BasicObject
-  def run: (?(Integer | Symbol) head, *String, **untyped, ?untyped &block) -> Array[String]
+  def run: (?(Integer | Symbol) head, *String, **untyped) ?{ (?) -> untyped } -> Array[String]
   def gather: (*String rest) -> Array[String]
 end
 ```

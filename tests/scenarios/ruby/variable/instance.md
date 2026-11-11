@@ -431,6 +431,10 @@ end
 
 ## Read-before-write ivar is treated as a falsey guard
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -447,7 +451,7 @@ end
 
 ```rbs
 class Sentinel
-  def update: -> "first call" | "skip"
+  def update: -> ("first call" | "skip")
 end
 ```
 

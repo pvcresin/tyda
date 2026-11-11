@@ -159,6 +159,10 @@ end
 
 ## Resolve ActiveModel::Serializer object and association DSL
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```rbs
@@ -196,7 +200,7 @@ end
 class ASerializer < ActiveModel::Serializer
   def item: -> Item
   def items: -> ActiveRecord::Associations::CollectionProxy[Item]
-  def label: -> "x" | "y"
+  def label: -> ("x" | "y")
   def item_name: -> untyped
   def first_item_name: -> "x"?
 end

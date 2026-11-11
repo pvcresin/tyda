@@ -91,7 +91,7 @@ end
 ```rbs
 class EntriesController < ApplicationController
   def show: -> "title"
-  private def require_entry: -> void?
+  private def require_entry: -> true?
   private def entry: -> Entry?
   private def render_title: (Entry found) -> "title"
 end

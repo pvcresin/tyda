@@ -436,6 +436,10 @@ end
 
 ## Ignore code after loop returns from the method
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -929,8 +933,8 @@ end
 class Object < BasicObject
   def loop_returns: -> :returned
   def loop_returns_from_begin: -> :returned
-  def while_true_returns_from_branches: -> :first | :second
-  def while_true_returns_from_ternary: -> :first | :second
+  def while_true_returns_from_branches: -> (:first | :second)
+  def while_true_returns_from_ternary: -> (:first | :second)
   def begin_modifier_returns: -> :returned
   def loop_break_continues: -> :after
   def while_true_returns: -> :returned
@@ -939,11 +943,11 @@ class Object < BasicObject
   def until_nil_returns: -> :returned
   def while_parenthesized_true_returns: -> :returned
   def while_return_before_unreachable: -> :returned
-  def while_break_before_return_continues: -> :after | :returned
-  def loop_break_before_return_continues: -> :after | :returned
-  def while_modifier_break_or_return: -> :after | :returned
-  def while_short_circuit_break_or_return: -> :after | :returned
-  def while_short_circuit_or_break_or_return: -> :after | :returned
+  def while_break_before_return_continues: -> (:after | :returned)
+  def loop_break_before_return_continues: -> (:after | :returned)
+  def while_modifier_break_or_return: -> (:after | :returned)
+  def while_short_circuit_break_or_return: -> (:after | :returned)
+  def while_short_circuit_or_break_or_return: -> (:after | :returned)
   def while_false_and_break_then_return: -> :returned
   def while_true_or_break_then_return: -> :returned
   def while_true_and_break_returns_after: -> :after
@@ -1263,6 +1267,10 @@ end
 
 ## for preserves the zero-yield path for conditional source-defined each
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 class Array
   def each
@@ -1290,7 +1298,7 @@ class Array
 end
 
 class ForEachConditional
-  def result: -> :after | :item
+  def result: -> (:after | :item)
 end
 ```
 
@@ -1425,6 +1433,10 @@ end
 
 ## Conditional break in times unions with the receiver
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1437,11 +1449,15 @@ end
 
 ```rbs
 class Counter
-  def pick: -> String | 3
+  def pick: -> (String | 3)
 end
 ```
 
 ## Break index from each_with_index unions with the receiver
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -1459,7 +1475,7 @@ end
 
 ```rbs
 class Finder
-  def index_of_two: -> Integer | [1, 2]
+  def index_of_two: -> (Integer | [1, 2])
 end
 ```
 

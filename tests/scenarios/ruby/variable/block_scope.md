@@ -2,6 +2,10 @@
 
 ## Local assignment in block is visible outside
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -20,7 +24,7 @@ end
 
 ```rbs
 class A
-  def f: -> :inner | :outer
+  def f: -> (:inner | :outer)
 end
 ```
 
@@ -74,6 +78,10 @@ end
 
 ## `for` loop variable stays in outer scope
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -90,7 +98,7 @@ end
 
 ```rbs
 class A
-  def f: -> 1 | 2 | 3
+  def f: -> (1 | 2 | 3)
 end
 ```
 
@@ -117,6 +125,6 @@ end
 
 ```rbs
 class Closure
-  def run: -> 1 | "a"
+  def run: -> (1 | "a")
 end
 ```

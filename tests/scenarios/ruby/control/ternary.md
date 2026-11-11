@@ -60,6 +60,10 @@ end
 
 ## Ternary-selected hash receiver mutation updates the chosen hash
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -78,6 +82,6 @@ def a = store(:required, :name, "n")
 ```rbs
 class Object < BasicObject
   def store: (Symbol kind, Symbol key, String info) -> ([Hash[Symbol, String], Hash[untyped, untyped]] | [Hash[untyped, untyped], Hash[Symbol, String]])
-  def a: -> [Hash[Symbol, String], Hash[untyped, untyped]] | [Hash[untyped, untyped], Hash[Symbol, String]]
+  def a: -> ([Hash[Symbol, String], Hash[untyped, untyped]] | [Hash[untyped, untyped], Hash[Symbol, String]])
 end
 ```

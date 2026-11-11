@@ -131,6 +131,10 @@ end
 
 ## Source methods distinguish yielded blocks from unused blocks
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -357,18 +361,18 @@ end
 
 ```rbs
 class ExplicitBlockInvocation
-  def run: (?untyped &block) -> :after
-  def forward: (?untyped &block) -> :after
-  def run_via_alias: (?untyped &block) -> :after
-  def alias_and_ignore: (?untyped &block) -> :ignored
-  def overwrite_alias: (?untyped &block) -> :ignored
-  def conditionally_overwrite_alias: (untyped flag, ?untyped &block) -> :ignored
-  def invoke_from_case: (untyped flag, ?untyped &block) -> :ignored
-  def invoke_after_loop: (untyped flag, ?untyped &block) -> :ignored
-  def invoke_from_rescue: (untyped flag, ?untyped &block) -> :ignored
-  def invoke_after_short_circuit: (untyped flag, ?untyped &block) -> :ignored
-  def invoke_before_overwrite: (?untyped &block) -> :ignored
-  def ignore: (?untyped &block) -> :ignored
+  def run: () ?{ (?) -> untyped } -> :after
+  def forward: () ?{ (?) -> untyped } -> :after
+  def run_via_alias: () ?{ (?) -> untyped } -> :after
+  def alias_and_ignore: () ?{ (?) -> untyped } -> :ignored
+  def overwrite_alias: () ?{ (?) -> untyped } -> :ignored
+  def conditionally_overwrite_alias: (untyped flag) ?{ (?) -> untyped } -> :ignored
+  def invoke_from_case: (untyped flag) ?{ (?) -> untyped } -> :ignored
+  def invoke_after_loop: (untyped flag) ?{ (?) -> untyped } -> :ignored
+  def invoke_from_rescue: (untyped flag) ?{ (?) -> untyped } -> :ignored
+  def invoke_after_short_circuit: (untyped flag) ?{ (?) -> untyped } -> :ignored
+  def invoke_before_overwrite: () ?{ (?) -> untyped } -> :ignored
+  def ignore: () ?{ (?) -> untyped } -> :ignored
   def block_call_updates_outer_local: -> :after
   def forwarded_block_updates_outer_local: -> :after
   def aliased_block_updates_outer_local: -> :after
@@ -381,19 +385,19 @@ class ExplicitBlockInvocation
   def rescue_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
   def short_circuit_block_alias_updates_outer_local: (untyped flag) -> (:after | :before)
   def mutation_in_repeated_block_widens: -> Array[1]
-  def guarded_yield: (?untyped &block) -> :done
+  def guarded_yield: () ?{ (?) -> untyped } -> :done
   def guarded_yield_updates_outer_local: -> :after
   def early_return_before_yield: (untyped flag) { () -> :after } -> (:after | :early)
   def early_return_joins_outer_local: (untyped flag) -> (:after | :before)
-  def escaped_block: (?untyped &block) -> :stored
-  def escaped_block_joins_outer_local: -> :after | :before
+  def escaped_block: () ?{ (?) -> untyped } -> :stored
+  def escaped_block_joins_outer_local: -> (:after | :before)
   def receiver_ignored_block: -> :before
   def receiver_yielded_block: -> :after
   def block_alias_runs_before_overwrite: -> :after
 end
 
 class ExplicitBlockReceiver
-  def ignore: (?untyped &block) -> :ignored
+  def ignore: () ?{ (?) -> untyped } -> :ignored
   def run: { () -> :after } -> :after
   def repeat: { () -> [1] } -> [1]
 end
@@ -503,6 +507,10 @@ end
 ```
 
 ## Literal arguments decide only what the callee reads unchanged
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -634,33 +642,37 @@ class LiteralBlockEdges
   def until_loop: (bool? flag) { () -> :after } -> :done
   def optional: (?bool? flag) { () -> :after } -> :done
   def trailing: (?Integer? first, Integer flag) { () -> :after } -> :done
-  def retried: (bool flag, ?untyped &block) -> :done
+  def retried: (bool flag) ?{ (?) -> untyped } -> :done
   def forwarded: (Integer? flag) { () -> untyped } -> untyped
   def target: { () -> untyped } -> untyped
   def nil_skips: -> :before
   def symbol_runs: -> :after
   def negated_runs: -> :after
-  def overwritten_is_unknown: -> :after | :before
-  def shadowed_is_unknown: -> :after | :before
-  def undecided_pattern_is_unknown: -> :after | :before
+  def overwritten_is_unknown: -> (:after | :before)
+  def shadowed_is_unknown: -> (:after | :before)
+  def undecided_pattern_is_unknown: -> (:after | :before)
   def multi_pattern_runs: -> :after
   def no_pattern_skips: -> :before
-  def float_pattern_is_unknown: -> :after | :before
-  def do_while_is_unknown: -> :after | :before
+  def float_pattern_is_unknown: -> (:after | :before)
+  def do_while_is_unknown: -> (:after | :before)
   def until_enters: -> :after
   def until_skips: -> :before
   def optional_given_runs: -> :after
-  def optional_omitted_is_unknown: -> :after | :before
-  def trailing_is_unknown: -> :after | :before
-  def retry_is_unknown: -> :after | :before
+  def optional_omitted_is_unknown: -> (:after | :before)
+  def trailing_is_unknown: -> (:after | :before)
+  def retry_is_unknown: -> (:after | :before)
   def forward_runs: -> :after
   def forward_skips: -> :before
-  def splat_is_unknown: -> :after | :before
+  def splat_is_unknown: -> (:after | :before)
   def non_literal_is_unknown: (untyped flag) -> (:after | :before)
 end
 ```
 
 ## A redefined literal case equality keeps every when arm
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -690,7 +702,7 @@ end
 ```rbs
 class RedefinedLiteralCase
   def run: (Symbol flag) { () -> :after } -> :done
-  def still_unknown: -> :after | :before
+  def still_unknown: -> (:after | :before)
 end
 
 class Symbol
@@ -992,6 +1004,10 @@ end
 
 ## find with ifnone proc
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -1006,11 +1022,15 @@ end
 
 ```rbs
 class F
-  def find_ifnone: -> 1 | 2 | "x"
+  def find_ifnone: -> (1 | 2 | "x")
 end
 ```
 
 ## find and detect narrow with class predicate
+
+```yaml
+known_issue: true
+```
 
 ### update
 
@@ -1046,7 +1066,7 @@ end
 class Object < BasicObject
   def find_entry: -> (Flag | Note)?
   def detect_non_entry: -> Other?
-  def find_entry_or_default: -> :none | Note
+  def find_entry_or_default: -> (:none | Note)
 end
 ```
 

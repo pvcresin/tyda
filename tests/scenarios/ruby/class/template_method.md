@@ -57,6 +57,10 @@ end
 
 ## Union return values from multiple subclasses
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -77,7 +81,7 @@ end
 
 ```rbs
 class Animal
-  def speak: -> "meow" | "woof"
+  def speak: -> ("meow" | "woof")
 end
 
 class Cat < Animal

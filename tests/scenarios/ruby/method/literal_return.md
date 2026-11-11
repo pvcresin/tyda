@@ -82,6 +82,10 @@ end
 
 ## Float literal
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -92,7 +96,7 @@ def pi = 3.14
 
 ```rbs
 class Object < BasicObject
-  def pi: -> 3.14
+  def pi: -> Float
 end
 ```
 

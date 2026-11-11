@@ -34,7 +34,7 @@ end
 class SourcePredicateGuard
   def maybe_string: -> String?
   def both_present?: (String? left, String? right) -> bool?
-  def guarded: -> :none | [String, String]
+  def guarded: -> (:none | [String, String])
 end
 ```
 
@@ -269,7 +269,7 @@ class PredicateWithUnrelatedNames
   def maybe_string: -> String?
   def present?: (String? value) -> bool
   def self.present?: (untyped _value) -> true
-  def checked: -> String | :none
+  def checked: -> (String | :none)
 end
 ```
 
@@ -353,6 +353,10 @@ end
 
 ## Nil guards on a local narrow the guarded branch
 
+```yaml
+known_issue: true
+```
+
 ### update
 
 ```ruby
@@ -398,9 +402,9 @@ end
 
 class NullableLocalGuardFlow
   def maybe: -> NullableLocalGuard?
-  def short_circuit: -> true | nil
-  def assigned_in_condition: -> :none | NullableLocalGuard
-  def assigned_in_unless: -> :none | NullableLocalGuard
+  def short_circuit: -> (true | nil)
+  def assigned_in_condition: -> (:none | NullableLocalGuard)
+  def assigned_in_unless: -> (:none | NullableLocalGuard)
   def unguarded: -> true
 end
 ```

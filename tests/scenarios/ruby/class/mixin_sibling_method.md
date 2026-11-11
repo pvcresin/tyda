@@ -1,18 +1,5 @@
 # Ruby / Class / Mixin Sibling Method
 
-```ruby
-class Request
-  module Env
-    def get_header(name) = @env[name]
-  end
-  module Helpers
-    def path_info = get_header("PATH_INFO")
-  end
-  include Env
-  include Helpers
-end
-```
-
 ## Resolve across two sibling mixins in same class
 
 ### update

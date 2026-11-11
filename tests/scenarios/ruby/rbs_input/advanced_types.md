@@ -2,6 +2,10 @@
 
 ## Intersection return type
 
+```yaml
+known_issue: true
+```
+
 ```rbs
 class Sorter
   def sorted_first: (Array[Comparable & Enumerable] items) -> (Comparable & Enumerable)
@@ -21,7 +25,7 @@ end
 
 ```rbs
 class App
-  def run: -> Comparable & Enumerable
+  def run: -> (Comparable & Enumerable)
 end
 ```
 
