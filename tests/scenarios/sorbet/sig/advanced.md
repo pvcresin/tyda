@@ -219,10 +219,6 @@ end
 
 ## type_parameters sig do...end
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class Wrapper
   sig do
@@ -297,10 +293,6 @@ end
 
 ## Block with T.proc.params
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class Iterator
   sig { params(items: T::Array[Integer], blk: T.proc.params(x: Integer).returns(String)).returns(T::Array[String]) }
@@ -318,10 +310,6 @@ end
 
 ## Block with T.proc.void
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class Logger
   sig { params(msg: String, blk: T.proc.void).void }
@@ -337,6 +325,23 @@ end
 ```rbs
 class Logger
   def log: (String msg) { () -> void } -> void
+end
+```
+
+## Block with T.nilable(T.proc)
+
+```ruby
+class Hooks
+  sig { params(name: String, blk: T.nilable(T.proc.params(x: Integer).returns(String))).returns(T.nilable(String)) }
+  def run(name, &blk) = blk&.call(1)
+end
+```
+
+### result
+
+```rbs
+class Hooks
+  def run: (String name) ?{ (Integer) -> String } -> String?
 end
 ```
 

@@ -17906,7 +17906,14 @@ impl<'a> InferenceEngine<'a> {
             {
                 (lines, true, false)
             } else if let Some(ref sig_srcs) = sig_sources {
-                (sig_sources_to_rbs_lines(sig_srcs), false, true)
+                let block_param_index = param_infos
+                    .iter()
+                    .position(|info| info.kind == ParamKind::Block);
+                (
+                    sig_sources_to_rbs_lines(sig_srcs, block_param_index),
+                    false,
+                    true,
+                )
             } else {
                 (Vec::new(), false, false)
             };

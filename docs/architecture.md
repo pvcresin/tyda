@@ -53,6 +53,9 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 Sorbet `sig { ... }` のブロック本体は型 DSL として扱い、通常コードとして推論しない。ブロック内の
 `returns` / `void` / `params` を enclosing class のメソッド呼び出しとして診断しない（実行時の
 self は `T::Private::Methods::DeclBuilder` であるため）。
+`sig` は `src/sorbet/sig.rs` で rbs-inline と同じ `#:` method type に変換し、以降は rbs-inline と
+同じ経路で登録する。Sorbet は sig param を def と同じ順序で書くため、def の `&blk` と同じ位置の
+`T.proc` / `T.nilable(T.proc)` param を RBS の block 節（`{ }` / `?{ }`）へ移す。
 
 ## Semantic backend
 
