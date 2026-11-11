@@ -1,7 +1,7 @@
 //! Maps tables to the model classes that read them, following Rails' `table_name`
 //! computation so namespaced models get their columns as well as their associations.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ruby_prism::{Node, ParseResult};
@@ -63,7 +63,8 @@ struct ModelDecl {
 #[derive(Default)]
 struct ModelScan {
     models: Vec<ModelDecl>,
-    module_prefixes: HashMap<String, String>,
+    /// `table_name_prefix` defined on a module or class (method or class attribute).
+    prefixes: HashMap<String, String>,
 }
 
 impl ModelScan {
@@ -96,7 +97,11 @@ impl ModelScan {
                 let index = self.models.len();
                 self.models.push(ModelDecl {
                     name: namespace.join("::"),
-                    superclass: class_node.superclass().map(|sc| constant_path_text(&sc)),
+                    superclass: class_node.superclass().map(|sc| {
+                        String::from_utf8_lossy(sc.location().as_slice())
+                            .trim()
+                            .to_string()
+                    }),
                     abstract_class: false,
                     explicit_table: None,
                 });
@@ -115,7 +120,7 @@ impl ModelScan {
                     && !namespace.is_empty()
                     && let Some(prefix) = def.body().and_then(|body| single_string(&body))
                 {
-                    self.module_prefixes.insert(namespace.join("::"), prefix);
+                    self.prefixes.insert(namespace.join("::"), prefix);
                 }
             }
             _ => {}
@@ -147,6 +152,12 @@ impl ModelScan {
                     self.models[index].abstract_class =
                         first_arg(&call).is_some_and(|arg| matches!(arg, Node::TrueNode { .. }));
                 }
+                b"table_name_prefix=" => {
+                    if let Some(prefix) = first_arg(&call).and_then(|arg| single_string(&arg)) {
+                        let name = self.models[index].name.clone();
+                        self.prefixes.insert(name, prefix);
+                    }
+                }
                 b"table_name=" => {
                     self.models[index].explicit_table =
                         first_arg(&call).and_then(|arg| single_string(&arg));
@@ -157,82 +168,139 @@ impl ModelScan {
     }
 
     fn into_index(self, inflector: ProjectInflector) -> ModelTableIndex {
-        let abstract_names: HashSet<&str> = self
+        let models: HashMap<&str, &ModelDecl> = self
             .models
             .iter()
-            .filter(|model| model.abstract_class)
-            .map(|model| model.name.as_str())
-            .collect();
-        let is_record_base = |superclass: &str| {
-            matches!(superclass, "ActiveRecord::Base" | "ApplicationRecord")
-                || abstract_names.contains(superclass)
-        };
-        // Single-table inheritance subclasses read their superclass's table.
-        let base_models: HashMap<&str, &ModelDecl> = self
-            .models
-            .iter()
-            .filter(|model| {
-                !model.abstract_class && model.superclass.as_deref().is_some_and(is_record_base)
-            })
             .map(|model| (model.name.as_str(), model))
             .collect();
-
+        let resolved = Resolved {
+            superclasses: self
+                .models
+                .iter()
+                .filter_map(|model| {
+                    let superclass = model.superclass.as_deref()?;
+                    Some((
+                        model.name.as_str(),
+                        resolve_relative(&model.name, superclass, &models),
+                    ))
+                })
+                .collect(),
+            models: &models,
+            prefixes: &self.prefixes,
+        };
         let mut index = ModelTableIndex {
             inflector,
             ..ModelTableIndex::default()
         };
-        for model in base_models.values() {
+        for model in &self.models {
             if let Some(table) = &model.explicit_table {
                 push_unique(
                     index.explicit.entry(table.clone()).or_default(),
                     &model.name,
                 );
-            } else {
-                let singular = self.singular_table_name(&model.name, &base_models);
+            } else if resolved.is_base_model(&model.name) {
+                let singular = resolved.singular_table_name(&model.name);
                 push_unique(index.computed.entry(singular).or_default(), &model.name);
-            }
-        }
-        for model in &self.models {
-            if !base_models.contains_key(model.name.as_str())
-                && let Some(table) = &model.explicit_table
-            {
-                push_unique(
-                    index.explicit.entry(table.clone()).or_default(),
-                    &model.name,
-                );
             }
         }
         index
     }
+}
+
+struct Resolved<'a> {
+    superclasses: HashMap<&'a str, String>,
+    models: &'a HashMap<&'a str, &'a ModelDecl>,
+    prefixes: &'a HashMap<String, String>,
+}
+
+impl Resolved<'_> {
+    fn is_abstract(&self, name: &str) -> bool {
+        self.models
+            .get(name)
+            .is_some_and(|model| model.abstract_class)
+    }
+
+    fn is_record_class(&self, name: &str) -> bool {
+        let mut current = name.to_string();
+        for _ in 0..self.models.len() + 1 {
+            if matches!(current.as_str(), "ActiveRecord::Base" | "ApplicationRecord") {
+                return true;
+            }
+            match self.superclasses.get(current.as_str()) {
+                Some(superclass) => current = superclass.clone(),
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// A concrete record class whose superclass is abstract owns a table; STI subclasses
+    /// read their superclass's table.
+    fn is_base_model(&self, name: &str) -> bool {
+        !self.is_abstract(name)
+            && self.superclasses.get(name).is_some_and(|superclass| {
+                matches!(
+                    superclass.as_str(),
+                    "ActiveRecord::Base" | "ApplicationRecord"
+                ) || self.is_abstract(superclass) && self.is_record_class(superclass)
+            })
+    }
 
     /// Rails' `compute_table_name`, before pluralizing the last word.
-    fn singular_table_name(
-        &self,
-        class_name: &str,
-        base_models: &HashMap<&str, &ModelDecl>,
-    ) -> String {
+    fn singular_table_name(&self, class_name: &str) -> String {
         let (parent, short) = class_name.rsplit_once("::").unwrap_or(("", class_name));
         let short = underscore(short);
-        if parent.is_empty() {
-            return short;
+        if !parent.is_empty() && self.is_base_model(parent) {
+            return format!("{}_{short}", self.singular_table_name(parent));
         }
-        if base_models.contains_key(parent) {
-            return format!("{}_{short}", self.singular_table_name(parent, base_models));
-        }
-        let prefix = self.table_name_prefix(parent).unwrap_or_default();
-        format!("{prefix}{short}")
+        format!("{}{short}", self.full_table_name_prefix(class_name))
     }
 
-    /// The innermost enclosing module that defines `table_name_prefix`.
-    fn table_name_prefix(&self, namespace: &str) -> Option<&str> {
-        let mut current = namespace;
-        loop {
-            if let Some(prefix) = self.module_prefixes.get(current) {
-                return Some(prefix);
+    /// `module_parents.detect { |p| p.respond_to?(:table_name_prefix) } || self`: a module
+    /// answers only when it defines the prefix, a record class always does (class attribute).
+    fn full_table_name_prefix(&self, class_name: &str) -> &str {
+        let mut current = class_name;
+        while let Some((parent, _)) = current.rsplit_once("::") {
+            if let Some(prefix) = self.prefixes.get(parent) {
+                return prefix;
             }
-            current = current.rsplit_once("::")?.0;
+            if self.is_record_class(parent) {
+                return self.inherited_prefix(parent);
+            }
+            current = parent;
         }
+        self.inherited_prefix(class_name)
     }
+
+    fn inherited_prefix(&self, class_name: &str) -> &str {
+        let mut current = class_name;
+        for _ in 0..self.models.len() + 1 {
+            if let Some(prefix) = self.prefixes.get(current) {
+                return prefix;
+            }
+            match self.superclasses.get(current) {
+                Some(superclass) => current = superclass,
+                None => break,
+            }
+        }
+        ""
+    }
+}
+
+/// Resolves a superclass reference from the class's lexical namespace outward.
+fn resolve_relative(owner: &str, name: &str, models: &HashMap<&str, &ModelDecl>) -> String {
+    if let Some(absolute) = name.strip_prefix("::") {
+        return absolute.to_string();
+    }
+    let mut namespace = owner;
+    while let Some((outer, _)) = namespace.rsplit_once("::") {
+        let candidate = format!("{outer}::{name}");
+        if candidate != owner && models.contains_key(candidate.as_str()) {
+            return candidate;
+        }
+        namespace = outer;
+    }
+    name.to_string()
 }
 
 fn push_unique(classes: &mut Vec<String>, class_name: &str) {
@@ -338,5 +406,58 @@ mod tests {
         assert!(index.classes_for("admins").is_empty());
         assert_eq!(index.classes_for("things_v1"), ["Old::Thing"]);
         assert!(index.classes_for("things").is_empty());
+    }
+
+    #[test]
+    fn abstract_base_classes_pass_their_prefix_to_subclasses() {
+        let index = index_for(&[
+            (
+                "ci/application_record.rb",
+                "module Ci
+  class ApplicationRecord < ::ApplicationRecord
+    self.abstract_class = true
+
+    def self.table_name_prefix
+      'ci_'
+    end
+  end
+end
+",
+            ),
+            (
+                "ci/build_need.rb",
+                "module Ci
+  class BuildNeed < Ci::ApplicationRecord
+  end
+end
+",
+            ),
+            (
+                "ci/stage.rb",
+                "module Ci
+  class Stage < ApplicationRecord
+  end
+end
+",
+            ),
+            (
+                "shop/record.rb",
+                "class Shop::Record < ApplicationRecord
+  self.abstract_class = true
+  self.table_name_prefix = \"shop_\"
+end
+",
+            ),
+            (
+                "shop/order.rb",
+                "class Shop::Order < Shop::Record
+end
+",
+            ),
+        ]);
+        assert_eq!(index.classes_for("ci_build_needs"), ["Ci::BuildNeed"]);
+        assert_eq!(index.classes_for("ci_stages"), ["Ci::Stage"]);
+        assert_eq!(index.classes_for("shop_orders"), ["Shop::Order"]);
+        assert!(index.classes_for("ci_application_records").is_empty());
     }
 }

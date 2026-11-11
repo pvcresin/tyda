@@ -440,15 +440,14 @@ impl TypeRegistry {
                 .method_index
                 .get(method.name.as_str())
                 .is_some_and(|slots| slots.has(method.is_singleton));
-            // A source DSL reader (e.g. `enum :status`) replaces the schema column reader it
-            // redefines; every other existing slot keeps precedence.
+            // A method from source (`belongs_to :user`, `enum :status`) replaces the schema
+            // column or foreign-key reader it redefines; every other existing slot keeps precedence.
             let generated_slot = data
                 .method_index
                 .get(method.name.as_str())
                 .and_then(|slots| slots.get(method.is_singleton))
                 .filter(|&idx| {
-                    method.synthetic_dsl_source
-                        && !method.rbs_file_source
+                    !method.rbs_file_source
                         && data.methods.get(idx).is_some_and(|existing| {
                             existing.synthetic_dsl_source && existing.rbs_file_source
                         })

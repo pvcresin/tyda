@@ -212,3 +212,117 @@ class Post < ApplicationRecord
   def baz: -> A
 end
 ```
+
+## Namespaced models read tables named by table_name_prefix
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "oidc_providers", force: :cascade do |t|
+    t.string "issuer", null: false
+  end
+  create_table "ci_stages", force: :cascade do |t|
+    t.string "name", null: false
+  end
+  create_table "shop_orders", force: :cascade do |t|
+    t.integer "total", null: false
+  end
+  create_table "post_comments", force: :cascade do |t|
+    t.text "body", null: false
+  end
+  create_table "posts", force: :cascade do |t|
+  end
+end
+```
+
+### file: app/models/oidc.rb
+
+```ruby
+module OIDC
+  def self.table_name_prefix
+    "oidc_"
+  end
+end
+```
+
+### file: app/models/oidc/provider.rb
+
+```ruby
+class OIDC::Provider < ApplicationRecord
+end
+```
+
+### file: app/models/ci/application_record.rb
+
+```ruby
+module Ci
+  class ApplicationRecord < ::ApplicationRecord
+    self.abstract_class = true
+
+    def self.table_name_prefix
+      "ci_"
+    end
+  end
+end
+```
+
+### file: app/models/ci/stage.rb
+
+```ruby
+module Ci
+  class Stage < ApplicationRecord
+  end
+end
+```
+
+### file: app/models/shop/record.rb
+
+```ruby
+class Shop::Record < ApplicationRecord
+  self.abstract_class = true
+  self.table_name_prefix = "shop_"
+end
+```
+
+### file: app/models/shop/order.rb
+
+```ruby
+class Shop::Order < Shop::Record
+end
+```
+
+### file: app/models/post.rb
+
+```ruby
+class Post < ApplicationRecord
+  class Comment < ApplicationRecord
+  end
+end
+```
+
+```ruby
+class Readers
+  def issuer = OIDC::Provider.first!.issuer
+  def stage = Ci::Stage.first!.name
+  def total = Shop::Order.first!.total
+  def body = Post::Comment.first!.body
+end
+```
+
+### result
+
+```rbs
+class Readers
+  def issuer: -> String
+  def stage: -> String
+  def total: -> Integer
+  def body: -> String
+end
+```
