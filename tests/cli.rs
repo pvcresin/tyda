@@ -4906,3 +4906,42 @@ fn deferred_relation_calls_delegate_to_records() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("def count: -> Integer"), "{stdout}");
 }
+
+/// A `belongs_to` declaration stays visible when the schema already provides the
+/// foreign-key reader: the source method replaces the generated one when files merge.
+#[test]
+fn association_declarations_replace_schema_foreign_key_readers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+    let db = dir.path().join("db");
+    let models = dir.path().join("app").join("models").join("achievements");
+    fs::create_dir_all(&db).expect("db dir");
+    fs::create_dir_all(&models).expect("models dir");
+    fs::write(
+        db.join("structure.sql"),
+        "CREATE TABLE achievements (\n    id bigint NOT NULL\n);\nCREATE TABLE user_achievements (\n    id bigint NOT NULL,\n    achievement_id bigint NOT NULL\n);\nALTER TABLE ONLY user_achievements\n    ADD CONSTRAINT fk_rails_1 FOREIGN KEY (achievement_id) REFERENCES achievements(id);\n",
+    )
+    .expect("write structure.sql");
+    fs::write(
+        models.join("achievement.rb"),
+        "module Achievements\n  class Achievement < ApplicationRecord\n  end\nend\n",
+    )
+    .expect("write achievement");
+    fs::write(
+        models.join("user_achievement.rb"),
+        "module Achievements\n  class UserAchievement < ApplicationRecord\n    belongs_to :achievement\n  end\nend\n",
+    )
+    .expect("write user_achievement");
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("app")
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("def achievement: -> Achievements::Achievement"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("def achievement=:"), "{stdout}");
+}
