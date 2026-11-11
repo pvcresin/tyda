@@ -96,7 +96,6 @@ const ACTIVE_RECORD_CALCULATION_METHODS: &[&str] = &[
     "count", "ids", "pick", "pluck", "sum", "average", "minimum", "maximum",
 ];
 const ACTIVE_RECORD_BOOL_RELATION_METHODS: &[&str] = &["exists?", "include?"];
-const ACTIVE_RECORD_WHERE_CHAIN_METHODS: &[&str] = &["not", "associated", "missing"];
 const ACTIVE_RECORD_BATCH_METHODS: &[&str] = &["find_each", "find_in_batches", "in_batches"];
 
 #[derive(Clone, Default)]
@@ -194,66 +193,31 @@ impl<'a> InferenceEngine<'a> {
         Type::Union(vec![Self::active_record_model_type(class_name), Type::Nil])
     }
 
-    fn active_record_batch_method_return(class_name: &str, method_name: &str) -> Option<Type> {
-        match method_name {
-            "find_each" => Some(Type::Generic {
-                base: Sym::new("Enumerator"),
-                args: vec![Type::Class(Sym::new(class_name))].into(),
-            }),
-            "find_in_batches" => Some(Type::Generic {
-                base: Sym::new("Enumerator"),
-                args: vec![Type::Array(Some(Box::new(Type::Class(Sym::new(
-                    class_name,
-                )))))]
-                .into(),
-            }),
-            "in_batches" => Some(Type::Class(Sym::new(
-                "ActiveRecord::Batches::BatchEnumerator",
-            ))),
-            _ => None,
-        }
+    /// Return type of a querying method delegated from the model class (`Post.where`).
+    fn active_record_model_class_method_return(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<Type> {
+        let method = crate::rails::relation_api::lookup(method_name)?;
+        let model = Self::active_record_model_type(class_name);
+        Some(method.return_type(
+            || Self::active_record_relation_type(class_name),
+            &model,
+            || self.active_record_primary_key_type(&model),
+        ))
     }
 
-    fn active_record_common_method_return(class_name: &str, method_name: &str) -> Option<Type> {
-        match method_name {
-            "any?" | "many?" | "none?" | "one?" => Some(Type::Bool),
-            "count" => Some(Type::Integer),
-            "ids" => Some(Type::Array(Some(Box::new(Type::Integer)))),
-            "pluck" => Some(Type::Array(Some(Box::new(Type::Untyped)))),
-            "pick" | "sum" | "average" | "minimum" | "maximum" => Some(Type::Untyped),
-            "find_by" | "first" | "last" | "take" => {
-                Some(Self::active_record_optional_model_type(class_name))
+    /// The model's `id` reader type (a uuid primary key reads as String); Integer by default.
+    pub(super) fn active_record_primary_key_type(&self, model: &Type) -> Type {
+        let Type::Class(name) = model else {
+            return Type::Integer;
+        };
+        match self.registry.lookup_method_return_type(name, "id") {
+            Some(ty) if !matches!(ty, Type::Untyped) && Self::is_concrete(&ty) => {
+                Self::remove_nil(&ty)
             }
-            "second" | "third" | "fourth" | "fifth" | "forty_two" | "third_to_last"
-            | "second_to_last" => Some(Self::active_record_optional_model_type(class_name)),
-            "find_by!"
-            | "first!"
-            | "last!"
-            | "take!"
-            | "sole"
-            | "second!"
-            | "third!"
-            | "fourth!"
-            | "fifth!"
-            | "forty_two!"
-            | "third_to_last!"
-            | "second_to_last!"
-            | "find_sole_by"
-            | "find_or_create_by"
-            | "find_or_create_by!"
-            | "find_or_initialize_by"
-            | "create_or_find_by"
-            | "create_or_find_by!"
-            | "new"
-            | "build"
-            | "create"
-            | "create!"
-            | "find" => Some(Self::active_record_model_type(class_name)),
-            "exists?" | "include?" => Some(Type::Bool),
-            "find_each" | "find_in_batches" | "in_batches" => {
-                Self::active_record_batch_method_return(class_name, method_name)
-            }
-            _ => None,
+            _ => Type::Integer,
         }
     }
 
@@ -1824,7 +1788,8 @@ impl<'a> InferenceEngine<'a> {
                 "count" | "ids" => (
                     Vec::new(),
                     Vec::new(),
-                    Self::active_record_common_method_return(class_name, name).unwrap(),
+                    self.active_record_model_class_method_return(class_name, name)
+                        .unwrap_or(Type::Untyped),
                 ),
                 "pick" | "pluck" => (
                     vec!["columns".to_string()],
@@ -1833,7 +1798,8 @@ impl<'a> InferenceEngine<'a> {
                         kind: ParamKind::Rest,
                         default_type: None,
                     }],
-                    Self::active_record_common_method_return(class_name, name).unwrap(),
+                    self.active_record_model_class_method_return(class_name, name)
+                        .unwrap_or(Type::Untyped),
                 ),
                 _ => (
                     vec!["column".to_string()],
@@ -1842,7 +1808,8 @@ impl<'a> InferenceEngine<'a> {
                         kind: ParamKind::Required,
                         default_type: Some(Type::Untyped),
                     }],
-                    Self::active_record_common_method_return(class_name, name).unwrap(),
+                    self.active_record_model_class_method_return(class_name, name)
+                        .unwrap_or(Type::Untyped),
                 ),
             };
             self.registry.add_method_def_if_missing(
@@ -2000,7 +1967,8 @@ impl<'a> InferenceEngine<'a> {
                 MethodDef {
                     name: Sym::new(*name),
                     param_infos,
-                    raw_return_type: Self::active_record_batch_method_return(class_name, name)
+                    raw_return_type: self
+                        .active_record_model_class_method_return(class_name, name)
                         .unwrap_or(Type::Untyped),
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
@@ -2036,119 +2004,77 @@ impl<'a> InferenceEngine<'a> {
                 return None;
             };
 
-        let relation_type_for_singleton =
-            || Self::active_record_relation_type(&elem_type.to_string());
-
         let relation_return = || {
             if singleton_model {
-                relation_type_for_singleton()
+                Self::active_record_relation_type(&elem_type.to_string())
             } else {
                 receiver_type.clone()
             }
         };
 
-        match method_name {
-            "async" | "load_async" if self.rails_at_least(7, 0) => Some(relation_return()),
-            name if ACTIVE_RECORD_RELATION_METHODS.contains(&name) => Some(relation_return()),
-            name if ACTIVE_RECORD_RELATION_METHODS_RAILS_6_1.contains(&name)
-                && self.rails_at_least(6, 1) =>
-            {
-                Some(relation_return())
-            }
-            name if ACTIVE_RECORD_RELATION_METHODS_RAILS_7_0.contains(&name)
-                && self.rails_at_least(7, 0) =>
-            {
-                Some(relation_return())
-            }
-            name if ACTIVE_RECORD_RELATION_METHODS_RAILS_7_1.contains(&name)
-                && self.rails_at_least(7, 1) =>
-            {
-                Some(relation_return())
-            }
-            name if ACTIVE_RECORD_WHERE_CHAIN_METHODS.contains(&name) => Some(relation_return()),
-            "any?" | "many?" | "none?" | "one?" => Some(Type::Bool),
-            "exists?" | "include?" => Some(Type::Bool),
-            "count" => Some(Type::Integer),
-            "ids" => Some(Type::Array(Some(Box::new(Type::Integer)))),
-            "pick" | "sum" | "average" | "minimum" | "maximum" => Some(Type::Untyped),
-            "pluck" => Some(Type::Array(Some(Box::new(Type::Untyped)))),
-            "kept" | "undiscarded" | "discarded" | "with_discarded"
-                if self.discard_dsl_enabled()
-                    && self
-                        .registry
-                        .lookup_method_sig(&elem_type.to_string(), method_name)
-                        .is_some() =>
-            {
-                Some(relation_return())
-            }
-            "find" => Some(elem_type.clone()),
-            "find_by" | "first" | "last" | "take" => {
-                Some(Type::Union(vec![elem_type.clone(), Type::Nil]))
-            }
-            "second" | "third" | "fourth" | "fifth" | "forty_two" | "third_to_last"
-            | "second_to_last" => Some(Type::Union(vec![elem_type.clone(), Type::Nil])),
-            "find_by!" | "first!" | "last!" | "take!" | "sole" | "find_sole_by" | "second!"
-            | "third!" | "fourth!" | "fifth!" | "forty_two!" | "third_to_last!"
-            | "second_to_last!" => Some(elem_type.clone()),
-            name if ACTIVE_RECORD_FIND_OR_CREATE_METHODS.contains(&name) => Some(elem_type.clone()),
-            "to_a" => Some(Type::Array(Some(Box::new(elem_type)))),
-            "async_count" if self.rails_at_least(7, 1) => Some(Type::Generic {
-                base: Sym::new("ActiveRecord::Promise"),
-                args: vec![Type::Integer].into(),
-            }),
-            "async_ids" if self.rails_at_least(7, 1) => Some(Type::Generic {
-                base: Sym::new("ActiveRecord::Promise"),
-                args: vec![Type::Array(Some(Box::new(Type::Integer)))].into(),
-            }),
-            "async_pick" | "async_pluck" | "async_sum" | "async_average" | "async_minimum"
-            | "async_maximum"
-                if self.rails_at_least(7, 1) =>
-            {
-                Some(Type::Generic {
-                    base: Sym::new("ActiveRecord::Promise"),
-                    args: vec![Type::Untyped].into(),
-                })
-            }
-            name if ACTIVE_RECORD_BUILDER_METHODS.contains(&name) => Some(elem_type.clone()),
-            "find_each" => Some(Type::Generic {
-                base: Sym::new("Enumerator"),
-                args: vec![elem_type].into(),
-            }),
-            "find_in_batches" => Some(Type::Generic {
-                base: Sym::new("Enumerator"),
-                args: vec![Type::Array(Some(Box::new(elem_type)))].into(),
-            }),
-            "in_batches" => Some(Type::Class(Sym::new(
-                "ActiveRecord::Batches::BatchEnumerator",
-            ))),
-            _ => {
-                if !singleton_model {
-                    let model_class = elem_type.to_string();
-                    if let Some(ret) = self.registry.lookup_method_return_type_with_hint(
-                        &model_class,
-                        method_name,
-                        true,
-                    ) {
-                        if Self::scope_chain_return_is_relation_like(&ret) {
-                            return Some(relation_return());
-                        }
-                        if ret == Type::SelfType {
-                            return Some(relation_return());
-                        }
-                    }
-                }
-                None
-            }
+        if let Some(method) = crate::rails::relation_api::lookup(method_name)
+            && (method.on_model || !singleton_model)
+            && self.rails_at_least(method.since.0, method.since.1)
+        {
+            return Some(method.return_type(relation_return, &elem_type, || {
+                self.active_record_primary_key_type(&elem_type)
+            }));
         }
+        let model_class = elem_type.to_string();
+        if matches!(
+            method_name,
+            "kept" | "undiscarded" | "discarded" | "with_discarded"
+        ) && self.discard_dsl_enabled()
+            && self
+                .registry
+                .lookup_method_sig(&model_class, method_name)
+                .is_some()
+        {
+            return Some(relation_return());
+        }
+        if singleton_model {
+            return None;
+        }
+        let ret =
+            self.registry
+                .lookup_method_return_type_with_hint(&model_class, method_name, true)?;
+        (Self::scope_chain_return_is_relation_like(&ret) || ret == Type::SelfType)
+            .then(relation_return)
     }
 
-    pub(super) fn refine_active_record_pluck_with_symbol_args(
+    /// `ActiveRecord::Delegation`: a relation answers `Enumerable` and the delegated `Array`
+    /// methods through its loaded records, so those calls dispatch on `Array[Model]`.
+    pub(super) fn active_record_records_receiver(
+        &mut self,
+        receiver_type: &Type,
+        method_name: &str,
+        has_block: bool,
+    ) -> Option<Type> {
+        use crate::rails::relation_api;
+        let model = relation_api::relation_element_type(receiver_type)?;
+        let delegates = match relation_api::lookup(method_name) {
+            Some(method) => has_block && method.block == relation_api::BlockForm::Records,
+            None => {
+                relation_api::delegates_to_records(method_name) || {
+                    self.ensure_class_available("Enumerable");
+                    self.registry
+                        .has_method_variant("Enumerable", method_name, false)
+                }
+            }
+        };
+        delegates.then(|| Type::Array(Some(Box::new(model.clone()))))
+    }
+
+    /// `pluck` / `pick` / `minimum` / `maximum` with literal column names read the columns' types.
+    pub(super) fn refine_active_record_column_call(
         &self,
         receiver_type: &Type,
         method_name: &str,
         symbol_args: &[String],
     ) -> Option<Type> {
-        if method_name != "pluck" || symbol_args.is_empty() {
+        use crate::rails::relation_api::{self, RelationReturn};
+        let method = relation_api::lookup(method_name)?;
+        if !method.reads_columns() || symbol_args.is_empty() {
             return None;
         }
         let elem_type = if let Some(et) = Self::active_record_relation_element_type(receiver_type) {
@@ -2183,12 +2109,15 @@ impl<'a> InferenceEngine<'a> {
             }
             col_types.push(ty);
         }
-        let element = if col_types.len() == 1 {
+        let row = if col_types.len() == 1 {
             col_types.into_iter().next().expect("len==1")
         } else {
             Type::Tuple(col_types)
         };
-        Some(Type::Array(Some(Box::new(element))))
+        Some(match method.returns {
+            RelationReturn::ColumnValues => Type::Array(Some(Box::new(row))),
+            _ => Type::from_type_vec(vec![row, Type::Nil]),
+        })
     }
 
     pub(super) fn refine_active_record_find_with_args(
@@ -2776,31 +2705,41 @@ impl<'a> InferenceEngine<'a> {
         options: &AssociationOptions,
         collection: bool,
     ) -> String {
-        let known_classes = self.registry.user_defined_class_names();
-        if let Some(class_name) = &options.class_name {
-            return class_name.clone();
-        }
-        if options.through.is_some()
-            && let Some(source) = &options.source
-        {
-            return self.classify_association_target(source, &known_classes);
-        }
+        let _ = collection;
         if let Some(inverse_of) = &options.inverse_of
+            && options.class_name.is_none()
+            && !(options.through.is_some() && options.source.is_some())
             && let Some(target) =
                 self.resolve_target_class_from_inverse_of(current_class, inverse_of)
         {
             return target;
         }
-
-        let _ = collection;
-        self.classify_association_target(assoc_name, &known_classes)
+        let relative = match (&options.class_name, &options.through, &options.source) {
+            (Some(class_name), _, _) => class_name.clone(),
+            (None, Some(_), Some(source)) => self.classify_association_target(source),
+            _ => self.classify_association_target(assoc_name),
+        };
+        crate::rails::resolve_class_name_from_owner(current_class, &relative, &|name| {
+            self.is_known_model_class_name(name)
+        })
     }
 
-    fn classify_association_target(&self, name: &str, known_classes: &[String]) -> String {
+    fn is_known_model_class_name(&self, name: &str) -> bool {
+        self.registry
+            .class_data_for(name)
+            .is_some_and(|data| data.user_defined)
+            || self
+                .project_root
+                .as_ref()
+                .is_some_and(|root| crate::rails::model_file_exists(root, name))
+    }
+
+    fn classify_association_target(&self, name: &str) -> String {
+        let is_known = |candidate: &str| self.is_known_model_class_name(candidate);
         if let Some(ref root) = self.project_root {
-            crate::rails::classify_with_project_known_classes(root, name, known_classes)
+            crate::rails::classify_with_project_known_classes(root, name, &is_known)
         } else {
-            crate::rails::classify_with_known_classes(name, known_classes)
+            crate::rails::classify_with_known_classes(name, &is_known)
         }
     }
 

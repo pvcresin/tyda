@@ -532,3 +532,35 @@ class Post < ApplicationRecord
   def self.kind_of_article: -> ActiveRecord::Relation[Post]
 end
 ```
+
+## Enum values generate negative scopes
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: app/models/post.rb
+
+```ruby
+class Post < ApplicationRecord
+  enum :status, { draft: 0, live: 1 }
+end
+```
+
+```ruby
+class PostFinder
+  def not_drafts = Post.not_draft
+  def not_live = Post.not_live
+end
+```
+
+### result
+
+```rbs
+class PostFinder
+  def not_drafts: -> ActiveRecord::Relation[Post]
+  def not_live: -> ActiveRecord::Relation[Post]
+end
+```

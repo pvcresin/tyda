@@ -44,7 +44,7 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 | `dep_graph.rs` | superclass / mixin / method call など種別付き依存と差分伝播 |
 | `rbs/` | inline RBS、`.rbs`、stdlib の import / lazy load / render |
 | `sorbet/` | `sig`、`.rbi`、Sorbet comment の実験的な import |
-| `rails/` | project 検出、schema / routes / inflector、Rails 共通情報 |
+| `rails/` | project 検出、schema / routes / inflector、relation API 表（`relation_api.rs`）、Rails 共通情報 |
 | `diagnostics.rs` | missing method、unresolved constant、argument / return type mismatch などの判定 |
 | `lsp.rs` | LSP protocol、document / file cache、CodeLens、Hover、refresh |
 | `mcp.rs` | stdio MCP transport、位置指定推論、明示query時の型由来説明 |

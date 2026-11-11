@@ -361,7 +361,7 @@ end
 class User < ApplicationRecord
   def email: -> untyped
   def email=: (untyped email) -> untyped
-  def self.normalize_value_for: (Symbol name, untyped value) -> String
+  def self.normalize_value_for: (Symbol name, String value) -> String
   def normalized_literal: -> String
 end
 ```
@@ -556,10 +556,6 @@ end
 ```
 
 ## find with a multi-element splat returns Array[Model]
-
-```yaml
-known_issue: true
-```
 
 ### update
 

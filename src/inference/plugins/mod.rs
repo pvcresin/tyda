@@ -192,7 +192,7 @@ pub(crate) fn builtin_plugin_manifests() -> impl Iterator<Item = &'static Plugin
 }
 
 // Shortlist of just the overrides for the hot path (scanning all of PLUGINS is ~30 no-op virtual calls).
-static OVERRIDE_PLUGINS: &[&dyn Plugin] = &[&oj::Oj];
+static OVERRIDE_PLUGINS: &[&dyn Plugin] = &[&oj::Oj, &active_record::ActiveRecord];
 
 const EXTRA_CLASS_BODY_DSL_METHODS: &[&str] = &[
     // Sorbet markers only apply when sorbet-runtime is enabled (gated via `is_sorbet_class_body_marker_call`).
@@ -483,8 +483,10 @@ impl<'e, 'src> PluginCx<'e, 'src> {
         &self,
         call_node: &CallNode<'_>,
         parse_result: &ParseResult<'_>,
+        owner: crate::rails::CastTypeOwner,
     ) -> Option<Type> {
-        self.engine.attribute_declared_type(call_node, parse_result)
+        self.engine
+            .attribute_declared_type(call_node, parse_result, owner)
     }
 
     pub(in crate::inference) fn camelize(&self, input: &str) -> String {

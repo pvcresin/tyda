@@ -479,8 +479,18 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
-        let declared_type = self.attribute_declared_type(call_node, parse_result);
         let has_default = self.has_hash_option(call_node, "default", parse_result);
+        let active_model_only = !self.is_active_record_model_class(class_name)
+            && self.class_or_ancestors_include_module(class_name, "ActiveModel::Attributes");
+        let declared_type = self.attribute_declared_type(
+            call_node,
+            parse_result,
+            if active_model_only {
+                crate::rails::CastTypeOwner::ActiveModel
+            } else {
+                crate::rails::CastTypeOwner::ActiveRecord
+            },
+        );
 
         if self.is_active_record_model_class(class_name) {
             let accessor_type = self.resolve_attribute_accessor_type(
@@ -501,7 +511,7 @@ impl<'a> InferenceEngine<'a> {
             return;
         }
 
-        if self.class_or_ancestors_include_module(class_name, "ActiveModel::Attributes") {
+        if active_model_only {
             let accessor_type = self.resolve_attribute_accessor_type(
                 class_name,
                 &attr_name,
