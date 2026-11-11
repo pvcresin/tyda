@@ -69,6 +69,12 @@ pub(in crate::inference) trait Plugin: Sync {
         None
     }
 
+    /// RBS for framework classes the plugin's return types name, loaded on first use when no
+    /// project or gem RBS declares the class.
+    fn class_declarations(&self) -> &'static [ClassDeclaration] {
+        &[]
+    }
+
     /// Method names whose return depends on argument types. Only calls to these names pay for
     /// argument inference before `synthetic_call_return`.
     fn call_return_method_names(&self) -> &'static [&'static str] {
@@ -207,6 +213,22 @@ static PLUGINS: &[&dyn Plugin] = &[
 pub(crate) fn builtin_plugin_manifests() -> impl Iterator<Item = &'static PluginManifest> {
     PLUGINS.iter().map(|plugin| plugin.manifest())
 }
+
+pub(in crate::inference) struct ClassDeclaration {
+    pub class_name: &'static str,
+    pub library: DslLibrary,
+    pub rbs: &'static str,
+}
+
+static CLASS_DECLARATIONS: std::sync::LazyLock<
+    rustc_hash::FxHashMap<&'static str, &'static ClassDeclaration>,
+> = std::sync::LazyLock::new(|| {
+    PLUGINS
+        .iter()
+        .flat_map(|plugin| plugin.class_declarations())
+        .map(|declaration| (declaration.class_name, declaration))
+        .collect()
+});
 
 static CALL_RETURN_METHOD_NAMES: std::sync::LazyLock<rustc_hash::FxHashSet<&'static str>> =
     std::sync::LazyLock::new(|| {
@@ -1229,6 +1251,24 @@ impl<'a> InferenceEngine<'a> {
             );
         }
         result
+    }
+
+    pub(super) fn ensure_plugin_class_declaration(&mut self, class_name: &str) {
+        let Some(declaration) = CLASS_DECLARATIONS.get(class_name) else {
+            return;
+        };
+        // A bare constant stub (from a known gem namespace) does not count as a declaration.
+        let declared = |registry: &TypeRegistry| {
+            registry
+                .class_data_for(class_name)
+                .is_some_and(|data| data.has_type_substance())
+        };
+        if self.dsl_enabled(declaration.library)
+            && !declared(&self.registry)
+            && !self.external_rbs.is_some_and(declared)
+        {
+            crate::rbs::import::load_rbs_string(declaration.rbs, &mut self.registry);
+        }
     }
 
     /// Argument-aware plugin return for a method the receiver does not define in source or RBS.

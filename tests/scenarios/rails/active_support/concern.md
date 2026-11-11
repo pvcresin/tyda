@@ -578,7 +578,7 @@ end
 module Statused
   extend ActiveSupport::Concern
 
-  STATUSES: ActiveSupport::HashWithIndifferentAccess
+  STATUSES: ActiveSupport::HashWithIndifferentAccess[String, 0 | 1]
 
   def active?: -> bool
   def active!: -> bool
