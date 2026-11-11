@@ -2,10 +2,6 @@
 
 ## Infer field accessors and finders from self.data
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

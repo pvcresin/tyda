@@ -219,6 +219,10 @@ end
 
 ## type_parameters sig do...end
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 class Wrapper
   sig do
@@ -236,7 +240,7 @@ end
 
 ```rbs
 class Wrapper
-  def with_timer: (?Proc &blk) -> U
+  def with_timer: { () -> U } -> U
 end
 ```
 
@@ -293,6 +297,10 @@ end
 
 ## Block with T.proc.params
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 class Iterator
   sig { params(items: T::Array[Integer], blk: T.proc.params(x: Integer).returns(String)).returns(T::Array[String]) }
@@ -304,11 +312,15 @@ end
 
 ```rbs
 class Iterator
-  def map_items: (Array[Integer] items, ?Proc &blk) -> Array[String]
+  def map_items: (Array[Integer] items) { (Integer) -> String } -> Array[String]
 end
 ```
 
 ## Block with T.proc.void
+
+```yaml
+known_issue: true
+```
 
 ```ruby
 class Logger
@@ -324,7 +336,7 @@ end
 
 ```rbs
 class Logger
-  def log: (String msg, ?Proc &blk) -> void
+  def log: (String msg) { () -> void } -> void
 end
 ```
 

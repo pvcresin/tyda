@@ -159,10 +159,6 @@ end
 
 ## Resolve ActiveModel::Serializer object and association DSL
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```rbs

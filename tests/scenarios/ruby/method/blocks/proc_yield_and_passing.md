@@ -372,10 +372,6 @@ end
 
 ## Pass lambda and proc values as blocks
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

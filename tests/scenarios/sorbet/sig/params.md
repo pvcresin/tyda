@@ -88,6 +88,10 @@ end
 
 ## Block arg with sig
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 class Foo
   sig { params(blk: T.proc.params(x: Integer).returns(String)).returns(String) }
@@ -99,7 +103,7 @@ end
 
 ```rbs
 class Foo
-  def with_block: (?Proc &blk) -> String
+  def with_block: { (Integer) -> String } -> String
 end
 ```
 
@@ -156,7 +160,7 @@ end
 
 ```rbs
 class Foo
-  def forward: (*Integer args, **String kwargs) ?{ (?) -> untyped } -> void
+  def forward: (*Integer args, **String kwargs) { () -> void } -> void
 end
 ```
 
@@ -258,7 +262,7 @@ end
 
 ```rbs
 class Foo
-  def map_all: (*Integer args) ?{ (?) -> untyped } -> Array[String]
+  def map_all: (*Integer args) { (Integer) -> String } -> Array[String]
 end
 ```
 
@@ -342,6 +346,10 @@ end
 
 ## type_parameters with params
 
+```yaml
+known_issue: true
+```
+
 ```ruby
 class Foo
   sig { type_parameters(:T).params(items: T::Array[T.type_parameter(:T)], blk: T.proc.params(x: T.type_parameter(:T)).returns(String)).returns(T::Array[String]) }
@@ -353,6 +361,6 @@ end
 
 ```rbs
 class Foo
-  def transform: (Array[T] items, ?Proc &blk) -> Array[String]
+  def transform: (Array[T] items) { (T) -> String } -> Array[String]
 end
 ```

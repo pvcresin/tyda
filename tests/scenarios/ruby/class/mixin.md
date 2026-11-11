@@ -887,10 +887,6 @@ end
 
 ## extend reaches modules included by the extended module
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

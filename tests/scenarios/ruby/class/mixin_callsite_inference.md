@@ -148,10 +148,6 @@ end
 
 ## Union optional positional default and call-site types
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

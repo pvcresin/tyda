@@ -569,10 +569,6 @@ end
 
 ## Array#sample keeps element precision
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1737,10 +1733,6 @@ end
 ```
 
 ## Direct `[]=` call accepts a block argument
-
-```yaml
-known_issue: true
-```
 
 ### update
 

@@ -2,10 +2,6 @@
 
 ## Local assignment in block is visible outside
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -77,10 +73,6 @@ end
 ```
 
 ## `for` loop variable stays in outer scope
-
-```yaml
-known_issue: true
-```
 
 ### update
 

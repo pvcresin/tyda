@@ -127,10 +127,6 @@ end
 
 ## String interpolation expands an annotated instance variable union
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -310,10 +306,6 @@ end
 
 ## String interpolation expands integer literal union from method condition
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -332,10 +324,6 @@ end
 ```
 
 ## Conditional inside string interpolation expands to integer literal union
-
-```yaml
-known_issue: true
-```
 
 ### update
 

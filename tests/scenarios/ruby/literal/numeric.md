@@ -25,10 +25,6 @@ end
 
 ## Float literal
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -86,10 +82,6 @@ end
 ```
 
 ## clamp and between? on Integer literals
-
-```yaml
-known_issue: true
-```
 
 ### update
 

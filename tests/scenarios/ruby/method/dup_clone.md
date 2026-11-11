@@ -2,10 +2,6 @@
 
 ## `dup` and `clone` preserve user class receiver type
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

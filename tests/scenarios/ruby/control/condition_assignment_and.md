@@ -1,9 +1,5 @@
 ## Narrow a right-hand condition assignment in the true branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

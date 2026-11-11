@@ -439,10 +439,6 @@ end
 
 ## Destructuring a tuple union keeps unknown elements
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

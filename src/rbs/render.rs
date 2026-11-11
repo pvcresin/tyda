@@ -325,37 +325,40 @@ fn write_signature<W: Write>(
     return_type: &Type,
     widen_params: bool,
 ) -> io::Result<()> {
+    // RBS has no `&block` parameter syntax; an unannotated block param becomes an untyped block.
+    let has_untyped_block = block.is_none()
+        && params
+            .iter()
+            .any(|param| matches!(param.kind, ParamKind::Block));
     let mut has_params = false;
-    let mut first = true;
     for param in params {
-        if matches!(param.kind, ParamKind::Block) && block.is_some() {
+        if matches!(param.kind, ParamKind::Block) {
             continue;
         }
-        if !has_params {
-            writer.write_all(b"(")?;
-        }
+        writer.write_all(if has_params { b", " } else { b"(" })?;
         has_params = true;
-        if !first {
-            writer.write_all(b", ")?;
-        }
-        first = false;
         write_param(writer, param, widen_params)?;
     }
     if has_params {
         writer.write_all(b")")?;
+        if let Some(block) = block {
+            write_block_signature(writer, block, widen_params)?;
+        }
     } else if let Some(block) = block {
         write_block_signature_trimmed(writer, block, widen_params)?;
-        writer.write_all(b" -> ")?;
-        return write_return_type(writer, return_type, false);
+    } else if has_untyped_block {
+        writer.write_all(b"()")?;
     } else {
-        writer.write_all(b"-> ")?;
-        return write_return_type(writer, return_type, false);
+        writer.write_all(b"->")?;
     }
-    if let Some(block) = block {
-        write_block_signature(writer, block, widen_params)?;
+    if has_untyped_block {
+        writer.write_all(b" ?{ (?) -> untyped }")?;
     }
-    writer.write_all(b" -> ")?;
-    write_return_type(writer, return_type, true)
+    if has_params || block.is_some() || has_untyped_block {
+        writer.write_all(b" ->")?;
+    }
+    writer.write_all(b" ")?;
+    write_return_type(writer, return_type)
 }
 
 fn write_param<W: Write>(writer: &mut W, param: &Param, widen_param: bool) -> io::Result<()> {
@@ -391,7 +394,7 @@ fn write_param<W: Write>(writer: &mut W, param: &Param, widen_param: bool) -> io
                 write!(writer, " {}", param.name)?;
             }
         }
-        ParamKind::Block => write!(writer, "?{param_type:#} &{}", param.name)?,
+        ParamKind::Block => unreachable!("block params are rendered as a block signature"),
     }
     Ok(())
 }
@@ -433,15 +436,15 @@ fn write_block_signature_body<W: Write>(
         }
     }
     writer.write_all(b") -> ")?;
-    write_return_type(writer, &block.return_type, !block.params.is_empty())?;
+    write_return_type(writer, &block.return_type)?;
     writer.write_all(b" }")
 }
 
-fn write_return_type<W: Write>(writer: &mut W, ty: &Type, has_params: bool) -> io::Result<()> {
-    if has_params {
-        write!(writer, "{ty:#}")
-    } else {
-        write!(writer, "{ty}")
+// RBS rejects a bare union or intersection after `->` (`| B` reads as another overload).
+fn write_return_type<W: Write>(writer: &mut W, ty: &Type) -> io::Result<()> {
+    match ty {
+        Type::Intersection(types) if types.len() > 1 => write!(writer, "({ty})"),
+        _ => write!(writer, "{ty:#}"),
     }
 }
 

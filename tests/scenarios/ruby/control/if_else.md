@@ -223,10 +223,6 @@ end
 
 ## Narrow an instance variable on the right of a short-circuit like a local
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

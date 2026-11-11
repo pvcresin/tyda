@@ -98,10 +98,6 @@ end
 
 ## Float literal
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

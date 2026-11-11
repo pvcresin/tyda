@@ -62,10 +62,6 @@ end
 
 ## for over non-empty fixed tuple keeps loop variable non-nil
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -105,10 +101,6 @@ end
 ```
 
 ## for loop value joins a body return with the receiver
-
-```yaml
-known_issue: true
-```
 
 ### update
 

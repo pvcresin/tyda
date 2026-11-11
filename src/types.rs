@@ -1417,7 +1417,8 @@ impl fmt::Display for Type {
                 write!(f, "{}", parts.join(" & "))
             }
             Type::LiteralInteger(v) => write!(f, "{v}"),
-            Type::LiteralFloat(v) => write!(f, "{v}"),
+            // RBS has no float literal types.
+            Type::LiteralFloat(_) => write!(f, "Float"),
             Type::LiteralString(v) => {
                 write!(f, "\"{}\"", escape_rbs_string_literal(v))
             }
@@ -1459,7 +1460,11 @@ impl fmt::Display for Type {
                     && non_nil.len() == 1
                     && matches!(non_nil[0], Type::True | Type::False)
                 {
-                    write!(f, "{} | nil", non_nil[0])
+                    if f.alternate() {
+                        write!(f, "({} | nil)", non_nil[0])
+                    } else {
+                        write!(f, "{} | nil", non_nil[0])
+                    }
                 } else if has_nil && !non_nil.is_empty() && !absorbs_nil {
                     let non_nil_parts = Self::dedup_rendered_preserve_order(
                         &non_nil.iter().copied().cloned().collect::<Vec<_>>(),
@@ -1472,11 +1477,11 @@ impl fmt::Display for Type {
                         write!(f, "{}?", non_nil_parts[0])
                     }
                 } else {
-                    let needs_parens = types.len() > 1;
+                    let parts = Self::dedup_rendered_preserve_order(types);
+                    let needs_parens = parts.len() > 1;
                     if needs_parens && f.alternate() {
                         write!(f, "(")?;
                     }
-                    let parts = Self::dedup_rendered_preserve_order(types);
                     write!(f, "{}", parts.join(" | "))?;
                     if needs_parens && f.alternate() {
                         write!(f, ")")?;

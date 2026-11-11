@@ -8,6 +8,8 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 - Ruby source と `.rbs` を中心にした query 型推論 engine
 - CLI の RBS 出力、JSON Lines diagnostics、型カバレッジ JSON
+  - RBS 出力は公式 parser が受理する構文に限る。戻り値の union / intersection は括弧で囲み、
+    型注釈のない `&block` は `?{ (?) -> untyped }`、Float literal は `Float` で出す
 - TypeProf VSCode 拡張と接続できる LSP server
 - stdio MCP server による AI agent 向けの位置指定型推論と、明示queryによる同一source内の型由来説明
 - Rails / gem DSL plugin

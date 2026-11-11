@@ -250,7 +250,6 @@ end
 
 ```yaml
 rails_version: 6.1.0
-known_issue: true
 ```
 
 ### update

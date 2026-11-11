@@ -353,10 +353,6 @@ end
 
 ## Nil guards on a local narrow the guarded branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
