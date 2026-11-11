@@ -10638,9 +10638,9 @@ impl TypeRegistry {
             Type::PatternRestRef(subject) => Type::PatternRestRef(Box::new(
                 self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
             )),
-            Type::SplatRef(subject) => Type::SplatRef(Box::new(
-                self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
-            )),
+            Type::SplatRef(subject) => self.resolve_splat_parts(
+                &self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
+            ),
             Type::PatternTrailingRef(subject, from_end) => Type::PatternTrailingRef(
                 Box::new(
                     self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),

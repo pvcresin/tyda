@@ -514,6 +514,48 @@ fn coverage_resolves_cross_file_references_after_workspace_merge() {
 }
 
 #[test]
+fn coverage_types_splat_argument_resolved_from_caller_block() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("packager.rb");
+    fs::write(
+        &rb_file,
+        r#"class Packager
+  def release
+    path = nil
+    step { path = build }
+    step { publish(path) }
+  end
+
+  def step = yield
+  def build = "pkg.gem"
+
+  def publish(path)
+    run(["gem", *command, path])
+  end
+
+  def command = ["push"]
+  def run(args) = args
+end
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["by_kind"]["method_parameter"]["total"], 2);
+    assert_eq!(
+        report["by_kind"]["method_parameter"]["typed"], 2,
+        "a splat argument whose parts are known should not stay deferred: {report}"
+    );
+}
+
+#[test]
 fn coverage_flag_rejects_display_and_diagnostic_modes() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("coverage.rb");
