@@ -9,7 +9,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - Ruby source と `.rbs` を中心にした query 型推論 engine
 - CLI の RBS 出力、JSON Lines diagnostics、型カバレッジ JSON
   - RBS 出力は公式 parser が受理する構文に限る。戻り値の union / intersection は括弧で囲み、
-    型注釈のない `&block` は `?{ (?) -> untyped }`、Float literal は `Float` で出す。`void` を含む
+    型注釈のない `&block` は `?{ (?) -> untyped }`、Float literal は `Float` で出す。戻り値の `void` を含む
     union は使える値がないため `void` にまとめる
   - class / module を定数参照で代入した定数（`A = B`、alias の連鎖、RBS の `class A = B` /
     `module A = B` 入力）は、定数宣言ではなく対象の種類に合わせた `class A = B` / `module A = B` で出す。
@@ -149,8 +149,8 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 - `config/routes.rb` から `*_path` / `*_url` helper を生成する。ActionDispatch の命名規則に沿って `namespace` / `scope`（`as:`、動的 segment）/ `resources` / `resource`（`as:`、`only:` / `except:`、`shallow`）/ `member` / `collection` / `new` / `concern` / `concerns` / `direct` を合成し、除外された action の helper は生成しない。`config/routes/*.rb` の `draw` は未対応
 - ActionView helper の `dom_id` / `dom_class` は `String`、`truncate` は nil を受けると nil を返すため `String?` を返す
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
-- ActiveJob の `perform_later` と ActionMailer の `deliver_later` は Rails 7.0 以降 enqueue callback の中断で `false` を返し、`perform_now` は perform callback の中断で `false` を返す。Sidekiq の `perform_async` などは client middleware の中断で `nil` を返す。`Sidekiq::Job` を include するクラスは名前が `Job` で終わっても ActiveJob として扱わない
-- ActiveSupport の core extension は plugin の戻り値テーブルで補う。引数の型で戻り値が決まるもの（`Array#including` / `in_groups` など）は plugin が名前を宣言した呼び出しだけ引数を推論する。`String#to_date` などは空白だけの文字列で `nil` を返す
+- ActiveJob の `perform_later` と ActionMailer の `deliver_later` は Rails 7.0 以降 enqueue callback の中断で `false` を返し、`perform_now` は perform callback の中断で `false` を返す。Sidekiq の `perform_async` などは client middleware の中断で `nil` を返す。ActiveJob の判定は継承関係を優先し、名前が `Job` で終わることによる補完は superclass が未解決のクラスに限る（`Sidekiq::Job` を include するクラスや既知の ActiveRecord / controller / mailer の基底を継承するクラスは対象外）
+- ActiveSupport の core extension は `active_support_core_ext`、時刻系は `active_support_time_ext` で有効化し、plugin の戻り値テーブルで補う。引数の型で戻り値が決まるもの（`Array#including` / `in_groups` など）は plugin が名前を宣言した呼び出しだけ引数を推論する。`String#to_date` などは空白だけの文字列で `nil` を返す
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
 - Rake が有効な project では、`String#ext` / `String#pathmap` の戻り値を `String` として扱う。Gemfile の引数なし `gemspec` は root の唯一の `*.gemspec` の gem 名も宣言済み gem として扱う
 - GitLab in-tree の Presenter / CurrentSettings / Metrics / EE 拡張を検出する

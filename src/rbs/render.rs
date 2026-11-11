@@ -458,8 +458,10 @@ fn write_block_signature_body<W: Write>(
 }
 
 // RBS rejects a bare union or intersection after `->` (`| B` reads as another overload).
+// It also rejects `void` as a union member; a return that may be `void` has no usable value.
 fn write_return_type<W: Write>(writer: &mut W, ty: &Type) -> io::Result<()> {
     match ty {
+        Type::Union(types) if types.contains(&Type::Void) => writer.write_all(b"void"),
         Type::Intersection(types) if types.len() > 1 => write!(writer, "({ty})"),
         _ => write!(writer, "{ty:#}"),
     }
@@ -469,6 +471,14 @@ fn write_return_type<W: Write>(writer: &mut W, ty: &Type) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::types::NamespaceAliasKind;
+
+    #[test]
+    fn signature_renders_a_union_with_void_as_void() {
+        let mut buf = Vec::new();
+        let ty = Type::Union(vec![Type::False, Type::Void]);
+        write_signature(&mut buf, &[], None, &ty, false).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "-> void");
+    }
 
     #[test]
     fn signature_formats_empty_tuple_as_rbs_empty_tuple() {

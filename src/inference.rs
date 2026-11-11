@@ -13500,7 +13500,8 @@ impl<'a> InferenceEngine<'a> {
                         }
                     }
                 }
-                self.register_rails_framework_methods(&class_name, class_loc);
+                let inherits_active_job =
+                    self.register_rails_framework_methods(&class_name, class_loc);
                 self.dsl_plugin_register_on_class(&class_name, class_loc);
                 self.extract_sorbet_class_modifiers(&class_name, node, parse_result, comments);
                 self.extract_class_type_params(&class_name, node, parse_result, comments);
@@ -13510,7 +13511,7 @@ impl<'a> InferenceEngine<'a> {
                 if self.rails_feature_enabled() && self.is_active_record_model_class(&class_name) {
                     self.register_active_record_relation_model_methods(&class_name, class_loc);
                 }
-                self.register_active_job_helpers(&class_name, class_loc);
+                self.register_active_job_helpers(&class_name, class_loc, inherits_active_job);
             }
             Node::ModuleNode { .. } => {
                 let module_node = node.as_module_node().expect("must be ModuleNode");
@@ -15078,7 +15079,8 @@ impl<'a> InferenceEngine<'a> {
                                 }
                             }
                         }
-                        self.register_rails_framework_methods(&full_name, nested_loc);
+                        let inherits_active_job =
+                            self.register_rails_framework_methods(&full_name, nested_loc);
                         self.dsl_plugin_register_on_class(&full_name, nested_loc);
                         self.extract_sorbet_class_modifiers(
                             &full_name,
@@ -15105,7 +15107,11 @@ impl<'a> InferenceEngine<'a> {
                                 });
                             });
                         }
-                        self.register_active_job_helpers(&full_name, nested_loc);
+                        self.register_active_job_helpers(
+                            &full_name,
+                            nested_loc,
+                            inherits_active_job,
+                        );
                     }
                     Node::ModuleNode { .. } => {
                         pending_sigs.clear();
@@ -30277,24 +30283,27 @@ impl<'a> InferenceEngine<'a> {
                             );
                             break 'recv wrap(override_ty);
                         }
+                        // Arguments collected for a plugin claim are reused by the dispatch below.
+                        let mut scoped_call_args = None;
                         if call_node.block().is_none()
                             && plugins::plugin_claims_call_return(&method_name)
                         {
-                            let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
+                            let collected = self.collect_call_arg_types_scoped_with_rest_shape(
                                 node,
                                 parse_result,
                                 class_name,
                                 scope,
                             );
-                            if kw_types.is_empty()
+                            if collected.1.is_empty()
                                 && let Some(call_ty) = self.dsl_plugin_call_return(
                                     &safe_nav_receiver_type,
                                     &method_name,
-                                    &arg_types,
+                                    &collected.0,
                                 )
                             {
                                 break 'recv wrap(call_ty);
                             }
+                            scoped_call_args = Some(collected);
                         }
                         if call_node.block().is_none()
                             && let Some(ancestors_result) = self.resolve_static_ancestors_return(
@@ -31255,16 +31264,17 @@ impl<'a> InferenceEngine<'a> {
                         let mut block_uses_rbs_signature = false;
                         let mut first_pass_block_return: Option<Type> = None;
                         let mut user_defined_no_block_enumerator_result: Option<Type> = None;
-                        let mut scoped_call_args = None;
                         if self.record_hover_snapshots
                             && matches!(safe_nav_receiver_type, Type::Union(_))
                         {
-                            let collected = self.collect_call_arg_types_scoped_with_rest_shape(
-                                node,
-                                parse_result,
-                                class_name,
-                                scope,
-                            );
+                            let collected = scoped_call_args.take().unwrap_or_else(|| {
+                                self.collect_call_arg_types_scoped_with_rest_shape(
+                                    node,
+                                    parse_result,
+                                    class_name,
+                                    scope,
+                                )
+                            });
                             self.record_arg_check_site(
                                 &call_node,
                                 parse_result,

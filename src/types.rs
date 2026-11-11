@@ -856,9 +856,6 @@ impl Type {
         Self::collect_union_parts(self, &mut parts);
         Self::collect_union_parts(other, &mut parts);
         Self::sort_dedup_parts(&mut parts);
-        if Self::void_absorbs(&parts) {
-            return Type::Void;
-        }
 
         let had_untyped = parts.contains(&Type::Untyped);
         parts.retain(|ty| *ty != Type::Untyped);
@@ -887,12 +884,6 @@ impl Type {
                 parts.push(other);
             }
         }
-    }
-
-    /// A return that may be `void` gives callers no usable value, so `void` absorbs the union
-    /// (RBS also rejects `void` as a union member).
-    fn void_absorbs(parts: &[Type]) -> bool {
-        parts.len() > 1 && parts.contains(&Type::Void)
     }
 
     fn sort_dedup_parts(parts: &mut Vec<Type>) {
@@ -1110,9 +1101,6 @@ impl Type {
         if parts.len() > Self::UNION_CARDINALITY_LIMIT {
             return Type::Untyped;
         }
-        if Self::void_absorbs(&parts) {
-            return Type::Void;
-        }
         let had_untyped = parts.contains(&Type::Untyped);
         parts.retain(|ty| *ty != Type::Untyped);
         // Don't narrow `nil | untyped` down to nil (if all that's left is nil, it's still "unknown").
@@ -1151,9 +1139,6 @@ impl Type {
         if parts.len() > Self::UNION_CARDINALITY_LIMIT {
             return Type::Untyped;
         }
-        if Self::void_absorbs(&parts) {
-            return Type::Void;
-        }
         if parts.len() > 1 {
             parts.retain(|ty| *ty != Type::Bot);
         }
@@ -1181,9 +1166,6 @@ impl Type {
         Self::sort_dedup_parts(&mut parts);
         if parts.len() > Self::UNION_CARDINALITY_LIMIT {
             return Type::Untyped;
-        }
-        if Self::void_absorbs(&parts) {
-            return Type::Void;
         }
         if parts.len() > 1 {
             parts.retain(|ty| *ty != Type::Bot);
@@ -1744,19 +1726,6 @@ pub struct MethodAliasSig {
 #[cfg(test)]
 mod tests {
     use super::{RecordKey, Type};
-
-    #[test]
-    fn void_absorbs_union_members() {
-        assert_eq!(Type::Void.union_with(Type::False), Type::Void);
-        assert_eq!(
-            Type::from_type_vec(vec![Type::Integer, Type::Void]),
-            Type::Void
-        );
-        assert_eq!(
-            Type::from_type_vec_preserve_untyped(vec![Type::Untyped, Type::Void]),
-            Type::Void
-        );
-    }
 
     #[test]
     fn display_deduplicates_union_members() {

@@ -119,3 +119,41 @@ class ItemsController < ActionController::Base
   def run_now: -> (String | false)
 end
 ```
+
+## A model named with a Job suffix gets no Active Job helpers
+
+### update
+
+```ruby
+class Job < ApplicationRecord
+  def perform = "done"
+end
+```
+
+### result
+
+```rbs
+class Job < ApplicationRecord
+  def perform: -> "done"
+end
+```
+
+## A Job-suffixed class with an unresolved superclass keeps Active Job helpers
+
+### update
+
+```ruby
+class ReportJob < BaseJob
+  def perform = "done"
+end
+```
+
+### result
+
+```rbs
+class ReportJob < BaseJob
+  def perform: -> "done"
+  def self.perform_later: -> (false | ReportJob)
+  def self.perform_now: -> (false | "done")
+end
+```

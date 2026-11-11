@@ -112,6 +112,16 @@ pub(super) struct AssociationOptions {
     pub(super) delegate_prefix_target: bool,
 }
 
+const RAILS_NON_JOB_BASES: &[&str] = &[
+    "ActiveRecord::Base",
+    "ApplicationRecord",
+    "ActionController::Base",
+    "ActionController::API",
+    "ApplicationController",
+    "ActionMailer::Base",
+    "ApplicationMailer",
+];
+
 impl<'a> InferenceEngine<'a> {
     fn active_record_model_type(class_name: &str) -> Type {
         Type::Class(Sym::new(class_name))
@@ -255,13 +265,14 @@ impl<'a> InferenceEngine<'a> {
             .any(|method| method.name == "respond_to" && !method.rbs_file_source)
     }
 
+    /// Returns whether the class got Active Job helpers from a known job base.
     pub(super) fn register_rails_framework_methods(
         &mut self,
         class_name: &str,
         loc: SourceLocation,
-    ) {
+    ) -> bool {
         if !self.rails_feature_enabled() {
-            return;
+            return false;
         }
 
         if self.class_matches_or_inherits(class_name, &["ActionCable::Channel::Base"]) {
@@ -481,7 +492,8 @@ impl<'a> InferenceEngine<'a> {
             self.register_active_model_serializer_framework_methods(class_name, loc);
         }
 
-        if self.inherits_active_job(class_name) {
+        let inherits_active_job = self.inherits_active_job(class_name);
+        if inherits_active_job {
             self.add_active_job_helpers(class_name, loc);
         }
 
@@ -673,6 +685,7 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
         }
+        inherits_active_job
     }
 
     pub(super) fn register_mailer_action_proxy(
@@ -796,18 +809,56 @@ impl<'a> InferenceEngine<'a> {
         self.class_matches_or_inherits(class_name, &["ActiveJob::Base", "ApplicationJob"])
     }
 
-    pub(crate) fn is_active_job_class(&self, class_name: &str) -> bool {
-        // The name fallback covers a base job defined elsewhere; Sidekiq jobs share the suffix.
-        self.inherits_active_job(class_name)
-            || class_name.ends_with("Job") && !self.is_sidekiq_job_class(class_name)
+    /// The `Job` suffix stands in for a job base defined elsewhere, so it applies only when the
+    /// ancestry is not known: a reopened class or an unresolved superclass. A Sidekiq mixin or a
+    /// known non-job Rails base rules it out.
+    fn is_active_job_by_name(&self, class_name: &str) -> bool {
+        class_name.ends_with("Job")
+            && self.superclass_chain_is_open(class_name)
+            && !self.class_matches_or_inherits(class_name, RAILS_NON_JOB_BASES)
+            && !self.is_sidekiq_job_class(class_name)
     }
 
-    /// A job matched only by name is confirmed after its body, once a Sidekiq mixin is known.
-    pub(super) fn register_active_job_helpers(&mut self, class_name: &str, loc: SourceLocation) {
-        if !self.rails_feature_enabled() || !self.is_active_job_class(class_name) {
+    fn superclass_chain_is_open(&self, class_name: &str) -> bool {
+        let Some(data) = self.registry.class_data_for(class_name) else {
+            return true;
+        };
+        if data.superclass.is_none() {
+            return true;
+        }
+        let mut current = self.resolved_superclass_name(class_name);
+        let mut seen = HashSet::new();
+        while let Some(name) = current {
+            if !seen.insert(name.clone()) {
+                return false;
+            }
+            let Some(data) = self.registry.class_data_for(&name) else {
+                return true;
+            };
+            if data.superclass_is_unknown {
+                return true;
+            }
+            current = self.resolved_superclass_name(&name);
+        }
+        false
+    }
+
+    /// Called after the class body, once `perform` and any Sidekiq mixin are known.
+    pub(super) fn register_active_job_helpers(
+        &mut self,
+        class_name: &str,
+        loc: SourceLocation,
+        inherits_active_job: bool,
+    ) {
+        if !self.rails_feature_enabled() {
             return;
         }
-        self.add_active_job_helpers(class_name, loc);
+        if !inherits_active_job {
+            if !self.is_active_job_by_name(class_name) {
+                return;
+            }
+            self.add_active_job_helpers(class_name, loc);
+        }
         self.propagate_perform_params_to_job_helpers(class_name);
     }
 
