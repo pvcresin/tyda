@@ -1565,7 +1565,7 @@ impl<'a> InferenceEngine<'a> {
         receiver
     }
 
-    fn member_surface_provably_complete(&mut self, class: &str) -> bool {
+    pub(super) fn member_surface_provably_complete(&mut self, class: &str) -> bool {
         let owner = class.trim_scope_prefix();
         // These broad built-in types can stand in for dynamically extended receivers.
         if matches!(owner, "Object" | "Class" | "Module") {
@@ -2599,6 +2599,7 @@ impl<'a> InferenceEngine<'a> {
                 | Type::PatternRestRef(_)
                 | Type::PatternKeyRef(_, _)
                 | Type::PatternKeyRestRef(_, _)
+                | Type::SplatRef(_)
         )
     }
 
@@ -4941,7 +4942,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(..)
             | Type::PatternTrailingRef(..)
             | Type::PatternKeyRef(..)
-            | Type::PatternKeyRestRef(..) => false,
+            | Type::PatternKeyRestRef(..)
+            | Type::SplatRef(..) => false,
             _ => true,
         }
     }
@@ -5012,7 +5014,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(receiver)
             | Type::PatternTrailingRef(receiver, _)
             | Type::PatternKeyRef(receiver, _)
-            | Type::PatternKeyRestRef(receiver, _) => Self::type_contains_type(receiver, target),
+            | Type::PatternKeyRestRef(receiver, _)
+            | Type::SplatRef(receiver) => Self::type_contains_type(receiver, target),
             _ => false,
         }
     }

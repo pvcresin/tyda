@@ -448,12 +448,11 @@ fn type_level(ty: &Type, class_context: &str, method_context: Option<&str>) -> C
         | Type::PatternRestRef(subject)
         | Type::PatternTrailingRef(subject, _)
         | Type::PatternKeyRef(subject, _)
-        | Type::PatternKeyRestRef(subject, _) => {
-            match type_level(subject, class_context, method_context) {
-                CoverageLevel::Unknown => CoverageLevel::Unknown,
-                CoverageLevel::Untyped | CoverageLevel::Typed => CoverageLevel::Untyped,
-            }
-        }
+        | Type::PatternKeyRestRef(subject, _)
+        | Type::SplatRef(subject) => match type_level(subject, class_context, method_context) {
+            CoverageLevel::Unknown => CoverageLevel::Unknown,
+            CoverageLevel::Untyped | CoverageLevel::Typed => CoverageLevel::Untyped,
+        },
         Type::LiteralInteger(_)
         | Type::LiteralFloat(_)
         | Type::LiteralString(_)

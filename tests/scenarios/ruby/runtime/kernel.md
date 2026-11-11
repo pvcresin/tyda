@@ -168,10 +168,6 @@ end
 
 ## Kernel Array converts a range through to_a
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

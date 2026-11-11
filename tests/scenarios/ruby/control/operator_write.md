@@ -172,10 +172,6 @@ end
 
 ## Attribute operator writes pass the new value to the writer
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

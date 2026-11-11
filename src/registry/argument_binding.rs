@@ -78,6 +78,62 @@ pub(crate) fn bind_positional_arguments(params: &[&ParamInfo], args: &[Type]) ->
         .collect()
 }
 
+/// The splat at `open_index` may give any number of its element, so each arity-valid count
+/// binds once and the parameters take the union.
+pub(crate) fn bind_positional_arguments_with_open_splat(
+    params: &[&ParamInfo],
+    args: &[Type],
+    open_index: usize,
+) -> Vec<Vec<Type>> {
+    let Some(open_elem) = args.get(open_index) else {
+        return bind_positional_arguments(params, args);
+    };
+    let required = params
+        .iter()
+        .filter(|param| matches!(param.kind, ParamKind::Required))
+        .count();
+    let optional = params
+        .iter()
+        .filter(|param| matches!(param.kind, ParamKind::Optional))
+        .count();
+    let has_rest = params
+        .iter()
+        .any(|param| matches!(param.kind, ParamKind::Rest));
+    let fixed = args.len() - 1;
+    // Past `required + optional` only the rest grows, which a single extra element already covers.
+    let max_count = (required + optional + usize::from(has_rest)).saturating_sub(fixed);
+    let mut merged: Vec<Vec<Type>> = vec![Vec::new(); params.len()];
+    let mut bound_any = false;
+    for count in 0..=max_count {
+        let total = fixed + count;
+        if total < required || (!has_rest && total > required + optional) {
+            continue;
+        }
+        let expanded: Vec<Type> = args[..open_index]
+            .iter()
+            .cloned()
+            .chain(std::iter::repeat_n(open_elem.clone(), count))
+            .chain(args[open_index + 1..].iter().cloned())
+            .collect();
+        for (slot, bound) in merged
+            .iter_mut()
+            .zip(bind_positional_arguments(params, &expanded))
+        {
+            for ty in bound {
+                if !slot.contains(&ty) {
+                    slot.push(ty);
+                }
+            }
+        }
+        bound_any = true;
+    }
+    if bound_any {
+        merged
+    } else {
+        bind_positional_arguments(params, args)
+    }
+}
+
 /// Keywords passed to a callable without keyword parameters arrive as a trailing hash.
 pub(crate) fn keyword_hash_argument<'a>(
     keywords: impl Iterator<Item = (&'a str, &'a Type)>,
@@ -344,5 +400,33 @@ mod tests {
             bind(&params, &[int(1)], LAMBDA).positional,
             vec![int(1), Type::Untyped]
         );
+    }
+
+    #[test]
+    fn open_splat_binds_every_arity_valid_count() {
+        let params = [
+            param("a", ParamKind::Required, None),
+            param("b", ParamKind::Required, None),
+            param("c", ParamKind::Optional, None),
+        ];
+        let params: Vec<&ParamInfo> = params.iter().collect();
+        let bound =
+            bind_positional_arguments_with_open_splat(&params, &[Type::Symbol, Type::String], 1);
+        assert_eq!(
+            bound,
+            vec![vec![Type::Symbol], vec![Type::String], vec![Type::String]]
+        );
+    }
+
+    #[test]
+    fn open_splat_without_a_valid_count_binds_one_element() {
+        let params = [param("a", ParamKind::Required, None)];
+        let params: Vec<&ParamInfo> = params.iter().collect();
+        let bound = bind_positional_arguments_with_open_splat(
+            &params,
+            &[Type::Symbol, Type::Symbol, Type::String],
+            2,
+        );
+        assert_eq!(bound, vec![vec![Type::Symbol]]);
     }
 }

@@ -34,7 +34,7 @@ use crate::sorbet::comments::{
 use crate::sorbet::rbi::LazyRbiLoader;
 use crate::types::{
     CapturedLocalWrites, HoverBlockSig, MethodSig, NamespaceAliasKind, Param, ParamKind, ProcKind,
-    ProcSignature, RecordField, RecordKey, SharedPath, SourceLocation, Type,
+    ProcSignature, RecordField, RecordKey, SharedPath, SourceLocation, SplatElements, Type,
 };
 
 mod array_element_flow;
@@ -52,6 +52,7 @@ pub(crate) use plugins::builtin_plugin_manifests;
 mod rails_dsl;
 mod rbs;
 mod ruby_dsl;
+mod splat_flow;
 
 use hover::{
     ArgCheckArg, ArgCheckSite, HoverBlockShape, HoverSnapshot, HoverTarget, MissingRecordKeySite,
@@ -632,6 +633,19 @@ impl ConditionOutcome {
             Self::Either => Self::Either,
         }
     }
+}
+
+/// The key of an index write; `slice` marks `a[start, length] = v` and `a[range] = v`.
+struct CollectedCallArgs {
+    positional: Vec<Type>,
+    keywords: HashMap<String, Type>,
+    keyword_rest_shape: Option<Box<Type>>,
+    open_splat: Option<u16>,
+}
+
+struct IndexWriteKey<'n, 'pr> {
+    node: &'n Node<'pr>,
+    slice: bool,
 }
 
 struct CondNarrowing {
@@ -2326,9 +2340,8 @@ impl<'a> InferenceEngine<'a> {
                 .any(|field| Self::type_contains_call_site_param_ref(&field.value)),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
-            | Type::PatternTrailingRef(subject, _) => {
-                Self::type_contains_call_site_param_ref(subject)
-            }
+            | Type::PatternTrailingRef(subject, _)
+            | Type::SplatRef(subject) => Self::type_contains_call_site_param_ref(subject),
             Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
                 Self::type_contains_call_site_param_ref(subject)
             }
@@ -2899,6 +2912,11 @@ impl<'a> InferenceEngine<'a> {
 
     pub fn merge_alias_call_sites(&mut self) {
         self.registry.merge_alias_call_sites();
+    }
+
+    /// Returns whether any call site was added.
+    pub fn merge_subclass_dispatch_call_sites(&mut self) -> bool {
+        self.registry.merge_subclass_dispatch_call_sites()
     }
 
     pub fn registry(&self) -> &TypeRegistry {
@@ -5875,6 +5893,7 @@ impl<'a> InferenceEngine<'a> {
                 | Type::PatternTrailingRef(_, _)
                 | Type::PatternKeyRef(_, _)
                 | Type::PatternKeyRestRef(_, _)
+                | Type::SplatRef(_)
         )
     }
 
@@ -7997,7 +8016,13 @@ impl<'a> InferenceEngine<'a> {
         let index_type = source_each
             .map(|(_, target_type)| target_type)
             .unwrap_or_else(|| Self::for_iteration_target_type(&resolved_collection_type));
-        self.assign_multi_target(class_name, &for_node.index(), index_type, &mut loop_scope);
+        self.assign_multi_target(
+            class_name,
+            &for_node.index(),
+            index_type,
+            parse_result,
+            &mut loop_scope,
+        );
 
         let body_exits = for_node.statements().is_some_and(|statements| {
             self.process_statements_for_returns(
@@ -8284,7 +8309,13 @@ impl<'a> InferenceEngine<'a> {
             .unwrap_or_else(|| Self::collection_iteration_cardinality(&resolved_collection_type));
 
         if matches!(cardinality, IterationCardinality::Never) {
-            self.assign_multi_target(class_name, &for_node.index(), Type::Nil, scope);
+            self.assign_multi_target(
+                class_name,
+                &for_node.index(),
+                Type::Nil,
+                parse_result,
+                scope,
+            );
             return collection_type;
         }
 
@@ -8296,7 +8327,13 @@ impl<'a> InferenceEngine<'a> {
         let index_type = source_each
             .map(|(_, target_type)| target_type)
             .unwrap_or_else(|| Self::for_iteration_target_type(&resolved_collection_type));
-        self.assign_multi_target(class_name, &for_node.index(), index_type, &mut loop_scope);
+        self.assign_multi_target(
+            class_name,
+            &for_node.index(),
+            index_type,
+            parse_result,
+            &mut loop_scope,
+        );
         let body_exits = for_node.statements().is_some_and(|statements| {
             self.process_statements_for_returns(
                 class_name,
@@ -9779,6 +9816,24 @@ impl<'a> InferenceEngine<'a> {
             Type::Array(None) => Type::Array(Some(Box::new(value))),
             other => other,
         }
+    }
+
+    /// A slice takes an Array value's elements and any other value as one element.
+    fn apply_array_slice_write(existing: Type, value: Type) -> Type {
+        let mut elems = match existing {
+            Type::Tuple(elems) => elems,
+            Type::Array(Some(inner)) => vec![*inner],
+            _ => Vec::new(),
+        };
+        match value {
+            Type::Tuple(values) => elems.extend(values),
+            Type::Array(Some(inner)) => elems.push(*inner),
+            Type::Array(None) => elems.push(Type::Untyped),
+            other => elems.push(other),
+        }
+        Type::Array(Some(Box::new(Self::cap_collection_growth_type(
+            Type::from_type_vec_preserve_untyped(elems),
+        ))))
     }
 
     fn cap_collection_growth_type(ty: Type) -> Type {
@@ -12661,6 +12716,8 @@ impl<'a> InferenceEngine<'a> {
                     keyword_rest_shape,
                     block: call_site_block,
                     caller_context: caller_context.clone(),
+                    open_splat: None,
+                    self_call: false,
                 },
             );
         }
@@ -17231,6 +17288,8 @@ impl<'a> InferenceEngine<'a> {
                     keyword_rest_shape,
                     block: None,
                     caller_context: None,
+                    open_splat: None,
+                    self_call: false,
                 },
             );
         }
@@ -20649,13 +20708,17 @@ impl<'a> InferenceEngine<'a> {
             }
 
             if call_node.receiver().is_none() {
-                let (arg_types, kw_types, keyword_rest_shape) = self
-                    .collect_call_arg_types_scoped_with_rest_shape(
-                        node,
-                        parse_result,
-                        class_name,
-                        &scope,
-                    );
+                let CollectedCallArgs {
+                    positional: arg_types,
+                    keywords: kw_types,
+                    keyword_rest_shape,
+                    open_splat,
+                } = self.collect_call_arg_types_scoped_with_rest_shape(
+                    node,
+                    parse_result,
+                    class_name,
+                    &scope,
+                );
                 let block = self.collect_call_site_block(
                     class_name,
                     method_name.as_ref(),
@@ -20677,6 +20740,8 @@ impl<'a> InferenceEngine<'a> {
                         keyword_rest_shape,
                         block: block.map(Box::new),
                         caller_context: None,
+                        open_splat,
+                        self_call: true,
                     },
                 );
             } else if let Some(receiver) = call_node.receiver() {
@@ -20725,6 +20790,8 @@ impl<'a> InferenceEngine<'a> {
                                     keyword_rest_shape: None,
                                     block: None,
                                     caller_context: None,
+                                    open_splat: None,
+                                    self_call: false,
                                 },
                             );
                         }
@@ -20733,8 +20800,18 @@ impl<'a> InferenceEngine<'a> {
                 let receiver_type =
                     self.infer_node_type(class_name, &receiver, parse_result, &scope);
                 if let Some(target_class) = self.type_to_class_name(&receiver_type) {
-                    let (arg_types, kw_types) =
-                        self.collect_call_arg_types_with_kw(node, parse_result, class_name, &scope);
+                    let CollectedCallArgs {
+                        positional: arg_types,
+                        keywords: kw_types,
+                        open_splat,
+                        ..
+                    } = self.collect_call_args_with_kw_skip(
+                        &call_node,
+                        parse_result,
+                        class_name,
+                        &scope,
+                        0,
+                    );
                     let method_is_singleton =
                         Self::receiver_is_singleton_dispatch(&receiver, singleton_dispatch);
                     let block = self.collect_call_site_block(
@@ -20758,6 +20835,8 @@ impl<'a> InferenceEngine<'a> {
                             keyword_rest_shape: None,
                             block: block.map(Box::new),
                             caller_context: None,
+                            open_splat,
+                            self_call: matches!(receiver, Node::SelfNode { .. }),
                         },
                     );
                 }
@@ -20790,7 +20869,26 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
         skip_positionals: usize,
     ) -> (Vec<Type>, HashMap<String, Type>) {
+        let args = self.collect_call_args_with_kw_skip(
+            call_node,
+            parse_result,
+            class_name,
+            scope,
+            skip_positionals,
+        );
+        (args.positional, args.keywords)
+    }
+
+    fn collect_call_args_with_kw_skip(
+        &mut self,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        class_name: &str,
+        scope: &Scope,
+        skip_positionals: usize,
+    ) -> CollectedCallArgs {
         let mut positional_types = Vec::new();
+        let mut open_splat = None;
         let mut kw_types = HashMap::new();
         if let Some(args) = call_node.arguments() {
             for (index, arg) in args.arguments().iter().enumerate() {
@@ -20821,15 +20919,11 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(expr) = splat.expression() {
                             let inner =
                                 self.infer_node_type(class_name, &expr, parse_result, scope);
-                            match inner {
-                                Type::Tuple(ref elems) => {
-                                    positional_types.extend(elems.iter().cloned());
-                                }
-                                Type::Array(Some(ref elem)) => {
-                                    positional_types.push(*elem.clone());
-                                }
-                                _ => positional_types.push(inner),
-                            }
+                            self.push_splat_arg_types(
+                                &inner,
+                                &mut positional_types,
+                                &mut open_splat,
+                            );
                         }
                     }
                     Node::ForwardingArgumentsNode { .. } => {
@@ -20869,7 +20963,30 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
         }
-        (positional_types, kw_types)
+        CollectedCallArgs {
+            positional: positional_types,
+            keywords: kw_types,
+            keyword_rest_shape: None,
+            open_splat,
+        }
+    }
+
+    /// Splat argument elements; the first splat with an unknown count is marked open.
+    fn push_splat_arg_types(
+        &mut self,
+        inner: &Type,
+        positional_types: &mut Vec<Type>,
+        open_splat: &mut Option<u16>,
+    ) {
+        match self.splat_elements(inner) {
+            SplatElements::Exact(elems) => positional_types.extend(elems),
+            SplatElements::Open(elem) => {
+                if open_splat.is_none() {
+                    *open_splat = u16::try_from(positional_types.len()).ok();
+                }
+                positional_types.push(elem);
+            }
+        }
     }
 
     fn collect_call_arg_types_with_kw_skip_and_shape(
@@ -20880,8 +20997,9 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
         skip_positionals: usize,
         capture_keyword_rest_shape: bool,
-    ) -> (Vec<Type>, HashMap<String, Type>, Option<Box<Type>>) {
+    ) -> CollectedCallArgs {
         let mut positional_types = Vec::new();
+        let mut open_splat = None;
         let mut kw_types = HashMap::new();
         let mut shape_variants = capture_keyword_rest_shape.then(|| vec![Vec::new()]);
         let mut shape_supported = true;
@@ -20958,19 +21076,11 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(expr) = splat.expression() {
                             let inner =
                                 self.infer_node_type(class_name, &expr, parse_result, scope);
-                            match inner {
-                                Type::Tuple(ref elems) => {
-                                    for elem in elems.iter() {
-                                        positional_types.push(elem.clone());
-                                    }
-                                }
-                                Type::Array(Some(ref elem)) => {
-                                    positional_types.push(*elem.clone());
-                                }
-                                _ => {
-                                    positional_types.push(inner);
-                                }
-                            }
+                            self.push_splat_arg_types(
+                                &inner,
+                                &mut positional_types,
+                                &mut open_splat,
+                            );
                         }
                     }
                     Node::ForwardingArgumentsNode { .. } => {
@@ -21023,7 +21133,12 @@ impl<'a> InferenceEngine<'a> {
             } else {
                 None
             };
-        (positional_types, kw_types, keyword_rest_shape)
+        CollectedCallArgs {
+            positional: positional_types,
+            keywords: kw_types,
+            keyword_rest_shape,
+            open_splat,
+        }
     }
 
     fn keyword_hash_as_positional_hash(
@@ -21478,17 +21593,16 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         class_name: &str,
         scope: &Scope,
-    ) -> (Vec<Type>, HashMap<String, Type>, Option<Box<Type>>) {
+    ) -> CollectedCallArgs {
         let call_node = node.as_call_node().expect("must be CallNode");
         if !Self::call_has_keyword_splat(&call_node) {
-            let (positional_types, kw_types) = self.collect_call_arg_types_with_kw_skip(
+            return self.collect_call_args_with_kw_skip(
                 &call_node,
                 parse_result,
                 class_name,
                 scope,
                 0,
             );
-            return (positional_types, kw_types, None);
         }
         self.collect_call_arg_types_with_kw_skip_and_shape(
             &call_node,
@@ -23416,9 +23530,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(receiver_type)
             | Type::PatternTrailingRef(receiver_type, _)
             | Type::PatternKeyRef(receiver_type, _)
-            | Type::PatternKeyRestRef(receiver_type, _) => {
-                Self::type_contains_block_return_ref(receiver_type)
-            }
+            | Type::PatternKeyRestRef(receiver_type, _)
+            | Type::SplatRef(receiver_type) => Self::type_contains_block_return_ref(receiver_type),
             Type::Proc { return_type, .. } => Self::type_contains_block_return_ref(return_type),
             _ => false,
         }
@@ -23486,6 +23599,10 @@ impl<'a> InferenceEngine<'a> {
             Type::PatternRestRef(subject) => Type::PatternRestRef(Box::new(
                 Self::substitute_block_return_ref(*subject, block_return_type),
             )),
+            Type::SplatRef(parts) => Type::SplatRef(Box::new(Self::substitute_block_return_ref(
+                *parts,
+                block_return_type,
+            ))),
             Type::PatternKeyRef(subject, key) => Type::PatternKeyRef(
                 Box::new(Self::substitute_block_return_ref(
                     *subject,
@@ -24253,6 +24370,8 @@ impl<'a> InferenceEngine<'a> {
                     keyword_rest_shape: None,
                     block: block.map(Box::new),
                     caller_context,
+                    open_splat: None,
+                    self_call: false,
                 },
             );
         }
@@ -24664,8 +24783,16 @@ impl<'a> InferenceEngine<'a> {
             .parameters()
             .is_some_and(|params| Self::block_has_only_plain_required_params(&params));
         if has_only_plain_required_params && !named_requireds.is_empty() {
+            // A block with several parameters splats a single yielded Array.
+            let splatted = match block_param_types.as_slice() {
+                [single] => {
+                    Self::destructure_single_block_param_type(single, named_requireds.len())
+                }
+                _ => None,
+            };
+            let bound_types = splatted.as_ref().unwrap_or(&block_param_types);
             for (idx, (name, _, _)) in named_requireds.iter().enumerate() {
-                let ty = block_param_types.get(idx).cloned().unwrap_or(Type::Untyped);
+                let ty = bound_types.get(idx).cloned().unwrap_or(Type::Untyped);
                 block_scope.set(name, ty);
             }
             Self::set_named_block_param_definition_locations(
@@ -25935,6 +26062,7 @@ impl<'a> InferenceEngine<'a> {
                         class_name,
                         &target,
                         Self::nilable_string_type(),
+                        parse_result,
                         scope,
                     );
                 }
@@ -26129,13 +26257,17 @@ impl<'a> InferenceEngine<'a> {
                     scope,
                 );
                 if call_node.receiver().is_none() {
-                    let (arg_types, kw_types, keyword_rest_shape) = self
-                        .collect_call_arg_types_scoped_with_rest_shape(
-                            node,
-                            parse_result,
-                            class_name,
-                            scope,
-                        );
+                    let CollectedCallArgs {
+                        positional: arg_types,
+                        keywords: kw_types,
+                        keyword_rest_shape,
+                        open_splat,
+                    } = self.collect_call_arg_types_scoped_with_rest_shape(
+                        node,
+                        parse_result,
+                        class_name,
+                        scope,
+                    );
                     if matches!(
                         method_name.as_str(),
                         "send" | "public_send" | "__send__" | "try" | "try!"
@@ -26316,6 +26448,8 @@ impl<'a> InferenceEngine<'a> {
                             keyword_rest_shape,
                             block: block.map(Box::new),
                             caller_context,
+                            open_splat,
+                            self_call: true,
                         }
                     });
                     // Emit a hover snapshot for the implicit-self call so non-last positions (`greet` on its own statement) surface the dispatch result just like the last position does.
@@ -26421,7 +26555,10 @@ impl<'a> InferenceEngine<'a> {
                                         class_name,
                                         scope,
                                         (target, existing),
-                                        &arg_nodes[0],
+                                        IndexWriteKey {
+                                            node: &arg_nodes[0],
+                                            slice: Self::index_write_is_slice(&arg_nodes),
+                                        },
                                         value_ty,
                                         parse_result,
                                     );
@@ -26893,7 +27030,12 @@ impl<'a> InferenceEngine<'a> {
                     &mut then_scope,
                     true,
                 );
-                self.bind_match_write_captures(class_name, &if_node.predicate(), &mut then_scope);
+                self.bind_match_write_captures(
+                    class_name,
+                    &if_node.predicate(),
+                    parse_result,
+                    &mut then_scope,
+                );
                 if let Some(projection) = &assignment_projection {
                     then_scope.set(&projection.local_name, projection.then_ty.clone());
                 }
@@ -29370,6 +29512,8 @@ impl<'a> InferenceEngine<'a> {
                                     keyword_rest_shape: None,
                                     block: None,
                                     caller_context,
+                                    open_splat: None,
+                                    self_call: false,
                                 }
                             });
                             break 'no_recv Type::Class(Sym::new(class_name));
@@ -29607,13 +29751,17 @@ impl<'a> InferenceEngine<'a> {
                             break 'no_recv result;
                         }
 
-                        let (arg_types, kw_types, keyword_rest_shape) = self
-                            .collect_call_arg_types_scoped_with_rest_shape(
-                                node,
-                                parse_result,
-                                class_name,
-                                scope,
-                            );
+                        let CollectedCallArgs {
+                            positional: arg_types,
+                            keywords: kw_types,
+                            keyword_rest_shape,
+                            open_splat,
+                        } = self.collect_call_arg_types_scoped_with_rest_shape(
+                            node,
+                            parse_result,
+                            class_name,
+                            scope,
+                        );
                         self.record_arg_check_site(
                             &call_node,
                             parse_result,
@@ -29707,6 +29855,8 @@ impl<'a> InferenceEngine<'a> {
                                 keyword_rest_shape,
                                 block: block.map(Box::new),
                                 caller_context,
+                                open_splat,
+                                self_call: true,
                             }
                         });
 
@@ -30483,6 +30633,8 @@ impl<'a> InferenceEngine<'a> {
                                         keyword_rest_shape: None,
                                         block: None,
                                         caller_context,
+                                        open_splat: None,
+                                        self_call: false,
                                     }
                                 });
                                 Some(Type::Class(target_class))
@@ -31125,22 +31277,26 @@ impl<'a> InferenceEngine<'a> {
                                 class_name,
                                 scope.method_name.as_deref(),
                                 scope.method_context_singleton_dispatch,
-                                &collected.0,
-                                &collected.1,
+                                &collected.positional,
+                                &collected.keywords,
                             );
                             scoped_call_args = Some(collected);
                         }
                         if let Some(target_class) = self.type_to_class_name(&safe_nav_receiver_type)
                         {
-                            let (mut arg_types, mut kw_types, mut keyword_rest_shape) =
-                                scoped_call_args.take().unwrap_or_else(|| {
-                                    self.collect_call_arg_types_scoped_with_rest_shape(
-                                        node,
-                                        parse_result,
-                                        class_name,
-                                        scope,
-                                    )
-                                });
+                            let CollectedCallArgs {
+                                positional: mut arg_types,
+                                keywords: mut kw_types,
+                                mut keyword_rest_shape,
+                                open_splat,
+                            } = scoped_call_args.take().unwrap_or_else(|| {
+                                self.collect_call_arg_types_scoped_with_rest_shape(
+                                    node,
+                                    parse_result,
+                                    class_name,
+                                    scope,
+                                )
+                            });
                             let has_bot_argument =
                                 arg_types.iter().any(|ty| matches!(ty, Type::Bot))
                                     || kw_types.values().any(|ty| matches!(ty, Type::Bot));
@@ -31279,6 +31435,8 @@ impl<'a> InferenceEngine<'a> {
                                     keyword_rest_shape,
                                     block: block.map(Box::new),
                                     caller_context,
+                                    open_splat,
+                                    self_call: matches!(receiver, Node::SelfNode { .. }),
                                 }
                             });
                         } else if self.coverage_recorder.is_some() && scoped_call_args.is_none() {
@@ -32432,6 +32590,7 @@ impl<'a> InferenceEngine<'a> {
                     self.bind_match_write_captures(
                         class_name,
                         &if_node.predicate(),
+                        parse_result,
                         &mut then_scope,
                     );
                     if let Some(projection) = &assignment_projection {
@@ -33688,57 +33847,79 @@ impl<'a> InferenceEngine<'a> {
             return Type::Tuple(Vec::new());
         }
 
-        // A splat element (`[*xs, y]`) inlines its collection. When the splatted value is a tuple we can keep an exact shape;
-        // otherwise the element count is unknown, so the literal degrades to `Array[union]`.
-        let mut tuple_elems: Vec<Type> = Vec::new();
-        let mut all_elem_types: Vec<Type> = Vec::new();
-        let mut shape_is_exact = true;
-        for elem in &elements {
-            if let Node::SplatNode { .. } = elem {
-                let splat = elem.as_splat_node().expect("must be SplatNode");
-                let splatted = splat
-                    .expression()
-                    .map(|expr| self.infer_node_type(class_name, &expr, parse_result, scope));
-                match splatted {
-                    Some(Type::Tuple(inner)) => {
-                        for t in inner {
-                            tuple_elems.push(t.clone());
-                            all_elem_types.push(t);
-                        }
-                    }
-                    Some(other) => {
-                        shape_is_exact = false;
-                        all_elem_types.push(Self::extract_element_type(&other));
-                    }
-                    None => {
-                        shape_is_exact = false;
-                        all_elem_types.push(Type::Untyped);
-                    }
-                }
-            } else {
-                let t = self.infer_node_type(class_name, elem, parse_result, scope);
-                tuple_elems.push(t.clone());
-                all_elem_types.push(t);
-            }
+        if let Some(parts) =
+            self.infer_splat_element_parts(class_name, &elements, parse_result, scope)
+        {
+            return self.splat_array_capped(parts);
         }
-
-        let projected = all_elem_types
+        let elems: Vec<Type> = elements
             .iter()
-            .map(Self::type_complexity)
-            .sum::<usize>()
-            + 1;
-        if !shape_is_exact || projected > Self::TUPLE_PUSH_COMPLEXITY_LIMIT {
-            // Preserve untyped: a splat of an untyped value (`[*arr, 1]`) contributes unknown elements, so the element type must stay `...
-            // | untyped` rather than collapsing to just the known literals.
-            let merged = Type::from_type_vec_preserve_untyped(all_elem_types);
-            return Type::Array(Some(Box::new(merged)));
-        }
-
-        if let Some(correlated) = Self::correlated_tuple_from_local_reads(scope, &elements) {
+            .map(|elem| self.infer_node_type(class_name, elem, parse_result, scope))
+            .collect();
+        if let Some(correlated) = Self::correlated_tuple_from_local_reads(scope, &elements)
+            && Self::tuple_fits_complexity(&elems)
+        {
             return correlated;
         }
+        Self::cap_tuple_complexity(elems)
+    }
 
-        Type::Tuple(tuple_elems)
+    /// Elements with a splat as splat parts: `[a, *xs, b]` splats `[a]`, `xs`, and `[b]`.
+    /// `None` when no element is a splat.
+    fn infer_splat_element_parts(
+        &mut self,
+        class_name: &str,
+        elements: &[Node<'_>],
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<Vec<Type>> {
+        if !elements
+            .iter()
+            .any(|elem| matches!(elem, Node::SplatNode { .. }))
+        {
+            return None;
+        }
+        let mut parts: Vec<Type> = Vec::new();
+        let mut fixed: Vec<Type> = Vec::new();
+        for elem in elements {
+            if let Some(splat) = elem.as_splat_node() {
+                if !fixed.is_empty() {
+                    parts.push(Type::Tuple(std::mem::take(&mut fixed)));
+                }
+                parts.push(
+                    splat
+                        .expression()
+                        .map(|expr| self.infer_node_type(class_name, &expr, parse_result, scope))
+                        .unwrap_or(Type::Untyped),
+                );
+            } else {
+                fixed.push(self.infer_node_type(class_name, elem, parse_result, scope));
+            }
+        }
+        if !fixed.is_empty() {
+            parts.push(Type::Tuple(fixed));
+        }
+        Some(parts)
+    }
+
+    fn splat_array_capped(&mut self, parts: Vec<Type>) -> Type {
+        match self.splat_array(parts) {
+            Type::Tuple(elems) => Self::cap_tuple_complexity(elems),
+            other => other,
+        }
+    }
+
+    fn tuple_fits_complexity(elems: &[Type]) -> bool {
+        elems.iter().map(Self::type_complexity).sum::<usize>() < Self::TUPLE_PUSH_COMPLEXITY_LIMIT
+    }
+
+    /// A literal too complex to keep its exact shape degrades to `Array[union]`.
+    fn cap_tuple_complexity(elems: Vec<Type>) -> Type {
+        if Self::tuple_fits_complexity(&elems) {
+            Type::Tuple(elems)
+        } else {
+            Type::Array(Some(Box::new(Type::from_type_vec_preserve_untyped(elems))))
+        }
     }
 
     fn correlated_tuple_from_local_reads(scope: &Scope, elements: &[Node<'_>]) -> Option<Type> {
@@ -34791,7 +34972,7 @@ impl<'a> InferenceEngine<'a> {
             let (present, may_be_missing) =
                 Self::destructured_leading_slot(&rhs_type, i, lefts.len(), rights.len());
             let ty = Self::materialize_destructured_slot(present, may_be_missing, Type::Nil);
-            self.assign_multi_target(class_name, target, ty, scope);
+            self.assign_multi_target(class_name, target, ty, parse_result, scope);
         }
 
         if has_splat {
@@ -34801,7 +34982,7 @@ impl<'a> InferenceEngine<'a> {
             if let Node::SplatNode { .. } = &rest_node {
                 let splat = rest_node.as_splat_node().expect("must be SplatNode");
                 if let Some(expr) = splat.expression() {
-                    self.assign_multi_target(class_name, &expr, rest_type, scope);
+                    self.assign_multi_target(class_name, &expr, rest_type, parse_result, scope);
                 }
             }
         }
@@ -34810,7 +34991,7 @@ impl<'a> InferenceEngine<'a> {
             let (present, may_be_missing) =
                 Self::destructured_trailing_slot(&rhs_type, i, lefts.len(), rights.len());
             let ty = Self::materialize_destructured_slot(present, may_be_missing, Type::Nil);
-            self.assign_multi_target(class_name, target, ty, scope);
+            self.assign_multi_target(class_name, target, ty, parse_result, scope);
         }
 
         rhs_type
@@ -34857,6 +35038,7 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         target: &Node<'_>,
         ty: Type,
+        parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
         match target {
@@ -34903,6 +35085,57 @@ impl<'a> InferenceEngine<'a> {
                 let path = String::from_utf8_lossy(target.location().as_slice()).to_string();
                 self.set_constant_path_value(class_name, &path, ty, None, ConstantAlias::None);
             }
+            Node::CallTargetNode { .. } => {
+                let target_node = target
+                    .as_call_target_node()
+                    .expect("must be CallTargetNode");
+                let receiver = target_node.receiver();
+                let receiver_type =
+                    self.infer_node_type(class_name, &receiver, parse_result, scope);
+                let writer = String::from_utf8_lossy(target_node.name().as_slice()).to_string();
+                self.record_desugared_call_site(
+                    class_name,
+                    &receiver,
+                    &receiver_type,
+                    &writer,
+                    vec![ty],
+                    scope,
+                );
+            }
+            Node::IndexTargetNode { .. } => {
+                let target_node = target
+                    .as_index_target_node()
+                    .expect("must be IndexTargetNode");
+                let receiver = target_node.receiver();
+                let receiver_type =
+                    self.infer_node_type(class_name, &receiver, parse_result, scope);
+                let mut arg_types: Vec<Type> = target_node
+                    .arguments()
+                    .map(|args| {
+                        args.arguments()
+                            .iter()
+                            .map(|arg| self.infer_node_type(class_name, &arg, parse_result, scope))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                arg_types.push(ty.clone());
+                self.record_desugared_call_site(
+                    class_name,
+                    &receiver,
+                    &receiver_type,
+                    "[]=",
+                    arg_types,
+                    scope,
+                );
+                self.apply_index_write_side_effect(
+                    class_name,
+                    Some(receiver),
+                    target_node.arguments(),
+                    ty,
+                    parse_result,
+                    scope,
+                );
+            }
             Node::MultiTargetNode { .. } => {
                 let mt = target
                     .as_multi_target_node()
@@ -34914,7 +35147,7 @@ impl<'a> InferenceEngine<'a> {
                         Self::destructured_leading_slot(&ty, i, left_count, right_count);
                     let sub_ty =
                         Self::materialize_destructured_slot(present, may_be_missing, Type::Nil);
-                    self.assign_multi_target(class_name, &sub_target, sub_ty, scope);
+                    self.assign_multi_target(class_name, &sub_target, sub_ty, parse_result, scope);
                 }
                 if let Some(rest) = mt.rest()
                     && let Node::SplatNode { .. } = rest
@@ -34922,7 +35155,7 @@ impl<'a> InferenceEngine<'a> {
                     let splat = rest.as_splat_node().expect("must be SplatNode");
                     if let Some(expr) = splat.expression() {
                         let rest_ty = Self::destructured_rest_type(&ty, left_count, right_count);
-                        self.assign_multi_target(class_name, &expr, rest_ty, scope);
+                        self.assign_multi_target(class_name, &expr, rest_ty, parse_result, scope);
                     }
                 }
                 for (i, sub_target) in mt.rights().iter().enumerate() {
@@ -34930,11 +35163,54 @@ impl<'a> InferenceEngine<'a> {
                         Self::destructured_trailing_slot(&ty, i, left_count, right_count);
                     let sub_ty =
                         Self::materialize_destructured_slot(present, may_be_missing, Type::Nil);
-                    self.assign_multi_target(class_name, &sub_target, sub_ty, scope);
+                    self.assign_multi_target(class_name, &sub_target, sub_ty, parse_result, scope);
                 }
             }
             _ => {}
         }
+    }
+
+    /// Records a call Ruby makes implicitly (`a.b, c[i] = ...` calls `b=` and `[]=`;
+    /// `a.b += 1` calls `b=`) like an ordinary call, so its arguments reach the callee.
+    fn record_desugared_call_site(
+        &mut self,
+        class_name: &str,
+        receiver: &Node<'_>,
+        receiver_type: &Type,
+        method_name: &str,
+        arg_types: Vec<Type>,
+        scope: &Scope,
+    ) {
+        let Some(target_class) = self.type_to_class_name(receiver_type) else {
+            return;
+        };
+        let method_is_singleton =
+            Self::receiver_is_singleton_dispatch(receiver, scope.singleton_dispatch);
+        let keyword_arg_types = HashMap::new();
+        let caller_context = self.call_site_caller_context_for_attr_writer(AttrWriterCallSite {
+            target_class: &target_class,
+            method_name,
+            method_is_singleton,
+            caller_class: class_name,
+            scope,
+            arg_types: &arg_types,
+            keyword_arg_types: &keyword_arg_types,
+            block: &None,
+        });
+        self.record_inferred_call_site(
+            &target_class,
+            CallSite {
+                method_name: method_name.into(),
+                method_is_singleton,
+                arg_types,
+                keyword_arg_types: Default::default(),
+                keyword_rest_shape: None,
+                block: None,
+                caller_context,
+                open_splat: None,
+                self_call: matches!(receiver, Node::SelfNode { .. }),
+            },
+        );
     }
 
     fn overwrite_definite_target_locals(
@@ -49809,6 +50085,9 @@ impl<'a> InferenceEngine<'a> {
             Type::PatternRestRef(subject) => {
                 Type::PatternRestRef(Box::new(Self::unbound_method_return_type(subject)))
             }
+            Type::SplatRef(parts) => {
+                Type::SplatRef(Box::new(Self::unbound_method_return_type(parts)))
+            }
             Type::PatternKeyRef(subject, key) => Type::PatternKeyRef(
                 Box::new(Self::unbound_method_return_type(subject)),
                 key.clone(),
@@ -49893,6 +50172,9 @@ impl<'a> InferenceEngine<'a> {
             ),
             Type::PatternRestRef(subject) => Type::PatternRestRef(Box::new(
                 Self::bind_first_positional_param_ref(subject, bound_receiver),
+            )),
+            Type::SplatRef(parts) => Type::SplatRef(Box::new(
+                Self::bind_first_positional_param_ref(parts, bound_receiver),
             )),
             Type::PatternKeyRef(subject, key) => Type::PatternKeyRef(
                 Box::new(Self::bind_first_positional_param_ref(
@@ -51165,6 +51447,7 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternTrailingRef(_, _)
             | Type::PatternKeyRef(_, _)
             | Type::PatternKeyRestRef(_, _)
+            | Type::SplatRef(_)
             | Type::ReceiverMethodRef(_, _) => Type::Untyped,
             Type::Union(parts) => Type::from_type_vec_preserve_untyped(
                 parts
@@ -51880,11 +52163,16 @@ impl<'a> InferenceEngine<'a> {
         if receiver_class == "Kernel"
             && method_name == "Array"
             && call_arg_count == 1
-            && call_arg_types.len() == 1
             && call_kw_arg_types.is_empty()
-            && Self::is_unresolved_call_arg_type(&call_arg_types[0])
+            && let [arg_type] = call_arg_types
         {
-            return Some(Type::Array(Some(Box::new(Type::Untyped))));
+            // RBS declares `Array[T]` for every argument but `nil`, so an exact shape widens.
+            return Some(match self.splat_array(vec![arg_type.clone()]) {
+                Type::Tuple(elems) if !elems.is_empty() => {
+                    Type::Array(Some(Box::new(Type::from_type_vec_preserve_untyped(elems))))
+                }
+                other => other,
+            });
         }
 
         let receiver_type_args = Self::extract_type_args(receiver_type);
@@ -52508,6 +52796,21 @@ impl<'a> InferenceEngine<'a> {
         let value_type = self.infer_node_type(class_name, value_node, parse_result, scope);
         let result_type =
             self.infer_conditional_write_result(&current_type, &value_type, kind, operator_name);
+        let written_type = if kind == "operator" {
+            result_type.clone()
+        } else {
+            value_type
+        };
+        if let Some(receiver) = receiver.as_ref() {
+            self.record_desugared_call_site(
+                class_name,
+                receiver,
+                &receiver_type,
+                &format!("{read_name}="),
+                vec![written_type],
+                scope,
+            );
+        }
         if nilable {
             result_type.union_with(Type::Nil)
         } else {
@@ -52817,7 +53120,10 @@ impl<'a> InferenceEngine<'a> {
                         class_name,
                         scope,
                         (target, existing),
-                        key_node,
+                        IndexWriteKey {
+                            node: key_node,
+                            slice: false,
+                        },
                         result_type,
                         parse_result,
                     );
@@ -52859,11 +53165,17 @@ impl<'a> InferenceEngine<'a> {
             let Some(key_node) = key_node else {
                 return;
             };
+            let slice = arguments.as_ref().is_some_and(|args| {
+                Self::index_write_is_slice(&args.arguments().iter().collect::<Vec<_>>())
+            });
             self.apply_index_write_to_alias_target(
                 class_name,
                 scope,
                 (target, existing),
-                &key_node,
+                IndexWriteKey {
+                    node: &key_node,
+                    slice,
+                },
                 result_type,
                 parse_result,
             );
@@ -52880,16 +53192,31 @@ impl<'a> InferenceEngine<'a> {
         );
     }
 
+    /// `a[start, length] = v` and `a[range] = v` replace a slice rather than one element.
+    fn index_write_is_slice(arg_nodes: &[Node<'_>]) -> bool {
+        match arg_nodes {
+            [_, _, _] => true,
+            [key, _] => matches!(key, Node::RangeNode { .. }),
+            _ => false,
+        }
+    }
+
     fn apply_index_write_to_alias_target(
         &mut self,
         class_name: &str,
         scope: &mut Scope,
         target_and_existing: (AliasTarget, Type),
-        key_node: &Node<'_>,
+        key: IndexWriteKey<'_, '_>,
         result_type: Type,
         parse_result: &ParseResult<'_>,
     ) {
         let (target, existing) = target_and_existing;
+        if key.slice && matches!(existing, Type::Tuple(_) | Type::Array(_)) {
+            let new_type = Self::apply_array_slice_write(existing, result_type);
+            self.write_alias_target(class_name, scope, &target, new_type);
+            return;
+        }
+        let key_node = key.node;
         let key = Self::record_key_from_node(key_node);
         let key_type = key
             .as_ref()
@@ -53655,6 +53982,14 @@ impl<'a> InferenceEngine<'a> {
                 Some(Self::apply_array_push(receiver_type.clone(), arg_type))
             }
             "push" | "append" => {
+                if let Some(parts) =
+                    self.infer_splat_element_parts(class_name, &arg_nodes, parse_result, scope)
+                {
+                    let mut all_parts = Vec::with_capacity(parts.len() + 1);
+                    all_parts.push(receiver_type.clone());
+                    all_parts.extend(parts);
+                    return Some(self.splat_array_capped(all_parts));
+                }
                 let arg_types =
                     self.infer_arg_node_types(class_name, &arg_nodes, parse_result, scope);
                 Some(Self::apply_array_push_many(
@@ -53713,10 +54048,9 @@ impl<'a> InferenceEngine<'a> {
                 if let Some(expr) = splat.expression() {
                     let inner = self.infer_node_type(class_name, &expr, parse_result, scope);
                     let inner = self.try_resolve_receiver_inline(class_name, &inner);
-                    match inner {
-                        Type::Tuple(elems) => types.extend(elems),
-                        Type::Array(Some(elem)) => types.push(*elem),
-                        other => types.push(other),
+                    match self.splat_elements(&inner) {
+                        SplatElements::Exact(elems) => types.extend(elems),
+                        SplatElements::Open(elem) => types.push(elem),
                     }
                     continue;
                 }
@@ -54272,6 +54606,7 @@ impl<'a> InferenceEngine<'a> {
                 | Type::PatternRestRef(_)
                 | Type::PatternTrailingRef(_, _)
                 | Type::PatternKeyRestRef(_, _)
+                | Type::SplatRef(_)
                 | Type::TruthyProjection(_)
                 | Type::FalsyProjection(_)
                 | Type::NonNilProjection(_)
@@ -54811,7 +55146,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternKeyRef(_, _)
             | Type::PatternRestRef(_)
             | Type::PatternTrailingRef(_, _)
-            | Type::PatternKeyRestRef(_, _) => {
+            | Type::PatternKeyRestRef(_, _)
+            | Type::SplatRef(_) => {
                 return Type::ReceiverMethodRef(
                     Box::new(receiver_type.clone()),
                     Sym::new(method_name),
@@ -55229,7 +55565,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(_)
             | Type::PatternTrailingRef(..)
             | Type::PatternKeyRef(..)
-            | Type::PatternKeyRestRef(..) => false,
+            | Type::PatternKeyRestRef(..)
+            | Type::SplatRef(_) => false,
             Type::Union(parts) => {
                 !parts.contains(&Type::Untyped)
                     && parts.iter().all(Self::receiver_resolution_is_identity)
@@ -55566,6 +55903,16 @@ impl<'a> InferenceEngine<'a> {
                     TypeRegistry::resolve_pattern_rest_ref(&resolved_subject)
                 }
             }
+            Type::SplatRef(subject) => {
+                let resolved_subject = self.resolve_receiver_method_refs_depth(
+                    subject,
+                    depth + 1,
+                    memo,
+                    visiting,
+                    preserve_untyped,
+                );
+                self.resolve_splat_parts(&resolved_subject)
+            }
             Type::PatternKeyRef(subject, key) => {
                 let resolved_subject = self.resolve_receiver_method_refs_depth(
                     subject,
@@ -55832,6 +56179,15 @@ impl<'a> InferenceEngine<'a> {
                     TypeRegistry::resolve_pattern_rest_ref(&resolved_subject)
                 }
             }
+            Type::SplatRef(subject) => {
+                let resolved_subject = self.resolve_receiver_method_refs_for_destructuring_depth(
+                    subject,
+                    depth + 1,
+                    memo,
+                    visiting,
+                );
+                self.resolve_splat_parts(&resolved_subject)
+            }
             Type::PatternKeyRef(subject, key) => {
                 let resolved_subject = self.resolve_receiver_method_refs_for_destructuring_depth(
                     subject,
@@ -55998,6 +56354,7 @@ impl<'a> InferenceEngine<'a> {
             | Type::NonNilProjection(subject) => {
                 Self::type_contains_receiver_resolution_ref(subject)
             }
+            Type::SplatRef(_) => true,
             _ => false,
         }
     }
@@ -58380,7 +58737,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::DeferredSafeNavigation(_, _)
             | Type::TruthyProjection(_)
             | Type::FalsyProjection(_)
-            | Type::NonNilProjection(_) => true,
+            | Type::NonNilProjection(_)
+            | Type::SplatRef(_) => true,
             _ => false,
         }
     }
@@ -60112,6 +60470,7 @@ impl<'a> InferenceEngine<'a> {
                         class_name,
                         &target,
                         Self::nilable_string_type(),
+                        parse_result,
                         scope,
                     );
                 }
@@ -60198,6 +60557,7 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         class_name: &str,
         predicate: &Node<'_>,
+        parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
         if let Node::MatchWriteNode { .. } = predicate {
@@ -60206,7 +60566,7 @@ impl<'a> InferenceEngine<'a> {
                 .expect("must be MatchWriteNode");
             scope.regexp_match_captures = true;
             for target in match_node.targets().iter() {
-                self.assign_multi_target(class_name, &target, Type::String, scope);
+                self.assign_multi_target(class_name, &target, Type::String, parse_result, scope);
             }
         }
     }
@@ -62817,7 +63177,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::DeferredSafeNavigation(..)
             | Type::GlobalVariableRef(_)
             | Type::IvarRef(_)
-            | Type::MethodReturnRef(..) => None,
+            | Type::MethodReturnRef(..)
+            | Type::SplatRef(_) => None,
             other => Some(other.clone()),
         }
     }
@@ -62941,7 +63302,9 @@ impl<'a> InferenceEngine<'a> {
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::type_needs_backward_propagation)
             }
-            Type::Array(Some(inner)) => Self::type_needs_backward_propagation(inner),
+            Type::Array(Some(inner)) | Type::SplatRef(inner) => {
+                Self::type_needs_backward_propagation(inner)
+            }
             Type::Hash(k, v) => {
                 k.as_deref()
                     .is_some_and(Self::type_needs_backward_propagation)
@@ -62962,7 +63325,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
-            | Type::PatternKeyRestRef(subject, _) => {
+            | Type::PatternKeyRestRef(subject, _)
+            | Type::SplatRef(subject) => {
                 Self::type_needs_backward_propagation(subject)
                     || Self::type_contains_unresolved_pattern_ref(subject)
             }

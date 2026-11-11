@@ -1,6 +1,9 @@
 use std::fmt;
 use std::sync::Arc;
 
+mod splat;
+pub use splat::{SplatElements, SplatToA};
+
 pub use crate::sym::Sym;
 
 pub type SharedPath = Arc<str>;
@@ -119,6 +122,8 @@ pub enum Type {
     TruthyProjection(Box<Type>),
     FalsyProjection(Box<Type>),
     NonNilProjection(Box<Type>),
+    // The Array `[*a, *b, ...]` builds from the parts of the inner `Tuple`, waiting for a part known only later.
+    SplatRef(Box<Type>),
     // `args` is stored as `Box<[Type]>` rather than `Vec` for a narrower slot.
     Generic {
         base: Sym,
@@ -177,7 +182,8 @@ impl Type {
             }
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => SLOT + inner.deep_extra_bytes(),
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => SLOT + inner.deep_extra_bytes(),
             Type::Proc { return_type, .. } => SLOT + return_type.deep_extra_bytes(),
             _ => 0,
         }
@@ -287,7 +293,8 @@ impl Type {
             | Type::DeferredSafeNavigation(..)
             | Type::BlockReturnRef
             | Type::IvarRef(_)
-            | Type::GlobalVariableRef(_) => true,
+            | Type::GlobalVariableRef(_)
+            | Type::SplatRef(_) => true,
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::contains_deferred_receiver_ref)
             }
@@ -397,7 +404,8 @@ impl PartialEq for Type {
             }
             (Type::TruthyProjection(t1), Type::TruthyProjection(t2))
             | (Type::FalsyProjection(t1), Type::FalsyProjection(t2))
-            | (Type::NonNilProjection(t1), Type::NonNilProjection(t2)) => t1 == t2,
+            | (Type::NonNilProjection(t1), Type::NonNilProjection(t2))
+            | (Type::SplatRef(t1), Type::SplatRef(t2)) => t1 == t2,
             (
                 Type::Proc {
                     return_type: r1,
@@ -472,7 +480,8 @@ impl std::hash::Hash for Type {
             }
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => inner.hash(state),
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => inner.hash(state),
             Type::Proc {
                 return_type,
                 param_count,
@@ -548,6 +557,7 @@ impl Type {
             Type::TruthyProjection(_) => 40,
             Type::FalsyProjection(_) => 41,
             Type::NonNilProjection(_) => 43,
+            Type::SplatRef(_) => 44,
             Type::SelfType => 31,
             Type::InstanceType => 38,
             Type::Proc { .. } => 32,
@@ -609,7 +619,8 @@ impl Type {
             }
             (Type::TruthyProjection(t1), Type::TruthyProjection(t2))
             | (Type::FalsyProjection(t1), Type::FalsyProjection(t2))
-            | (Type::NonNilProjection(t1), Type::NonNilProjection(t2)) => t1.cmp(t2),
+            | (Type::NonNilProjection(t1), Type::NonNilProjection(t2))
+            | (Type::SplatRef(t1), Type::SplatRef(t2)) => t1.cmp(t2),
             (
                 Type::Proc {
                     return_type: a,
@@ -697,6 +708,7 @@ impl Type {
             Type::NonNilProjection(inner) => {
                 Type::NonNilProjection(Box::new(inner.replace_self_type(self_type)))
             }
+            Type::SplatRef(inner) => Type::SplatRef(Box::new(inner.replace_self_type(self_type))),
             Type::DeferredSafeNavigation(receiver, result) => Type::DeferredSafeNavigation(
                 Box::new(receiver.replace_self_type(self_type)),
                 Box::new(result.replace_self_type(self_type)),
@@ -734,7 +746,8 @@ impl Type {
             Type::Record(fields) => fields.iter().any(|f| f.value.contains_instance_type()),
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => inner.contains_instance_type(),
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => inner.contains_instance_type(),
             Type::DeferredSafeNavigation(receiver, result) => {
                 receiver.contains_instance_type() || result.contains_instance_type()
             }
@@ -798,6 +811,9 @@ impl Type {
             }
             Type::NonNilProjection(inner) => {
                 Type::NonNilProjection(Box::new(inner.replace_instance_type(instance_type)))
+            }
+            Type::SplatRef(inner) => {
+                Type::SplatRef(Box::new(inner.replace_instance_type(instance_type)))
             }
             Type::DeferredSafeNavigation(receiver, result) => Type::DeferredSafeNavigation(
                 Box::new(receiver.replace_instance_type(instance_type)),
@@ -1422,6 +1438,7 @@ impl Type {
                 | Type::TruthyProjection(_)
                 | Type::FalsyProjection(_)
                 | Type::NonNilProjection(_)
+                | Type::SplatRef(_)
         )
     }
 }
@@ -1535,7 +1552,10 @@ impl fmt::Display for Type {
             Type::PatternKeyRestRef(_, _) => write!(f, "untyped"),
             Type::ReceiverMethodRef(_, _) => write!(f, "untyped"),
             Type::DeferredSafeNavigation(_, _) => write!(f, "untyped"),
-            Type::TruthyProjection(_) | Type::FalsyProjection(_) | Type::NonNilProjection(_) => {
+            Type::TruthyProjection(_)
+            | Type::FalsyProjection(_)
+            | Type::NonNilProjection(_)
+            | Type::SplatRef(_) => {
                 write!(f, "untyped")
             }
             Type::SelfType => write!(f, "self"),

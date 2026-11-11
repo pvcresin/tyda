@@ -43,6 +43,7 @@ impl WorkspaceState {
             | Type::BlockReturnRef => true,
             Type::Array(Some(inner))
             | Type::PatternRestRef(inner)
+            | Type::SplatRef(inner)
             | Type::Proc {
                 return_type: inner, ..
             } => Self::type_needs_display_workspace(inner),
