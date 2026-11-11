@@ -93,20 +93,54 @@ impl Type {
         })
     }
 
-    /// `[*parts...]` now when every part is known, otherwise a deferred `SplatRef`.
+    /// `[*parts...]` now when every part is known. Otherwise the shape is open and only the
+    /// element type waits: `Array[SplatRef]`, so the value still acts as an Array meanwhile.
     pub fn splat_array(parts: Vec<Type>, to_a: &mut dyn FnMut(&Type) -> SplatToA) -> Type {
-        Self::splat_concat(&parts, to_a)
-            .unwrap_or_else(|| Type::SplatRef(Box::new(Type::Tuple(parts))))
+        Self::splat_concat(&parts, to_a).unwrap_or_else(|| {
+            Type::Array(Some(Box::new(Type::SplatRef(Box::new(Type::Tuple(parts))))))
+        })
     }
 
-    /// Resolves a `SplatRef` whose parts are now known; `None` keeps it deferred.
+    /// The element type of `[*parts...]` (a `SplatRef`'s value); `None` keeps it deferred.
     pub fn resolve_splat_ref(
         inner: &Type,
         to_a: &mut dyn FnMut(&Type) -> SplatToA,
     ) -> Option<Type> {
-        match inner {
-            Type::Tuple(parts) => Self::splat_concat(parts, to_a),
-            _ => Self::splat_concat(std::slice::from_ref(inner), to_a),
+        let parts = match inner {
+            Type::Tuple(parts) => parts.as_slice(),
+            _ => std::slice::from_ref(inner),
+        };
+        let mut members = Vec::new();
+        for part in parts {
+            match Self::splat_elements(part, to_a)? {
+                SplatElements::Exact(elems) => members.extend(elems),
+                SplatElements::Open(elem) => members.push(elem),
+            }
+        }
+        Some(Self::from_type_vec_preserve_untyped(members))
+    }
+
+    /// A `SplatRef` that can no longer be resolved: its unknown parts give unknown elements.
+    pub fn splat_fallback(inner: &Type) -> Type {
+        let erased = match inner {
+            Type::Tuple(parts) => {
+                Type::Tuple(parts.iter().map(Self::erase_deferred_splat_part).collect())
+            }
+            other => Self::erase_deferred_splat_part(other),
+        };
+        Self::resolve_splat_ref(&erased, &mut |_| SplatToA::Unknown).unwrap_or(Type::Untyped)
+    }
+
+    fn erase_deferred_splat_part(part: &Type) -> Type {
+        match part {
+            Type::Union(members) => Type::from_type_vec_preserve_untyped(
+                members
+                    .iter()
+                    .map(Self::erase_deferred_splat_part)
+                    .collect(),
+            ),
+            _ if Self::structural_splat_elements(part).is_none() => Type::Untyped,
+            _ => part.clone(),
         }
     }
 
@@ -275,12 +309,30 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_splat_element_falls_back_to_untyped_parts() {
+        let inner = Type::Tuple(vec![Type::Tuple(vec![Type::Integer]), Type::ParamRef(0)]);
+        assert_eq!(
+            Type::splat_fallback(&inner),
+            Type::Union(vec![Type::Integer, Type::Untyped])
+        );
+    }
+
+    #[test]
     fn splat_of_reference_defers() {
         let parts = vec![Type::Tuple(vec![Type::Integer]), Type::ParamRef(0)];
         assert_eq!(Type::splat_concat(&parts, &mut no_to_a), None);
+        let element = Type::SplatRef(Box::new(Type::Tuple(parts.clone())));
         assert_eq!(
-            Type::splat_array(parts.clone(), &mut no_to_a),
-            Type::SplatRef(Box::new(Type::Tuple(parts)))
+            Type::splat_array(parts, &mut no_to_a),
+            Type::Array(Some(Box::new(element.clone())))
+        );
+        let resolved = Type::Tuple(vec![
+            Type::Tuple(vec![Type::Integer]),
+            Type::Array(Some(Box::new(Type::String))),
+        ]);
+        assert_eq!(
+            Type::resolve_splat_ref(&resolved, &mut no_to_a),
+            Some(Type::Union(vec![Type::Integer, Type::String]))
         );
     }
 }

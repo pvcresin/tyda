@@ -49568,7 +49568,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::KeywordParamRef(_)
             | Type::ReceiverMethodRef(_, _)
             | Type::DeferredSafeNavigation(_, _)
-            | Type::MethodReturnRef(_, _) => true,
+            | Type::MethodReturnRef(_, _)
+            | Type::SplatRef(_) => true,
             // A flow projection of a deferred value is still unknown until the call site.
             Type::NonNilProjection(inner)
             | Type::TruthyProjection(inner)
