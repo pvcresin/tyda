@@ -809,3 +809,48 @@ class AccountPosts
   def fresh: -> ActiveRecord::Associations::CollectionProxy[Post]
 end
 ```
+
+## delete and destroy follow the relation or association proxy contract
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: app/models/account.rb
+
+```ruby
+class Account < ApplicationRecord
+  has_many :posts
+end
+```
+
+### file: app/models/post.rb
+
+```ruby
+class Post < ApplicationRecord
+end
+```
+
+```ruby
+class PostRemoval
+  def removed(post) = Account.find(1).posts.destroy(post)
+  def deleted(post) = Account.find(1).posts.delete(post)
+  def appended(post) = Account.find(1).posts << post
+  def deleted_count = Post.where(id: 1).delete(1)
+  def destroyed = Post.where(id: 1).destroy(1)
+end
+```
+
+### result
+
+```rbs
+class PostRemoval
+  def removed: (untyped post) -> Array[Post]
+  def deleted: (untyped post) -> Array[Post]
+  def appended: (untyped post) -> ActiveRecord::Associations::CollectionProxy[Post]
+  def deleted_count: -> Integer
+  def destroyed: -> Post
+end
+```

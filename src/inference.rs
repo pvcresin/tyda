@@ -31364,8 +31364,7 @@ impl<'a> InferenceEngine<'a> {
 
                         if call_node.block().is_none()
                             && let Some(args) = call_node.arguments()
-                            && crate::rails::relation_api::lookup(&method_name)
-                                .is_some_and(|method| method.reads_columns())
+                            && crate::rails::relation_api::reads_columns(&method_name)
                         {
                             let arg_nodes: Vec<_> = args.arguments().iter().collect();
                             let symbol_args: Vec<String> = arg_nodes

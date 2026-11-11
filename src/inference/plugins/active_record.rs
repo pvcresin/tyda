@@ -121,15 +121,13 @@ impl Plugin for ActiveRecord {
         receiver_type: &Type,
         method_name: &str,
     ) -> Option<Type> {
-        let class_name = match receiver_type {
-            Type::Generic { base, .. }
-                if crate::rails::relation_api::relation_element_type(receiver_type).is_some() =>
-            {
-                base.as_str()
-            }
-            _ => return None,
+        use crate::rails::relation_api;
+        let Type::Generic { base, .. } = receiver_type else {
+            return None;
         };
-        let method = crate::rails::relation_api::lookup(method_name)?;
+        let class_name = base.as_str();
+        let receiver = relation_api::Receiver::of_relation(receiver_type)?;
+        let method = relation_api::lookup(method_name, receiver)?;
         if method.refined_by_args || !cx.dsl_enabled(DslLibrary::ActiveRecordPersistence) {
             return None;
         }

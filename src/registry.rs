@@ -9875,27 +9875,31 @@ impl TypeRegistry {
     ) -> Option<Type> {
         use crate::rails::relation_api;
         let model = relation_api::relation_element_type(receiver_type)?;
+        let receiver = relation_api::Receiver::of_relation(receiver_type)?;
         // The registry does not know the Rails version, so only version-independent methods apply.
-        let method = relation_api::lookup(method_name).filter(|method| method.since == (0, 0))?;
+        let method =
+            relation_api::lookup(method_name, receiver).filter(|method| method.since == (0, 0))?;
         Some(method.return_type(
             || receiver_type.clone(),
             model,
-            || {
-                let Type::Class(name) = model else {
-                    return Type::Integer;
-                };
-                match self.lookup_method_return_type(name, "id") {
-                    Some(Type::Union(parts)) => Type::from_type_vec(
-                        parts
-                            .into_iter()
-                            .filter(|part| *part != Type::Nil)
-                            .collect(),
-                    ),
-                    Some(ty) if !matches!(ty, Type::Untyped | Type::Nil) => ty,
-                    _ => Type::Integer,
-                }
-            },
+            || self.active_record_primary_key_type(model),
         ))
+    }
+
+    /// The model's `id` reader type (a uuid primary key reads as String); Integer by default.
+    pub(crate) fn active_record_primary_key_type(&self, model: &Type) -> Type {
+        let Type::Class(name) = model else {
+            return Type::Integer;
+        };
+        match self.lookup_method_return_type(name, "id") {
+            Some(ty) if !Type::contains_deferred_receiver_ref(&ty) => {
+                match Type::project_non_nil(&ty) {
+                    Type::Untyped | Type::Nil => Type::Integer,
+                    key => key,
+                }
+            }
+            _ => Type::Integer,
+        }
     }
 
     fn receiver_ivar_reflection_name(method_name: &str) -> Option<&str> {

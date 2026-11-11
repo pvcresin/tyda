@@ -810,7 +810,7 @@ class Post < ApplicationRecord
 end
 ```
 
-## Rails 7.0 supports with in_order_of invert_where and excluding
+## Rails 7.0 supports in_order_of invert_where and excluding
 
 ```yaml
 rails_version: 7.0.0
@@ -836,7 +836,7 @@ end
 
 ```rbs
 class Post < ApplicationRecord
-  def self.with_test: -> ActiveRecord::Relation[Post]
+  def self.with_test: -> untyped
   def self.in_order_test: -> ActiveRecord::Relation[Post]
   def self.invert_test: -> ActiveRecord::Relation[Post]
   def self.excluding_test: -> ActiveRecord::Relation[Post]
@@ -845,7 +845,7 @@ class Post < ApplicationRecord
 end
 ```
 
-## Rails 7.1 supports with_recursive and regroup
+## Rails 7.1 supports with and regroup
 
 ```yaml
 rails_version: 7.1.0
@@ -858,6 +858,7 @@ class ActiveRecord::Base; end
 class ApplicationRecord < ActiveRecord::Base; end
 
 class Post < ApplicationRecord
+  def self.with_test = with(foo: "bar")
   def self.with_recursive_test = with_recursive(foo: "bar")
   def self.regroup_test = regroup(:category)
 end
@@ -867,8 +868,34 @@ end
 
 ```rbs
 class Post < ApplicationRecord
-  def self.with_recursive_test: -> ActiveRecord::Relation[Post]
+  def self.with_test: -> ActiveRecord::Relation[Post]
+  def self.with_recursive_test: -> untyped
   def self.regroup_test: -> ActiveRecord::Relation[Post]
+end
+```
+
+## Rails 7.2 supports with_recursive
+
+```yaml
+rails_version: 7.2.0
+```
+
+### update
+
+```ruby
+class ActiveRecord::Base; end
+class ApplicationRecord < ActiveRecord::Base; end
+
+class Post < ApplicationRecord
+  def self.with_recursive_test = with_recursive(foo: "bar")
+end
+```
+
+### result
+
+```rbs
+class Post < ApplicationRecord
+  def self.with_recursive_test: -> ActiveRecord::Relation[Post]
 end
 ```
 

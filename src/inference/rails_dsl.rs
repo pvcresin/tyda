@@ -56,11 +56,14 @@ const ACTIVE_RECORD_RELATION_METHODS: &[&str] = &[
     "annotate",
     "select",
     "merge",
+    "strict_loading",
+    "with",
+    "in_order_of",
+    "invert_where",
+    "excluding",
+    "with_recursive",
+    "regroup",
 ];
-const ACTIVE_RECORD_RELATION_METHODS_RAILS_6_1: &[&str] = &["strict_loading"];
-const ACTIVE_RECORD_RELATION_METHODS_RAILS_7_0: &[&str] =
-    &["with", "in_order_of", "invert_where", "excluding"];
-const ACTIVE_RECORD_RELATION_METHODS_RAILS_7_1: &[&str] = &["with_recursive", "regroup"];
 const ACTIVE_RECORD_OPTIONAL_FINDER_METHODS: &[&str] = &["find_by", "first", "last", "take"];
 const ACTIVE_RECORD_REQUIRED_FINDER_METHODS: &[&str] =
     &["find_by!", "first!", "last!", "take!", "sole"];
@@ -199,26 +202,16 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         method_name: &str,
     ) -> Option<Type> {
-        let method = crate::rails::relation_api::lookup(method_name)?;
+        let method = crate::rails::relation_api::lookup(
+            method_name,
+            crate::rails::relation_api::Receiver::Model,
+        )?;
         let model = Self::active_record_model_type(class_name);
         Some(method.return_type(
             || Self::active_record_relation_type(class_name),
             &model,
-            || self.active_record_primary_key_type(&model),
+            || self.registry.active_record_primary_key_type(&model),
         ))
-    }
-
-    /// The model's `id` reader type (a uuid primary key reads as String); Integer by default.
-    pub(super) fn active_record_primary_key_type(&self, model: &Type) -> Type {
-        let Type::Class(name) = model else {
-            return Type::Integer;
-        };
-        match self.registry.lookup_method_return_type(name, "id") {
-            Some(ty) if !matches!(ty, Type::Untyped) && Self::is_concrete(&ty) => {
-                Self::remove_nil(&ty)
-            }
-            _ => Type::Integer,
-        }
     }
 
     pub(super) fn try_resolve_controller_respond_to(
@@ -1450,32 +1443,47 @@ impl<'a> InferenceEngine<'a> {
         let optional_model_type = Self::active_record_optional_model_type(class_name);
 
         for name in ACTIVE_RECORD_RELATION_METHODS {
-            let (_param_names, param_infos) = match *name {
-                "all" | "none" => (Vec::new(), Vec::new()),
-                "merge" => (
-                    vec!["relation".to_string()],
-                    vec![ParamInfo {
-                        name: "relation".to_string(),
+            let available = crate::rails::relation_api::lookup(
+                name,
+                crate::rails::relation_api::Receiver::Model,
+            )
+            .is_some_and(|method| self.rails_at_least(method.since.0, method.since.1));
+            if !available {
+                continue;
+            }
+            let rest_args = || {
+                vec![ParamInfo {
+                    name: "args".to_string(),
+                    kind: ParamKind::Rest,
+                    default_type: None,
+                }]
+            };
+            let param_infos = match *name {
+                "all" | "none" => Vec::new(),
+                "merge" => vec![ParamInfo {
+                    name: "relation".to_string(),
+                    kind: ParamKind::Required,
+                    default_type: Some(relation_type.clone()),
+                }],
+                "limit" | "offset" => vec![ParamInfo {
+                    name: "value".to_string(),
+                    kind: ParamKind::Required,
+                    default_type: Some(Type::Integer),
+                }],
+                "in_order_of" => ["column", "values"]
+                    .into_iter()
+                    .map(|param| ParamInfo {
+                        name: param.to_string(),
                         kind: ParamKind::Required,
-                        default_type: Some(relation_type.clone()),
-                    }],
-                ),
-                "limit" | "offset" => (
-                    vec!["value".to_string()],
-                    vec![ParamInfo {
-                        name: "value".to_string(),
-                        kind: ParamKind::Required,
-                        default_type: Some(Type::Integer),
-                    }],
-                ),
-                _ => (
-                    vec!["args".to_string()],
-                    vec![ParamInfo {
-                        name: "args".to_string(),
-                        kind: ParamKind::Rest,
-                        default_type: None,
-                    }],
-                ),
+                        default_type: Some(Type::Untyped),
+                    })
+                    .collect(),
+                "strict_loading" => vec![ParamInfo {
+                    name: "value".to_string(),
+                    kind: ParamKind::Optional,
+                    default_type: Some(Type::Untyped),
+                }],
+                _ => rest_args(),
             };
             self.registry.add_method_def_if_missing(
                 class_name,
@@ -1496,71 +1504,6 @@ impl<'a> InferenceEngine<'a> {
                     loc: Some(loc),
                 },
             );
-        }
-
-        let versioned_methods: &[(&[&str], u16, u16)] = &[
-            (ACTIVE_RECORD_RELATION_METHODS_RAILS_6_1, 6, 1),
-            (ACTIVE_RECORD_RELATION_METHODS_RAILS_7_0, 7, 0),
-            (ACTIVE_RECORD_RELATION_METHODS_RAILS_7_1, 7, 1),
-        ];
-        for (methods, major, minor) in versioned_methods {
-            if !self.rails_at_least(*major, *minor) {
-                continue;
-            }
-            for name in *methods {
-                let (_param_names, param_infos) = match *name {
-                    "in_order_of" => (
-                        vec!["column".to_string(), "values".to_string()],
-                        vec![
-                            ParamInfo {
-                                name: "column".to_string(),
-                                kind: ParamKind::Required,
-                                default_type: Some(Type::Untyped),
-                            },
-                            ParamInfo {
-                                name: "values".to_string(),
-                                kind: ParamKind::Required,
-                                default_type: Some(Type::Untyped),
-                            },
-                        ],
-                    ),
-                    "strict_loading" => (
-                        vec!["value".to_string()],
-                        vec![ParamInfo {
-                            name: "value".to_string(),
-                            kind: ParamKind::Optional,
-                            default_type: Some(Type::Untyped),
-                        }],
-                    ),
-                    _ => (
-                        vec!["args".to_string()],
-                        vec![ParamInfo {
-                            name: "args".to_string(),
-                            kind: ParamKind::Rest,
-                            default_type: None,
-                        }],
-                    ),
-                };
-                self.registry.add_method_def_if_missing(
-                    class_name,
-                    MethodDef {
-                        name: Sym::new(*name),
-                        param_infos,
-                        raw_return_type: relation_type.clone(),
-                        sorbet_modifier_comments: Vec::new(),
-                        rbs_annotated: true,
-                        rbs_inline_annotated: false,
-                        sig_annotated: false,
-                        attr_ivar: None,
-                        is_singleton: true,
-                        rbs_file_source: true,
-                        synthetic_dsl_source: true,
-                        rbs_method_types: Default::default(),
-                        extra_overloads: Vec::new(),
-                        loc: Some(loc),
-                    },
-                );
-            }
         }
 
         self.registry.add_method_def_if_missing(
@@ -2012,12 +1955,17 @@ impl<'a> InferenceEngine<'a> {
             }
         };
 
-        if let Some(method) = crate::rails::relation_api::lookup(method_name)
-            && (method.on_model || !singleton_model)
+        let receiver = if singleton_model {
+            Some(crate::rails::relation_api::Receiver::Model)
+        } else {
+            crate::rails::relation_api::Receiver::of_relation(receiver_type)
+        };
+        if let Some(method) =
+            receiver.and_then(|receiver| crate::rails::relation_api::lookup(method_name, receiver))
             && self.rails_at_least(method.since.0, method.since.1)
         {
             return Some(method.return_type(relation_return, &elem_type, || {
-                self.active_record_primary_key_type(&elem_type)
+                self.registry.active_record_primary_key_type(&elem_type)
             }));
         }
         let model_class = elem_type.to_string();
@@ -2052,7 +2000,8 @@ impl<'a> InferenceEngine<'a> {
     ) -> Option<Type> {
         use crate::rails::relation_api;
         let model = relation_api::relation_element_type(receiver_type)?;
-        let delegates = match relation_api::lookup(method_name) {
+        let receiver = relation_api::Receiver::of_relation(receiver_type)?;
+        let delegates = match relation_api::lookup(method_name, receiver) {
             Some(method) => has_block && method.block == relation_api::BlockForm::Records,
             None => {
                 relation_api::delegates_to_records(method_name) || {
@@ -2073,7 +2022,11 @@ impl<'a> InferenceEngine<'a> {
         symbol_args: &[String],
     ) -> Option<Type> {
         use crate::rails::relation_api::{self, RelationReturn};
-        let method = relation_api::lookup(method_name)?;
+        let receiver = match receiver_type {
+            Type::Singleton(_) => relation_api::Receiver::Model,
+            _ => relation_api::Receiver::of_relation(receiver_type)?,
+        };
+        let method = relation_api::lookup(method_name, receiver)?;
         if !method.reads_columns() || symbol_args.is_empty() {
             return None;
         }
