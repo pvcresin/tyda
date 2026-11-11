@@ -484,7 +484,7 @@ fn coverage_resolves_cross_file_references_after_workspace_merge() {
     .expect("failed to write producer");
     fs::write(
         dir.path().join("consumer.rb"),
-        "class Consumer\n  def value = Producer.new.value\nend\n\nConsumer.new.value\n",
+        "class Consumer\n  def value = Producer.new.value\n  def producer_class = Producer\nend\n\nConsumer.new.value\n",
     )
     .expect("failed to write consumer");
 
