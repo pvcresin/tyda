@@ -131,10 +131,6 @@ end
 
 ## The truncate helper returns nil for a nil text
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -187,5 +183,23 @@ module FormatHelper
   def logo: -> String
   def body: -> String
   def clean: -> String
+end
+```
+
+## Resolve dom_id in helper modules
+
+### update
+
+```ruby
+module RowsHelper
+  def row_id(record) = dom_id(record)
+end
+```
+
+### result
+
+```rbs
+module RowsHelper
+  def row_id: (untyped record) -> String
 end
 ```

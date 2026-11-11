@@ -136,6 +136,8 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 - ActiveRecord model の `reflections` / `base_class` と instance の `readonly!` は既知 API として扱い、返り値は未解決なら `untyped` にする
 - StateMachines は `state_machine` reader、`<attribute>_name`、state predicate、event method を追加する。machine descriptor の内部 API は `untyped` にする
 - Devise は `devise` に指定した module に対応する model instance method を追加し、Paperclip は ActiveRecord model の `has_attached_file` から attachment reader を追加する。Rack::Attack が有効な場合、`Rack::Attack::Request` は `Rack::Request` の request method surface を継承する
+- `config/routes.rb` から `*_path` / `*_url` helper を生成する。ActionDispatch の命名規則に沿って `namespace` / `scope`（`as:`、動的 segment）/ `resources` / `resource`（`as:`、`only:` / `except:`、`shallow`）/ `member` / `collection` / `new` / `concern` / `concerns` / `direct` を合成し、除外された action の helper は生成しない。`config/routes/*.rb` の `draw` は未対応
+- ActionView helper の `dom_id` / `dom_class` は `String`、`truncate` は nil を受けると nil を返すため `String?` を返す
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
 - Rake が有効な project では、`String#ext` / `String#pathmap` の戻り値を `String` として扱う。Gemfile の引数なし `gemspec` は root の唯一の `*.gemspec` の gem 名も宣言済み gem として扱う

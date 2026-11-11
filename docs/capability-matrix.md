@@ -51,7 +51,7 @@ Sorbet は [tests/scenarios/sorbet/](https://github.com/pvcresin/tyda/tree/main/
 | ActiveRecord / ActiveModel | supported | association、scope、enum、attribute、schema |
 | ActiveSupport | supported | Concern、delegate、class attribute、core extension（`starts_with?` / `ends_with?` など）、Rails 有効時の `String#underscore` / `String#camelize` の戻り型推論と missing-method 診断、`try` / `try!` の nil-safe 呼び出し |
 | ActionController / ActionMailer / ActiveJob | supported | class-body DSL と主要 instance API |
-| routes / structure.sql | supported | Rails project fixture を含む |
+| routes / structure.sql | supported | Rails project fixture を含む。routes は scope / resources / shallow / concern / direct の命名規則を扱い、`draw` による分割ファイルは未対応 |
 | RSpec structural DSL | supported | `let`、`subject`、`described_class` の lexical scope |
 | Devise / Doorkeeper / policy | supported | plugin による scope / policy |
 | Grape / GraphQL / AMS | partial | plugin ごとに静的に追える範囲 |
