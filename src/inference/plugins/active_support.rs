@@ -123,6 +123,10 @@ impl Plugin for ActiveSupport {
         CLASS_BODY_METHODS
     }
 
+    fn class_declarations(&self) -> &'static [super::ClassDeclaration] {
+        CLASS_DECLARATIONS
+    }
+
     fn call_return_method_names(&self) -> &'static [&'static str] {
         &["including", "in_groups", "in_groups_of"]
     }
@@ -441,17 +445,82 @@ fn hash_extension_return(receiver_type: &Type, method_name: &str) -> Option<Type
         "deep_stringify_keys" | "deep_stringify_keys!" => {
             return Some(deep_transform_keys(receiver_type, stringified_key));
         }
-        "with_indifferent_access" => {
-            return Some(Type::Class(Sym::new(
-                "ActiveSupport::HashWithIndifferentAccess",
-            )));
-        }
+        "with_indifferent_access" => return Some(indifferent_access(receiver_type)),
         "to_query" | "to_param" => return Some(Type::String),
         _ => return None,
     };
     Some(transform_keys(receiver_type, key_map, &|value| {
         value.clone()
     }))
+}
+
+const HASH_WITH_INDIFFERENT_ACCESS: &str = "ActiveSupport::HashWithIndifferentAccess";
+
+/// `HashWithIndifferentAccess` stores symbol keys as strings, so it dispatches as `Hash[K, V]`
+/// apart from the methods it overrides to keep its own class.
+static CLASS_DECLARATIONS: &[super::ClassDeclaration] = &[super::ClassDeclaration {
+    class_name: HASH_WITH_INDIFFERENT_ACCESS,
+    library: DslLibrary::ActiveSupportCoreExt,
+    rbs: r#"module ActiveSupport
+  class HashWithIndifferentAccess[K, V] < ::Hash[K, V]
+    def with_indifferent_access: () -> HashWithIndifferentAccess[K, V]
+    def dup: () -> HashWithIndifferentAccess[K, V]
+    def slice: (*untyped keys) -> HashWithIndifferentAccess[K, V]
+    def except: (*untyped keys) -> HashWithIndifferentAccess[K, V]
+    def without: (*untyped keys) -> HashWithIndifferentAccess[K, V]
+    def select: () { (K, V) -> boolish } -> HashWithIndifferentAccess[K, V]
+    def reject: () { (K, V) -> boolish } -> HashWithIndifferentAccess[K, V]
+    def compact: () -> HashWithIndifferentAccess[K, V]
+    def stringify_keys: () -> HashWithIndifferentAccess[K, V]
+    def deep_stringify_keys: () -> HashWithIndifferentAccess[K, V]
+    def symbolize_keys: () -> ::Hash[::Symbol, V]
+    def to_options: () -> ::Hash[::Symbol, V]
+    def deep_symbolize_keys: () -> ::Hash[::Symbol, untyped]
+    def to_hash: () -> ::Hash[K, V]
+  end
+end
+"#,
+}];
+
+/// `HashWithIndifferentAccess[K, V] < Hash[K, V]` stores symbol keys as strings and converts
+/// nested hashes on the way in, so Hash methods dispatch with the converted key and value types.
+fn indifferent_access(hash: &Type) -> Type {
+    let (key, value) = match hash {
+        Type::Hash(key, value) => (
+            key.as_deref().cloned().unwrap_or(Type::Untyped),
+            value.as_deref().cloned().unwrap_or(Type::Untyped),
+        ),
+        Type::Record(fields) => (
+            Type::from_type_vec(fields.iter().map(|f| record_key_type(&f.key)).collect()),
+            Type::from_type_vec(fields.iter().map(|f| f.value.clone()).collect()),
+        ),
+        _ => return hash.clone(),
+    };
+    Type::Generic {
+        base: Sym::new(HASH_WITH_INDIFFERENT_ACCESS),
+        args: vec![indifferent_key(&key).widen(), indifferent_value(&value)].into(),
+    }
+}
+
+fn indifferent_key(key: &Type) -> Type {
+    match key {
+        Type::Symbol => Type::String,
+        Type::LiteralSymbol(name) => Type::LiteralString(name.to_string()),
+        Type::Union(parts) => Type::from_type_vec(parts.iter().map(indifferent_key).collect()),
+        other => other.clone(),
+    }
+}
+
+fn indifferent_value(value: &Type) -> Type {
+    match value {
+        Type::Hash(_, _) | Type::Record(_) => indifferent_access(value),
+        Type::Array(Some(elem)) => Type::Array(Some(Box::new(indifferent_value(elem)))),
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(indifferent_value).collect()),
+        Type::Union(parts) => {
+            Type::from_type_vec_preserve_untyped(parts.iter().map(indifferent_value).collect())
+        }
+        other => other.clone(),
+    }
 }
 
 /// `symbolize_keys` rescues keys without `to_sym`, so only strings change.
@@ -1180,6 +1249,32 @@ mod tests {
         assert_eq!(
             hash_extension_return(&receiver, "deep_stringify_keys"),
             Some(hash(Type::String, array(hash(Type::String, Type::Integer))))
+        );
+    }
+
+    #[test]
+    fn class_declarations_parse_as_rbs() {
+        for declaration in CLASS_DECLARATIONS {
+            assert!(crate::rbs::import::rbs_parses(declaration.rbs));
+        }
+    }
+
+    #[test]
+    fn indifferent_access_stringifies_keys_and_converts_nested_hashes() {
+        let receiver = Type::Record(vec![field(
+            RecordKey::Symbol("a".into()),
+            hash(Type::Symbol, Type::Integer),
+        )]);
+        let indifferent = |key: Type, value: Type| Type::Generic {
+            base: Sym::new(HASH_WITH_INDIFFERENT_ACCESS),
+            args: vec![key, value].into(),
+        };
+        assert_eq!(
+            hash_extension_return(&receiver, "with_indifferent_access"),
+            Some(indifferent(
+                Type::String,
+                indifferent(Type::String, Type::Integer)
+            ))
         );
     }
 

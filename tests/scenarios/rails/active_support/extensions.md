@@ -269,7 +269,7 @@ end
 
 ```rbs
 class Options
-  def indifferent: (Hash[Symbol, Integer] hash) -> ActiveSupport::HashWithIndifferentAccess
+  def indifferent: (Hash[Symbol, Integer] hash) -> ActiveSupport::HashWithIndifferentAccess[String, Integer]
 end
 ```
 
@@ -298,5 +298,45 @@ class Checks
   def even: -> bool
   def query: -> String
   def same: -> bool
+end
+```
+
+## HashWithIndifferentAccess dispatches Hash methods with string keys
+
+### update
+
+```ruby
+class Roles
+  ROLES = { maintainer: 40, owner: 50 }.with_indifferent_access.freeze
+
+  def role(name) = ROLES.fetch(name)
+
+  def lookup = ROLES[:owner]
+
+  def names = ROLES.keys
+
+  def subset = ROLES.slice(:owner)
+
+  def plain = ROLES.to_h
+
+  def symbolized = ROLES.symbolize_keys
+
+  def nested = { a: { b: 1 } }.with_indifferent_access
+end
+```
+
+### result
+
+```rbs
+class Roles
+  ROLES: ActiveSupport::HashWithIndifferentAccess[String, 40 | 50]
+
+  def role: (untyped name) -> (40 | 50)
+  def lookup: -> (40 | 50)?
+  def names: -> Array[String]
+  def subset: -> ActiveSupport::HashWithIndifferentAccess[String, 40 | 50]
+  def plain: -> Hash[String, 40 | 50]
+  def symbolized: -> Hash[Symbol, 40 | 50]
+  def nested: -> ActiveSupport::HashWithIndifferentAccess[String, ActiveSupport::HashWithIndifferentAccess[String, 1]]
 end
 ```

@@ -139,7 +139,7 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 - Devise は `devise` に指定した module に対応する model instance method を追加し、Paperclip は ActiveRecord model の `has_attached_file` から attachment reader を追加する。Rack::Attack が有効な場合、`Rack::Attack::Request` は `Rack::Request` の request method surface を継承する
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
 - ActiveJob の `perform_later` と ActionMailer の `deliver_later` は Rails 7.0 以降 enqueue callback の中断で `false` を返し、`perform_now` は perform callback の中断で `false` を返す。Sidekiq の `perform_async` などは client middleware の中断で `nil` を返す。ActiveJob の判定は継承関係を優先し、名前が `Job` で終わることによる補完は superclass が未解決のクラスに限る（`Sidekiq::Job` を include するクラスや既知の ActiveRecord / controller / mailer の基底を継承するクラスは対象外）
-- ActiveSupport の core extension は `active_support_core_ext`、時刻系は `active_support_time_ext` で有効化し、plugin の戻り値テーブルで補う。引数の型で戻り値が決まるもの（`Array#including` / `in_groups` など）は plugin が名前を宣言した呼び出しだけ引数を推論する。`String#to_date` などは空白だけの文字列で `nil` を返す
+- ActiveSupport の core extension は `active_support_core_ext`、時刻系は `active_support_time_ext` で有効化し、plugin の戻り値テーブルで補う。引数の型で戻り値が決まるもの（`Array#including` / `in_groups` など）は plugin が名前を宣言した呼び出しだけ引数を推論する。`String#to_date` などは空白だけの文字列で `nil` を返す。`with_indifferent_access` は key を文字列にした `ActiveSupport::HashWithIndifferentAccess[K, V]` を返し、`Hash` の method をその型引数で解決する
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
 - Rake が有効な project では、`String#ext` / `String#pathmap` の戻り値を `String` として扱う。Gemfile の引数なし `gemspec` は root の唯一の `*.gemspec` の gem 名も宣言済み gem として扱う
 - GitLab in-tree の Presenter / CurrentSettings / Metrics / EE 拡張を検出する

@@ -281,7 +281,7 @@ end
 
 ```rbs
 class ConstantEnumReader
-  STATUSES: ActiveSupport::HashWithIndifferentAccess
+  STATUSES: ActiveSupport::HashWithIndifferentAccess[String, 0 | 1]
 
   def status: -> String
   def self.statuses: -> Hash[String, untyped]

@@ -10190,6 +10190,7 @@ impl<'a> InferenceEngine<'a> {
         }
         self.ensure_stdlib_class(class_name);
         self.ensure_external_class(class_name);
+        self.ensure_plugin_class_declaration(class_name);
         let mixin_targets: Vec<String> = self
             .registry
             .class_data_for(class_name)
