@@ -356,3 +356,99 @@ class JobIds
   def job_ids: -> Array[String]
 end
 ```
+
+## TimeWithZone columns answer Time methods through the zone
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "users", id: :serial, force: :cascade do |t|
+    t.datetime "updated_at", null: false
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class User < ApplicationRecord
+  def key = id
+  def elapsed = updated_at - Time.now
+  def shifted = updated_at + 1.day
+  def earlier = updated_at - 60
+  def before = updated_at - 1.day
+  def rounded = updated_at.round
+  def sunday = updated_at.sunday?
+  def day = updated_at.to_date
+end
+```
+
+### result
+
+```rbs
+class User < ApplicationRecord
+  def key: -> Integer
+  def elapsed: -> Float
+  def shifted: -> ActiveSupport::TimeWithZone
+  def earlier: -> ActiveSupport::TimeWithZone
+  def before: -> ActiveSupport::TimeWithZone
+  def rounded: -> ActiveSupport::TimeWithZone
+  def sunday: -> bool
+  def day: -> Date
+end
+```
+
+## Map PostgreSQL native column types
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "hosts", id: :bigserial, force: :cascade do |t|
+    t.inet "address", null: false
+    t.interval "ttl", null: false
+    t.money "price", null: false
+    t.daterange "window", null: false
+    t.timestamptz "seen_at", null: false
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Host < ApplicationRecord
+  def key = id
+  def ip = address
+  def lifetime = ttl
+  def cost = price
+  def span = window
+  def seen = seen_at
+end
+```
+
+### result
+
+```rbs
+class Host < ApplicationRecord
+  def key: -> Integer
+  def ip: -> IPAddr
+  def lifetime: -> ActiveSupport::Duration
+  def cost: -> BigDecimal
+  def span: -> Range[Date]
+  def seen: -> ActiveSupport::TimeWithZone
+end
+```

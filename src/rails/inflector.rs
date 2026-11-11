@@ -112,29 +112,52 @@ pub fn singularize_with_project(root: &Path, word: &str) -> String {
     singularize_with(word, &inflector)
 }
 
-fn singularize_with(word: &str, inflector: &ProjectInflector) -> String {
+pub(crate) fn singularize_with(word: &str, inflector: &ProjectInflector) -> String {
     if let Some(irregular) = inflector.irregular_singulars.get(word) {
         return irregular.clone();
     }
-    if word.ends_with("ies") && word.len() > 3 {
-        format!("{}y", &word[..word.len() - 3])
-    } else if word.ends_with("sses") {
-        word[..word.len() - 2].to_string()
-    } else if word.ends_with("ves") && word.len() > 3 {
-        format!("{}f", &word[..word.len() - 3])
-    } else if word.ends_with("ices") && word.len() > 4 {
-        format!("{}ex", &word[..word.len() - 4])
-    } else if (word.ends_with("ses") && word.len() > 3)
-        || (word.ends_with("xes") && word.len() > 3)
-        || word.ends_with("ches")
-        || word.ends_with("shes")
-    {
-        word[..word.len() - 2].to_string()
-    } else if word.ends_with('s') && !word.ends_with("ss") && word.len() > 1 {
-        word[..word.len() - 1].to_string()
-    } else {
-        word.to_string()
+    // ActiveSupport's default singular rules, most specific first.
+    let stem = |suffix: &str| &word[..word.len() - suffix.len()];
+    let ends_with_any = |stems: &[&str], suffix: &str| {
+        word.strip_suffix(suffix)
+            .is_some_and(|rest| stems.iter().any(|stem| rest.ends_with(stem)))
+    };
+    if word.len() <= 1 || !word.ends_with('s') || word.ends_with("ss") {
+        return word.to_string();
     }
+    if word.ends_with("movies") || word.ends_with("databases") {
+        return stem("s").to_string();
+    }
+    if word.ends_with("ies") && word.len() > 3 {
+        return format!("{}y", stem("ies"));
+    }
+    if ends_with_any(&["vert", "ind"], "ices") {
+        return format!("{}ex", stem("ices"));
+    }
+    if word.ends_with("matrices") {
+        return format!("{}ix", stem("ices"));
+    }
+    if ends_with_any(&["wi", "kni", "li"], "ves") {
+        return format!("{}fe", stem("ves"));
+    }
+    if ends_with_any(&["l", "r", "ea"], "ves") && !word.ends_with("hives") {
+        return format!("{}f", stem("ves"));
+    }
+    if ends_with_any(
+        &[
+            "analy", "ba", "diagno", "parenthe", "progno", "synop", "the",
+        ],
+        "ses",
+    ) {
+        return format!("{}sis", stem("ses"));
+    }
+    if ends_with_any(
+        &["x", "ch", "sh", "ss", "alias", "status", "bus", "o"],
+        "es",
+    ) {
+        return stem("es").to_string();
+    }
+    stem("s").to_string()
 }
 
 /// Which attribute API casts a type keyword. Active Record makes `datetime` attributes time
@@ -155,18 +178,35 @@ pub fn cast_type_keyword_to_type(
     owner: CastTypeOwner,
 ) -> Option<crate::types::Type> {
     use crate::types::Type;
+    let class = |name: &str| Type::Class(Sym::new(name));
+    let range = |elem: Type| Type::Generic {
+        base: Sym::new("Range"),
+        args: vec![elem].into(),
+    };
+    let time_with_zone = || match owner {
+        CastTypeOwner::ActiveRecord => class("ActiveSupport::TimeWithZone"),
+        CastTypeOwner::ActiveModel => class("Time"),
+    };
+    // Built-in ActiveModel types plus the PostgreSQL / MySQL native column types Rails maps.
     Some(match col_type {
-        "string" | "text" | "citext" | "uuid" | "binary" | "immutable_string" => Type::String,
-        "integer" | "bigint" | "smallint" | "big_integer" => Type::Integer,
-        "float" => Type::Float,
-        "decimal" | "numeric" => Type::Class(Sym::new("BigDecimal")),
+        "string" | "text" | "citext" | "uuid" | "binary" | "immutable_string" | "blob"
+        | "tinyblob" | "mediumblob" | "longblob" | "tinytext" | "mediumtext" | "longtext"
+        | "macaddr" | "xml" | "tsvector" | "ltree" | "bit" | "bit_varying" | "enum" | "line"
+        | "lseg" | "box" | "path" | "polygon" | "circle" => Type::String,
+        "integer" | "bigint" | "smallint" | "big_integer" | "primary_key" | "serial"
+        | "bigserial" | "oid" | "unsigned_integer" | "unsigned_bigint" => Type::Integer,
+        "float" | "unsigned_float" => Type::Float,
+        "decimal" | "numeric" | "money" | "unsigned_decimal" => class("BigDecimal"),
         "boolean" => Type::Bool,
-        "date" => Type::Class(Sym::new("Date")),
-        "datetime" | "timestamp" => match owner {
-            CastTypeOwner::ActiveRecord => Type::Class(Sym::new("ActiveSupport::TimeWithZone")),
-            CastTypeOwner::ActiveModel => Type::Class(Sym::new("Time")),
-        },
-        "time" => Type::Class(Sym::new("Time")),
+        "date" => class("Date"),
+        "datetime" | "timestamp" | "timestamptz" => time_with_zone(),
+        "time" => class("Time"),
+        "interval" => class("ActiveSupport::Duration"),
+        "inet" | "cidr" => class("IPAddr"),
+        "int4range" | "int8range" => range(Type::Integer),
+        "numrange" => range(class("BigDecimal")),
+        "daterange" => range(class("Date")),
+        "tsrange" | "tstzrange" => range(time_with_zone()),
         "json" | "jsonb" | "hstore" => Type::Untyped,
         _ => return None,
     })
@@ -286,7 +326,7 @@ fn model_path_exists(root: &Path, class_name: &str) -> bool {
         .exists()
 }
 
-fn underscore(name: &str) -> String {
+pub(crate) fn underscore(name: &str) -> String {
     let mut out = String::new();
     for (idx, ch) in name.chars().enumerate() {
         if ch.is_uppercase() && idx > 0 {
@@ -319,6 +359,18 @@ mod tests {
         assert_eq!(singularize("buses"), "bus");
         assert_eq!(singularize("boxes"), "box");
         assert_eq!(singularize("matches"), "match");
+        assert_eq!(singularize("invoices"), "invoice");
+        assert_eq!(singularize("devices"), "device");
+        assert_eq!(singularize("indices"), "index");
+        assert_eq!(singularize("archives"), "archive");
+        assert_eq!(singularize("wolves"), "wolf");
+        assert_eq!(singularize("knives"), "knife");
+        assert_eq!(singularize("responses"), "response");
+        assert_eq!(singularize("databases"), "database");
+        assert_eq!(singularize("statuses"), "status");
+        assert_eq!(singularize("analyses"), "analysis");
+        assert_eq!(singularize("heroes"), "hero");
+        assert_eq!(singularize("movies"), "movie");
     }
 
     #[test]
@@ -356,7 +408,13 @@ mod tests {
         assert_eq!(column_type_keyword_to_type("hstore"), Some(Type::Untyped));
         // A custom cast type not in the map is None (camelized on the DSL side).
         assert_eq!(column_type_keyword_to_type("account"), None);
-        assert_eq!(column_type_keyword_to_type("money"), None);
+        assert_eq!(column_type_keyword_to_type("encrypted_token"), None);
+        // PostgreSQL registers its native types (`money`, `interval`, `inet`) with the attribute API.
+        assert_eq!(
+            column_type_keyword_to_type("money"),
+            Some(Type::Class(Sym::new("BigDecimal")))
+        );
+        assert_eq!(column_type_keyword_to_type("serial"), Some(Type::Integer));
     }
 
     #[test]

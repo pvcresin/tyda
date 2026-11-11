@@ -229,7 +229,7 @@ pub(in crate::inference) fn synthetic_method_return(
     if !engine.dsl_enabled(DslLibrary::ActiveSupportTimeExt) {
         return None;
     }
-    time_ext_return(receiver_type, method_name)
+    time_ext_return(engine, receiver_type, method_name)
 }
 
 fn core_ext_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
@@ -271,7 +271,11 @@ fn core_ext_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
     }
 }
 
-fn time_ext_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
+fn time_ext_return(
+    engine: &mut PluginCx<'_, '_>,
+    receiver_type: &Type,
+    method_name: &str,
+) -> Option<Type> {
     match receiver_type {
         Type::Singleton(name) if name.as_str() == "Time" => match method_name {
             "current" => Some(time_with_zone()),
@@ -314,10 +318,10 @@ fn time_ext_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
             | "sec" | "wday" | "yday" | "usec" | "nsec" | "utc_offset" => Some(Type::Integer),
             "to_f" => Some(Type::Float),
             "dst?" | "utc?" | "gmt?" | "blank?" | "present?" => Some(Type::Bool),
-            "+" => Some(time_with_zone()),
-            "-" | "time" | "period" | "comparable_time" => Some(Type::Untyped),
+            "time" | "period" | "comparable_time" => Some(Type::Untyped),
             "<=>" => Some(Type::Integer.union_with(Type::Nil)),
-            name => calendar_method_return(name, receiver_type),
+            name => calendar_method_return(name, receiver_type)
+                .or_else(|| time_with_zone_delegated_return(engine, name)),
         },
         Type::Class(name) if matches!(name.as_str(), "Time" | "Date" | "DateTime") => {
             calendar_method_return(method_name, receiver_type)
@@ -622,6 +626,53 @@ fn deep_transform_keys(ty: &Type, key_map: fn(&Type) -> Type) -> Type {
     }
 }
 
+/// `TimeWithZone#method_missing` sends other methods to its local `Time` and wraps a `Time`
+/// result back into the zone (`wrap_with_time_zone`).
+fn time_with_zone_delegated_return(
+    engine: &mut PluginCx<'_, '_>,
+    method_name: &str,
+) -> Option<Type> {
+    if matches!(method_name, "+" | "-") {
+        // Defined by TimeWithZone itself with argument-dependent overloads.
+        return None;
+    }
+    let time = Type::Class(Sym::new("Time"));
+    match engine.engine.resolve_method_on_type(&time, method_name) {
+        Type::Untyped | Type::ReceiverMethodRef(..) => None,
+        ty => Some(wrap_time_in_zone(ty)),
+    }
+}
+
+fn wrap_time_in_zone(ty: Type) -> Type {
+    match ty {
+        Type::Class(name) if name.as_str() == "Time" => time_with_zone(),
+        Type::Union(parts) => {
+            Type::from_type_vec(parts.into_iter().map(wrap_time_in_zone).collect())
+        }
+        other => other,
+    }
+}
+
+/// `TimeWithZone#-` / `#+` overloads: a time operand gives the difference in seconds,
+/// a numeric or duration operand shifts the time within its zone.
+const TIME_WITH_ZONE_ARITHMETIC: &[(&str, &[&str])] = &[
+    (
+        "-",
+        &[
+            "(ActiveSupport::Duration other) -> ActiveSupport::TimeWithZone",
+            "(Time | ActiveSupport::TimeWithZone | DateTime other) -> Float",
+            "(Numeric other) -> ActiveSupport::TimeWithZone",
+        ],
+    ),
+    (
+        "+",
+        &[
+            "(ActiveSupport::Duration other) -> ActiveSupport::TimeWithZone",
+            "(Numeric other) -> ActiveSupport::TimeWithZone",
+        ],
+    ),
+];
+
 use super::super::*;
 
 impl<'a> InferenceEngine<'a> {
@@ -666,6 +717,40 @@ impl<'a> InferenceEngine<'a> {
     }
 
     pub(in crate::inference) fn register_time_ext_class_methods(&mut self, loc: SourceLocation) {
+        if self.dsl_enabled(DslLibrary::ActiveSupportTimeExt)
+            && !self.registry.has_method_variant(TIME_WITH_ZONE, "-", false)
+        {
+            for (name, signatures) in TIME_WITH_ZONE_ARITHMETIC {
+                let method_types: Vec<crate::rbs::ir::MethodType> = signatures
+                    .iter()
+                    .filter_map(|signature| rbs_sys::parse_method_type(signature).ok())
+                    .map(|parsed| crate::rbs::ir::MethodType::from(&parsed))
+                    .collect();
+                self.registry.add_method_def_if_missing(
+                    TIME_WITH_ZONE,
+                    MethodDef {
+                        name: Sym::new(*name),
+                        param_infos: vec![ParamInfo {
+                            name: "other".to_string(),
+                            kind: ParamKind::Required,
+                            default_type: Some(Type::Untyped),
+                        }],
+                        raw_return_type: Type::Untyped,
+                        sorbet_modifier_comments: Vec::new(),
+                        rbs_annotated: true,
+                        rbs_inline_annotated: false,
+                        sig_annotated: false,
+                        attr_ivar: None,
+                        is_singleton: false,
+                        rbs_file_source: true,
+                        synthetic_dsl_source: true,
+                        rbs_method_types: std::sync::Arc::new(method_types),
+                        extra_overloads: Vec::new(),
+                        loc: Some(loc),
+                    },
+                );
+            }
+        }
         if self.dsl_enabled(DslLibrary::ActiveSupportTimeExt) {
             self.registry.add_method_def_if_missing(
                 "Time",

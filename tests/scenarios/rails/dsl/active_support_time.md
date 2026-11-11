@@ -51,7 +51,6 @@ class Calendar
 end
 ```
 
-
 ## Resolve Time.zone factories and calendar helpers
 
 ### update

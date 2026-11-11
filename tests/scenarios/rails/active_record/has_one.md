@@ -78,3 +78,59 @@ class PostProfile
   def profile_of: -> Profile?
 end
 ```
+
+## A namespaced model reads the table Rails computes for it
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "organizations", force: :cascade do |t|
+    t.string "name"
+  end
+  create_table "organization_details", force: :cascade do |t|
+    t.bigint "organization_id"
+    t.text "description", null: false
+  end
+end
+```
+
+### file: app/models/organizations/organization_detail.rb
+
+```ruby
+module Organizations
+  class OrganizationDetail < ApplicationRecord
+    belongs_to :organization
+  end
+end
+```
+
+### file: app/models/organizations/organization.rb
+
+```ruby
+module Organizations
+  class Organization < ApplicationRecord
+    has_one :organization_detail
+  end
+end
+```
+
+```ruby
+class OrganizationSummary
+  def first_description = Organizations::Organization.first!.organization_detail&.description
+end
+```
+
+### result
+
+```rbs
+class OrganizationSummary
+  def first_description: -> String?
+end
+```

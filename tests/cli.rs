@@ -4868,3 +4868,41 @@ fn deferred_relation_methods_follow_the_project_rails_version() {
         "{rails_5_2}"
     );
 }
+
+/// Records delegation (`length` on an association proxy) must also apply when the merged
+/// registry resolves a cross-file call after the engines finish.
+#[test]
+fn deferred_relation_calls_delegate_to_records() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+    let models = dir.path().join("app").join("models");
+    fs::create_dir_all(&models).expect("models dir");
+    fs::write(
+        models.join("application_record.rb"),
+        "class ApplicationRecord < ActiveRecord::Base\nend\n",
+    )
+    .expect("write application_record");
+    fs::write(
+        models.join("post.rb"),
+        "class Post < ApplicationRecord\n  has_many :attestations\nend\n",
+    )
+    .expect("write post");
+    fs::write(
+        models.join("attestation.rb"),
+        "class Attestation < ApplicationRecord\n  belongs_to :post\nend\n",
+    )
+    .expect("write attestation");
+    fs::write(
+        models.join("other.rb"),
+        "class Other\n  def count = Post.new.attestations.length\nend\n",
+    )
+    .expect("write other");
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("app")
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("def count: -> Integer"), "{stdout}");
+}
