@@ -556,6 +556,51 @@ end
 }
 
 #[test]
+fn coverage_binds_constructor_ivar_through_inherited_self_call() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("holder.rb");
+    fs::write(
+        &rb_file,
+        r#"class Holder
+  def initialize(value)
+    @value = value
+  end
+end
+
+class Base
+  def update(record) = handle(record)
+end
+
+class Sub < Base
+  def handle(record) = build(record)
+  def build(record) = Holder.new(record)
+end
+
+class Caller
+  def run(item) = Base.new.update(item.record)
+end
+
+Sub.new.build("r")
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["by_kind"]["instance_variable"]["total"], 1);
+    assert_eq!(
+        report["by_kind"]["instance_variable"]["unknown"], 0,
+        "a caller's parameter marker must not leak into the ivar: {report}"
+    );
+}
+
+#[test]
 fn coverage_flag_rejects_display_and_diagnostic_modes() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("coverage.rb");
