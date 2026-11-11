@@ -262,3 +262,144 @@ class Links
   def user: (untyped name) -> String
 end
 ```
+
+## Skip resource helpers excluded by only
+
+### update
+
+`config/routes.rb`
+
+```ruby
+Rails.application.routes.draw do
+  resources :posts, only: [:index, :show]
+end
+```
+
+```ruby
+class Links
+  def edit_link(post) = edit_post_path(post)
+end
+```
+
+### result
+
+```rbs
+class Links
+  def edit_link: (untyped post) -> untyped
+end
+```
+
+## Resolve shallow nested resource helpers
+
+### update
+
+`config/routes.rb`
+
+```ruby
+Rails.application.routes.draw do
+  resources :articles, shallow: true do
+    resources :comments
+  end
+end
+```
+
+```ruby
+class Links
+  def comment(id) = comment_path(id)
+
+  def edit_comment(id) = edit_comment_path(id)
+end
+```
+
+### result
+
+```rbs
+class Links
+  def comment: (untyped id) -> String
+  def edit_comment: (untyped id) -> String
+end
+```
+
+## Resolve helpers from routing concerns
+
+### update
+
+`config/routes.rb`
+
+```ruby
+Rails.application.routes.draw do
+  concern :commentable do
+    resources :notes
+  end
+  resources :photos, concerns: :commentable
+end
+```
+
+```ruby
+class Links
+  def notes(photo) = photo_notes_path(photo)
+end
+```
+
+### result
+
+```rbs
+class Links
+  def notes: (untyped photo) -> String
+end
+```
+
+## Resolve resources helpers renamed with as
+
+### update
+
+`config/routes.rb`
+
+```ruby
+Rails.application.routes.draw do
+  resources :events, as: :happenings
+end
+```
+
+```ruby
+class Links
+  def happenings = happenings_path
+
+  def happening(event) = happening_path(event)
+end
+```
+
+### result
+
+```rbs
+class Links
+  def happenings: -> String
+  def happening: (untyped event) -> String
+end
+```
+
+## Resolve direct route helpers
+
+### update
+
+`config/routes.rb`
+
+```ruby
+Rails.application.routes.draw do
+  direct(:homepage) { "https://example.com" }
+end
+```
+
+```ruby
+class Links
+  def home = homepage_url
+end
+```
+
+### result
+
+```rbs
+class Links
+  def home: -> String
+end
+```
