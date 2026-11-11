@@ -1561,9 +1561,18 @@ pub enum ParamKind {
     Block,
 }
 
-/// Identifies a source proc literal by its file and start offset, interned as `file:offset`.
+/// Identifies a source proc literal within one analysis: the analysis's nonce in the high bits
+/// and the literal's start offset in the low bits. Ids from other analyses never match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ProcLiteralId(pub Sym);
+pub struct ProcLiteralId(std::num::NonZeroU64);
+
+impl ProcLiteralId {
+    pub fn new(analysis_nonce: std::num::NonZeroU32, offset: usize) -> Self {
+        let offset = u32::try_from(offset).unwrap_or(u32::MAX);
+        let packed = (u64::from(analysis_nonce.get()) << 32) | u64::from(offset);
+        Self(std::num::NonZeroU64::new(packed).unwrap_or(std::num::NonZeroU64::MIN))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HoverBlockSig {

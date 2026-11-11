@@ -1110,7 +1110,9 @@ pub struct InferenceEngine<'a> {
     /// Source of each `===` defined in this file, reparsed when a call site asks how it narrows.
     source_case_equality_defs: HashMap<(String, bool), Arc<str>>,
     literal_block_flows: LiteralBlockFlowMemo,
+    // Lives as long as this per-file engine; re-inferring a literal replaces its entry.
     proc_literals: FxHashMap<ProcLiteralId, Arc<ProcSignature>>,
+    proc_literal_nonce: std::num::NonZeroU32,
     pending_proc_call_writes: Option<PendingProcCallWrites>,
     in_source_case_equality_guard: bool,
     /// Full analysis re-infers bodies, so first-pass ParamRef call sites are skipped.
@@ -1703,6 +1705,12 @@ enum SuperCallArguments {
         positional: Vec<Type>,
         keywords: HashMap<String, Type>,
     },
+}
+
+fn next_proc_literal_nonce() -> std::num::NonZeroU32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::num::NonZeroU32::new(nonce).unwrap_or(std::num::NonZeroU32::MIN)
 }
 
 /// A source proc literal's parameters, kept beside its `Type::Proc` so equal types still dedupe.
@@ -2576,6 +2584,7 @@ impl<'a> InferenceEngine<'a> {
             source_case_equality_defs: HashMap::new(),
             literal_block_flows: LiteralBlockFlowMemo::default(),
             proc_literals: FxHashMap::default(),
+            proc_literal_nonce: next_proc_literal_nonce(),
             pending_proc_call_writes: None,
             in_source_case_equality_guard: false,
             defer_unresolved_body_call_sites: false,
@@ -2667,6 +2676,7 @@ impl<'a> InferenceEngine<'a> {
             source_case_equality_defs: HashMap::new(),
             literal_block_flows: LiteralBlockFlowMemo::default(),
             proc_literals: FxHashMap::default(),
+            proc_literal_nonce: next_proc_literal_nonce(),
             pending_proc_call_writes: None,
             in_source_case_equality_guard: false,
             defer_unresolved_body_call_sites: false,
@@ -34979,11 +34989,7 @@ impl<'a> InferenceEngine<'a> {
             .iter()
             .filter(|param| argument_binding::is_positional(param.kind))
             .count();
-        let id = ProcLiteralId(Sym::new(format!(
-            "{}:{}",
-            self.file_path.as_deref().unwrap_or(""),
-            literal.start
-        )));
+        let id = ProcLiteralId::new(self.proc_literal_nonce, literal.start);
         let signature = ProcSignature {
             kind: literal.kind,
             captured_writes: Self::captured_local_writes(class_name, &literal, scope, &block_scope),
@@ -62939,6 +62945,43 @@ mod tests {
         assert_eq!(
             engine.static_case_equality_result(&target, Some(&subject)),
             (Some(false), true),
+        );
+    }
+
+    #[test]
+    fn re_inferring_proc_literals_does_not_grow_the_signature_table() {
+        let source = "first = ->(a, b = 1) { b }\nsecond = proc { |x| x }\nfirst.call(1)\n";
+        let parse_result = ruby_prism::parse(source.as_bytes());
+        let program = parse_result.node().as_program_node().expect("program");
+        let mut engine = InferenceEngine::new();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let mut scope = Scope::default();
+            for node in program.statements().body().iter() {
+                let ty = engine.infer_node_type("Object", &node, &parse_result, &scope);
+                if let Type::Proc {
+                    literal: Some(id), ..
+                } = &ty
+                {
+                    ids.push(*id);
+                }
+                engine.process_statement("Object", &node, &parse_result, &mut scope);
+            }
+            assert_eq!(engine.proc_literals.len(), 2);
+        }
+        assert!(!ids.is_empty());
+        let mut other = InferenceEngine::new();
+        let first = program.statements().body().iter().next().expect("first");
+        let Type::Proc {
+            literal: Some(other_id),
+            ..
+        } = other.infer_node_type("Object", &first, &parse_result, &Scope::default())
+        else {
+            panic!("expected a proc literal");
+        };
+        assert!(
+            !ids.contains(&other_id),
+            "ids from another analysis must not match"
         );
     }
 
