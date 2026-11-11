@@ -1998,20 +1998,15 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         has_block: bool,
     ) -> Option<Type> {
-        use crate::rails::relation_api;
-        let model = relation_api::relation_element_type(receiver_type)?;
-        let receiver = relation_api::Receiver::of_relation(receiver_type)?;
-        let delegates = match relation_api::lookup(method_name, receiver) {
-            Some(method) => has_block && method.block == relation_api::BlockForm::Records,
-            None => {
-                relation_api::delegates_to_records(method_name) || {
-                    self.ensure_class_available("Enumerable");
-                    self.registry
-                        .has_method_variant("Enumerable", method_name, false)
-                }
-            }
-        };
-        delegates.then(|| Type::Array(Some(Box::new(model.clone()))))
+        crate::rails::relation_api::records_receiver(
+            receiver_type,
+            method_name,
+            has_block,
+            |name| {
+                self.ensure_class_available("Enumerable");
+                self.registry.has_method_variant("Enumerable", name, false)
+            },
+        )
     }
 
     /// `pluck` / `pick` / `minimum` / `maximum` with literal column names read the columns' types.

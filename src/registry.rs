@@ -9801,6 +9801,21 @@ impl TypeRegistry {
         {
             return result;
         }
+        if let Some(records) = crate::rails::relation_api::records_receiver(
+            resolved_receiver,
+            method_name,
+            false,
+            |name| self.has_method_variant("Enumerable", name, false),
+        ) {
+            return self.resolve_method_on_resolved_receiver(
+                _class_name,
+                &records,
+                method_name,
+                depth,
+                memo,
+                visiting,
+            );
+        }
         if let Some(cls) = Self::type_to_class_name(resolved_receiver) {
             let prefer_singleton = matches!(resolved_receiver, Type::Singleton(_));
             let ret = self
@@ -9827,7 +9842,9 @@ impl TypeRegistry {
             {
                 return ivar_ty;
             }
-            return resolved;
+            // The deferred path has no lazy stdlib loader; return-invariant entries still apply.
+            return stdlib_returns::stdlib_receiver_method_return(resolved_receiver, method_name)
+                .unwrap_or(resolved);
         }
         if let Type::Union(parts) = resolved_receiver {
             let mut resolved_parts: Vec<Type> = Vec::new();

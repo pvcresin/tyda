@@ -1,13 +1,13 @@
 use crate::prism_compat::LocationExt;
 use crate::types::Sym;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ruby_prism::{Node, ParseResult};
 
 use super::inflector::{
     classify_with_project_known_classes, column_type_to_type, resolve_model_class_name,
 };
+use super::model_tables::ModelTableIndex;
 use crate::registry::{MethodDef, ParamInfo, TypeRegistry};
 use crate::types::{ParamKind, Type};
 
@@ -40,7 +40,7 @@ pub fn load_schema(root: &Path, registry: &mut TypeRegistry) {
         return;
     }
     let t = std::time::Instant::now();
-    let overrides = collect_table_name_overrides(root);
+    let overrides = ModelTableIndex::load(root);
     let overrides_ms = t.elapsed().as_secs_f64() * 1000.0;
     let t = std::time::Instant::now();
     let tables = if schema_path.exists() {
@@ -60,11 +60,9 @@ pub fn load_schema(root: &Path, registry: &mut TypeRegistry) {
     let t = std::time::Instant::now();
     for table in &tables {
         register_table_methods(table, registry);
-        if let Some(classes) = overrides.get(&table.table_name) {
-            for class in classes {
-                if class != &table.class_name {
-                    register_table_methods_as(class, table, registry);
-                }
+        for class in overrides.classes_for(&table.table_name) {
+            if class != table.class_name {
+                register_table_methods_as(class, table, registry);
             }
         }
     }
@@ -75,120 +73,6 @@ pub fn load_schema(root: &Path, registry: &mut TypeRegistry) {
             t.elapsed().as_secs_f64() * 1000.0,
         );
     }
-}
-
-/// Collects `self.table_name =` declarations, since inflection alone can't find namespaced + legacy tables.
-fn collect_table_name_overrides(root: &Path) -> HashMap<String, Vec<String>> {
-    let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    let mut files = Vec::new();
-    collect_model_files(&root.join("app").join("models"), &mut files);
-    for path in files {
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if !source.contains("table_name") {
-            continue;
-        }
-        let parse_result = ruby_prism::parse(source.as_bytes());
-        let mut namespace: Vec<String> = Vec::new();
-        collect_table_name_in_node(
-            &parse_result.node(),
-            &parse_result,
-            &mut namespace,
-            &mut map,
-        );
-    }
-    map
-}
-
-fn collect_model_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.filter_map(|entry| entry.ok()) {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_model_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rb") {
-            out.push(path);
-        }
-    }
-}
-
-fn collect_table_name_in_node(
-    node: &Node<'_>,
-    parse_result: &ParseResult<'_>,
-    namespace: &mut Vec<String>,
-    map: &mut HashMap<String, Vec<String>>,
-) {
-    match node {
-        Node::ProgramNode { .. } => {
-            let program = node.as_program_node().expect("must be ProgramNode");
-            for stmt in program.statements().body().iter() {
-                collect_table_name_in_node(&stmt, parse_result, namespace, map);
-            }
-        }
-        Node::StatementsNode { .. } => {
-            let stmts = node.as_statements_node().expect("must be StatementsNode");
-            for stmt in stmts.body().iter() {
-                collect_table_name_in_node(&stmt, parse_result, namespace, map);
-            }
-        }
-        Node::ModuleNode { .. } => {
-            let module_node = node.as_module_node().expect("must be ModuleNode");
-            let name = constant_path_text(&module_node.constant_path());
-            namespace.push(name);
-            if let Some(body) = module_node.body() {
-                collect_table_name_in_node(&body, parse_result, namespace, map);
-            }
-            namespace.pop();
-        }
-        Node::ClassNode { .. } => {
-            let class_node = node.as_class_node().expect("must be ClassNode");
-            let name = constant_path_text(&class_node.constant_path());
-            namespace.push(name);
-            if let Some(body) = class_node.body() {
-                collect_table_name_in_node(&body, parse_result, namespace, map);
-            }
-            namespace.pop();
-        }
-        Node::CallNode { .. } => {
-            let call = node.as_call_node().expect("must be CallNode");
-            if call.name().as_slice() != b"table_name=" {
-                return;
-            }
-            if namespace.is_empty() {
-                return;
-            }
-            let Some(args) = call.arguments() else {
-                return;
-            };
-            let Some(first) = args.arguments().iter().next() else {
-                return;
-            };
-            if let Some(table) = extract_string_value(&first, parse_result) {
-                let class_name = namespace.join("::");
-                let entry = map.entry(table).or_default();
-                if !entry.contains(&class_name) {
-                    entry.push(class_name);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn constant_path_text(node: &Node<'_>) -> String {
-    let text = match node {
-        Node::ConstantReadNode { .. } => {
-            let cr = node
-                .as_constant_read_node()
-                .expect("must be ConstantReadNode");
-            String::from_utf8_lossy(cr.name().as_slice()).to_string()
-        }
-        _ => String::from_utf8_lossy(node.location().as_slice()).to_string(),
-    };
-    text.trim().trim_start_matches("::").to_string()
 }
 
 fn parse_schema(source: &str, workspace_root: &Path) -> Vec<TableDef> {
@@ -209,7 +93,7 @@ fn parse_schema(source: &str, workspace_root: &Path) -> Vec<TableDef> {
 fn parse_structure_sql(
     source: &str,
     workspace_root: &Path,
-    table_name_overrides: &HashMap<String, Vec<String>>,
+    table_name_overrides: &ModelTableIndex,
 ) -> Vec<TableDef> {
     let mut tables = Vec::new();
     let mut current_table_name: Option<String> = None;
@@ -497,6 +381,12 @@ fn structure_sql_canonical_keyword(definition: &str) -> Option<&'static str> {
     if lower.starts_with("boolean") || lower.starts_with("bool") || lower.starts_with("tinyint(1)")
     {
         Some("boolean")
+    } else if lower.starts_with("interval") {
+        Some("interval")
+    } else if lower.starts_with("inet") || lower.starts_with("cidr") {
+        Some("inet")
+    } else if lower.starts_with("money") {
+        Some("money")
     } else if lower.starts_with("bigint")
         || lower.starts_with("integer")
         || lower.starts_with("int")
@@ -522,6 +412,11 @@ fn structure_sql_canonical_keyword(definition: &str) -> Option<&'static str> {
         || lower.starts_with("citext")
         || lower.starts_with("uuid")
         || lower.starts_with("bytea")
+        || lower.starts_with("macaddr")
+        || lower.starts_with("xml")
+        || lower.starts_with("tsvector")
+        || lower.starts_with("ltree")
+        || lower.starts_with("bit")
         || lower.starts_with("enum")
         || lower.starts_with("set(")
     {
@@ -731,7 +626,7 @@ fn parse_schema_association_call(
 fn attach_structure_foreign_keys(
     source: &str,
     workspace_root: &Path,
-    table_name_overrides: &HashMap<String, Vec<String>>,
+    table_name_overrides: &ModelTableIndex,
     tables: &mut [TableDef],
 ) {
     let mut current_table: Option<String> = None;
@@ -780,12 +675,10 @@ fn attach_structure_foreign_keys(
 fn resolve_table_model_class_name(
     root: &Path,
     table_name: &str,
-    table_name_overrides: &HashMap<String, Vec<String>>,
+    table_name_overrides: &ModelTableIndex,
 ) -> String {
-    if let Some(classes) = table_name_overrides.get(table_name)
-        && let [class_name] = classes.as_slice()
-    {
-        return class_name.clone();
+    if let [class_name] = table_name_overrides.classes_for(table_name).as_slice() {
+        return class_name.to_string();
     }
     resolve_model_class_name(root, table_name)
 }
@@ -1030,6 +923,14 @@ mod tests {
             Type::Class(Sym::new("ActiveSupport::TimeWithZone"))
         );
         assert_eq!(structure_sql_type_to_type("double"), Type::Float);
+        assert_eq!(
+            structure_sql_type_to_type("interval"),
+            Type::Class(Sym::new("ActiveSupport::Duration"))
+        );
+        assert_eq!(
+            structure_sql_type_to_type("inet"),
+            Type::Class(Sym::new("IPAddr"))
+        );
     }
 
     #[test]
@@ -1164,7 +1065,8 @@ CREATE TABLE `shop_users` (\n\
   PRIMARY KEY (`id`),\n\
   KEY `index_shop_users_on_person_id` (`person_id`)\n\
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n";
-        let tables = parse_structure_sql(sql, Path::new("/nonexistent"), &HashMap::new());
+        let tables =
+            parse_structure_sql(sql, Path::new("/nonexistent"), &ModelTableIndex::default());
         assert_eq!(tables.len(), 1, "one table parsed");
         let names: Vec<&str> = tables[0].columns.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"person_id"), "person_id column: {names:?}");
@@ -1187,7 +1089,7 @@ CREATE TABLE `shop_users` (\n\
         )
         .expect("write model");
 
-        let overrides = collect_table_name_overrides(root.path());
+        let overrides = ModelTableIndex::load(root.path());
         let sql = "CREATE TABLE bulk_import_batch_trackers (\n  tracker_id bigint NOT NULL\n);\n\
 ALTER TABLE ONLY bulk_import_batch_trackers\n\
   ADD CONSTRAINT fk_tracker FOREIGN KEY (tracker_id) REFERENCES bulk_import_trackers(id);\n";

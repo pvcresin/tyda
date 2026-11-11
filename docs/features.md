@@ -128,7 +128,9 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 個別 gem の一覧をこの文書に重複して持たない。
 
 - schema / `attribute` / relation から model の型を補う。migration と schema の `t.column name, type` も型引数を読み取り、単純な `column IS NOT NULL` check constraint は非 nullable として扱う
-- ActiveRecord の `datetime` column / attribute は time zone aware な `ActiveSupport::TimeWithZone`、ActiveModel の `attribute :x, :datetime` は `Time` とする。`create_table` の暗黙の主キーは `id:` / `primary_key:` に従い（`id: :uuid` は `String`、`id: false` は列なし）、`created_at` / `updated_at` は `t.timestamps` がある場合だけ追加する
+- ActiveRecord の `datetime` column / attribute は time zone aware な `ActiveSupport::TimeWithZone`、ActiveModel の `attribute :x, :datetime` は `Time` とする。`create_table` の暗黙の主キーは `id:` / `primary_key:` に従い（`id: :uuid` は `String`、`id: false` は列なし）、`created_at` / `updated_at` は `t.timestamps` がある場合だけ追加する。PostgreSQL / MySQL の native 型（`serial` / `bigserial`、`inet`、`interval`、`money`、range 型など）も Rails の cast 型に対応付ける。namespace 内の model は Rails の `table_name` 計算（module の `table_name_prefix`、外側 model の単数 table 名）で table と対応付ける
+- `ActiveSupport::TimeWithZone` は `-` / `+` の overload（時刻との差は `Float`、数値や `Duration` との演算は `TimeWithZone`）を持ち、それ以外の method は `Time` の定義に委譲して `Time` の戻り値を `TimeWithZone` に置き換える
+- Rails version は `Gemfile.lock` の `specs:` 直下の spec 行（`rails`、なければ `railties` / `activerecord`）から読む
 - Concern、association（`belongs_to` / `has_one` の optional attribute hash を取る `build_*` / `create_*` / `create_*!` を含む）、scope、enum（plural map method、文字列キーを返すreader、静的に読めるHash/Array/`HashWithIndifferentAccess.new`定数mappingを含む）、delegate などの静的な DSL を展開する。`alias_attribute` は reader / writer / predicate を追加する。`structure.sql` の外部キー先は明示的な `self.table_name` も参照する
 - `serialize` は `type:` がある場合だけその型を使い、型指定のないserialized attributeは `untyped` として扱う。明示されたsource/RBS methodの型は保持する
 - ActionController の `tag` helper は、引数なしでは `TagBuilder`、生成したタグ名の呼び出しでは `String` として推論する

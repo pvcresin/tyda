@@ -96,3 +96,28 @@ class Clock
   def label: -> String
 end
 ```
+
+## Adding a duration to TimeWithZone returns TimeWithZone
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Clock
+  def later = Time.current + 1.hour
+
+  def zone_later = Time.zone.now + 1.hour
+end
+```
+
+### result
+
+```rbs
+class Clock
+  def later: -> ActiveSupport::TimeWithZone
+  def zone_later: -> ActiveSupport::TimeWithZone
+end
+```

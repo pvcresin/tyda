@@ -210,8 +210,22 @@ const RECORDS_DELEGATED_METHODS: &[&str] = &[
     "rindex",
 ];
 
-pub fn delegates_to_records(method_name: &str) -> bool {
-    RECORDS_DELEGATED_METHODS.contains(&method_name)
+/// `ActiveRecord::Delegation`: the records array a relation call dispatches on, when the
+/// relation itself does not define the method (`length`, `map`) or falls back to `Enumerable`
+/// for the block form (`select { }`). `enumerable_defines` is asked only for other names.
+pub fn records_receiver(
+    receiver_type: &Type,
+    method_name: &str,
+    has_block: bool,
+    enumerable_defines: impl FnOnce(&str) -> bool,
+) -> Option<Type> {
+    let model = relation_element_type(receiver_type)?;
+    let receiver = Receiver::of_relation(receiver_type)?;
+    let delegates = match lookup(method_name, receiver) {
+        Some(method) => has_block && method.block == BlockForm::Records,
+        None => RECORDS_DELEGATED_METHODS.contains(&method_name) || enumerable_defines(method_name),
+    };
+    delegates.then(|| Type::Array(Some(Box::new(model.clone()))))
 }
 
 /// The method's contract on `receiver`, or `None` when that receiver does not define it.
@@ -404,6 +418,24 @@ mod tests {
         assert_eq!(since("in_order_of"), Some((7, 0)));
         assert_eq!(since("with"), Some((7, 1)));
         assert_eq!(since("with_recursive"), Some((7, 2)));
+    }
+
+    #[test]
+    fn relations_delegate_array_methods_to_their_records() {
+        let records = Some(Type::Array(Some(Box::new(post()))));
+        let proxy = generic(COLLECTION_PROXY_CLASS);
+        assert_eq!(
+            records_receiver(&proxy, "length", false, |_| false),
+            records
+        );
+        assert_eq!(
+            records_receiver(&proxy, "map", false, |name| name == "map"),
+            records
+        );
+        assert_eq!(records_receiver(&proxy, "select", true, |_| true), records);
+        assert_eq!(records_receiver(&proxy, "select", false, |_| true), None);
+        assert_eq!(records_receiver(&proxy, "size", false, |_| true), None);
+        assert_eq!(records_receiver(&post(), "length", false, |_| true), None);
     }
 
     #[test]
