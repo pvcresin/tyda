@@ -27,6 +27,10 @@ static MANIFEST: PluginManifest = PluginManifest {
             gem_markers: &[],
         },
         DslFeature {
+            library: DslLibrary::ActiveSupportCoreExt,
+            gem_markers: &[],
+        },
+        DslFeature {
             library: DslLibrary::ActiveSupportCurrentAttributes,
             gem_markers: &[],
         },
@@ -130,7 +134,7 @@ impl Plugin for ActiveSupport {
         method_name: &str,
         arg_types: &[Type],
     ) -> Option<Type> {
-        if !cx.dsl_enabled(DslLibrary::ActiveSupportTimeExt) {
+        if !cx.dsl_enabled(DslLibrary::ActiveSupportCoreExt) {
             return None;
         }
         array_call_return(receiver_type, method_name, arg_types)
@@ -213,9 +217,18 @@ pub(in crate::inference) fn synthetic_method_return(
             && engine.dsl_enabled(DslLibrary::ActiveSupportEnvironmentInquirer))
         .then_some(Type::Bool);
     }
+    if engine.dsl_enabled(DslLibrary::ActiveSupportCoreExt)
+        && let Some(ty) = core_ext_return(receiver_type, method_name)
+    {
+        return Some(ty);
+    }
     if !engine.dsl_enabled(DslLibrary::ActiveSupportTimeExt) {
         return None;
     }
+    time_ext_return(receiver_type, method_name)
+}
+
+fn core_ext_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
     if method_name == "to_json" {
         return Some(Type::String);
     }
@@ -245,6 +258,17 @@ pub(in crate::inference) fn synthetic_method_return(
             "ends_with?" | "starts_with?" => Some(Type::Bool),
             _ => None,
         },
+        Type::Singleton(name) if name.as_str() == "ActiveSupport::SecurityUtils" => matches!(
+            method_name,
+            "secure_compare" | "fixed_length_secure_compare"
+        )
+        .then_some(Type::Bool),
+        _ => None,
+    }
+}
+
+fn time_ext_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
+    match receiver_type {
         Type::Singleton(name) if name.as_str() == "Time" => match method_name {
             "current" => Some(time_with_zone()),
             "zone" => Some(Type::Class(Sym::new("ActiveSupport::TimeZone"))),
@@ -259,11 +283,6 @@ pub(in crate::inference) fn synthetic_method_return(
                 _ => None,
             }
         }
-        Type::Singleton(name) if name.as_str() == "ActiveSupport::SecurityUtils" => matches!(
-            method_name,
-            "secure_compare" | "fixed_length_secure_compare"
-        )
-        .then_some(Type::Bool),
         Type::Singleton(name) if name.as_str() == "ActiveSupport::TimeZone" => match method_name {
             "all" => Some(Type::Array(Some(Box::new(Type::Class(Sym::new(
                 "ActiveSupport::TimeZone",

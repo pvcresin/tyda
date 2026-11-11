@@ -101,6 +101,7 @@ pub enum DslLibrary {
     ActiveResource,
     ActiveStorage,
     ActiveSupportConcern,
+    ActiveSupportCoreExt,
     ActiveSupportCurrentAttributes,
     ActiveSupportEnvironmentInquirer,
     ActiveSupportTimeExt,
@@ -235,6 +236,7 @@ impl DslLibrary {
             Self::ActiveResource => "active_resource",
             Self::ActiveStorage => "active_storage",
             Self::ActiveSupportConcern => "active_support_concern",
+            Self::ActiveSupportCoreExt => "active_support_core_ext",
             Self::ActiveSupportCurrentAttributes => "active_support_current_attributes",
             Self::ActiveSupportEnvironmentInquirer => "active_support_environment_inquirer",
             Self::ActiveSupportTimeExt => "active_support_time_ext",
@@ -299,6 +301,7 @@ impl DslLibrary {
             Self::ActiveResource,
             Self::ActiveStorage,
             Self::ActiveSupportConcern,
+            Self::ActiveSupportCoreExt,
             Self::ActiveSupportCurrentAttributes,
             Self::ActiveSupportEnvironmentInquirer,
             Self::ActiveSupportTimeExt,
@@ -364,6 +367,7 @@ impl DslLibrary {
                 | Self::ActiveResource
                 | Self::ActiveStorage
                 | Self::ActiveSupportConcern
+                | Self::ActiveSupportCoreExt
                 | Self::ActiveSupportCurrentAttributes
                 | Self::ActiveSupportEnvironmentInquirer
                 | Self::ActiveSupportTimeExt
@@ -1423,6 +1427,7 @@ mod tests {
             DslLibrary::ActiveResource,
             DslLibrary::ActiveStorage,
             DslLibrary::ActiveSupportConcern,
+            DslLibrary::ActiveSupportCoreExt,
             DslLibrary::ActiveSupportCurrentAttributes,
             DslLibrary::ActiveSupportEnvironmentInquirer,
             DslLibrary::ActiveSupportTimeExt,
