@@ -1140,6 +1140,8 @@ pub struct InferenceEngine<'a> {
     replayed_callee_names: FxHashSet<String>,
     suppress_body_call_sites: bool,
     receiver_type_override: Option<(usize, usize, Type)>,
+    /// The call currently dispatched for observation after a local flow fact decided its type.
+    local_fact_dispatch_span: Option<(usize, usize)>,
     dispatching_typed_receiver_arm: bool,
     /// Enclosing `class`/`module` names that are not part of the current FQN
     /// (`class ::Bar` inside `module Foo`).
@@ -2612,6 +2614,7 @@ impl<'a> InferenceEngine<'a> {
             replayed_callee_names: FxHashSet::default(),
             suppress_body_call_sites: false,
             receiver_type_override: None,
+            local_fact_dispatch_span: None,
             dispatching_typed_receiver_arm: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
@@ -2704,6 +2707,7 @@ impl<'a> InferenceEngine<'a> {
             replayed_callee_names: FxHashSet::default(),
             suppress_body_call_sites: false,
             receiver_type_override: None,
+            local_fact_dispatch_span: None,
             dispatching_typed_receiver_arm: false,
             lexical_parent_stack: Vec::new(),
             current_cref: None,
@@ -28729,6 +28733,32 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// The type of a read on a local whose flow facts decide the result (`opts[:key]`,
+    /// `list[0]`, `record.attr`).
+    fn local_fact_read(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<Type> {
+        if !scope.hash_key_facts.is_empty()
+            && let Some(inferred) = self.hash_key_fact_read(class_name, node, parse_result, scope)
+        {
+            return Some(inferred);
+        }
+        if !scope.array_element_facts.is_empty()
+            && let Some(inferred) =
+                self.array_element_fact_read(class_name, node, parse_result, scope)
+        {
+            return Some(inferred);
+        }
+        if !scope.exclusive_receiver_facts.is_empty() {
+            return Self::exclusive_receiver_attribute_read(node, scope);
+        }
+        None
+    }
+
     fn infer_node_type_inner(
         &mut self,
         class_name: &str,
@@ -28748,20 +28778,15 @@ impl<'a> InferenceEngine<'a> {
         if let Some(inferred) = self.context_free_node_type_cached(node) {
             return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
         }
-        if !scope.hash_key_facts.is_empty()
-            && let Some(inferred) = self.hash_key_fact_read(class_name, node, parse_result, scope)
+        let span = (node.location().start_offset(), node.location().end_offset());
+        if self.local_fact_dispatch_span != Some(span)
+            && let Some(inferred) = self.local_fact_read(class_name, node, parse_result, scope)
         {
-            return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
-        }
-        if !scope.array_element_facts.is_empty()
-            && let Some(inferred) =
-                self.array_element_fact_read(class_name, node, parse_result, scope)
-        {
-            return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
-        }
-        if !scope.exclusive_receiver_facts.is_empty()
-            && let Some(inferred) = Self::exclusive_receiver_attribute_read(node, scope)
-        {
+            // The call is still dispatched once so hover and coverage observe it as before;
+            // only its result is replaced by the fact.
+            let outer = self.local_fact_dispatch_span.replace(span);
+            self.infer_node_type_inner(class_name, node, parse_result, scope);
+            self.local_fact_dispatch_span = outer;
             return self.apply_inline_assertion_for_node(node, parse_result.source(), inferred);
         }
         if let Some(call_node) = node.as_call_node()

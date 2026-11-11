@@ -475,6 +475,31 @@ fn coverage_includes_arguments_of_unresolved_receiver_calls() {
 }
 
 #[test]
+fn coverage_keeps_call_sites_decided_by_local_hash_key_facts() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("hash_key_fact.rb");
+    fs::write(
+        &rb_file,
+        "class Picker\n  def pick(given)\n    opts = given || {}\n    opts[:key] = \"value\"\n    opts[:key]\n  end\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    // `opts[:key]` and its receiver stay observed although the fact decides the result.
+    assert_eq!(report["references"]["total"], 7);
+    assert_eq!(report["by_kind"]["method_call"]["total"], 1);
+    assert_eq!(report["by_kind"]["value"]["total"], 5);
+    assert_eq!(report["by_kind"]["method_return"]["typed"], 1);
+}
+
+#[test]
 fn coverage_resolves_cross_file_references_after_workspace_merge() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
@@ -5031,4 +5056,26 @@ fn association_declarations_replace_schema_foreign_key_readers() {
         "{stdout}"
     );
     assert!(stdout.contains("def achievement=:"), "{stdout}");
+}
+
+#[test]
+fn diagnostics_keyword_hash_read_interpolating_a_constant_is_not_nil() {
+    // A keyword hash read in a value interpolating a constant, followed by a block call,
+    // once reported `NilClass#[]`.
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("card.rb");
+    fs::write(
+        &rb_file,
+        "class Card\n  def item_link(**options)\n    options[:class] = \"#{options[:class]} #{ITEM}\"\n    wrap do\n      link(**options)\n    end\n  end\n  ITEM = \"a\"\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("NilClass"), "got: {stdout}");
 }
