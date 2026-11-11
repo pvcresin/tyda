@@ -2001,15 +2001,30 @@ impl<'a> InferenceEngine<'a> {
         symbol_args: &[String],
     ) -> Option<Type> {
         use crate::rails::relation_api::{self, RelationReturn};
+        // ActiveSupport's `Enumerable#pluck` / `#pick` read `record[key]` from loaded records.
+        let loaded_records = match receiver_type {
+            Type::Array(Some(elem)) => match elem.as_ref() {
+                Type::Class(name) if self.is_active_record_model_class(name) => Some(*name),
+                _ => None,
+            },
+            _ => None,
+        };
         let receiver = match receiver_type {
             Type::Singleton(_) => relation_api::Receiver::Model,
+            _ if loaded_records.is_some() => match method_name {
+                "pluck" if self.rails_at_least(5, 0) => relation_api::Receiver::Model,
+                "pick" if self.rails_at_least(6, 0) => relation_api::Receiver::Model,
+                _ => return None,
+            },
             _ => relation_api::Receiver::of_relation(receiver_type)?,
         };
         let method = relation_api::lookup(method_name, receiver)?;
         if !method.reads_columns() || symbol_args.is_empty() {
             return None;
         }
-        let elem_type = if let Some(et) = Self::active_record_relation_element_type(receiver_type) {
+        let elem_type = if let Some(model) = loaded_records {
+            Type::Class(model)
+        } else if let Some(et) = Self::active_record_relation_element_type(receiver_type) {
             et
         } else if let Type::Singleton(name) = receiver_type {
             if self.is_active_record_model_class(name) {
