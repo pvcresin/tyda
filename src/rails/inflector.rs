@@ -12,29 +12,52 @@ pub fn classify(table_name: &str) -> String {
     flat_classify_with(table_name, &ProjectInflector::default())
 }
 
-pub fn classify_with_known_classes(name: &str, known_classes: &[String]) -> String {
-    classify_with_inflector_and_known_classes(name, &ProjectInflector::default(), known_classes)
+pub fn classify_with_known_classes(name: &str, is_known: &dyn Fn(&str) -> bool) -> String {
+    classify_with_inflector_and_known_classes(name, &ProjectInflector::default(), is_known)
 }
 
 pub fn classify_with_project_known_classes(
     root: &Path,
     name: &str,
-    known_classes: &[String],
+    is_known: &dyn Fn(&str) -> bool,
 ) -> String {
     let inflector = load_project_inflector(root);
     let flat = flat_classify_with(name, &inflector);
     let Some(namespaced) = namespaced_classify_candidate_with(name, &inflector) else {
         return flat;
     };
-    if known_classes
-        .iter()
-        .any(|candidate| candidate == &namespaced)
-        || model_path_exists(root, &namespaced)
-    {
+    if is_known(&namespaced) || model_path_exists(root, &namespaced) {
         namespaced
     } else {
         flat
     }
+}
+
+/// Rails' `compute_type`: a relative class name resolves from the owner's namespace outward
+/// (`Admin::Report` + `Entry` tries `Admin::Report::Entry`, `Admin::Entry`, then `Entry`).
+pub fn resolve_class_name_from_owner(
+    owner: &str,
+    name: &str,
+    is_known: &dyn Fn(&str) -> bool,
+) -> String {
+    if let Some(absolute) = name.strip_prefix("::") {
+        return absolute.to_string();
+    }
+    let mut namespace = owner;
+    loop {
+        let candidate = format!("{namespace}::{name}");
+        if is_known(&candidate) {
+            return candidate;
+        }
+        match namespace.rsplit_once("::") {
+            Some((outer, _)) => namespace = outer,
+            None => return name.to_string(),
+        }
+    }
+}
+
+pub fn model_file_exists(root: &Path, class_name: &str) -> bool {
+    model_path_exists(root, class_name)
 }
 
 pub fn resolve_model_class_name(root: &Path, table_name: &str) -> String {
@@ -114,8 +137,23 @@ fn singularize_with(word: &str, inflector: &ProjectInflector) -> String {
     }
 }
 
+/// Which attribute API casts a type keyword. Active Record makes `datetime` attributes time
+/// zone aware (`time_zone_aware_attributes`), while `ActiveModel::Type::DateTime` casts to `Time`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CastTypeOwner {
+    ActiveRecord,
+    ActiveModel,
+}
+
 /// Canonical column-type map shared by schema / structure / DSL. `None` = unmapped (e.g. a custom cast type).
 pub fn column_type_keyword_to_type(col_type: &str) -> Option<crate::types::Type> {
+    cast_type_keyword_to_type(col_type, CastTypeOwner::ActiveRecord)
+}
+
+pub fn cast_type_keyword_to_type(
+    col_type: &str,
+    owner: CastTypeOwner,
+) -> Option<crate::types::Type> {
     use crate::types::Type;
     Some(match col_type {
         "string" | "text" | "citext" | "uuid" | "binary" | "immutable_string" => Type::String,
@@ -124,10 +162,10 @@ pub fn column_type_keyword_to_type(col_type: &str) -> Option<crate::types::Type>
         "decimal" | "numeric" => Type::Class(Sym::new("BigDecimal")),
         "boolean" => Type::Bool,
         "date" => Type::Class(Sym::new("Date")),
-        "datetime" | "timestamp" => Type::Union(vec![
-            Type::Class(Sym::new("DateTime")),
-            Type::Class(Sym::new("ActiveSupport::TimeWithZone")),
-        ]),
+        "datetime" | "timestamp" => match owner {
+            CastTypeOwner::ActiveRecord => Type::Class(Sym::new("ActiveSupport::TimeWithZone")),
+            CastTypeOwner::ActiveModel => Type::Class(Sym::new("Time")),
+        },
         "time" => Type::Class(Sym::new("Time")),
         "json" | "jsonb" | "hstore" => Type::Untyped,
         _ => return None,
@@ -149,16 +187,13 @@ fn flat_classify_with(table_name: &str, inflector: &ProjectInflector) -> String 
 fn classify_with_inflector_and_known_classes(
     name: &str,
     inflector: &ProjectInflector,
-    known_classes: &[String],
+    is_known: &dyn Fn(&str) -> bool,
 ) -> String {
     let flat = flat_classify_with(name, inflector);
     let Some(namespaced) = namespaced_classify_candidate_with(name, inflector) else {
         return flat;
     };
-    if known_classes
-        .iter()
-        .any(|candidate| candidate == &namespaced)
-    {
+    if is_known(&namespaced) {
         namespaced
     } else {
         flat
@@ -301,10 +336,11 @@ mod tests {
         assert_eq!(column_type_to_type("date"), Type::Class(Sym::new("Date")));
         assert_eq!(
             column_type_to_type("datetime"),
-            Type::Union(vec![
-                Type::Class(Sym::new("DateTime")),
-                Type::Class(Sym::new("ActiveSupport::TimeWithZone")),
-            ])
+            Type::Class(Sym::new("ActiveSupport::TimeWithZone"))
+        );
+        assert_eq!(
+            cast_type_keyword_to_type("datetime", CastTypeOwner::ActiveModel),
+            Some(Type::Class(Sym::new("Time")))
         );
         // json/jsonb/hstore have no concrete type, so they're Untyped; unknown column types also degrade to Untyped.
         assert_eq!(column_type_to_type("jsonb"), Type::Untyped);
@@ -325,11 +361,36 @@ mod tests {
 
     #[test]
     fn test_classify_with_known_classes_prefers_namespaced_model() {
-        let known = vec!["Admin::User".to_string(), "Post".to_string()];
+        let is_known = |name: &str| matches!(name, "Admin::User" | "Post");
         assert_eq!(
-            classify_with_known_classes("admin_user", &known),
+            classify_with_known_classes("admin_user", &is_known),
             "Admin::User"
         );
-        assert_eq!(classify_with_known_classes("post", &known), "Post");
+        assert_eq!(classify_with_known_classes("post", &is_known), "Post");
+    }
+
+    #[test]
+    fn resolve_class_name_from_owner_walks_namespaces_outward() {
+        let is_known = |name: &str| matches!(name, "Admin::Entry" | "Admin::Report::Note");
+        assert_eq!(
+            resolve_class_name_from_owner("Admin::Report", "Entry", &is_known),
+            "Admin::Entry"
+        );
+        assert_eq!(
+            resolve_class_name_from_owner("Admin::Report", "Note", &is_known),
+            "Admin::Report::Note"
+        );
+        assert_eq!(
+            resolve_class_name_from_owner("Admin::Report", "Post", &is_known),
+            "Post"
+        );
+        assert_eq!(
+            resolve_class_name_from_owner("Admin::Report", "::Entry", &is_known),
+            "Entry"
+        );
+        assert_eq!(
+            resolve_class_name_from_owner("Report", "Entry", &is_known),
+            "Entry"
+        );
     }
 }

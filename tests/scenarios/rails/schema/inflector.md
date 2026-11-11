@@ -186,6 +186,7 @@ ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
     t.references "a", null: false
     t.belongs_to "x", polymorphic: true
     t.string "status", default: "draft"
+    t.timestamps
   end
 end
 ```
@@ -207,7 +208,7 @@ end
 ```rbs
 class Post < ApplicationRecord
   def foo: -> Integer
-  def bar: -> Time
+  def bar: -> ActiveSupport::TimeWithZone
   def baz: -> A
 end
 ```

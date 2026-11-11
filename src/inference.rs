@@ -30050,6 +30050,13 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         receiver_type.clone()
                     };
+                    let safe_nav_receiver_type = self
+                        .active_record_records_receiver(
+                            &safe_nav_receiver_type,
+                            &method_name,
+                            call_node.block().is_some(),
+                        )
+                        .unwrap_or(safe_nav_receiver_type);
                     let safe_nav_adds_nil = nil_safe_dispatch && Self::contains_nil(&receiver_type);
                     let defer_safe_navigation = nil_safe_dispatch
                         && !safe_nav_adds_nil
@@ -31307,18 +31314,17 @@ impl<'a> InferenceEngine<'a> {
                                 &safe_nav_receiver_type,
                                 &method_name,
                                 call_arg_types_for_generic.first(),
-                                call_node
-                                    .arguments()
-                                    .map(|a| a.arguments().iter().count())
-                                    .unwrap_or(0),
+                                // Splatted tuples count as their elements (`find(*[1, 2])`).
+                                call_arg_types_for_generic.len(),
                             )
                         {
                             break 'recv wrap(ar_result);
                         }
 
                         if call_node.block().is_none()
-                            && method_name == "pluck"
                             && let Some(args) = call_node.arguments()
+                            && crate::rails::relation_api::lookup(&method_name)
+                                .is_some_and(|method| method.reads_columns())
                         {
                             let arg_nodes: Vec<_> = args.arguments().iter().collect();
                             let symbol_args: Vec<String> = arg_nodes
@@ -31326,14 +31332,13 @@ impl<'a> InferenceEngine<'a> {
                                 .filter_map(Self::extract_symbol_literal_name)
                                 .collect();
                             if symbol_args.len() == arg_nodes.len()
-                                && let Some(pluck_result) = self
-                                    .refine_active_record_pluck_with_symbol_args(
-                                        &safe_nav_receiver_type,
-                                        &method_name,
-                                        &symbol_args,
-                                    )
+                                && let Some(column_result) = self.refine_active_record_column_call(
+                                    &safe_nav_receiver_type,
+                                    &method_name,
+                                    &symbol_args,
+                                )
                             {
-                                break 'recv wrap(pluck_result);
+                                break 'recv wrap(column_result);
                             }
                         }
 
@@ -32098,16 +32103,6 @@ impl<'a> InferenceEngine<'a> {
                             ) {
                                 break 'recv wrap(no_block_result);
                             }
-                        }
-
-                        if method_name == "normalize_value_for"
-                            && let Some(args) = call_node.arguments()
-                            && args.arguments().iter().count() >= 2
-                            && let Some(value_arg) = args.arguments().iter().nth(1)
-                        {
-                            let value_type =
-                                self.infer_node_type(class_name, &value_arg, parse_result, scope);
-                            break 'recv wrap(value_type);
                         }
 
                         if let Some(overload_result) = self.resolve_overloaded_call(
@@ -54613,6 +54608,11 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn resolve_method_on_type(&mut self, receiver_type: &Type, method_name: &str) -> Type {
+        if let Some(records) =
+            self.active_record_records_receiver(receiver_type, method_name, false)
+        {
+            return self.resolve_method_on_type(&records, method_name);
+        }
         if method_name == "freeze" {
             return receiver_type.clone();
         }

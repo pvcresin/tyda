@@ -9799,7 +9799,7 @@ impl TypeRegistry {
             );
         }
         if let Some(result) =
-            Self::active_record_relation_method_return(resolved_receiver, method_name)
+            self.active_record_relation_method_return(resolved_receiver, method_name)
         {
             return result;
         }
@@ -9874,38 +9874,33 @@ impl TypeRegistry {
     /// registry has no AST call node at that point, but these methods preserve
     /// the relation shape independently of their arguments.
     fn active_record_relation_method_return(
+        &self,
         receiver_type: &Type,
         method_name: &str,
     ) -> Option<Type> {
-        let elem_type = match receiver_type {
-            Type::Generic { base, args }
-                if matches!(
-                    base.as_str(),
-                    "ActiveRecord::Relation"
-                        | "ActiveRecord::AssociationRelation"
-                        | "ActiveRecord::CollectionProxy"
-                        | "ActiveRecord::Associations::CollectionProxy"
-                ) =>
-            {
-                args.first()?.clone()
-            }
-            _ => return None,
-        };
-
-        match method_name {
-            "all" | "where" | "rewhere" | "not" | "or" | "and" | "merge" | "order" | "reorder"
-            | "limit" | "offset" | "reselect" | "group" | "regroup" | "having" | "joins"
-            | "left_outer_joins" | "includes" | "eager_load" | "preload" | "references"
-            | "unscope" | "extending" | "optimizer_hints" | "annotate" | "excluding"
-            | "create_with" | "distinct" | "distinct!" | "readonly" | "lock" | "strict_loading"
-            | "skip_query_cache" | "without" | "load" | "load_async" | "async" | "none"
-            | "invert_where" | "reverse_order" => Some(receiver_type.clone()),
-            "ids" => Some(Type::Array(Some(Box::new(Type::Integer)))),
-            "count" | "size" | "length" => Some(Type::Integer),
-            "any?" | "many?" | "none?" | "one?" | "exists?" | "include?" => Some(Type::Bool),
-            "to_a" => Some(Type::Array(Some(Box::new(elem_type)))),
-            _ => None,
-        }
+        use crate::rails::relation_api;
+        let model = relation_api::relation_element_type(receiver_type)?;
+        // The registry does not know the Rails version, so only version-independent methods apply.
+        let method = relation_api::lookup(method_name).filter(|method| method.since == (0, 0))?;
+        Some(method.return_type(
+            || receiver_type.clone(),
+            model,
+            || {
+                let Type::Class(name) = model else {
+                    return Type::Integer;
+                };
+                match self.lookup_method_return_type(name, "id") {
+                    Some(Type::Union(parts)) => Type::from_type_vec(
+                        parts
+                            .into_iter()
+                            .filter(|part| *part != Type::Nil)
+                            .collect(),
+                    ),
+                    Some(ty) if !matches!(ty, Type::Untyped | Type::Nil) => ty,
+                    _ => Type::Integer,
+                }
+            },
+        ))
     }
 
     fn receiver_ivar_reflection_name(method_name: &str) -> Option<&str> {
@@ -12370,7 +12365,7 @@ impl TypeRegistry {
         }
     }
 
-    fn substitute_param_refs_static(ty: &Type, param_types: &[Type]) -> Type {
+    pub(crate) fn substitute_param_refs_static(ty: &Type, param_types: &[Type]) -> Type {
         Self::substitute_param_refs_static_with_keywords(ty, param_types, &HashMap::new())
     }
 

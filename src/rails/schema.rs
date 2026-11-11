@@ -285,23 +285,9 @@ fn parse_create_table(
     let table_name = extract_string_value(&first_arg, parse_result)?;
     let class_name = resolve_model_class_name(root, &table_name);
 
-    let mut columns = vec![
-        ColumnDef {
-            name: "id".to_string(),
-            col_type: Type::Integer,
-            nullable: false,
-        },
-        ColumnDef {
-            name: "created_at".to_string(),
-            col_type: Type::Class(Sym::new("Time")),
-            nullable: false,
-        },
-        ColumnDef {
-            name: "updated_at".to_string(),
-            col_type: Type::Class(Sym::new("Time")),
-            nullable: false,
-        },
-    ];
+    let mut columns: Vec<ColumnDef> = implicit_primary_key(call, parse_result)
+        .into_iter()
+        .collect();
     let mut non_nullable_columns = Vec::new();
 
     if let Some(block_raw) = call.block()
@@ -351,6 +337,27 @@ fn parse_create_table(
         class_name,
         columns,
         associations,
+    })
+}
+
+/// `create_table` adds a bigint `id` unless `id: false`; `id: :uuid` / `primary_key:` change its type / name.
+fn implicit_primary_key(
+    call: &ruby_prism::CallNode<'_>,
+    parse_result: &ParseResult<'_>,
+) -> Option<ColumnDef> {
+    let col_type = match hash_option_node(call, "id", parse_result) {
+        None => Type::Integer,
+        Some(Node::FalseNode { .. }) => return None,
+        Some(node) => extract_string_value(&node, parse_result)
+            .map_or(Type::Integer, |keyword| column_type_to_type(&keyword)),
+    };
+    let name = hash_option_node(call, "primary_key", parse_result)
+        .and_then(|node| extract_string_value(&node, parse_result))
+        .unwrap_or_else(|| "id".to_string());
+    Some(ColumnDef {
+        name,
+        col_type,
+        nullable: false,
     })
 }
 
@@ -573,6 +580,21 @@ fn parse_column_call(
     call: &ruby_prism::CallNode<'_>,
     parse_result: &ParseResult<'_>,
 ) -> Option<Vec<ColumnDef>> {
+    if col_type == "timestamps" {
+        // `t.timestamps` defaults to `null: false` since Rails 5.
+        let nullable = matches!(hash_option_bool(call, "null", parse_result), Some(true));
+        let col_type = column_type_to_type("datetime");
+        return Some(
+            ["created_at", "updated_at"]
+                .into_iter()
+                .map(|name| ColumnDef {
+                    name: name.to_string(),
+                    col_type: col_type.clone(),
+                    nullable,
+                })
+                .collect(),
+        );
+    }
     let args = call.arguments()?;
     let first_arg = args.arguments().iter().next()?;
     let col_name = extract_string_value(&first_arg, parse_result)?;
@@ -791,8 +813,7 @@ fn parse_structure_foreign_key_line(line: &str) -> Option<(String, String)> {
 }
 
 fn infer_association_target_class(root: &Path, current_class: &str, assoc_name: &str) -> String {
-    let known_classes = vec![current_class.to_string()];
-    classify_with_project_known_classes(root, assoc_name, &known_classes)
+    classify_with_project_known_classes(root, assoc_name, &|name| name == current_class)
 }
 
 fn register_table_methods(table: &TableDef, registry: &mut TypeRegistry) {
@@ -1006,10 +1027,7 @@ mod tests {
         assert_eq!(structure_sql_type_to_type("varchar(255)"), Type::String);
         assert_eq!(
             structure_sql_type_to_type("datetime(6)"),
-            Type::Union(vec![
-                Type::Class(Sym::new("DateTime")),
-                Type::Class(Sym::new("ActiveSupport::TimeWithZone")),
-            ])
+            Type::Class(Sym::new("ActiveSupport::TimeWithZone"))
         );
         assert_eq!(structure_sql_type_to_type("double"), Type::Float);
     }
@@ -1021,17 +1039,14 @@ mod tests {
             structure_sql_type_to_type("numeric(10,2)"),
             Type::Class(Sym::new("BigDecimal"))
         );
-        // date maps to Date; timestamp maps to the datetime union.
+        // date maps to Date; timestamp maps to the time-zone-aware datetime type.
         assert_eq!(
             structure_sql_type_to_type("date"),
             Type::Class(Sym::new("Date"))
         );
         assert_eq!(
             structure_sql_type_to_type("timestamp(6) without time zone"),
-            Type::Union(vec![
-                Type::Class(Sym::new("DateTime")),
-                Type::Class(Sym::new("ActiveSupport::TimeWithZone")),
-            ])
+            Type::Class(Sym::new("ActiveSupport::TimeWithZone"))
         );
         // json / jsonb / hstore have no concrete type, so they degrade to Untyped.
         assert_eq!(structure_sql_type_to_type("jsonb"), Type::Untyped);
@@ -1083,6 +1098,59 @@ end
             .expect("scopes column");
         assert!(!scopes.nullable);
         assert_eq!(scopes.col_type, Type::Array(Some(Box::new(Type::String))));
+    }
+
+    #[test]
+    fn create_table_options_shape_the_implicit_primary_key_and_timestamps() {
+        let schema = r#"
+create_table "jobs", id: :uuid do |t|
+  t.timestamps null: true
+end
+create_table "joins", id: false do |t|
+  t.string "name"
+end
+create_table "legacy", primary_key: "code", id: :string do |t|
+  t.timestamps
+end
+"#;
+        let tables = parse_schema(schema, Path::new("/nonexistent"));
+        let columns = |table: &str| -> Vec<(String, Type, bool)> {
+            tables
+                .iter()
+                .find(|def| def.table_name == table)
+                .expect("table")
+                .columns
+                .iter()
+                .map(|column| {
+                    (
+                        column.name.clone(),
+                        column.col_type.clone(),
+                        column.nullable,
+                    )
+                })
+                .collect()
+        };
+        let time = Type::Class(Sym::new("ActiveSupport::TimeWithZone"));
+        assert_eq!(
+            columns("jobs"),
+            vec![
+                ("id".to_string(), Type::String, false),
+                ("created_at".to_string(), time.clone(), true),
+                ("updated_at".to_string(), time.clone(), true),
+            ]
+        );
+        assert_eq!(
+            columns("joins"),
+            vec![("name".to_string(), Type::String, true)]
+        );
+        assert_eq!(
+            columns("legacy"),
+            vec![
+                ("code".to_string(), Type::String, false),
+                ("created_at".to_string(), time.clone(), false),
+                ("updated_at".to_string(), time, false),
+            ]
+        );
     }
 
     #[test]

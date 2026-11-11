@@ -113,6 +113,39 @@ impl Plugin for ActiveRecord {
         synthetic_method_return(cx, receiver_type, method_name)
     }
 
+    // Relation and CollectionProxy have no definition here, so a relation method that
+    // Kernel / Object also define (`load`, `select`) would otherwise resolve to that owner.
+    fn synthetic_method_return_override(
+        &self,
+        cx: &mut PluginCx<'_, '_>,
+        receiver_type: &Type,
+        method_name: &str,
+    ) -> Option<Type> {
+        let class_name = match receiver_type {
+            Type::Generic { base, .. }
+                if crate::rails::relation_api::relation_element_type(receiver_type).is_some() =>
+            {
+                base.as_str()
+            }
+            _ => return None,
+        };
+        let method = crate::rails::relation_api::lookup(method_name)?;
+        if method.refined_by_args || !cx.dsl_enabled(DslLibrary::ActiveRecordPersistence) {
+            return None;
+        }
+        let has_real_definition = |registry: &crate::registry::TypeRegistry| {
+            registry
+                .lookup_method_def(class_name, method_name, false)
+                .is_some_and(|def| !def.synthetic_dsl_source)
+        };
+        if has_real_definition(cx.registry()) || cx.external_rbs().is_some_and(has_real_definition)
+        {
+            return None;
+        }
+        cx.engine
+            .synthetic_active_record_method_return(receiver_type, method_name)
+    }
+
     fn collect_class_body_call(
         &self,
         cx: &mut PluginCx<'_, '_>,
@@ -223,9 +256,6 @@ pub(in crate::inference) fn synthetic_method_return(
 ) -> Option<Type> {
     if !engine.dsl_enabled(DslLibrary::ActiveRecordPersistence) {
         return None;
-    }
-    if let Some(elem_type) = InferenceEngine::active_record_relation_element_type(receiver_type) {
-        return relation_method_return(receiver_type, &elem_type, method_name);
     }
     match receiver_type {
         Type::Class(name) if name.as_str() == "ActiveRecord::Batches::BatchEnumerator" => {
@@ -360,25 +390,6 @@ fn dynamic_finder_return(model_name: &str, method_name: &str) -> Option<Type> {
         return Some(Type::Union(vec![model(), Type::Nil]));
     }
     None
-}
-
-fn relation_method_return(
-    receiver_type: &Type,
-    elem_type: &Type,
-    method_name: &str,
-) -> Option<Type> {
-    match method_name {
-        "update_all" | "delete_all" | "touch_all" | "delete" | "destroy" | "in_order_of_count" => {
-            Some(Type::Integer)
-        }
-        "destroy_all" => Some(Type::Array(Some(Box::new(elem_type.clone())))),
-        "merge!" | "<<" | "push" | "append" | "concat" | "load" | "reset" | "prepend" => {
-            Some(receiver_type.clone())
-        }
-        "insert" | "insert!" | "insert_all" | "insert_all!" | "upsert" | "upsert_all"
-        | "replace" | "scoping" | "explain" | "calculate" | "each_batch" => Some(Type::Untyped),
-        _ => None,
-    }
 }
 
 use super::super::*;
@@ -635,12 +646,17 @@ impl<'a> InferenceEngine<'a> {
                     loc: Some(loc),
                 },
             );
-            for suffix_name in [format!("{assoc_name}_type"), format!("{assoc_name}_id")] {
-                let ret = if suffix_name.ends_with("_type") {
-                    Type::String
-                } else {
-                    Type::Integer
-                };
+            for (suffix_name, base) in [
+                (format!("{assoc_name}_type"), Type::String),
+                (format!("{assoc_name}_id"), Type::Integer),
+            ] {
+                // The schema column decides nullability; without one, `optional:` does.
+                let ret = self
+                    .registry
+                    .schema_column_accessor_type(class_name, &suffix_name)
+                    .unwrap_or_else(|| {
+                        crate::rails::nullable_column_accessor_type(&base, options.optional)
+                    });
                 self.registry.add_method_def(
                     class_name,
                     MethodDef {
@@ -1198,6 +1214,29 @@ impl<'a> InferenceEngine<'a> {
                 },
             );
             let scope_return = self.owner_relation_type_for_dsl(class_name);
+            if self.rails_at_least(6, 0) {
+                // Rails 6.0+ also defines `not_<value>`; kept out of the RBS output like other
+                // generated readers so enum declarations render as before.
+                self.registry.add_method_def_if_missing(
+                    class_name,
+                    MethodDef {
+                        name: Sym::new(format!("not_{method_base}")),
+                        param_infos: Vec::new(),
+                        raw_return_type: scope_return.clone(),
+                        sorbet_modifier_comments: Vec::new(),
+                        rbs_annotated: true,
+                        rbs_inline_annotated: false,
+                        sig_annotated: false,
+                        attr_ivar: None,
+                        is_singleton: true,
+                        rbs_file_source: true,
+                        synthetic_dsl_source: true,
+                        rbs_method_types: Default::default(),
+                        extra_overloads: Vec::new(),
+                        loc: Some(loc),
+                    },
+                );
+            }
             self.registry.add_method_def(
                 class_name,
                 MethodDef {
@@ -1519,6 +1558,8 @@ impl<'a> InferenceEngine<'a> {
         for attr_name in Self::extract_symbol_args(call_node) {
             self.register_untyped_attribute_accessors(class_name, &attr_name, loc);
         }
+        // The normalizer lambda is the method body: its parameter is `value`.
+        let normalized_type = self.normalizer_result_type(class_name, call_node, parse_result);
         self.registry.add_method_def_if_missing(
             class_name,
             MethodDef {
@@ -1532,12 +1573,12 @@ impl<'a> InferenceEngine<'a> {
                     ParamInfo {
                         name: "value".to_string(),
                         kind: ParamKind::Required,
-                        default_type: Some(Type::Untyped),
+                        default_type: None,
                     },
                 ],
-                raw_return_type: Type::ParamRef(1),
+                raw_return_type: normalized_type,
                 sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: true,
+                rbs_annotated: false,
                 rbs_inline_annotated: false,
                 sig_annotated: false,
                 attr_ivar: None,
@@ -1552,6 +1593,28 @@ impl<'a> InferenceEngine<'a> {
         if let Some(start) = synthetic_start {
             self.registry
                 .mark_methods_synthetic_dsl_from(class_name, start);
+        }
+    }
+
+    /// `normalize_value_for(name, value)` returns what the `with:` normalizer makes of `value`.
+    fn normalizer_result_type(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+    ) -> Type {
+        let Some(normalizer) = Self::hash_option_value(call_node, "with", parse_result) else {
+            return Type::Untyped;
+        };
+        match self.infer_node_type(class_name, &normalizer, parse_result, &Scope::default()) {
+            Type::Proc {
+                return_type,
+                param_count,
+                ..
+            } if param_count >= 1 => {
+                TypeRegistry::substitute_param_refs_static(&return_type, &[Type::ParamRef(1)])
+            }
+            _ => Type::Untyped,
         }
     }
 

@@ -287,3 +287,44 @@ class Post < ApplicationRecord
   def replies=: (Array[Comment] replies) -> ActiveRecord::Associations::CollectionProxy[Comment]
 end
 ```
+
+## has_many in a namespaced model resolves the sibling model
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: app/models/admin/entry.rb
+
+```ruby
+module Admin
+  class Entry < ApplicationRecord
+  end
+end
+```
+
+### file: app/models/admin/report.rb
+
+```ruby
+module Admin
+  class Report < ApplicationRecord
+    has_many :entries
+  end
+end
+```
+
+```ruby
+class ReportEntries
+  def first_entry = Admin::Report.find(1).entries.first
+end
+```
+
+### result
+
+```rbs
+class ReportEntries
+  def first_entry: -> Admin::Entry?
+end
+```
