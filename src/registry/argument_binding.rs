@@ -3,7 +3,14 @@
 
 use std::collections::HashMap;
 
-use crate::types::{ParamInfo, ParamKind, ProcKind, RecordField, RecordKey, Type};
+use crate::registry::ParamInfo;
+use crate::types::{ParamKind, RecordField, RecordKey, Type};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcKind {
+    Proc,
+    Lambda,
+}
 
 /// How a callable treats its arguments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,49 +141,60 @@ pub(crate) fn bind_positional_arguments_with_open_splat(
     }
 }
 
-/// Keywords passed to a callable without keyword parameters arrive as a trailing hash.
+/// Keywords passed to a callable without keyword parameters arrive as one trailing hash.
 pub(crate) fn keyword_hash_argument<'a>(
     keywords: impl Iterator<Item = (&'a str, &'a Type)>,
 ) -> Type {
-    let mut fields: Vec<RecordField> = keywords
-        .map(|(name, ty)| RecordField {
+    let mut fields: Vec<RecordField> = Vec::new();
+    let mut unknown_names = false;
+    for (name, ty) in keywords {
+        // `*` stands for keywords whose names are unknown.
+        unknown_names |= name == "*";
+        fields.push(RecordField {
             key: RecordKey::Symbol(name.to_string()),
             value: ty.clone(),
             optional: false,
-        })
-        .collect();
+        });
+    }
+    if unknown_names {
+        let values = fields.into_iter().map(|field| field.value).collect();
+        return Type::Hash(
+            Some(Box::new(Type::Symbol)),
+            Some(Box::new(Type::from_type_vec_preserve_untyped(values))),
+        );
+    }
     fields.sort_by(|a, b| a.key.cmp(&b.key));
     Type::Record(fields)
 }
 
-/// A proc spreads a lone array argument unless it takes exactly one plain parameter or only a rest.
+/// Ruby spreads a lone array over a proc's parameters only when it has more than one positional
+/// slot besides the rest, or a rest next to another positional (`|a, *b|`, `|a,|`).
 fn proc_auto_splats(params: &[ParamInfo]) -> bool {
-    let single_plain = matches!(params, [param] if param.kind == ParamKind::Required);
-    let takes_lead = params.iter().any(|param| {
-        matches!(
-            param.kind,
-            ParamKind::Required
-                | ParamKind::Optional
-                | ParamKind::KeywordRequired
-                | ParamKind::KeywordOptional
-                | ParamKind::DoubleRest
-        )
-    });
-    takes_lead && !single_plain
+    let mut slots = 0;
+    let mut has_rest = false;
+    for param in params {
+        match param.kind {
+            ParamKind::Required | ParamKind::Optional => slots += 1,
+            ParamKind::Rest => has_rest = true,
+            _ => {}
+        }
+    }
+    slots > 1 || (has_rest && slots > 0)
 }
 
-fn splat_lone_array(params: &[ParamInfo], arg: &Type) -> Option<Vec<Type>> {
-    match arg {
-        Type::Tuple(elems) => Some(elems.clone()),
-        Type::Array(Some(elem)) => {
-            let slots = params
-                .iter()
-                .filter(|param| matches!(param.kind, ParamKind::Required | ParamKind::Optional))
-                .count();
-            Some(vec![elem.as_ref().clone(); slots])
-        }
-        _ => None,
-    }
+/// An array of unknown length gives each slot its element or `nil`, and the rest an array.
+fn bind_spread_array(params: &[&ParamInfo], elem: &Type) -> Vec<Type> {
+    params
+        .iter()
+        .map(|param| match param.kind {
+            ParamKind::Rest => Type::Array(Some(Box::new(elem.clone()))),
+            ParamKind::Optional => {
+                let fallback = param.default_type.clone().unwrap_or(Type::Nil);
+                elem.clone().union_with(fallback)
+            }
+            _ => elem.clone().union_with(Type::Nil),
+        })
+        .collect()
 }
 
 pub(crate) fn bind_arguments(
@@ -192,34 +210,41 @@ pub(crate) fn bind_arguments(
             ty
         }
     };
-    let splatted = match positional {
-        [arg] if rules.is_proc() && keywords.is_empty() && proc_auto_splats(params) => {
-            splat_lone_array(params, arg)
-        }
-        _ => None,
-    };
-    let mut args = splatted.unwrap_or_else(|| positional.to_vec());
     let positional_params: Vec<&ParamInfo> = params
         .iter()
         .filter(|param| is_positional(param.kind))
         .collect();
-    if !keywords.is_empty() && !accepts_keywords(params) && args.len() < positional_params.len() {
-        args.push(keyword_hash_argument(
-            keywords.iter().map(|(name, ty)| (name.as_str(), ty)),
-        ));
-    }
-
-    let positional = bind_positional_arguments(&positional_params, &args)
-        .into_iter()
-        .zip(&positional_params)
-        .map(|(bound, param)| match param.kind {
-            ParamKind::Rest if matches!(rules, ArgumentRules::Literal(_)) => Type::Tuple(bound),
-            _ if !bound.is_empty() => finish(Type::from_type_vec_preserve_untyped(bound)),
-            ParamKind::Optional => param.default_type.clone().map_or(Type::Untyped, finish),
-            ParamKind::Required if rules.is_proc() => Type::Nil,
-            _ => Type::Untyped,
-        })
-        .collect();
+    let spread = match positional {
+        [arg] if rules.is_proc() && keywords.is_empty() && proc_auto_splats(params) => Some(arg),
+        _ => None,
+    };
+    let positional = match spread {
+        Some(Type::Array(Some(elem))) => bind_spread_array(&positional_params, elem),
+        _ => {
+            let mut args = match spread {
+                Some(Type::Tuple(elems)) => elems.clone(),
+                _ => positional.to_vec(),
+            };
+            if !keywords.is_empty() && !accepts_keywords(params) {
+                args.push(keyword_hash_argument(
+                    keywords.iter().map(|(name, ty)| (name.as_str(), ty)),
+                ));
+            }
+            bind_positional_arguments(&positional_params, &args)
+                .into_iter()
+                .zip(&positional_params)
+                .map(|(bound, param)| match param.kind {
+                    ParamKind::Rest if matches!(rules, ArgumentRules::Literal(_)) => {
+                        Type::Tuple(bound)
+                    }
+                    _ if !bound.is_empty() => finish(Type::from_type_vec_preserve_untyped(bound)),
+                    ParamKind::Optional => param.default_type.clone().map_or(Type::Untyped, finish),
+                    ParamKind::Required if rules.is_proc() => Type::Nil,
+                    _ => Type::Untyped,
+                })
+                .collect()
+        }
+    };
 
     let mut bound_keywords: HashMap<String, Type> = params
         .iter()
@@ -245,8 +270,7 @@ pub(crate) fn bind_arguments(
         let remaining = keywords
             .iter()
             .filter(|(name, _)| !bound_keywords.contains_key(*name));
-        // `*` stands for keywords whose names are unknown.
-        if matches!(rules, ArgumentRules::Literal(_)) && !keywords.contains_key("*") {
+        if matches!(rules, ArgumentRules::Literal(_)) {
             let shape = keyword_hash_argument(remaining.map(|(name, ty)| (name.as_str(), ty)));
             bound_keywords.insert(rest.name.clone(), shape);
             return BoundArguments {
@@ -419,6 +443,47 @@ mod tests {
     }
 
     #[test]
+    fn procs_spread_only_with_several_positional_slots() {
+        let pair = Type::Tuple(vec![int(1), int(2)]);
+        let spreads = |params: &[ParamInfo]| bind(params, std::slice::from_ref(&pair), PROC);
+        let a = param("a", ParamKind::Required, None);
+        let rest = param("", ParamKind::Rest, None);
+        for params in [
+            vec![a.clone(), param("b", ParamKind::Block, None)],
+            vec![
+                a.clone(),
+                param("k", ParamKind::KeywordOptional, Some(int(1))),
+            ],
+            vec![param("a", ParamKind::Optional, Some(int(5)))],
+        ] {
+            assert_eq!(spreads(&params).positional[0], pair, "{params:?}");
+        }
+        assert_eq!(
+            spreads(std::slice::from_ref(&rest)).positional,
+            vec![Type::Tuple(vec![pair.clone()])]
+        );
+        assert_eq!(spreads(&[a, rest]).positional[0], int(1));
+    }
+
+    #[test]
+    fn spreading_an_array_of_unknown_length_may_leave_slots_nil() {
+        let params = [
+            param("a", ParamKind::Required, None),
+            param("b", ParamKind::Optional, Some(Type::String)),
+            param("rest", ParamKind::Rest, None),
+        ];
+        let array = Type::Array(Some(Box::new(Type::Integer)));
+        assert_eq!(
+            bind(&params, std::slice::from_ref(&array), PROC).positional,
+            vec![
+                Type::Integer.union_with(Type::Nil),
+                Type::Integer.union_with(Type::String),
+                array,
+            ]
+        );
+    }
+
+    #[test]
     fn open_splat_without_a_valid_count_binds_one_element() {
         let params = [param("a", ParamKind::Required, None)];
         let params: Vec<&ParamInfo> = params.iter().collect();
@@ -428,5 +493,19 @@ mod tests {
             2,
         );
         assert_eq!(bound, vec![vec![Type::Symbol]]);
+    }
+
+    #[test]
+    fn rest_receives_keywords_as_a_hash_without_keyword_parameters() {
+        let params = [param("rest", ParamKind::Rest, None)];
+        let keywords = HashMap::from([("k".to_string(), int(2))]);
+        let bound = bind_arguments(&params, &[int(1)], &keywords, LAMBDA);
+        assert_eq!(
+            bound.positional,
+            vec![Type::Tuple(vec![
+                int(1),
+                keyword_hash_argument([("k", &int(2))].into_iter())
+            ])]
+        );
     }
 }

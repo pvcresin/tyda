@@ -331,7 +331,12 @@ use crate::types::{
     SplatToA, Type,
 };
 
-pub use crate::types::ParamInfo;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamInfo {
+    pub name: String,
+    pub kind: ParamKind,
+    pub default_type: Option<Type>,
+}
 
 /// How a splatted value answers `to_a`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3335,9 +3340,7 @@ impl TypeRegistry {
         param_infos: &[ParamInfo],
     ) -> Vec<Type> {
         let mut arg_types = call_site.arg_types.clone();
-        if call_site.keyword_arg_types.is_empty()
-            || argument_binding::accepts_keywords(param_infos)
-            || arg_types.len() >= Self::positional_param_count(param_infos)
+        if call_site.keyword_arg_types.is_empty() || argument_binding::accepts_keywords(param_infos)
         {
             return arg_types;
         }
@@ -7950,7 +7953,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => {
                 let (ret, resolved, unresolved) =
                     self.resolve_scoped_refs_in_type(scope_class, return_type);
@@ -7959,7 +7962,7 @@ impl TypeRegistry {
                 Type::Proc {
                     return_type: Box::new(ret),
                     param_count: *param_count,
-                    signature: signature.clone(),
+                    literal: *literal,
                 }
             }
             Type::DeferredSafeNavigation(receiver, result) => {
@@ -8199,11 +8202,11 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_subclass_refs_in_type(return_type)),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_subclass_refs_in_type(subject);
@@ -9024,7 +9027,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_global_refs(
                     context_class,
@@ -9035,7 +9038,7 @@ impl TypeRegistry {
                     budget,
                 )),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_global_refs(
@@ -9289,11 +9292,11 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_param_refs_from_resolved(return_type, params)),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 let resolved_inner = self.resolve_param_refs_from_resolved(inner, params);
@@ -9920,7 +9923,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_deferred_refs_depth(
                     class_name,
@@ -9931,7 +9934,7 @@ impl TypeRegistry {
                     visiting,
                 )),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             Type::Tuple(elems) => Type::Tuple(
                 elems
@@ -10628,7 +10631,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_call_site_type_from_caller_context(
                     call_site,
@@ -10636,7 +10639,7 @@ impl TypeRegistry {
                     visiting,
                 )),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
@@ -12639,11 +12642,11 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(recur(return_type)),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             // don't eagerly resolve while a param marker remains (`_ => Untyped` would destroy the marker -> leave it for call-site substitution).
             Type::PatternIndexRef(subject, index) => {
@@ -14075,7 +14078,7 @@ mod tests {
                 Type::Proc {
                     return_type: Box::new(Type::MethodReturnRef("Box".into(), "value".into())),
                     param_count: 0,
-                    signature: None,
+                    literal: None,
                 },
             ),
         );
@@ -14114,7 +14117,7 @@ mod tests {
             Type::Proc {
                 return_type: Box::new(Type::Integer),
                 param_count: 0,
-                signature: None,
+                literal: None,
             }
         );
         let hash = registry

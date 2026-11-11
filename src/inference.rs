@@ -18,7 +18,7 @@ use crate::rbs::inline::{
     parse_rbs_shorthand, parse_rbs_shorthand_with_aliases,
 };
 use crate::rbs::stdlib_loader::LazyRbsLoader;
-use crate::registry::argument_binding::{self, ArgumentRules};
+use crate::registry::argument_binding::{self, ArgumentRules, ProcKind};
 use crate::registry::{
     BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, ConstantAlias, KeywordArgTypes,
     LiteralBranchedDef, MethodBlockMeta, MethodBodySummary, MethodDef, MixinKind, ParamInfo,
@@ -33,8 +33,8 @@ use crate::sorbet::comments::{
 };
 use crate::sorbet::rbi::LazyRbiLoader;
 use crate::types::{
-    CapturedLocalWrites, HoverBlockSig, MethodSig, NamespaceAliasKind, Param, ParamKind, ProcKind,
-    ProcSignature, RecordField, RecordKey, SharedPath, SourceLocation, SplatElements, Type,
+    HoverBlockSig, MethodSig, NamespaceAliasKind, Param, ParamKind, ProcLiteralId, RecordField,
+    RecordKey, SharedPath, SourceLocation, SplatElements, Type,
 };
 
 mod array_element_flow;
@@ -1126,6 +1126,10 @@ pub struct InferenceEngine<'a> {
     /// Source of each `===` defined in this file, reparsed when a call site asks how it narrows.
     source_case_equality_defs: HashMap<(String, bool), Arc<str>>,
     literal_block_flows: LiteralBlockFlowMemo,
+    // Lives as long as this per-file engine; re-inferring a literal replaces its entry.
+    proc_literals: FxHashMap<ProcLiteralId, Arc<ProcSignature>>,
+    proc_literal_nonce: std::num::NonZeroU32,
+    pending_proc_call_writes: Option<PendingProcCallWrites>,
     in_source_case_equality_guard: bool,
     /// Full analysis re-infers bodies, so first-pass ParamRef call sites are skipped.
     /// Compact/CLI snapshots have no re-infer and must keep those sites.
@@ -1720,7 +1724,37 @@ enum SuperCallArguments {
     },
 }
 
+fn next_proc_literal_nonce() -> std::num::NonZeroU32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::num::NonZeroU32::new(nonce).unwrap_or(std::num::NonZeroU32::MIN)
+}
+
+/// A source proc literal's parameters, kept beside its `Type::Proc` so equal types still dedupe.
+#[derive(Debug)]
+struct ProcSignature {
+    kind: ProcKind,
+    params: Box<[ParamInfo]>,
+    captured_writes: Option<CapturedLocalWrites>,
+}
+
+/// Outer locals a proc literal's body assigns. The names only mean the same locals inside the
+/// method that defined the literal, so a call applies them there alone.
+#[derive(Debug)]
+struct CapturedLocalWrites {
+    class_name: Sym,
+    method_name: Option<Sym>,
+    writes: Box<[(String, Type)]>,
+}
+
+/// Captured writes bound by the latest proc call, applied once its statement finishes.
+struct PendingProcCallWrites {
+    call_location: (usize, usize),
+    writes: Vec<(String, Type)>,
+}
+
 struct ProcLiteral<'src> {
+    start: usize,
     params: Option<Node<'src>>,
     body: Option<Node<'src>>,
     kind: ProcKind,
@@ -2567,6 +2601,9 @@ impl<'a> InferenceEngine<'a> {
             source_base_case_equality_override: false,
             source_case_equality_defs: HashMap::new(),
             literal_block_flows: LiteralBlockFlowMemo::default(),
+            proc_literals: FxHashMap::default(),
+            proc_literal_nonce: next_proc_literal_nonce(),
+            pending_proc_call_writes: None,
             in_source_case_equality_guard: false,
             defer_unresolved_body_call_sites: false,
             track_deferred_block_receiver_bodies: false,
@@ -2656,6 +2693,9 @@ impl<'a> InferenceEngine<'a> {
             source_base_case_equality_override: false,
             source_case_equality_defs: HashMap::new(),
             literal_block_flows: LiteralBlockFlowMemo::default(),
+            proc_literals: FxHashMap::default(),
+            proc_literal_nonce: next_proc_literal_nonce(),
+            pending_proc_call_writes: None,
             in_source_case_equality_guard: false,
             defer_unresolved_body_call_sites: false,
             track_deferred_block_receiver_bodies: false,
@@ -18386,7 +18426,7 @@ impl<'a> InferenceEngine<'a> {
                             Type::Proc {
                                 return_type: Box::new(Type::BlockReturnRef),
                                 param_count: 0,
-                                signature: None,
+                                literal: None,
                             },
                         );
                         scope.current_block_param_name = Some(pi.name.clone());
@@ -20477,6 +20517,18 @@ impl<'a> InferenceEngine<'a> {
                     scope.set(&names[names.len() - 1], Type::ParamRef(positional_idx));
                     positional_idx += 1;
                 }
+            } else if params
+                .rest()
+                .is_some_and(|rest| matches!(rest, Node::ImplicitRestNode { .. }))
+            {
+                // A block's trailing comma (`|a,|`) drops extra arguments like an anonymous rest.
+                names.push(String::new());
+                infos.push(ParamInfo {
+                    name: String::new(),
+                    kind: ParamKind::Rest,
+                    default_type: None,
+                });
+                positional_idx += 1;
             }
             for param in params.posts().iter() {
                 if let Node::RequiredParameterNode { .. } = &param {
@@ -22150,7 +22202,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
-                self.apply_proc_call_captured_writes(class_name, &call_node, parse_result, scope);
+                self.apply_proc_call_captured_writes(&call_node, scope);
                 return ty;
             }
         }
@@ -23632,14 +23684,14 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(Self::substitute_block_return_ref(
                     *return_type,
                     block_return_type,
                 )),
                 param_count,
-                signature,
+                literal,
             },
             other => other,
         }
@@ -25577,12 +25629,7 @@ impl<'a> InferenceEngine<'a> {
                         parse_result,
                         scope,
                     );
-                    self.apply_proc_call_captured_writes(
-                        class_name,
-                        &call_node,
-                        parse_result,
-                        scope,
-                    );
+                    self.apply_proc_call_captured_writes(&call_node, scope);
                     self.apply_block_dependent_enumerator_receiver_side_effect(
                         class_name,
                         &call_node,
@@ -26645,7 +26692,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
-                self.apply_proc_call_captured_writes(class_name, &call_node, parse_result, scope);
+                self.apply_proc_call_captured_writes(&call_node, scope);
                 self.apply_block_dependent_enumerator_receiver_side_effect(
                     class_name,
                     &call_node,
@@ -29416,6 +29463,7 @@ impl<'a> InferenceEngine<'a> {
                             break 'no_recv self.infer_proc_literal_type(
                                 class_name,
                                 ProcLiteral {
+                                    start: call_node.location().start_offset(),
                                     params: block_node.parameters(),
                                     body: block_node.body(),
                                     kind,
@@ -30604,6 +30652,7 @@ impl<'a> InferenceEngine<'a> {
                                 Some(self.infer_proc_literal_type(
                                     class_name,
                                     ProcLiteral {
+                                        start: call_node.location().start_offset(),
                                         params: block.parameters(),
                                         body: block.body(),
                                         kind: ProcKind::Proc,
@@ -31095,7 +31144,7 @@ impl<'a> InferenceEngine<'a> {
                         if let Type::Proc {
                             return_type,
                             param_count,
-                            signature,
+                            literal,
                         } = &safe_nav_receiver_type
                         {
                             if method_name == "to_proc" && call_node.arguments().is_none() {
@@ -31121,7 +31170,7 @@ impl<'a> InferenceEngine<'a> {
                                         &bound_receiver,
                                     )),
                                     param_count: param_count.saturating_sub(1),
-                                    signature: None,
+                                    literal: None,
                                 });
                             }
                             if method_name == "bind_call" {
@@ -31183,12 +31232,14 @@ impl<'a> InferenceEngine<'a> {
                                 {
                                     break 'recv wrap(result);
                                 }
+                                let signature =
+                                    literal.and_then(|id| self.proc_literals.get(&id)).cloned();
                                 let result = if let Some(signature) = signature {
                                     self.call_proc_literal(
                                         class_name,
                                         &call_node,
                                         return_type,
-                                        signature,
+                                        &signature,
                                         parse_result,
                                         scope,
                                     )
@@ -35293,6 +35344,7 @@ impl<'a> InferenceEngine<'a> {
         self.infer_proc_literal_type(
             class_name,
             ProcLiteral {
+                start: node.location().start_offset(),
                 params: lambda_node.parameters(),
                 body: lambda_node.body(),
                 kind: ProcKind::Lambda,
@@ -35344,22 +35396,21 @@ impl<'a> InferenceEngine<'a> {
         } else {
             value
         };
+        let param_count = params
+            .iter()
+            .filter(|param| argument_binding::is_positional(param.kind))
+            .count();
+        let id = ProcLiteralId::new(self.proc_literal_nonce, literal.start);
+        let signature = ProcSignature {
+            kind: literal.kind,
+            captured_writes: Self::captured_local_writes(class_name, &literal, scope, &block_scope),
+            params: params.into(),
+        };
+        self.proc_literals.insert(id, Arc::new(signature));
         Type::Proc {
             return_type: Box::new(return_type),
-            param_count: params
-                .iter()
-                .filter(|param| argument_binding::is_positional(param.kind))
-                .count(),
-            signature: Some(Arc::new(ProcSignature {
-                kind: literal.kind,
-                captured_writes: Self::captured_local_writes(
-                    class_name,
-                    &literal,
-                    scope,
-                    &block_scope,
-                ),
-                params: params.into(),
-            })),
+            param_count,
+            literal: Some(id),
         }
     }
 
@@ -35368,7 +35419,7 @@ impl<'a> InferenceEngine<'a> {
         literal: &ProcLiteral<'_>,
         outer: &Scope,
         block_scope: &Scope,
-    ) -> Option<Box<CapturedLocalWrites>> {
+    ) -> Option<CapturedLocalWrites> {
         let body = literal.body.as_ref()?;
         if outer.locals.is_empty() {
             return None;
@@ -35389,71 +35440,30 @@ impl<'a> InferenceEngine<'a> {
             return None;
         }
         writes.sort_by(|a, b| a.0.cmp(&b.0));
-        Some(Box::new(CapturedLocalWrites {
+        Some(CapturedLocalWrites {
             class_name: Sym::new(class_name),
             method_name: outer.method_name.as_deref().map(Sym::new),
             writes: writes.into(),
-        }))
+        })
     }
 
-    /// Calling a proc held in a local runs its body, so the outer locals it assigns may change.
+    /// A proc call runs the literal's body, so the outer locals it assigns may change.
     fn apply_proc_call_captured_writes(
         &mut self,
-        class_name: &str,
         call_node: &ruby_prism::CallNode<'_>,
-        parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
-        if !matches!(
-            call_node.name().as_slice(),
-            b"call" | b"[]" | b"yield" | b"==="
-        ) {
+        let Some(pending) = self.pending_proc_call_writes.take() else {
+            return;
+        };
+        let location = call_node.location();
+        if pending.call_location != (location.start_offset(), location.end_offset()) {
             return;
         }
-        let Some(receiver) = call_node
-            .receiver()
-            .and_then(|receiver| receiver.as_local_variable_read_node())
-        else {
-            return;
-        };
-        let receiver_name = String::from_utf8_lossy(receiver.name().as_slice());
-        let Some(Type::Proc {
-            signature: Some(signature),
-            ..
-        }) = scope.get(&receiver_name)
-        else {
-            return;
-        };
-        let Some(captured) = signature.captured_writes.as_deref() else {
-            return;
-        };
-        if captured.class_name.as_str() != class_name
-            || captured.method_name.as_deref() != scope.method_name.as_deref()
-        {
-            return;
-        }
-        let signature = Arc::clone(signature);
-        let (positional, keywords) =
-            self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
-        let bound = argument_binding::bind_arguments(
-            &signature.params,
-            &positional,
-            &keywords,
-            ArgumentRules::Literal(signature.kind),
-        );
-        for (name, written) in signature
-            .captured_writes
-            .iter()
-            .flat_map(|captured| captured.writes.iter())
-        {
-            let written = Self::substitute_param_refs_with_keywords(
-                written,
-                &bound.positional,
-                &bound.keywords,
-            );
-            if let Some(current) = scope.get(name) {
+        for (name, written) in pending.writes {
+            if let Some(current) = scope.get(&name) {
                 let merged = current.clone().union_with(written);
-                scope.set(name, merged);
+                scope.set(&name, merged);
             }
         }
     }
@@ -35475,6 +35485,27 @@ impl<'a> InferenceEngine<'a> {
             &keywords,
             ArgumentRules::Literal(signature.kind),
         );
+        if let Some(captured) = &signature.captured_writes
+            && captured.class_name.as_str() == class_name
+            && captured.method_name.as_deref() == scope.method_name.as_deref()
+        {
+            let location = call_node.location();
+            self.pending_proc_call_writes = Some(PendingProcCallWrites {
+                call_location: (location.start_offset(), location.end_offset()),
+                writes: captured
+                    .writes
+                    .iter()
+                    .map(|(name, written)| {
+                        let written = Self::substitute_param_refs_with_keywords(
+                            written,
+                            &bound.positional,
+                            &bound.keywords,
+                        );
+                        (name.clone(), written)
+                    })
+                    .collect(),
+            });
+        }
         let mut result = Self::substitute_param_refs_with_keywords(
             return_type,
             &bound.positional,
@@ -35555,7 +35586,7 @@ impl<'a> InferenceEngine<'a> {
                             Type::Proc {
                                 return_type: Box::new(Type::BlockReturnRef),
                                 param_count: 0,
-                                signature: None,
+                                literal: None,
                             },
                         ),
                         _ => {}
@@ -46347,7 +46378,7 @@ impl<'a> InferenceEngine<'a> {
                 Type::Proc {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_function_type_param_count(&method_type.function_type),
-                    signature: None,
+                    literal: None,
                 }
             }
             _ => convert_rbs_type(rbs_ty),
@@ -46453,7 +46484,7 @@ impl<'a> InferenceEngine<'a> {
                 Type::Proc {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_function_type_param_count(&method_type.function_type),
-                    signature: None,
+                    literal: None,
                 }
             }
             _ => Self::substitute_rbs_type_vars(rbs_ty, vars),
@@ -50000,7 +50031,7 @@ impl<'a> InferenceEngine<'a> {
             return Some(Type::Proc {
                 return_type: Box::new(return_type),
                 param_count,
-                signature: None,
+                literal: None,
             });
         }
 
@@ -50042,7 +50073,7 @@ impl<'a> InferenceEngine<'a> {
                 return Some(Type::Proc {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_method_type_positional_param_count(method_type),
-                    signature: None,
+                    literal: None,
                 });
             }
         }
@@ -50053,7 +50084,7 @@ impl<'a> InferenceEngine<'a> {
                 Sym::new(target_method),
             )),
             param_count: 1,
-            signature: None,
+            literal: None,
         })
     }
 
@@ -50116,11 +50147,11 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(Self::unbound_method_return_type(return_type)),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             _ => ty.clone(),
         }
@@ -50210,14 +50241,14 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(Self::bind_first_positional_param_ref(
                     return_type,
                     bound_receiver,
                 )),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             _ => ty.clone(),
         }
@@ -50244,7 +50275,7 @@ impl<'a> InferenceEngine<'a> {
             return Some(Type::Proc {
                 return_type: Box::new(Self::unbound_method_return_type(&return_type)),
                 param_count: param_count.saturating_add(1),
-                signature: None,
+                literal: None,
             });
         }
 
@@ -50278,7 +50309,7 @@ impl<'a> InferenceEngine<'a> {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_method_type_positional_param_count(method_type)
                         .saturating_add(1),
-                    signature: None,
+                    literal: None,
                 });
             }
         }
@@ -50289,7 +50320,7 @@ impl<'a> InferenceEngine<'a> {
                 Sym::new(target_method),
             )),
             param_count: 1,
-            signature: None,
+            literal: None,
         })
     }
 
@@ -55909,7 +55940,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_receiver_method_refs_depth(
                     return_type,
@@ -55919,7 +55950,7 @@ impl<'a> InferenceEngine<'a> {
                     preserve_untyped,
                 )),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_receiver_method_refs_depth(
@@ -56188,7 +56219,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_receiver_method_refs_for_destructuring_depth(
                     return_type,
@@ -56197,7 +56228,7 @@ impl<'a> InferenceEngine<'a> {
                     visiting,
                 )),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_receiver_method_refs_for_destructuring_depth(
@@ -63098,7 +63129,7 @@ impl<'a> InferenceEngine<'a> {
                             Type::Proc {
                                 return_type: Box::new(Type::BlockReturnRef),
                                 param_count: 0,
-                                signature: None,
+                                literal: None,
                             },
                         );
                         scope.current_block_param_name = Some(pi.name.clone());
@@ -63494,6 +63525,43 @@ mod tests {
         assert_eq!(
             engine.static_case_equality_result(&target, Some(&subject)),
             (Some(false), true),
+        );
+    }
+
+    #[test]
+    fn re_inferring_proc_literals_does_not_grow_the_signature_table() {
+        let source = "first = ->(a, b = 1) { b }\nsecond = proc { |x| x }\nfirst.call(1)\n";
+        let parse_result = ruby_prism::parse(source.as_bytes());
+        let program = parse_result.node().as_program_node().expect("program");
+        let mut engine = InferenceEngine::new();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let mut scope = Scope::default();
+            for node in program.statements().body().iter() {
+                let ty = engine.infer_node_type("Object", &node, &parse_result, &scope);
+                if let Type::Proc {
+                    literal: Some(id), ..
+                } = &ty
+                {
+                    ids.push(*id);
+                }
+                engine.process_statement("Object", &node, &parse_result, &mut scope);
+            }
+            assert_eq!(engine.proc_literals.len(), 2);
+        }
+        assert!(!ids.is_empty());
+        let mut other = InferenceEngine::new();
+        let first = program.statements().body().iter().next().expect("first");
+        let Type::Proc {
+            literal: Some(other_id),
+            ..
+        } = other.infer_node_type("Object", &first, &parse_result, &Scope::default())
+        else {
+            panic!("expected a proc literal");
+        };
+        assert!(
+            !ids.contains(&other_id),
+            "ids from another analysis must not match"
         );
     }
 

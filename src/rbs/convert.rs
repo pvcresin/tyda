@@ -141,7 +141,7 @@ pub(crate) fn convert_rbs_type(rbs_ty: &rbs_ir::RbsType) -> Type {
             Type::Proc {
                 return_type: Box::new(return_type),
                 param_count,
-                signature: None,
+                literal: None,
             }
         }
         rbs_ir::RbsType::Variable(_) => Type::Untyped,
