@@ -713,6 +713,98 @@ class ItemPositions
 end
 ```
 
+## Calculations on a grouped relation return a hash
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "items", force: :cascade do |t|
+    t.integer "position", null: false
+    t.string "kind", null: false
+  end
+end
+```
+
+### file: app/models/item.rb
+
+```ruby
+class Item < ApplicationRecord
+end
+```
+
+```ruby
+class ItemStats
+  def last_positions = Item.where(id: 1).group(:kind).maximum(:position)
+  def counts = Item.group(:kind).count
+end
+```
+
+### result
+
+```rbs
+class ItemStats
+  def last_positions: -> Hash[untyped, untyped]
+  def counts: -> Hash[untyped, Integer]
+end
+```
+
+## Query methods called on a subclass return the subclass
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "items", force: :cascade do |t|
+    t.string "name"
+    t.string "type"
+  end
+end
+```
+
+### file: app/models/item.rb
+
+```ruby
+class Item < ApplicationRecord
+  scope :named, -> { where.not(name: nil) }
+end
+```
+
+### file: app/models/special_item.rb
+
+```ruby
+class SpecialItem < Item
+end
+```
+
+```ruby
+class SpecialItemFinder
+  def by_where = SpecialItem.where(name: "x").first
+  def by_scope = SpecialItem.named.first
+end
+```
+
+### result
+
+```rbs
+class SpecialItemFinder
+  def by_where: -> SpecialItem?
+  def by_scope: -> SpecialItem?
+end
+```
+
 ## unscoped without a block returns a relation
 
 ```yaml

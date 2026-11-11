@@ -122,6 +122,9 @@ impl Plugin for ActiveRecord {
         method_name: &str,
     ) -> Option<Type> {
         use crate::rails::relation_api;
+        if let Type::Singleton(class_name) = receiver_type {
+            return inherited_model_class_method_return(cx, class_name.as_str(), method_name);
+        }
         let Type::Generic { base, .. } = receiver_type else {
             return None;
         };
@@ -280,6 +283,22 @@ fn batch_enumerator_method_return(method_name: &str) -> Option<Type> {
     }
 }
 
+/// A query method or scope generated on a parent model returns records of the class it is
+/// called on (`MavenPackage.where(...)` is `Relation[MavenPackage]`, not `Relation[Package]`).
+fn inherited_model_class_method_return(
+    cx: &mut PluginCx<'_, '_>,
+    class_name: &str,
+    method_name: &str,
+) -> Option<Type> {
+    if !cx.dsl_enabled(DslLibrary::ActiveRecordRelations) {
+        return None;
+    }
+    cx.engine
+        .ensure_class_available_with_ancestors(class_name, 0);
+    cx.registry()
+        .inherited_model_singleton_return(class_name, method_name)
+}
+
 fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
     let changes_hash = || Type::Hash(Some(Box::new(Type::String)), Some(Box::new(Type::Untyped)));
     match method_name {
@@ -297,9 +316,8 @@ fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Typ
         "destroy" | "destroy!" | "delete" | "reload" | "lock!" | "increment" | "decrement"
         | "toggle" | "tap_reload" => Some(receiver_type.clone()),
         "assign_attributes" | "attributes=" => Some(Type::Nil),
-        "attributes" | "saved_changes" | "previous_changes" | "changes" | "changes_to_save" => {
-            Some(changes_hash())
-        }
+        "attributes" | "saved_changes" | "previous_changes" | "changes" | "changes_to_save"
+        | "slice" => Some(changes_hash()),
         "becomes"
         | "becomes!"
         | "with_lock"
@@ -312,6 +330,8 @@ fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Typ
         | "transaction"
         | "read_attribute"
         | "write_attribute"
+        | "[]"
+        | "[]="
         | "logger"
         | "attribute_was" => Some(Type::Untyped),
         _ => None,

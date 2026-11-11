@@ -316,7 +316,9 @@ fn parse_structure_column_line(line: &str) -> Option<ColumnDef> {
             || lower.starts_with("check ")
             || lower.starts_with("exclude ")
             || lower.starts_with("like ")
-            || lower.starts_with("key ")
+            // MySQL `KEY idx (col)` is an index; `key text NOT NULL` is a column named `key`.
+            || (lower.starts_with("key ")
+                && structure_sql_canonical_keyword(&lower["key ".len()..]).is_none())
             || lower.starts_with("key(")
             || lower.starts_with("index ")
             || lower.starts_with("fulltext")
@@ -716,13 +718,18 @@ fn register_table_methods(table: &TableDef, registry: &mut TypeRegistry) {
 fn register_table_methods_as(owner: &str, table: &TableDef, registry: &mut TypeRegistry) {
     // The 15 dirty-tracking kinds per column are registered as a pattern; readers/writers/predicates are materialized (keeps RSS as a skeleton).
     let mut dirty_columns: Vec<(Sym, Type)> = Vec::with_capacity(table.columns.len());
+    let mut non_null_columns = Vec::new();
     for col in &table.columns {
         let accessor_type = nullable_type(&col.col_type, col.nullable);
         register_attribute_methods(owner, &col.name, accessor_type, registry);
         register_predicate_method(owner, &col.name, registry);
         dirty_columns.push((Sym::new(&col.name), col.col_type.clone()));
+        if !col.nullable {
+            non_null_columns.push(Sym::new(&col.name));
+        }
     }
     registry.register_dirty_pattern_columns(owner, dirty_columns);
+    registry.register_non_null_columns(owner, non_null_columns);
     for assoc in &table.associations {
         let assoc_type = nullable_type(&Type::Class(Sym::new(&assoc.target_class)), assoc.nullable);
         register_attribute_methods(owner, &assoc.name, assoc_type, registry);

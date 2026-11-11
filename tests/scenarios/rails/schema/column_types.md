@@ -537,3 +537,73 @@ class CommitStatus < ApplicationRecord
   def emails_enabled?: -> bool
 end
 ```
+
+## Keep column nullability for super in an accessor override
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "logs", force: :cascade do |t|
+    t.string "action", default: "", null: false
+    t.string "kind"
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Log < ApplicationRecord
+  def action = super
+
+  def kind = super
+end
+```
+
+### result
+
+```rbs
+class Log < ApplicationRecord
+  def action: -> String
+  def kind: -> String?
+end
+```
+
+## Treat a column named by an unknown macro as replaced
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "documents", force: :cascade do |t|
+    t.string "file"
+    t.string "title"
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Document < ApplicationRecord
+  mount_uploader :file, DocumentUploader
+
+  def attachment = file
+
+  def heading = title
+end
+```
+
+### result
+
+```rbs
+class Document < ApplicationRecord
+  def attachment: -> untyped
+  def heading: -> String?
+end
+```

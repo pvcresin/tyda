@@ -1469,3 +1469,51 @@ fn known_issue_nil_false_positives_still_reported() {
         );
     }
 }
+
+fn missing_methods_in(source: &str, compact: bool) -> Vec<(u32, String)> {
+    diagnostics(source, compact)
+        .into_iter()
+        .filter(|diagnostic| diagnostic.code == "missing_method")
+        .map(|diagnostic| (diagnostic.line, diagnostic.unresolved_method))
+        .collect()
+}
+
+#[test]
+fn class_new_block_runs_on_the_new_class() {
+    let source = concat!(
+        "class EventBase\n",
+        "  def self.attribute(name) = name\n",
+        "end\n",
+        "class EventRegistry\n",
+        "  def self.define\n",
+        "    Class.new(EventBase) do\n",
+        "      attribute :agent\n",
+        "    end\n",
+        "  end\n",
+        "  def self.broken = attribute(:agent)\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        assert_eq!(
+            missing_methods_in(source, compact),
+            [(10, "EventRegistry#attribute".to_string())],
+            "compact={compact}"
+        );
+    }
+}
+
+#[test]
+fn hash_key_written_after_a_fallback_default_is_known() {
+    let source = concat!(
+        "class SerializerOptions\n",
+        "  def merge(options = nil)\n",
+        "    options = options&.dup || {}\n",
+        "    options[:except] = Array(options[:except]).dup\n",
+        "    options[:except].concat([:secret])\n",
+        "  end\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        assert_eq!(missing_methods_in(source, compact), [], "compact={compact}");
+    }
+}

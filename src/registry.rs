@@ -941,6 +941,8 @@ pub struct MethodDef {
 #[derive(Debug, Clone, Default)]
 pub struct DirtyPattern {
     columns: Vec<(Sym, Type)>,
+    /// Columns declared `null: false` (or with a default), whose readers never return nil.
+    non_null_columns: Vec<Sym>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DirtyKind {
@@ -1038,7 +1040,10 @@ fn split_dirty_method_name(name: &str) -> Option<(&str, DirtyKind)> {
 
 impl DirtyPattern {
     pub fn from_columns(columns: Vec<(Sym, Type)>) -> Self {
-        Self { columns }
+        Self {
+            columns,
+            non_null_columns: Vec::new(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1048,8 +1053,21 @@ impl DirtyPattern {
         for (name, ty) in &other.columns {
             if !self.columns.iter().any(|(existing, _)| existing == name) {
                 self.columns.push((*name, ty.clone()));
+                if other.non_null_columns.contains(name) {
+                    self.non_null_columns.push(*name);
+                }
             }
         }
+    }
+
+    /// Reader type of a column: nilable unless the schema declares it non-null.
+    fn column_accessor_type(&self, col: &str) -> Option<Type> {
+        let base = self.column_type(col)?;
+        let nullable = !self
+            .non_null_columns
+            .iter()
+            .any(|name| name.as_str() == col);
+        Some(crate::rails::nullable_column_accessor_type(base, nullable))
     }
 
     fn column_type(&self, col: &str) -> Option<&Type> {
@@ -1983,6 +2001,11 @@ pub struct ClassDataCold {
     /// DSL recorded in a concern `included do` that must run against each includer
     /// (resource name / serializer owner), not the concern module itself.
     pub includer_bound_dsl: Vec<IncluderBoundDsl>,
+    /// Names passed to class macros Tyda cannot resolve; such a macro may define methods
+    /// named after them (`attr_encrypted :token` -> `token`, `token=`, `token_changed?`).
+    pub unknown_macro_attributes: Vec<Sym>,
+    /// `include` / `extend` / `prepend` of a module computed at runtime (`include Routing.url_helpers`).
+    pub has_dynamic_mixin: bool,
 }
 
 /// Owner-dependent DSL collected on a concern and applied at each includer.
@@ -3894,7 +3917,7 @@ impl TypeRegistry {
             depth += 1;
             let data = self.class_data.get(cls.as_str())?;
             if let Some(pattern) = data.cold().dirty_method_pattern.as_ref()
-                && let Some(base) = pattern.column_type(column)
+                && let Some(accessor) = pattern.column_accessor_type(column)
             {
                 if is_predicate {
                     return Some(Type::Bool);
@@ -3902,10 +3925,7 @@ impl TypeRegistry {
                 let generated = Self::method_for_lookup_kind(data, column, Some(false))
                     .filter(|method| method.synthetic_dsl_source && method.rbs_file_source)
                     .map(|method| method.raw_return_type.clone());
-                return Some(
-                    generated
-                        .unwrap_or_else(|| crate::rails::nullable_column_accessor_type(base, true)),
-                );
+                return Some(generated.unwrap_or(accessor));
             }
             current = data.superclass.as_ref().map(|sc| {
                 self.resolve_superclass_ref_borrow(&cls, sc.as_ref())
@@ -3927,14 +3947,14 @@ impl TypeRegistry {
                 break;
             };
             if let Some(pattern) = data.cold().dirty_method_pattern.as_ref()
-                && let Some(base) = pattern.column_type(column)
+                && let Some(accessor) = pattern.column_accessor_type(column)
             {
                 if let Some(method) = Self::method_for_lookup_kind(data, column, Some(false))
                     && !matches!(method.raw_return_type, Type::Untyped)
                 {
                     return Some(method.raw_return_type.clone());
                 }
-                return Some(crate::rails::nullable_column_accessor_type(base, true));
+                return Some(accessor);
             }
             current = data.superclass.as_ref().map(|sc| {
                 self.resolve_superclass_ref_borrow(&cls, sc.as_ref())
@@ -3964,6 +3984,73 @@ impl TypeRegistry {
         let mut method = DirtyPattern::build_method_def(column, Type::Untyped);
         method.attr_ivar = Some(ivar);
         self.add_method_def(class_name, method);
+    }
+
+    pub(crate) fn mark_dynamic_mixin(&mut self, class_name: &str) {
+        self.class_data_mut(class_name).cold_mut().has_dynamic_mixin = true;
+    }
+
+    fn walked_closure_has_dynamic_mixin(&self, classes: &[String]) -> bool {
+        classes
+            .iter()
+            .filter_map(|name| self.class_data.get(name.as_str()))
+            .any(|data| data.cold_opt().is_some_and(|cold| cold.has_dynamic_mixin))
+    }
+
+    pub(crate) fn mark_unknown_macro_attribute(&mut self, class_name: &str, name: &str) {
+        let name = Sym::new(name);
+        let names = &mut self
+            .class_data_mut(class_name)
+            .cold_mut()
+            .unknown_macro_attributes;
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+
+    /// Whether an unknown class macro on the class or its ancestors may have generated
+    /// `method_name`: the attribute itself, its writer / predicate, a dirty-family method, or
+    /// a name that contains it as a word (`remove_avatar!` for `mount_uploader :avatar`).
+    pub fn method_may_come_from_unknown_macro(&self, class_name: &str, method_name: &str) -> bool {
+        let attribute = split_dirty_method_name(method_name)
+            .map(|(column, _)| column)
+            .unwrap_or_else(|| method_name.trim_end_matches(['=', '?', '!']));
+        // Generated names wrap the attribute in words (`remove_avatar!`, `can_start?`).
+        let wrapped = format!("_{attribute}_");
+        let mut visited: Vec<String> = Vec::new();
+        let mut touched_framework_base = false;
+        self.ancestor_knowledge_complete_inner(
+            class_name.trim_scope_prefix(),
+            &mut visited,
+            &mut touched_framework_base,
+        );
+        visited.iter().any(|name| {
+            self.class_data
+                .get(name.as_str())
+                .and_then(|data| data.cold_opt())
+                .is_some_and(|cold| {
+                    cold.unknown_macro_attributes.iter().any(|macro_name| {
+                        macro_name.as_str() == attribute
+                            || wrapped.contains(&format!("_{}_", macro_name.as_str()))
+                    })
+                })
+        })
+    }
+
+    pub fn register_non_null_columns(&mut self, class_name: &str, columns: Vec<Sym>) {
+        let Some(pattern) = self
+            .class_data_mut(class_name)
+            .cold_mut()
+            .dirty_method_pattern
+            .as_mut()
+        else {
+            return;
+        };
+        for name in columns {
+            if !pattern.non_null_columns.contains(&name) {
+                pattern.non_null_columns.push(name);
+            }
+        }
     }
 
     pub fn register_dirty_pattern_columns(&mut self, class_name: &str, columns: Vec<(Sym, Type)>) {
@@ -7370,7 +7457,71 @@ impl TypeRegistry {
         if self.argless_overloads_disagree(class_name, method_name, prefer_singleton) {
             return None;
         }
+        if prefer_singleton
+            && let Some(ret) = self.inherited_model_singleton_return(class_name, method_name)
+        {
+            return Some(ret);
+        }
         self.lookup_method_return_type_with_hint(class_name, method_name, prefer_singleton)
+    }
+
+    /// A query method or scope generated on a parent model returns records of the class it
+    /// is called on (`MavenPackage.where(...)` is `Relation[MavenPackage]`).
+    pub(crate) fn inherited_model_singleton_return(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<Type> {
+        // Without the call's arguments `first(3)` / `find(1, 2)` cannot be told from the
+        // single-record form, so those keep their argument-blind owner type.
+        if crate::rails::relation_api::lookup(
+            method_name,
+            crate::rails::relation_api::Receiver::Model,
+        )
+        .is_some_and(|method| method.refined_by_args)
+        {
+            return None;
+        }
+        let (owner, owner_singleton) =
+            self.first_method_call_owner_cached(class_name, method_name, true)?;
+        if !owner_singleton || owner.as_ref() == class_name {
+            return None;
+        }
+        let method = self.lookup_method_def(&owner, method_name, true)?;
+        let returns = &method.raw_return_type;
+        // Generated query methods, and scopes, which return a relation of their owner.
+        let owner_relation = crate::rails::relation_api::relation_element_type(returns)
+            .is_some_and(|elem| matches!(elem, Type::Class(name) if *name == owner.as_ref()));
+        if !(method.synthetic_dsl_source || owner_relation)
+            || !self.class_inherits_from_active_record(class_name)
+        {
+            return None;
+        }
+        let replaced = Self::replace_model_class(returns, &owner, class_name);
+        (replaced != *returns).then_some(replaced)
+    }
+
+    fn replace_model_class(ty: &Type, from: &str, to: &str) -> Type {
+        match ty {
+            Type::Class(name) if name.as_str() == from => Type::Class(Sym::new(to)),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args
+                    .iter()
+                    .map(|arg| Self::replace_model_class(arg, from, to))
+                    .collect(),
+            },
+            Type::Array(Some(elem)) => {
+                Type::Array(Some(Box::new(Self::replace_model_class(elem, from, to))))
+            }
+            Type::Union(members) => Type::Union(
+                members
+                    .iter()
+                    .map(|member| Self::replace_model_class(member, from, to))
+                    .collect(),
+            ),
+            _ => ty.clone(),
+        }
     }
 
     fn argless_overloads_disagree(
@@ -12211,7 +12362,9 @@ impl TypeRegistry {
         ) {
             return false;
         }
-        if self.walked_closure_defines_method_missing(&visited) {
+        if self.walked_closure_defines_method_missing(&visited)
+            || self.walked_closure_has_dynamic_mixin(&visited)
+        {
             return false;
         }
         // ActiveRecord synthesizes attribute methods from the database schema.
@@ -12219,7 +12372,13 @@ impl TypeRegistry {
         // still open even when its superclass chain is known.
         let generated_surface_known = generated_artifacts_present
             && self.walked_closure_has_declaration_backed_methods(&visited);
-        if self.class_inherits_from_active_record(class_name)
+        let inherits_active_record = self.class_inherits_from_active_record(class_name);
+        // A table can name a model whose class is not in the analyzed source (`License` from an
+        // `ee/` directory); its columns alone say nothing about the rest of its surface.
+        if !inherits_active_record && self.schema_column_names(class_name).is_some() {
+            return false;
+        }
+        if inherits_active_record
             && self.schema_column_names(class_name).is_none()
             && !generated_surface_known
         {
@@ -12229,6 +12388,32 @@ impl TypeRegistry {
             return true;
         }
         !generated_artifacts_present || generated_surface_known
+    }
+
+    /// Like `method_surface_knowledge_complete`, for calls on the class object. A model
+    /// class answers the whole `ActiveRecord::Base` class API (naming, schema, persistence,
+    /// connection handling) and class methods that gems add to it. Tyda models only part of
+    /// that API and the schema only proves instance attributes, so the class surface is
+    /// provable only from generated declarations.
+    pub fn singleton_method_surface_knowledge_complete(
+        &self,
+        class_name: &str,
+        generated_artifacts_present: bool,
+    ) -> bool {
+        if !self.method_surface_knowledge_complete(class_name, generated_artifacts_present) {
+            return false;
+        }
+        if !self.class_inherits_from_active_record(class_name) {
+            return true;
+        }
+        let mut visited: Vec<String> = Vec::new();
+        let mut touched_framework_base = false;
+        self.ancestor_knowledge_complete_inner(
+            class_name.trim_scope_prefix(),
+            &mut visited,
+            &mut touched_framework_base,
+        );
+        generated_artifacts_present && self.walked_closure_has_declaration_backed_methods(&visited)
     }
 
     fn class_inherits_from_active_record(&self, class_name: &str) -> bool {

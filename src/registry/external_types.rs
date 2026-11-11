@@ -409,6 +409,16 @@ impl TypeRegistry {
                 data.cold_mut().includer_bound_dsl.push(dsl.clone());
             }
         }
+        if let Some(src_cold) = rbs_data.cold_opt() {
+            if src_cold.has_dynamic_mixin {
+                data.cold_mut().has_dynamic_mixin = true;
+            }
+            for name in &src_cold.unknown_macro_attributes {
+                if !data.cold().unknown_macro_attributes.contains(name) {
+                    data.cold_mut().unknown_macro_attributes.push(*name);
+                }
+            }
+        }
         let target_has_pattern = data.cold().dirty_method_pattern.is_some();
         for (method_idx, method) in shared_methods.into_iter().enumerate() {
             let method_key = (method.name, method.is_singleton);

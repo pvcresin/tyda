@@ -204,6 +204,10 @@ mutation test は壊れた入力の graceful degradation、pathological test は
   推論が一致したら通常 scenario へ昇格する。解決後は `known_issue` キーを削除し、
   `known_issue: false` は残さない。他の設定もなければ YAML config ブロックごと削除する。
 - 大きな推論変更は最小例から始め、対象 scenario、全 suite、OSS subject、benchmark へ段階的に広げる。
+- CI の analysis compatibility で実プロジェクトの出力差分が出たら、原因のコードパターンが既存
+  scenario で未カバーか確認し、未カバーなら最小化・一般化して scenario（RBS で表せない
+  diagnostics の挙動は diagnostics テスト）として追加する。誤検知・推論の後退は未カバーの
+  パターンを意味するため必須で、改善も挙動を固定するため追加する。
 - flaky test は原因を再現・修正し、retry や skip で隠さない。
 - Ruby version / Rails version による意味の差だけを version case にする。
 - DSL は gem / framework ごとに分け、1 case に複数の無関係な機能を詰め込まない。

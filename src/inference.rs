@@ -28159,6 +28159,8 @@ impl<'a> InferenceEngine<'a> {
             .unwrap_or_else(|| Type::Singleton(Sym::new("Object")));
         if let Some(block) = call_node.block().and_then(|block| block.as_block_node()) {
             let mut block_scope = scope.fork_for_block();
+            // The block runs with self = the new class, which has no name to resolve methods on.
+            block_scope.self_override = Some(Type::Class(Sym::new("Class")));
             if let Some(params_node) = block.parameters() {
                 self.bind_call_block_param_types(
                     class_name,
@@ -31555,6 +31557,14 @@ impl<'a> InferenceEngine<'a> {
                             break 'recv wrap(ar_result);
                         }
 
+                        if let Some(grouped) = self.active_record_grouped_calculation_return(
+                            &safe_nav_receiver_type,
+                            &method_name,
+                            &call_node,
+                        ) {
+                            break 'recv wrap(grouped);
+                        }
+
                         if call_node.block().is_none()
                             && let Some(args) = call_node.arguments()
                             && crate::rails::relation_api::reads_columns(&method_name)
@@ -32330,12 +32340,12 @@ impl<'a> InferenceEngine<'a> {
                                     break 'recv wrap(literal_result);
                                 }
                             }
-                            if let Some(grouped_count) = self.active_record_grouped_count_return(
+                            if let Some(grouped) = self.active_record_grouped_calculation_return(
                                 &safe_nav_receiver_type,
                                 &method_name,
                                 &call_node,
                             ) {
-                                break 'recv wrap(grouped_count);
+                                break 'recv wrap(grouped);
                             }
                             let call_arg_count = call_arg_types_for_generic
                                 .len()
@@ -54961,9 +54971,8 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         call_node: &ruby_prism::CallNode<'_>,
     ) -> Type {
-        if method_name == "count"
-            && let Some(result) =
-                self.active_record_grouped_count_return(receiver_type, method_name, call_node)
+        if let Some(result) =
+            self.active_record_grouped_calculation_return(receiver_type, method_name, call_node)
         {
             return result;
         }
@@ -54984,27 +54993,25 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn active_record_grouped_count_return(
+    /// A calculation on a grouped relation returns a Hash from the group keys to the values.
+    fn active_record_grouped_calculation_return(
         &self,
         receiver_type: &Type,
         method_name: &str,
         call_node: &ruby_prism::CallNode<'_>,
     ) -> Option<Type> {
-        if self.rails_feature_enabled()
-            && method_name == "count"
+        let value = match method_name {
+            "count" => Type::Integer,
+            "sum" | "average" | "minimum" | "maximum" | "calculate" => Type::Untyped,
+            _ => return None,
+        };
+        (self.rails_feature_enabled()
             && Self::active_record_relation_element_type(receiver_type).is_some()
             && call_node.block().is_none()
             && call_node
                 .receiver()
-                .is_some_and(Self::call_chain_has_active_record_group)
-        {
-            Some(Type::Hash(
-                Some(Box::new(Type::Untyped)),
-                Some(Box::new(Type::Integer)),
-            ))
-        } else {
-            None
-        }
+                .is_some_and(Self::call_chain_has_active_record_group))
+        .then(|| Type::Hash(Some(Box::new(Type::Untyped)), Some(Box::new(value))))
     }
 
     fn call_chain_has_active_record_group(node: Node<'_>) -> bool {

@@ -1351,7 +1351,9 @@ impl<'a> InferenceEngine<'a> {
     }
 
     /// An unknown class macro naming a column may replace its accessor, as uploaders do, so the
-    /// schema type no longer proves what the accessor returns.
+    /// schema type no longer proves what the accessor returns. On a model, where the macro call
+    /// itself stays silent, any name it is given may also become a generated method
+    /// (`attr_encrypted :token`), so those names stay unknown.
     fn mark_column_replaced_by_unknown_macro(
         &mut self,
         class_name: &str,
@@ -1366,14 +1368,26 @@ impl<'a> InferenceEngine<'a> {
         {
             return;
         }
-        let Some(column) = Self::extract_symbol_args(call_node).first().cloned() else {
+        let names = Self::extract_symbol_args(call_node);
+        // Elsewhere the macro call itself is reported, which already points at the gap.
+        if self.is_active_record_dsl_target(class_name) {
+            for name in &names {
+                self.registry.mark_unknown_macro_attribute(class_name, name);
+            }
+        }
+        let Some(column) = names.first().cloned() else {
             return;
         };
-        if self
+        // The schema is preloaded into the external registry.
+        let is_column = self
             .registry
             .schema_column_accessor_type(class_name, &column)
-            .is_none()
-        {
+            .or_else(|| {
+                self.external_rbs
+                    .and_then(|registry| registry.schema_column_accessor_type(class_name, &column))
+            })
+            .is_some();
+        if !is_column {
             return;
         }
         self.registry

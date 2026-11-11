@@ -146,6 +146,35 @@ class Timer
 end
 ```
 
+## Duration unit methods delegate to the value and return a duration
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Backoff
+  INITIAL = 1.minute
+
+  def delay(count) = (INITIAL * (2**count)).seconds
+
+  def seconds_total = INITIAL.in_seconds
+end
+```
+
+### result
+
+```rbs
+class Backoff
+  INITIAL: ActiveSupport::Duration
+
+  def delay: (untyped count) -> ActiveSupport::Duration
+  def seconds_total: -> Integer
+end
+```
+
 ## Adding a duration to TimeWithZone returns TimeWithZone
 
 ```yaml

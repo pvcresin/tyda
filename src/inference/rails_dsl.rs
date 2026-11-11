@@ -898,7 +898,11 @@ impl<'a> InferenceEngine<'a> {
 
         match method_name {
             "+" | "-" | "-@" | "+@" | "*" | "%" => Some(Type::Class(*class_name)),
-            "in_seconds" | "seconds" | "to_i" => Some(Type::Integer),
+            "in_seconds" | "to_i" => Some(Type::Integer),
+            // Delegated to the Integer value (`1.minute.seconds` is `60.seconds`).
+            name if super::method_tables::DURATION_METHODS.contains(&name) => {
+                Some(Type::Class(*class_name))
+            }
             "ago" | "until" | "from_now" | "since" => Some(Type::Class(Sym::new("Time"))),
             "parts" => Some(Type::Hash(
                 Some(Box::new(Type::Symbol)),
