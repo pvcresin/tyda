@@ -9,7 +9,8 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - Ruby source と `.rbs` を中心にした query 型推論 engine
 - CLI の RBS 出力、JSON Lines diagnostics、型カバレッジ JSON
   - RBS 出力は公式 parser が受理する構文に限る。戻り値の union / intersection は括弧で囲み、
-    型注釈のない `&block` は `?{ (?) -> untyped }`、Float literal は `Float` で出す
+    型注釈のない `&block` は `?{ (?) -> untyped }`、Float literal は `Float` で出す。`void` を含む
+    union は使える値がないため `void` にまとめる
 - TypeProf VSCode 拡張と接続できる LSP server
 - stdio MCP server による AI agent 向けの位置指定型推論と、明示queryによる同一source内の型由来説明
 - Rails / gem DSL plugin
@@ -137,6 +138,8 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 - StateMachines は `state_machine` reader、`<attribute>_name`、state predicate、event method を追加する。machine descriptor の内部 API は `untyped` にする
 - Devise は `devise` に指定した module に対応する model instance method を追加し、Paperclip は ActiveRecord model の `has_attached_file` から attachment reader を追加する。Rack::Attack が有効な場合、`Rack::Attack::Request` は `Rack::Request` の request method surface を継承する
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
+- ActiveJob の `perform_later` と ActionMailer の `deliver_later` は Rails 7.0 以降 enqueue callback の中断で `false` を返し、`perform_now` は perform callback の中断で `false` を返す。Sidekiq の `perform_async` などは client middleware の中断で `nil` を返す。`Sidekiq::Job` を include するクラスは名前が `Job` で終わっても ActiveJob として扱わない
+- ActiveSupport の core extension は plugin の戻り値テーブルで補う。引数の型で戻り値が決まるもの（`Array#including` / `in_groups` など）は plugin が名前を宣言した呼び出しだけ引数を推論する。`String#to_date` などは空白だけの文字列で `nil` を返す
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
 - Rake が有効な project では、`String#ext` / `String#pathmap` の戻り値を `String` として扱う。Gemfile の引数なし `gemspec` は root の唯一の `*.gemspec` の gem 名も宣言済み gem として扱う
 - GitLab in-tree の Presenter / CurrentSettings / Metrics / EE 拡張を検出する

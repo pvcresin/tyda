@@ -96,3 +96,103 @@ class Clock
   def label: -> String
 end
 ```
+
+## Date.yesterday and Date.tomorrow return Date
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Calendar
+  def yesterday = Date.yesterday
+
+  def tomorrow = Date.tomorrow
+end
+```
+
+### result
+
+```rbs
+class Calendar
+  def yesterday: -> Date
+  def tomorrow: -> Date
+end
+```
+
+## Duration arithmetic with another duration returns a duration
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Timer
+  def total = 1.day + 2.hours
+
+  def remaining = 2.weeks - 1.day
+end
+```
+
+### result
+
+```rbs
+class Timer
+  def total: -> ActiveSupport::Duration
+  def remaining: -> ActiveSupport::Duration
+end
+```
+
+## Adding a duration to TimeWithZone returns TimeWithZone
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Clock
+  def later = Time.current + 1.hour
+
+  def zone_later = Time.zone.now + 1.hour
+end
+```
+
+### result
+
+```rbs
+class Clock
+  def later: -> ActiveSupport::TimeWithZone
+  def zone_later: -> ActiveSupport::TimeWithZone
+end
+```
+
+## TimeZone at and local return non-nil TimeWithZone
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Clock
+  def epoch = Time.zone.at(0)
+
+  def new_year = Time.zone.local(2024, 1, 1)
+end
+```
+
+### result
+
+```rbs
+class Clock
+  def epoch: -> ActiveSupport::TimeWithZone
+  def new_year: -> ActiveSupport::TimeWithZone
+end
+```

@@ -517,45 +517,8 @@ impl<'a> InferenceEngine<'a> {
             self.register_active_model_serializer_framework_methods(class_name, loc);
         }
 
-        if self.is_active_job_class(class_name) {
-            self.registry.add_method_def_if_missing(
-                class_name,
-                MethodDef {
-                    name: Sym::new("perform_later"),
-                    param_infos: Vec::new(),
-                    raw_return_type: Type::Class(Sym::new(class_name)),
-                    sorbet_modifier_comments: Vec::new(),
-                    rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
-                    attr_ivar: None,
-                    is_singleton: true,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
-                    rbs_method_types: Default::default(),
-                    extra_overloads: Vec::new(),
-                    loc: Some(loc),
-                },
-            );
-            self.registry.add_method_def_if_missing(
-                class_name,
-                MethodDef {
-                    name: Sym::new("perform_now"),
-                    param_infos: Vec::new(),
-                    raw_return_type: Type::MethodReturnRef(class_name.into(), "perform".into()),
-                    sorbet_modifier_comments: Vec::new(),
-                    rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
-                    attr_ivar: None,
-                    is_singleton: true,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
-                    rbs_method_types: Default::default(),
-                    extra_overloads: Vec::new(),
-                    loc: Some(loc),
-                },
-            );
+        if self.inherits_active_job(class_name) {
+            self.add_active_job_helpers(class_name, loc);
         }
 
         if self.is_action_mailer_class(class_name) {
@@ -799,36 +762,27 @@ impl<'a> InferenceEngine<'a> {
 
     fn ensure_message_delivery_methods(&mut self, loc: SourceLocation) {
         let class_name = "ActionMailer::MessageDelivery";
-        self.registry.add_method_def_if_missing(
-            class_name,
-            MethodDef {
-                name: Sym::new("deliver_now"),
-                param_infos: Vec::new(),
-                raw_return_type: Type::Class(Sym::new("Mail::Message")),
-                sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
-                attr_ivar: None,
-                is_singleton: false,
-                rbs_file_source: true,
-                synthetic_dsl_source: true,
-                rbs_method_types: Default::default(),
-                extra_overloads: Vec::new(),
-                loc: Some(loc),
-            },
-        );
-        for name in ["deliver_later", "deliver_later!", "deliver_now!"] {
+        let mail_message = || Type::Class(Sym::new("Mail::Message"));
+        let enqueued =
+            self.active_job_enqueue_return(Type::Class(Sym::new(if self.rails_at_least(6, 1) {
+                "ActionMailer::MailDeliveryJob"
+            } else {
+                "ActionMailer::DeliveryJob"
+            })));
+        for (name, return_type) in [
+            ("message", mail_message()),
+            ("deliver_now", mail_message()),
+            ("deliver_now!", mail_message()),
+            ("deliver_later", enqueued.clone()),
+            ("deliver_later!", enqueued),
+            ("processed?", Type::Bool),
+        ] {
             self.registry.add_method_def_if_missing(
                 class_name,
                 MethodDef {
                     name: Sym::new(name),
                     param_infos: Vec::new(),
-                    raw_return_type: if name == "deliver_later" || name == "deliver_later!" {
-                        Type::Class(Sym::new(class_name))
-                    } else {
-                        Type::Class(Sym::new("Mail::Message"))
-                    },
+                    raw_return_type: return_type,
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
                     rbs_inline_annotated: false,
@@ -842,6 +796,16 @@ impl<'a> InferenceEngine<'a> {
                     loc: Some(loc),
                 },
             );
+        }
+    }
+
+    /// `ActiveJob::Base#enqueue` returns `false` when an `before_enqueue` callback aborts
+    /// (always since Rails 7.0; earlier versions returned the job unless configured).
+    fn active_job_enqueue_return(&self, job: Type) -> Type {
+        if self.rails_at_least(7, 0) {
+            job.union_with(Type::False)
+        } else {
+            job
         }
     }
 
@@ -864,12 +828,69 @@ impl<'a> InferenceEngine<'a> {
             .any(|m| m.name == method_name && !m.synthetic_dsl_source && !m.rbs_file_source)
     }
 
-    pub(crate) fn is_active_job_class(&self, class_name: &str) -> bool {
-        class_name.ends_with("Job")
-            || self.class_matches_or_inherits(class_name, &["ActiveJob::Base", "ApplicationJob"])
+    fn inherits_active_job(&self, class_name: &str) -> bool {
+        self.class_matches_or_inherits(class_name, &["ActiveJob::Base", "ApplicationJob"])
     }
 
-    pub(super) fn propagate_perform_params_to_job_helpers(&mut self, class_name: &str) {
+    pub(crate) fn is_active_job_class(&self, class_name: &str) -> bool {
+        // The name fallback covers a base job defined elsewhere; Sidekiq jobs share the suffix.
+        self.inherits_active_job(class_name)
+            || class_name.ends_with("Job") && !self.is_sidekiq_job_class(class_name)
+    }
+
+    /// A job matched only by name is confirmed after its body, once a Sidekiq mixin is known.
+    pub(super) fn register_active_job_helpers(&mut self, class_name: &str, loc: SourceLocation) {
+        if !self.rails_feature_enabled() || !self.is_active_job_class(class_name) {
+            return;
+        }
+        self.add_active_job_helpers(class_name, loc);
+        self.propagate_perform_params_to_job_helpers(class_name);
+    }
+
+    fn add_active_job_helpers(&mut self, class_name: &str, loc: SourceLocation) {
+        self.registry.add_method_def_if_missing(
+            class_name,
+            MethodDef {
+                name: Sym::new("perform_later"),
+                param_infos: Vec::new(),
+                raw_return_type: self.active_job_enqueue_return(Type::Class(Sym::new(class_name))),
+                sorbet_modifier_comments: Vec::new(),
+                rbs_annotated: true,
+                rbs_inline_annotated: false,
+                sig_annotated: false,
+                attr_ivar: None,
+                is_singleton: true,
+                rbs_file_source: false,
+                synthetic_dsl_source: false,
+                rbs_method_types: Default::default(),
+                extra_overloads: Vec::new(),
+                loc: Some(loc),
+            },
+        );
+        self.registry.add_method_def_if_missing(
+            class_name,
+            MethodDef {
+                name: Sym::new("perform_now"),
+                param_infos: Vec::new(),
+                // `run_callbacks` returns false when a `before_perform` callback aborts.
+                raw_return_type: Type::MethodReturnRef(class_name.into(), "perform".into())
+                    .union_with(Type::False),
+                sorbet_modifier_comments: Vec::new(),
+                rbs_annotated: true,
+                rbs_inline_annotated: false,
+                sig_annotated: false,
+                attr_ivar: None,
+                is_singleton: true,
+                rbs_file_source: false,
+                synthetic_dsl_source: false,
+                rbs_method_types: Default::default(),
+                extra_overloads: Vec::new(),
+                loc: Some(loc),
+            },
+        );
+    }
+
+    fn propagate_perform_params_to_job_helpers(&mut self, class_name: &str) {
         let Some(perform_def) = self
             .registry
             .lookup_method_def(class_name, "perform", false)
@@ -942,7 +963,8 @@ impl<'a> InferenceEngine<'a> {
             | "reject"
             | "compact"
             | "deep_transform_values"
-            | "deep_transform_values!" => Some(ac_params()),
+            | "deep_transform_values!"
+            | "permit!" => Some(ac_params()),
             "to_h" | "to_unsafe_h" | "to_hash" => Some(Type::Hash(
                 Some(Box::new(Type::String)),
                 Some(Box::new(Type::Untyped)),
@@ -950,7 +972,7 @@ impl<'a> InferenceEngine<'a> {
             "keys" => Some(Type::Array(Some(Box::new(Type::String)))),
             "values" | "values_at" => Some(Type::Array(Some(Box::new(Type::Untyped)))),
             "any?" | "all?" | "empty?" | "none?" | "has_key?" | "include?" | "key?" | "member?"
-            | "present?" | "blank?" => Some(Type::Bool),
+            | "present?" | "blank?" | "permitted?" => Some(Type::Bool),
             "[]" | "fetch" | "dig" | "delete" | "each_value" => Some(Type::Untyped),
             _ => None,
         }
@@ -1012,6 +1034,7 @@ impl<'a> InferenceEngine<'a> {
         }
 
         match method_name {
+            "+" | "-" | "-@" | "+@" | "*" | "%" => Some(Type::Class(*class_name)),
             "in_seconds" | "seconds" | "to_i" => Some(Type::Integer),
             "ago" | "until" | "from_now" | "since" => Some(Type::Class(Sym::new("Time"))),
             "parts" => Some(Type::Hash(
@@ -1106,7 +1129,9 @@ impl<'a> InferenceEngine<'a> {
 
         match method_name {
             "fetch" | "read" | "read_multi" => Some(Type::Untyped),
-            "write" | "delete" | "delete_matched" | "exist?" | "clear" => Some(Type::Bool),
+            // `write` reports a backend error as nil instead of raising.
+            "write" => Some(Type::Bool.union_with(Type::Nil)),
+            "delete" | "delete_matched" | "exist?" | "clear" => Some(Type::Bool),
             _ => None,
         }
     }
@@ -1185,7 +1210,8 @@ impl<'a> InferenceEngine<'a> {
         match method_name {
             "host" | "host_with_port" | "remote_ip" | "referer" | "referrer" | "path"
             | "fullpath" | "original_url" | "url" | "user_agent" | "method" | "request_method"
-            | "uuid" => Some(Type::String),
+            | "uuid" | "protocol" | "scheme" | "subdomain" => Some(Type::String),
+            "port" | "server_port" => Some(Type::Integer),
             "get?" | "post?" | "put?" | "patch?" | "delete?" | "xhr?" | "ssl?" | "local?" => {
                 Some(Type::Bool)
             }
