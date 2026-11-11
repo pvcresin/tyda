@@ -1997,6 +1997,65 @@ impl<'a> InferenceEngine<'a> {
         (self_receiver && !scope.singleton_dispatch).then(|| Type::Class(Sym::new(class_name)))
     }
 
+    /// `select("count(*) AS total")` / `select('config')` gives the loaded records a reader for
+    /// each selected name, including names that are not columns of the model.
+    pub(super) fn record_active_record_select_aliases(
+        &mut self,
+        receiver_type: &Type,
+        call_node: &ruby_prism::CallNode<'_>,
+    ) {
+        // A query chain not resolved yet (`self.class.from_union(...)`) starts at the model class.
+        let mut base = receiver_type;
+        let mut class_of = None;
+        while let Type::ReceiverMethodRef(inner, method) = base {
+            if method.as_str() == "class"
+                && let Type::Class(name) = inner.as_ref()
+            {
+                class_of = Some(*name);
+                break;
+            }
+            base = inner;
+        }
+        let model: Sym = match (class_of, base) {
+            (Some(name), _) => name,
+            (None, Type::Singleton(name)) => *name,
+            (None, _) => match Self::active_record_relation_element_type(base) {
+                Some(Type::Class(name)) => name,
+                _ => return,
+            },
+        };
+        let Some(args) = call_node.arguments() else {
+            return;
+        };
+        let mut names = Vec::new();
+        for arg in args.arguments().iter() {
+            let Some(string) = arg.as_string_node() else {
+                continue;
+            };
+            let sql = String::from_utf8_lossy(string.unescaped()).to_string();
+            names.extend(sql.split(',').filter_map(Self::selected_column_name));
+        }
+        if names.is_empty() || !self.is_active_record_model_class(model.as_str()) {
+            return;
+        }
+        for name in names {
+            self.registry.mark_runtime_attribute(model.as_str(), &name);
+        }
+    }
+
+    /// The reader name of one select expression: the alias after `AS`, or a bare column.
+    fn selected_column_name(expression: &str) -> Option<String> {
+        let expression = expression.trim();
+        let lower = expression.to_ascii_lowercase();
+        let name = match lower.rfind(" as ") {
+            Some(index) => &expression[index + 4..],
+            None => expression.rsplit('.').next()?,
+        };
+        let name = name.trim().trim_matches(|c| c == '"' || c == '`');
+        (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .then(|| name.to_string())
+    }
+
     /// `pluck` / `pick` / `minimum` / `maximum` with literal column names read the columns' types.
     pub(super) fn refine_active_record_column_call(
         &self,

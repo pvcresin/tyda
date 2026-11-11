@@ -416,7 +416,7 @@ impl<'a> InferenceEngine<'a> {
                 if !complete
                     || self
                         .registry
-                        .method_may_come_from_unknown_macro(&owner, &snap.name)
+                        .method_may_be_runtime_attribute(&owner, &snap.name)
                 {
                     crate::diagnostics::record_gating_suppression(
                         crate::diagnostics::GatingReason::IncompleteAncestors,
@@ -1555,7 +1555,7 @@ impl<'a> InferenceEngine<'a> {
                 )
                 || self
                     .registry
-                    .method_may_come_from_unknown_macro(&class, &snap.name)
+                    .method_may_be_runtime_attribute(&class, &snap.name)
                 || (!prefer_singleton
                     && class == snap.class_context
                     && self.any_subclass_defines_method(&class, &snap.name))

@@ -740,6 +740,14 @@ impl<'e, 'src> PluginCx<'e, 'src> {
     ) {
         self.engine
             .collect_attribute_dsl(class_name, call_node, parse_result);
+        // Active Record also generates `name?` and dirty methods for an `attribute`.
+        if self.engine.is_active_record_model_class(class_name)
+            && let Some(name) = InferenceEngine::extract_symbol_args(call_node).first()
+        {
+            self.engine
+                .registry
+                .mark_runtime_attribute(class_name, name);
+        }
     }
 
     pub(in crate::inference) fn collect_serialized_attribute_dsl(
@@ -1346,52 +1354,106 @@ impl<'a> InferenceEngine<'a> {
                 return true;
             }
         }
-        self.mark_column_replaced_by_unknown_macro(class_name, method_name, call_node);
+        self.mark_names_from_class_macro(class_name, method_name, call_node, parse_result);
         false
     }
 
-    /// An unknown class macro naming a column may replace its accessor, as uploaders do, so the
-    /// schema type no longer proves what the accessor returns. On a model, where the macro call
-    /// itself stays silent, any name it is given may also become a generated method
-    /// (`attr_encrypted :token`), so those names stay unknown.
-    fn mark_column_replaced_by_unknown_macro(
+    /// A class macro Tyda does not model may define methods named after its arguments
+    /// (`attr_encrypted :token` -> `token`, `token_changed?`; `jsonb_accessor :settings,
+    /// level: :integer` -> `level`) and may replace a column's accessor, as uploaders do. The
+    /// same holds for a macro written in a concern or parent class
+    /// (`mount_file_store_uploader Uploader` with `file_field: :file`), whose names come from
+    /// its literal arguments and symbol parameter defaults. On a model, where such a call stays
+    /// silent, those names stay unknown and a named column's schema type no longer applies.
+    fn mark_names_from_class_macro(
         &mut self,
         class_name: &str,
         method_name: &str,
         call_node: &CallNode<'_>,
+        parse_result: &ParseResult<'_>,
     ) {
-        if call_node.receiver().is_some()
-            || self
-                .registry
-                .first_method_call_owner_cached(class_name, method_name, true)
-                .is_some()
-        {
+        if call_node.receiver().is_some() {
             return;
         }
-        let names = Self::extract_symbol_args(call_node);
-        // Elsewhere the macro call itself is reported, which already points at the gap.
+        let owner = self
+            .registry
+            .first_method_call_owner_cached(class_name, method_name, true);
+        let mut names = Self::extract_symbol_args(call_node);
+        let replaces_all_columns = match owner {
+            None => {
+                // The definition may come from a concern loaded later.
+                if self.is_active_record_dsl_target(class_name) {
+                    let args = names.iter().map(crate::types::Sym::new).collect();
+                    self.registry
+                        .push_pending_class_macro(class_name, method_name, args);
+                }
+                names.extend(Self::keyword_symbol_keys(call_node, parse_result));
+                false
+            }
+            Some((owner, true)) if owner.as_ref() != class_name => {
+                // Only a macro defined in Ruby source; declared signatures say what they define.
+                let Some(method) = self
+                    .registry
+                    .lookup_method_def(&owner, method_name, true)
+                    .filter(|method| !method.rbs_file_source && method.loc.is_some())
+                else {
+                    return;
+                };
+                names.extend(method.param_infos.iter().filter_map(
+                    |param| match &param.default_type {
+                        Some(Type::LiteralSymbol(name)) => Some(name.as_str().to_string()),
+                        _ => None,
+                    },
+                ));
+                true
+            }
+            _ => return,
+        };
+        // Elsewhere an unknown macro call itself is reported, which already points at the gap.
         if self.is_active_record_dsl_target(class_name) {
             for name in &names {
-                self.registry.mark_unknown_macro_attribute(class_name, name);
+                self.registry.mark_runtime_attribute(class_name, name);
             }
         }
-        let Some(column) = names.first().cloned() else {
-            return;
+        let columns = if replaces_all_columns {
+            &names[..]
+        } else {
+            names.get(..1).unwrap_or_default()
         };
-        // The schema is preloaded into the external registry.
-        let is_column = self
-            .registry
-            .schema_column_accessor_type(class_name, &column)
-            .or_else(|| {
-                self.external_rbs
-                    .and_then(|registry| registry.schema_column_accessor_type(class_name, &column))
-            })
-            .is_some();
-        if !is_column {
-            return;
+        for column in columns {
+            // The schema is preloaded into the external registry.
+            let is_column = self
+                .registry
+                .schema_column_accessor_type(class_name, column)
+                .or_else(|| {
+                    self.external_rbs.and_then(|registry| {
+                        registry.schema_column_accessor_type(class_name, column)
+                    })
+                })
+                .is_some();
+            if is_column {
+                self.registry
+                    .mark_column_accessor_replaced(class_name, column);
+            }
         }
-        self.registry
-            .mark_column_accessor_replaced(class_name, &column);
+    }
+
+    fn keyword_symbol_keys(
+        call_node: &CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+    ) -> Vec<String> {
+        let Some(args) = call_node.arguments() else {
+            return Vec::new();
+        };
+        args.arguments()
+            .iter()
+            .filter_map(|arg| arg.as_keyword_hash_node())
+            .flat_map(|hash| hash.elements().iter().collect::<Vec<_>>())
+            .filter_map(|element| {
+                let assoc = element.as_assoc_node()?;
+                Self::node_to_symbol_or_label(&assoc.key(), parse_result)
+            })
+            .collect()
     }
 
     pub(super) fn dsl_plugin_consumes_class_body_call(

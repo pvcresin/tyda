@@ -607,3 +607,56 @@ class Document < ApplicationRecord
   def heading: -> String?
 end
 ```
+
+## Treat a column named by a macro from a concern as replaced
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "documents", force: :cascade do |t|
+    t.string "file"
+    t.string "title"
+  end
+end
+```
+
+`app/models/concerns/file_mounter.rb`
+
+```ruby
+module FileMounter
+  extend ActiveSupport::Concern
+
+  class_methods do
+    def mount_file(uploader, field: :file)
+      mount_uploader(field, uploader)
+    end
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Document < ApplicationRecord
+  include FileMounter
+  mount_file DocumentUploader
+
+  def attachment = file
+
+  def heading = title
+end
+```
+
+### result
+
+```rbs
+class Document < ApplicationRecord
+  include FileMounter
+
+  def attachment: -> untyped
+  def heading: -> String?
+end
+```

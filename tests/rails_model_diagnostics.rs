@@ -199,3 +199,46 @@ fn a_table_without_a_model_class_does_not_prove_its_surface() {
     )]);
     assert!(missing.is_empty(), "{missing:?}");
 }
+
+#[test]
+fn readers_generated_from_macro_names_and_select_aliases_are_not_reported() {
+    let missing = missing_methods(&[
+        (
+            "app/models/concerns/file_mounter.rb",
+            concat!(
+                "module FileMounter\n",
+                "  extend ActiveSupport::Concern\n",
+                "  class_methods do\n",
+                "    def mount_file(uploader, field: :file)\n",
+                "      mount_uploader(field, uploader)\n",
+                "    end\n",
+                "  end\n",
+                "end\n",
+            ),
+        ),
+        (
+            "app/models/report.rb",
+            concat!(
+                "class Report < ApplicationRecord\n",
+                "  include FileMounter\n",
+                "  mount_file ReportUploader\n",
+                "  attribute :draft_path, default: nil\n",
+                "  jsonb_accessor :settings, level: :integer\n",
+                "  def readable? = file.exists? && draft_path?\n",
+                "  def level_changed_recently? = level_changed?\n",
+                "  def summary = self.class.where(title: \"x\").select(\"count(*) AS total\").first!.total\n",
+                "  def broken = summary_text\n",
+                "end\n",
+            ),
+        ),
+        (
+            "app/workers/report_worker.rb",
+            "class ReportWorker\n  def perform(id) = Report.find(id).file.open_stream\nend\n",
+        ),
+    ]);
+    assert_eq!(
+        missing,
+        BTreeSet::from(["Report#summary_text".to_string()]),
+        "{missing:?}"
+    );
+}

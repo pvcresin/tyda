@@ -1517,3 +1517,33 @@ fn hash_key_written_after_a_fallback_default_is_known() {
         assert_eq!(missing_methods_in(source, compact), [], "compact={compact}");
     }
 }
+
+#[test]
+fn ivar_read_after_an_object_assignment_uses_the_written_value() {
+    let source = concat!(
+        "class Setting\n",
+        "  def save = true\n",
+        "end\n",
+        "class SettingStore\n",
+        "  def self.find_cached = [Setting.new].find { |setting| setting }\n",
+        "  def self.build(level) = Setting.new\n",
+        "end\n",
+        "class SettingOwner\n",
+        "  def cached\n",
+        "    @setting = SettingStore.find_cached\n",
+        "  end\n",
+        "  def setting\n",
+        "    @setting = SettingStore.build(1)\n",
+        "    @setting.save\n",
+        "  end\n",
+        "  def stale = @setting.save\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        assert_eq!(
+            missing_methods_in(source, compact),
+            [(16, "NilClass#save".to_string())],
+            "compact={compact}"
+        );
+    }
+}

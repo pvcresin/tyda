@@ -248,7 +248,9 @@ impl TypeRegistry {
             .class_data
             .get(class_name)
             .is_some_and(|d| d.user_defined);
-        if !rbs_data.cold().includer_bound_dsl.is_empty() {
+        if !rbs_data.cold().includer_bound_dsl.is_empty()
+            || !rbs_data.cold().pending_class_macros.is_empty()
+        {
             self.has_includer_bound_dsl = true;
             self.includer_bound_dsl_applied = false;
         }
@@ -413,9 +415,14 @@ impl TypeRegistry {
             if src_cold.has_dynamic_mixin {
                 data.cold_mut().has_dynamic_mixin = true;
             }
-            for name in &src_cold.unknown_macro_attributes {
-                if !data.cold().unknown_macro_attributes.contains(name) {
-                    data.cold_mut().unknown_macro_attributes.push(*name);
+            for entry in &src_cold.pending_class_macros {
+                if !data.cold().pending_class_macros.contains(entry) {
+                    data.cold_mut().pending_class_macros.push(entry.clone());
+                }
+            }
+            for name in &src_cold.runtime_attributes {
+                if !data.cold().runtime_attributes.contains(name) {
+                    data.cold_mut().runtime_attributes.push(*name);
                 }
             }
         }

@@ -2001,9 +2001,12 @@ pub struct ClassDataCold {
     /// DSL recorded in a concern `included do` that must run against each includer
     /// (resource name / serializer owner), not the concern module itself.
     pub includer_bound_dsl: Vec<IncluderBoundDsl>,
-    /// Names passed to class macros Tyda cannot resolve; such a macro may define methods
-    /// named after them (`attr_encrypted :token` -> `token`, `token=`, `token_changed?`).
-    pub unknown_macro_attributes: Vec<Sym>,
+    /// Attribute names whose methods are generated at runtime by macros Tyda does not model
+    /// (`attr_encrypted :token` -> `token`, `token=`, `token_changed?`) or by `select` aliases.
+    pub runtime_attributes: Vec<Sym>,
+    /// Class-body calls (macro name, literal symbol arguments) whose definition was not loaded
+    /// yet; resolved against source-defined class methods once the ancestors are known.
+    pub pending_class_macros: Vec<(Sym, Vec<Sym>)>,
     /// `include` / `extend` / `prepend` of a module computed at runtime (`include Routing.url_helpers`).
     pub has_dynamic_mixin: bool,
 }
@@ -3997,21 +4000,21 @@ impl TypeRegistry {
             .any(|data| data.cold_opt().is_some_and(|cold| cold.has_dynamic_mixin))
     }
 
-    pub(crate) fn mark_unknown_macro_attribute(&mut self, class_name: &str, name: &str) {
+    pub(crate) fn mark_runtime_attribute(&mut self, class_name: &str, name: &str) {
         let name = Sym::new(name);
         let names = &mut self
             .class_data_mut(class_name)
             .cold_mut()
-            .unknown_macro_attributes;
+            .runtime_attributes;
         if !names.contains(&name) {
             names.push(name);
         }
     }
 
-    /// Whether an unknown class macro on the class or its ancestors may have generated
+    /// Whether a runtime attribute on the class or its ancestors may have generated
     /// `method_name`: the attribute itself, its writer / predicate, a dirty-family method, or
     /// a name that contains it as a word (`remove_avatar!` for `mount_uploader :avatar`).
-    pub fn method_may_come_from_unknown_macro(&self, class_name: &str, method_name: &str) -> bool {
+    pub fn method_may_be_runtime_attribute(&self, class_name: &str, method_name: &str) -> bool {
         let attribute = split_dirty_method_name(method_name)
             .map(|(column, _)| column)
             .unwrap_or_else(|| method_name.trim_end_matches(['=', '?', '!']));
@@ -4029,7 +4032,7 @@ impl TypeRegistry {
                 .get(name.as_str())
                 .and_then(|data| data.cold_opt())
                 .is_some_and(|cold| {
-                    cold.unknown_macro_attributes.iter().any(|macro_name| {
+                    cold.runtime_attributes.iter().any(|macro_name| {
                         macro_name.as_str() == attribute
                             || wrapped.contains(&format!("_{}_", macro_name.as_str()))
                     })

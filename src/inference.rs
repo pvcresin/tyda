@@ -30296,6 +30296,9 @@ impl<'a> InferenceEngine<'a> {
                         }
                     };
 
+                    if method_name == "select" && self.rails_feature_enabled() {
+                        self.record_active_record_select_aliases(&receiver_type, &call_node);
+                    }
                     let result = 'recv: {
                         if receiver_type == Type::Bot
                             && self.node_always_exits_in_method_scope(class_name, scope, &receiver)
@@ -61977,7 +61980,9 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn can_track_ivar_write_locally(value: &Node<'_>, ty: &Type) -> bool {
-        // Method return summaries may include branches excluded by this call's arguments.
+        // Method return summaries may include branches excluded by this call's arguments, and
+        // a literal result can depend on state the call reads (`@on = !@on`). A single object
+        // type is still the value just written (`@setting = settings.find_or_initialize_by(..)`).
         let call_result_is_stable = match value {
             Node::CallNode { .. } => {
                 matches!(ty, Type::Nil)
@@ -61992,6 +61997,8 @@ impl<'a> InferenceEngine<'a> {
                             && call.block().is_none()
                             && !matches!(ty, Type::Union(_))
                     })
+                    || (matches!(ty, Type::Class(_) | Type::Generic { .. })
+                        && Self::is_concrete(ty))
             }
             _ => true,
         };
@@ -63636,9 +63643,18 @@ mod tests {
             .value();
 
         assert!(matches!(call_value, Node::CallNode { .. }));
-        assert!(!InferenceEngine::can_track_ivar_write_locally(
+        // A single object result is the value just written, whatever the call's arguments.
+        assert!(InferenceEngine::can_track_ivar_write_locally(
             &call_value,
             &Type::Class(Sym::new("Factory")),
+        ));
+        assert!(!InferenceEngine::can_track_ivar_write_locally(
+            &call_value,
+            &Type::Union(vec![Type::Class(Sym::new("Factory")), Type::Nil]),
+        ));
+        assert!(!InferenceEngine::can_track_ivar_write_locally(
+            &call_value,
+            &Type::Integer,
         ));
         assert!(!InferenceEngine::can_track_ivar_write_locally(
             &call_value,
@@ -63662,11 +63678,11 @@ mod tests {
         ));
         assert!(!InferenceEngine::can_track_ivar_write_locally(
             &arg_dup_value,
-            &Type::Class(Sym::new("Hash")),
+            &Type::String,
         ));
         assert!(!InferenceEngine::can_track_ivar_write_locally(
             &block_dup_value,
-            &Type::Class(Sym::new("Hash")),
+            &Type::String,
         ));
         let literal_value = nodes
             .next()
