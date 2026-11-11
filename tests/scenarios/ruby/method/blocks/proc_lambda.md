@@ -160,10 +160,6 @@ end
 
 ## Lambda optional parameter uses its default value
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -184,10 +180,6 @@ end
 ```
 
 ## Lambda rest parameter collects the call arguments
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -210,10 +202,6 @@ end
 
 ## Lambda post parameter takes the last call argument
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -234,10 +222,6 @@ end
 ```
 
 ## Lambda keyword parameter takes the call keyword or its default
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -266,10 +250,6 @@ end
 
 ## Lambda block parameter receives the call block
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -290,10 +270,6 @@ end
 ```
 
 ## Lambda positional parameter receives keyword arguments as a hash
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -316,10 +292,6 @@ end
 
 ## Proc spreads a single array argument over its parameters
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -341,10 +313,6 @@ end
 
 ## return inside a lambda leaves only the lambda
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -365,10 +333,6 @@ end
 ```
 
 ## break inside a lambda leaves only the lambda
-
-```yaml
-known_issue: true
-```
 
 ### update
 

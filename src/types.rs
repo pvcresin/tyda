@@ -112,6 +112,8 @@ pub enum Type {
     Proc {
         return_type: Box<Type>,
         param_count: usize,
+        // Present for source proc literals so a call binds its arguments like a method call.
+        signature: Option<Arc<ProcSignature>>,
     },
     Tuple(Vec<Type>),
     TruthyProjection(Box<Type>),
@@ -400,12 +402,14 @@ impl PartialEq for Type {
                 Type::Proc {
                     return_type: r1,
                     param_count: p1,
+                    signature: s1,
                 },
                 Type::Proc {
                     return_type: r2,
                     param_count: p2,
+                    signature: s2,
                 },
-            ) => p1 == p2 && r1 == r2,
+            ) => p1 == p2 && r1 == r2 && s1 == s2,
             (Type::Generic { base: b1, args: a1 }, Type::Generic { base: b2, args: a2 }) => {
                 b1 == b2 && a1 == a2
             }
@@ -472,9 +476,11 @@ impl std::hash::Hash for Type {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => {
                 return_type.hash(state);
                 param_count.hash(state);
+                signature.hash(state);
             }
             Type::Tuple(types) => types.hash(state),
             Type::Generic { base, args } => {
@@ -608,12 +614,14 @@ impl Type {
                 Type::Proc {
                     return_type: a,
                     param_count: pa,
+                    signature: sa,
                 },
                 Type::Proc {
                     return_type: b,
                     param_count: pb,
+                    signature: sb,
                 },
-            ) => a.cmp(b).then(pa.cmp(pb)),
+            ) => a.cmp(b).then(pa.cmp(pb)).then_with(|| sa.cmp(sb)),
             (Type::Tuple(a), Type::Tuple(b)) => a.cmp(b),
             (Type::Intersection(a), Type::Intersection(b)) => a.cmp(b),
             // Since it shares a discriminant, comparisons involving `Generic` fall back to Display strings (compatible with the old flat representation).
@@ -674,9 +682,11 @@ impl Type {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(return_type.replace_self_type(self_type)),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             Type::TruthyProjection(inner) => {
                 Type::TruthyProjection(Box::new(inner.replace_self_type(self_type)))
@@ -774,9 +784,11 @@ impl Type {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(return_type.replace_instance_type(instance_type)),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             Type::TruthyProjection(inner) => {
                 Type::TruthyProjection(Box::new(inner.replace_instance_type(instance_type)))
@@ -1557,7 +1569,7 @@ pub struct SourceLocation {
     pub column: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ParamKind {
     Required,
     Optional,
@@ -1566,6 +1578,35 @@ pub enum ParamKind {
     KeywordOptional,
     DoubleRest,
     Block,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ParamInfo {
+    pub name: String,
+    pub kind: ParamKind,
+    pub default_type: Option<Type>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ProcKind {
+    Proc,
+    Lambda,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ProcSignature {
+    pub kind: ProcKind,
+    pub params: Box<[ParamInfo]>,
+    pub captured_writes: Option<Box<CapturedLocalWrites>>,
+}
+
+/// Outer locals a proc literal's body assigns. The names only mean the same locals inside the
+/// method that defined the literal, so a call applies them there alone.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CapturedLocalWrites {
+    pub class_name: Sym,
+    pub method_name: Option<Sym>,
+    pub writes: Box<[(String, Type)]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

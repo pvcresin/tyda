@@ -291,6 +291,7 @@ impl Drop for CallerCtxMemoScope {
     }
 }
 
+pub(crate) mod argument_binding;
 mod external_types;
 mod file_local;
 mod includer_dsl;
@@ -330,12 +331,7 @@ use crate::types::{
     Type,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParamInfo {
-    pub name: String,
-    pub kind: ParamKind,
-    pub default_type: Option<Type>,
-}
+pub use crate::types::ParamInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallSiteCallerContext {
@@ -3311,40 +3307,23 @@ impl TypeRegistry {
             .count()
     }
 
-    fn method_accepts_keywords(param_infos: &[ParamInfo]) -> bool {
-        param_infos.iter().any(|pi| {
-            matches!(
-                pi.kind,
-                ParamKind::KeywordRequired | ParamKind::KeywordOptional | ParamKind::DoubleRest
-            )
-        })
-    }
-
     pub(crate) fn synthesize_keyword_hash_arg(
         call_site: &CallSite,
         param_infos: &[ParamInfo],
     ) -> Vec<Type> {
         let mut arg_types = call_site.arg_types.clone();
-        if call_site.keyword_arg_types.is_empty() || Self::method_accepts_keywords(param_infos) {
+        if call_site.keyword_arg_types.is_empty()
+            || argument_binding::accepts_keywords(param_infos)
+            || arg_types.len() >= Self::positional_param_count(param_infos)
+        {
             return arg_types;
         }
-
-        let positional_count = Self::positional_param_count(param_infos);
-        if arg_types.len() >= positional_count {
-            return arg_types;
-        }
-
-        let mut fields: Vec<RecordField> = call_site
-            .keyword_arg_types
-            .iter()
-            .map(|(name, ty)| RecordField {
-                key: RecordKey::Symbol(name.to_string()),
-                value: ty.clone(),
-                optional: false,
-            })
-            .collect();
-        fields.sort_by(|a, b| a.key.cmp(&b.key));
-        arg_types.push(Type::Record(fields));
+        arg_types.push(argument_binding::keyword_hash_argument(
+            call_site
+                .keyword_arg_types
+                .iter()
+                .map(|(name, ty)| (name.as_ref(), ty)),
+        ));
         arg_types
     }
 
@@ -3371,46 +3350,12 @@ impl TypeRegistry {
                 )
             })
             .collect();
-        let bound = Self::bind_positional_arguments(&positional_infos, arg_types);
+        let bound = argument_binding::bind_positional_arguments(&positional_infos, arg_types);
         for (slot, arg_types) in param_types.iter_mut().zip(bound) {
             for arg_type in arg_types {
                 Type::append_argument_parts(slot, arg_type);
             }
         }
-    }
-
-    /// Ruby's positional binding: required parameters first, then optionals, then the rest.
-    pub(crate) fn bind_positional_arguments(
-        params: &[&ParamInfo],
-        args: &[Type],
-    ) -> Vec<Vec<Type>> {
-        let required_count = params
-            .iter()
-            .filter(|param| matches!(param.kind, ParamKind::Required))
-            .count();
-        let optional_count = params
-            .iter()
-            .filter(|param| matches!(param.kind, ParamKind::Optional))
-            .count();
-        let mut optional_args = args.len().saturating_sub(required_count);
-        let mut rest_args = optional_args.saturating_sub(optional_count);
-        let mut args = args.iter().cloned();
-        params
-            .iter()
-            .map(|param| match param.kind {
-                ParamKind::Optional if optional_args == 0 => Vec::new(),
-                ParamKind::Optional => {
-                    optional_args -= 1;
-                    args.next().into_iter().collect()
-                }
-                ParamKind::Rest => {
-                    let collected = args.by_ref().take(rest_args).collect();
-                    rest_args = 0;
-                    collected
-                }
-                _ => args.next().into_iter().collect(),
-            })
-            .collect()
     }
 
     pub fn new() -> Self {
@@ -7837,6 +7782,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => {
                 let (ret, resolved, unresolved) =
                     self.resolve_scoped_refs_in_type(scope_class, return_type);
@@ -7845,6 +7791,7 @@ impl TypeRegistry {
                 Type::Proc {
                     return_type: Box::new(ret),
                     param_count: *param_count,
+                    signature: signature.clone(),
                 }
             }
             Type::DeferredSafeNavigation(receiver, result) => {
@@ -8090,9 +8037,11 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_subclass_refs_in_type(return_type)),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_subclass_refs_in_type(subject);
@@ -8904,6 +8853,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_global_refs(
                     context_class,
@@ -8914,6 +8864,7 @@ impl TypeRegistry {
                     budget,
                 )),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_global_refs(
@@ -9145,9 +9096,11 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_param_refs_from_resolved(return_type, params)),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 let resolved_inner = self.resolve_param_refs_from_resolved(inner, params);
@@ -9761,6 +9714,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_deferred_refs_depth(
                     class_name,
@@ -9771,6 +9725,7 @@ impl TypeRegistry {
                     visiting,
                 )),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             Type::Tuple(elems) => Type::Tuple(
                 elems
@@ -10456,6 +10411,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_call_site_type_from_caller_context(
                     call_site,
@@ -10463,6 +10419,7 @@ impl TypeRegistry {
                     visiting,
                 )),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
@@ -12467,9 +12424,11 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(recur(return_type)),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             // don't eagerly resolve while a param marker remains (`_ => Untyped` would destroy the marker -> leave it for call-site substitution).
             Type::PatternIndexRef(subject, index) => {
@@ -13828,6 +13787,7 @@ mod tests {
                 Type::Proc {
                     return_type: Box::new(Type::MethodReturnRef("Box".into(), "value".into())),
                     param_count: 0,
+                    signature: None,
                 },
             ),
         );
@@ -13866,6 +13826,7 @@ mod tests {
             Type::Proc {
                 return_type: Box::new(Type::Integer),
                 param_count: 0,
+                signature: None,
             }
         );
         let hash = registry
