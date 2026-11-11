@@ -122,7 +122,7 @@ pub enum Type {
     TruthyProjection(Box<Type>),
     FalsyProjection(Box<Type>),
     NonNilProjection(Box<Type>),
-    // The Array `[*a, *b, ...]` builds from the parts of the inner `Tuple`, waiting for a part known only later.
+    // The element type of `[*a, *b, ...]` over the parts of the inner `Tuple`, waiting for a part known only later.
     SplatRef(Box<Type>),
     // `args` is stored as `Box<[Type]>` rather than `Vec` for a narrower slot.
     Generic {
@@ -1533,10 +1533,8 @@ impl fmt::Display for Type {
             Type::PatternKeyRestRef(_, _) => write!(f, "untyped"),
             Type::ReceiverMethodRef(_, _) => write!(f, "untyped"),
             Type::DeferredSafeNavigation(_, _) => write!(f, "untyped"),
-            Type::TruthyProjection(_)
-            | Type::FalsyProjection(_)
-            | Type::NonNilProjection(_)
-            | Type::SplatRef(_) => {
+            Type::SplatRef(inner) => write!(f, "{}", Type::splat_fallback(inner)),
+            Type::TruthyProjection(_) | Type::FalsyProjection(_) | Type::NonNilProjection(_) => {
                 write!(f, "untyped")
             }
             Type::SelfType => write!(f, "self"),

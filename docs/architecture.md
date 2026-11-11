@@ -136,8 +136,9 @@ union にまとめる。適用先や hook の定義を解決できない場合�
 splat の展開（`[*x]`、`Kernel#Array`、`push(*x)`、呼び出しの `*x`）は `types::splat` の
 一つの規則で表し、`to_a` の参照だけを呼び出し側が与える。値が `to_a` を持つか、持たないと言えるかは
 推論と遅延解決のどちらも `TypeRegistry::splat_to_a_response` で決め、推論中は先に class と祖先を
-読み込み、戻り値だけを型引数付きで引く。parameter など後で分かる部分を含む展開は `Type::SplatRef` として残し、各遅延
-解決 pass が中身を解決してから同じ規則で展開する。call site は要素数が分からない splat の位置を
+読み込み、戻り値だけを型引数付きで引く。parameter など後で分かる部分を含む展開は要素数を確定せず `Array[SplatRef]` とし、要素型だけを
+遅延参照として残す。値は Array のまま後続の呼び出しや `<<` に渡り、各遅延解決 pass が中身を解決してから
+同じ規則で要素型を求める。最後まで解決できない部分は `untyped` の要素として表示する。call site は要素数が分からない splat の位置を
 `open_splat` に持ち、parameter への束縛は arity が合う要素数ごとに行って union にする。
 
 親クラス本体の `self` 呼び出し（call site の `self_call`）は Ruby では実行時の class へ dispatch する。

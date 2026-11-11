@@ -183,3 +183,91 @@ class Builder
   def build: -> Array[Integer]
 end
 ```
+
+## Kernel Array of an unknown value read through an attr reader stays an Array
+
+### update
+
+```ruby
+class Report
+  attr_reader :sources
+
+  def initialize(options)
+    @sources = Array(options[:source])
+  end
+end
+```
+
+### result
+
+```rbs
+class Report
+  def sources: -> Array[untyped]
+  def initialize: (untyped options) -> void
+end
+```
+
+## Kernel Array of a memoized unknown value keeps Array calls
+
+### update
+
+```ruby
+class Grouping
+  def initialize(options)
+    @options = options
+  end
+
+  def groups
+    @groups ||= Array(@options["group"] || :default).map(&:to_sym)
+  end
+end
+```
+
+### result
+
+```rbs
+class Grouping
+  def initialize: (untyped options) -> void
+  def groups: -> Array[untyped]
+end
+```
+
+## Kernel Array of a reassigned parameter keeps Array methods
+
+### update
+
+```ruby
+class Front
+  def show(name = nil, *value)
+    Setting.new(name, value).value
+  end
+
+  def read(name)
+    Setting.new(name, nil).value
+  end
+end
+
+class Setting
+  attr_reader :value
+
+  def initialize(name, value)
+    @name = name
+    value = Array(value)
+    @value = value.empty? ? nil : value.join(" ")
+  end
+end
+```
+
+### result
+
+```rbs
+class Front
+  def show: (?nil name, *untyped value) -> String?
+  def read: (untyped name) -> String?
+end
+
+class Setting
+  def value: -> String?
+  def initialize: (nil name, Array[untyped]? value) -> void
+end
+```
