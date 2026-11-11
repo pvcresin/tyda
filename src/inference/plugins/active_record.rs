@@ -218,7 +218,10 @@ impl Plugin for ActiveRecord {
                 cx.collect_connects_to(class_name, call_node, parse_result);
                 true
             }
-            "encrypts" | "has_encrypted" if cx.rails_feature_enabled() => {
+            // Active Record encryption decorates an existing attribute; Lockbox's
+            // `has_encrypted` defines a virtual one.
+            "encrypts" if cx.rails_feature_enabled() => true,
+            "has_encrypted" if cx.rails_feature_enabled() => {
                 cx.collect_encrypted_attributes(class_name, call_node, parse_result);
                 true
             }
@@ -1553,9 +1556,7 @@ impl<'a> InferenceEngine<'a> {
         let synthetic_start = self
             .is_collecting_concern_included()
             .then(|| self.registry.method_defs_len(class_name));
-        for attr_name in Self::extract_symbol_args(call_node) {
-            self.register_untyped_attribute_accessors(class_name, &attr_name, loc);
-        }
+        // `normalizes` decorates existing attributes; it defines no accessors.
         // The normalizer lambda is the method body: its parameter is `value`.
         let normalized_type = self.normalizer_result_type(class_name, call_node, parse_result);
         self.registry.add_method_def_if_missing(

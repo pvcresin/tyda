@@ -1864,6 +1864,58 @@ impl<'a> InferenceEngine<'a> {
         )
     }
 
+    /// Reading an attribute by a literal name (`record[:title]`, `record.read_attribute(:title)`,
+    /// `attributes["title"]`) gives the column's reader type.
+    pub(super) fn active_record_attribute_read(
+        &mut self,
+        class_name: &str,
+        receiver: &Node<'_>,
+        receiver_type: &Type,
+        call_node: &ruby_prism::CallNode<'_>,
+        method_name: &str,
+        scope: &Scope,
+    ) -> Option<Type> {
+        let model = match method_name {
+            "read_attribute" | "_read_attribute" => receiver_type.clone(),
+            "[]" => self
+                .attributes_hash_owner(class_name, receiver, scope)
+                .unwrap_or_else(|| receiver_type.clone()),
+            "fetch" | "dig" => self.attributes_hash_owner(class_name, receiver, scope)?,
+            _ => return None,
+        };
+        let Type::Class(model_name) = model else {
+            return None;
+        };
+        if !self.is_active_record_model_class(&model_name) {
+            return None;
+        }
+        let args = call_node.arguments()?;
+        let mut args = args.arguments().iter();
+        let column = Self::extract_symbol_literal_name(&args.next()?)?;
+        if args.next().is_some() {
+            return None;
+        }
+        self.registry
+            .schema_column_accessor_type(&model_name, &column)
+    }
+
+    /// The model whose `attributes` hash `receiver` is (`attributes` / `record.attributes`).
+    fn attributes_hash_owner(
+        &self,
+        class_name: &str,
+        receiver: &Node<'_>,
+        scope: &Scope,
+    ) -> Option<Type> {
+        let call = receiver.as_call_node()?;
+        if call.name().as_slice() != b"attributes" || call.arguments().is_some() {
+            return None;
+        }
+        let self_receiver = call
+            .receiver()
+            .is_none_or(|owner| matches!(owner, Node::SelfNode { .. }));
+        (self_receiver && !scope.singleton_dispatch).then(|| Type::Class(Sym::new(class_name)))
+    }
+
     /// `pluck` / `pick` / `minimum` / `maximum` with literal column names read the columns' types.
     pub(super) fn refine_active_record_column_call(
         &self,
