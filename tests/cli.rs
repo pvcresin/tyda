@@ -4796,3 +4796,75 @@ fn known_issue_io_read_through_parameters_in_a_single_file() {
         "known issue fixed (IO#read through a parameter); drop this check: {read}"
     );
 }
+
+/// Cross-file relation chains resolve in the merged registry after the engines finish, so
+/// that registry must apply the project's Rails version like the engine does.
+#[test]
+fn deferred_relation_methods_follow_the_project_rails_version() {
+    fn render_query(rails_version: &str) -> String {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+        fs::write(
+            dir.path().join("Gemfile.lock"),
+            format!("GEM\n  specs:\n    rails ({rails_version})\n"),
+        )
+        .expect("write Gemfile.lock");
+        let models = dir.path().join("app").join("models");
+        let services = dir.path().join("app").join("services");
+        fs::create_dir_all(&models).expect("models dir");
+        fs::create_dir_all(&services).expect("services dir");
+        fs::write(
+            models.join("application_record.rb"),
+            "class ApplicationRecord < ActiveRecord::Base\nend\n",
+        )
+        .expect("write application_record");
+        fs::write(
+            models.join("post.rb"),
+            "class Post < ApplicationRecord\n  def self.published = where(id: 1)\nend\n",
+        )
+        .expect("write post");
+        fs::write(
+            services.join("finder.rb"),
+            "class Finder\n  def self.scope = Post.published\nend\n",
+        )
+        .expect("write finder");
+        fs::write(
+            services.join("query.rb"),
+            "class Query\n  def reselected = Finder.scope.reselect(:id)\n  def combined = Finder.scope.and(Post.all)\n  def ordered = Finder.scope.order(:id)\nend\n",
+        )
+        .expect("write query");
+        let output = tyda_bin()
+            .current_dir(dir.path())
+            .arg("app")
+            .output()
+            .expect("failed to run");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    let relation = "-> ActiveRecord::Relation[Post]";
+    let rails_6_1 = render_query("6.1.0");
+    assert!(
+        rails_6_1.contains(&format!("def reselected: {relation}")),
+        "{rails_6_1}"
+    );
+    assert!(
+        rails_6_1.contains(&format!("def combined: {relation}")),
+        "{rails_6_1}"
+    );
+
+    // `reselect` is 6.0+ and `and` is 6.1+; `order` is available in every version.
+    let rails_5_2 = render_query("5.2.0");
+    assert!(
+        rails_5_2.contains("def reselected: -> untyped"),
+        "{rails_5_2}"
+    );
+    assert!(
+        rails_5_2.contains("def combined: -> untyped"),
+        "{rails_5_2}"
+    );
+    assert!(
+        rails_5_2.contains(&format!("def ordered: {relation}")),
+        "{rails_5_2}"
+    );
+}

@@ -38,6 +38,8 @@ pub fn load_project_types_with_activation(
         return false;
     }
     let preload_timing = std::env::var_os("TYDA_PRELOAD_TIMING").is_some();
+    // Registries derived from this one resolve version-gated Rails APIs after the engines finish.
+    registry.set_rails_version(crate::project::detect_rails_version(root));
     // Registers declared-gem / framework constants as known, so they don't trigger `unresolved_constant`.
     let t = std::time::Instant::now();
     registry
