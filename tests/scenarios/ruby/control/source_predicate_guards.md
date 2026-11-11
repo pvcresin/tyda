@@ -206,7 +206,7 @@ class PredicateOverriddenBelow
 end
 
 class PredicateOverrideChild < PredicateOverriddenBelow
-  def present?: (untyped _value) -> true
+  def present?: (String? _value) -> true
 end
 
 class PredicatePrepended

@@ -212,11 +212,15 @@ impl<'a> InferenceEngine<'a> {
             let mut all_param_types: Vec<Vec<Type>> = Vec::with_capacity(data.methods.len());
             let caller_ctx_memo = CallerCtxMemoScope::enter();
             for method in &data.methods {
-                let empty: [&CallSite; 0] = [];
-                let method_call_sites = grouped_call_sites
+                let mut method_call_sites: Vec<&CallSite> = grouped_call_sites
                     .get(&(method.name.as_str(), method.is_singleton))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&empty);
+                    .cloned()
+                    .unwrap_or_default();
+                method_call_sites.extend(self.registry.ancestor_self_call_sites(
+                    class_name,
+                    method.name.as_str(),
+                    method.is_singleton,
+                ));
                 let forwarded_call_sites: Vec<Option<CallSite>> = method_call_sites
                     .iter()
                     .map(|site| self.registry.call_site_with_forwarded_args(site))

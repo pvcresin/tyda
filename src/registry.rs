@@ -333,6 +333,17 @@ use crate::types::{
 
 pub use crate::types::ParamInfo;
 
+/// How a splatted value answers `to_a`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToAResponse {
+    Defined {
+        source_defined: bool,
+        owner_singleton: bool,
+    },
+    Missing,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallSiteCallerContext {
     pub class_name: SharedName,
@@ -2651,6 +2662,8 @@ pub struct TypeRegistry {
     has_source_base_case_equality_override: bool,
     has_source_numeric_case_equality_override: bool,
     has_source_block_given_override: bool,
+    /// Lazy RBI declarations exist, so a method surface is complete only when they back it.
+    generated_artifacts_present: bool,
     /// skip the dirty-synthesis path entirely for registries with no dirty patterns (avoids per-miss matching cost for non-Rails).
     has_dirty_patterns: bool,
     /// resolved-param cache: valid because the registry is immutable during resolution. Call `invalidate_resolve_cache` after mutation.
@@ -2753,6 +2766,7 @@ impl Clone for TypeRegistry {
             has_source_numeric_case_equality_override: self
                 .has_source_numeric_case_equality_override,
             has_source_block_given_override: self.has_source_block_given_override,
+            generated_artifacts_present: self.generated_artifacts_present,
             has_dirty_patterns: self.has_dirty_patterns,
             resolve_params_cache: ParamCache::default(),
             resolve_params_cache_frozen: std::sync::atomic::AtomicBool::new(false),
@@ -2949,44 +2963,6 @@ impl TypeRegistry {
             current = alias.old_name.clone();
         }
         current
-    }
-
-    /// A self call to a method the class lacks or leaves abstract dispatches to the subclasses
-    /// that define it, so its call sites also feed their parameters.
-    /// Returns whether any call site was added.
-    pub fn merge_subclass_dispatch_call_sites(&mut self) -> bool {
-        if self.tail().subclass_index.is_none() {
-            return false;
-        }
-        let mut additions: Vec<(&str, CallSite)> = Vec::new();
-        for (class_name, data) in &self.class_data {
-            if data.call_sites.is_empty() || self.subclasses_of(class_name).is_empty() {
-                continue;
-            }
-            let mut targets: FxHashMap<(&str, bool), Vec<(&str, bool)>> = FxHashMap::default();
-            for site in data.call_sites.iter().filter(|site| site.self_call) {
-                let key = (site.method_name.as_ref(), site.method_is_singleton);
-                let owners = targets.entry(key).or_insert_with(|| {
-                    if self.self_call_reaches_subclasses(class_name, key.0, key.1) {
-                        self.resolve_method_in_subclasses_refs(class_name, key.0, key.1)
-                    } else {
-                        Vec::new()
-                    }
-                });
-                for &(owner, _) in owners.iter() {
-                    additions.push((owner, site.clone()));
-                }
-            }
-        }
-        let additions: Vec<(String, CallSite)> = additions
-            .into_iter()
-            .map(|(owner, site)| (owner.to_string(), site))
-            .collect();
-        let added = !additions.is_empty();
-        for (owner, site) in additions {
-            self.add_call_site(&owner, site);
-        }
-        added
     }
 
     /// union call sites within an alias group (Ruby aliases share the same body). Done once, after recording and before param resolution.
@@ -5797,6 +5773,79 @@ impl TypeRegistry {
             .is_some_and(|method| method.raw_return_type == Type::Bot)
     }
 
+    /// Self calls that ancestor bodies make to `method_name`. Ruby dispatches them on the runtime
+    /// class, so on an instance of `class_name` they run its own definition and feed its parameters.
+    pub(crate) fn ancestor_self_call_sites(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Vec<&CallSite> {
+        let mut sites = Vec::new();
+        let mut current = class_name;
+        for _ in 0..MAX_RESOLVE_DEPTH {
+            let Some(parent) = self.get_superclass(current) else {
+                break;
+            };
+            if parent == current || parent == class_name {
+                break;
+            }
+            if let Some(data) = self.class_data.get(parent)
+                && !data.call_sites.is_empty()
+            {
+                sites.extend(
+                    self.method_call_sites(parent, data, method_name, is_singleton)
+                        .filter(|site| site.self_call),
+                );
+            }
+            current = parent;
+        }
+        sites
+    }
+
+    /// The call sites recorded on `class_name` for one method.
+    fn method_call_sites<'d>(
+        &self,
+        class_name: &str,
+        data: &'d ClassData,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Box<dyn Iterator<Item = &'d CallSite> + 'd> {
+        match self.matching_call_site_indices(class_name, data, method_name, is_singleton) {
+            Some(indices) => Box::new(
+                indices
+                    .into_iter()
+                    .map(move |idx| data.call_sites.get(idx as usize)),
+            ),
+            None => {
+                let method_name: SharedName = self.shared_name(method_name);
+                Box::new(data.call_sites.iter().filter(move |site| {
+                    site.method_name == method_name && site.method_is_singleton == is_singleton
+                }))
+            }
+        }
+    }
+
+    /// Whether some self call reaches a subclass definition whose return the parent reads.
+    pub(crate) fn has_self_calls_reaching_subclass_returns(&self) -> bool {
+        if self.tail().subclass_index.is_none() {
+            return false;
+        }
+        self.class_data.iter().any(|(class_name, data)| {
+            if self.subclasses_of(class_name).is_empty() {
+                return false;
+            }
+            let mut checked: FxHashSet<&str> = FxHashSet::default();
+            data.call_sites.iter().any(|site| {
+                site.self_call
+                    && checked.insert(site.method_name.as_ref())
+                    && self
+                        .subclass_return_for_self_call(class_name, &site.method_name)
+                        .is_some()
+            })
+        })
+    }
+
     pub fn lookup_method_return_type_in_subclasses(
         &self,
         class_name: &str,
@@ -7149,7 +7198,7 @@ impl TypeRegistry {
                 !method.synthetic_dsl_source
                     && Self::type_contains_param_ref_static(&method.raw_return_type)
             });
-            if !has_candidate || data.call_sites.is_empty() {
+            if !has_candidate {
                 continue;
             }
             let mut grouped: FxHashMap<(&str, bool), Vec<&CallSite>> = FxHashMap::default();
@@ -7168,10 +7217,21 @@ impl TypeRegistry {
                     {
                         return None;
                     }
-                    let sites = grouped.get(&(method.name.as_str(), method.is_singleton))?;
+                    let mut sites: Vec<&CallSite> = grouped
+                        .get(&(method.name.as_str(), method.is_singleton))
+                        .cloned()
+                        .unwrap_or_default();
+                    sites.extend(self.ancestor_self_call_sites(
+                        class_name,
+                        method.name.as_str(),
+                        method.is_singleton,
+                    ));
+                    if sites.is_empty() {
+                        return None;
+                    }
                     let positional_count = Self::positional_param_count(&method.param_infos);
                     let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
-                    for site in sites {
+                    for site in &sites {
                         let forwarded = self.call_site_with_forwarded_args(site);
                         Self::merge_call_site_positional_types(
                             &mut param_types,
@@ -7201,7 +7261,7 @@ impl TypeRegistry {
                         })
                         .collect();
                     let mut keyword_merged: FxHashMap<String, Vec<Type>> = FxHashMap::default();
-                    for site in sites {
+                    for site in &sites {
                         for (name, ty) in &site.keyword_arg_types {
                             keyword_merged
                                 .entry(name.as_ref().to_string())
@@ -11033,16 +11093,13 @@ impl TypeRegistry {
 
         let positional_count = Self::positional_param_count(&method.param_infos);
         let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
-        let indexed = self.matching_call_site_indices(
-            class_name,
-            data,
-            method.name.as_str(),
-            method.is_singleton,
-        );
-        let site_iter: Box<dyn Iterator<Item = &CallSite>> = match &indexed {
-            Some(indices) => Box::new(indices.iter().map(|&idx| data.call_sites.get(idx as usize))),
-            None => Box::new(data.call_sites.iter()),
-        };
+        let site_iter = self
+            .method_call_sites(class_name, data, method.name.as_str(), method.is_singleton)
+            .chain(self.ancestor_self_call_sites(
+                class_name,
+                method.name.as_str(),
+                method.is_singleton,
+            ));
         for call_site in site_iter {
             if call_site.method_name.as_ref() == method.name.as_str()
                 && call_site.method_is_singleton == method.is_singleton
@@ -11309,12 +11366,9 @@ impl TypeRegistry {
         visiting: &mut FxHashSet<(String, String, bool)>,
     ) -> Type {
         let mut types = Vec::new();
-        let indexed =
-            self.matching_call_site_indices(class_name, data, method_name, method_is_singleton);
-        let site_iter: Box<dyn Iterator<Item = &CallSite>> = match &indexed {
-            Some(indices) => Box::new(indices.iter().map(|&idx| data.call_sites.get(idx as usize))),
-            None => Box::new(data.call_sites.iter()),
-        };
+        let site_iter = self
+            .method_call_sites(class_name, data, method_name, method_is_singleton)
+            .chain(self.ancestor_self_call_sites(class_name, method_name, method_is_singleton));
         for call_site in site_iter {
             if call_site.method_name.as_ref() == method_name
                 && call_site.method_is_singleton == method_is_singleton
@@ -12645,25 +12699,65 @@ impl TypeRegistry {
         }
     }
 
-    /// What `to_a` gives for a splatted value, as far as the loaded declarations tell.
-    pub(crate) fn splat_to_a(&self, ty: &Type) -> SplatToA {
+    pub(crate) fn set_generated_artifacts_present(&mut self, present: bool) {
+        self.generated_artifacts_present = present;
+    }
+
+    /// Whether a splatted value responds to `to_a`, judged from the loaded declarations. Inference
+    /// and deferred resolution both decide through this, so they agree on exact and open shapes.
+    pub(crate) fn splat_to_a_response(&self, ty: &Type) -> ToAResponse {
         let Some(class_name) = Self::type_to_class_name(ty) else {
-            return SplatToA::Unknown;
+            return ToAResponse::Unknown;
         };
-        let prefer_singleton = matches!(ty, Type::Singleton(_));
-        if self
-            .resolve_method_call_owner_ref(&class_name, "to_a", prefer_singleton)
-            .is_none()
+        let is_singleton = matches!(ty, Type::Singleton(_));
+        // Broad built-in types stand in for dynamically extended values.
+        if matches!(
+            class_name.as_str(),
+            "Object" | "BasicObject" | "Class" | "Module"
+        ) || !self
+            .class_data
+            .get(class_name.as_str())
+            .is_some_and(|data| data.has_type_substance())
         {
-            return if self.method_surface_knowledge_complete(&class_name, false) {
-                SplatToA::Missing
-            } else {
-                SplatToA::Unknown
+            return ToAResponse::Unknown;
+        }
+        let custom_respond_to = ["respond_to?", "respond_to_missing?"].iter().any(|method| {
+            self.resolve_method_call_owner_ref(&class_name, method, is_singleton)
+                .is_some_and(|(owner, _)| !matches!(owner, "BasicObject" | "Kernel" | "Object"))
+        });
+        if custom_respond_to {
+            return ToAResponse::Unknown;
+        }
+        if let Some((owner, owner_singleton)) =
+            self.resolve_method_call_owner_ref(&class_name, "to_a", is_singleton)
+        {
+            return ToAResponse::Defined {
+                source_defined: self.is_user_defined_class(owner),
+                owner_singleton,
             };
         }
-        match self.lookup_argless_receiver_return(&class_name, "to_a", prefer_singleton) {
-            Some(ret) => SplatToA::Returns(Self::deferred_self_return(&ret, ty)),
-            None => SplatToA::Unknown,
+        if self.method_surface_knowledge_complete(&class_name, self.generated_artifacts_present) {
+            ToAResponse::Missing
+        } else {
+            ToAResponse::Unknown
+        }
+    }
+
+    /// What `to_a` gives for a splatted value, as far as the loaded declarations tell.
+    pub(crate) fn splat_to_a(&self, ty: &Type) -> SplatToA {
+        match self.splat_to_a_response(ty) {
+            ToAResponse::Missing => SplatToA::Missing,
+            ToAResponse::Unknown => SplatToA::Unknown,
+            ToAResponse::Defined { .. } => {
+                let Some(class_name) = Self::type_to_class_name(ty) else {
+                    return SplatToA::Unknown;
+                };
+                let prefer_singleton = matches!(ty, Type::Singleton(_));
+                match self.lookup_argless_receiver_return(&class_name, "to_a", prefer_singleton) {
+                    Some(ret) => SplatToA::Returns(Self::deferred_self_return(&ret, ty)),
+                    None => SplatToA::Unknown,
+                }
+            }
         }
     }
 

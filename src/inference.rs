@@ -646,6 +646,8 @@ struct CollectedCallArgs {
 struct IndexWriteKey<'n, 'pr> {
     node: &'n Node<'pr>,
     slice: bool,
+    // The key's type when the caller already inferred it.
+    known_type: Option<Type>,
 }
 
 struct CondNarrowing {
@@ -1698,7 +1700,8 @@ pub(crate) struct Scope {
     exclusive_local_alts: Option<Arc<CorrelatedWorlds>>,
 }
 
-struct AttrWriterCallSite<'a> {
+/// A call to a known target class, for deciding its caller context.
+struct TargetedCallSite<'a> {
     target_class: &'a str,
     method_name: &'a str,
     method_is_singleton: bool,
@@ -2399,11 +2402,13 @@ impl<'a> InferenceEngine<'a> {
         })
     }
 
-    fn call_site_caller_context_for_attr_writer(
+    /// The caller context a call needs: when its arguments refer to the caller's parameters, or
+    /// when it feeds a generated attr writer of the caller's own class.
+    fn call_site_caller_context_for_target(
         &self,
-        call_site: AttrWriterCallSite<'_>,
+        call_site: TargetedCallSite<'_>,
     ) -> Option<Box<CallSiteCallerContext>> {
-        let AttrWriterCallSite {
+        let TargetedCallSite {
             target_class,
             method_name,
             method_is_singleton,
@@ -2914,9 +2919,8 @@ impl<'a> InferenceEngine<'a> {
         self.registry.merge_alias_call_sites();
     }
 
-    /// Returns whether any call site was added.
-    pub fn merge_subclass_dispatch_call_sites(&mut self) -> bool {
-        self.registry.merge_subclass_dispatch_call_sites()
+    pub fn has_self_calls_reaching_subclass_returns(&self) -> bool {
+        self.registry.has_self_calls_reaching_subclass_returns()
     }
 
     pub fn registry(&self) -> &TypeRegistry {
@@ -2941,6 +2945,7 @@ impl<'a> InferenceEngine<'a> {
 
     pub fn set_lazy_rbi_loader(&mut self, loader: &'a LazyRbiLoader) {
         self.lazy_rbi_loader = Some(loader);
+        self.registry.set_generated_artifacts_present(true);
     }
 
     fn ensure_stdlib_class(&mut self, class_name: &str) {
@@ -26564,6 +26569,7 @@ impl<'a> InferenceEngine<'a> {
                                         IndexWriteKey {
                                             node: &arg_nodes[0],
                                             slice: Self::index_write_is_slice(&arg_nodes),
+                                            known_type: None,
                                         },
                                         value_ty,
                                         parse_result,
@@ -29839,7 +29845,7 @@ impl<'a> InferenceEngine<'a> {
                         };
                         self.record_inferred_call_site(class_name, {
                             let caller_context =
-                                self.call_site_caller_context_for_attr_writer(AttrWriterCallSite {
+                                self.call_site_caller_context_for_target(TargetedCallSite {
                                     target_class: class_name,
                                     method_name: &method_name,
                                     method_is_singleton: scope.singleton_dispatch,
@@ -30294,11 +30300,11 @@ impl<'a> InferenceEngine<'a> {
                                 class_name,
                                 scope,
                             );
-                            if collected.1.is_empty()
+                            if collected.keywords.is_empty()
                                 && let Some(call_ty) = self.dsl_plugin_call_return(
                                     &safe_nav_receiver_type,
                                     &method_name,
-                                    &collected.0,
+                                    &collected.positional,
                                 )
                             {
                                 break 'recv wrap(call_ty);
@@ -31421,8 +31427,8 @@ impl<'a> InferenceEngine<'a> {
                                 )
                             });
                             self.record_inferred_call_site(&target_class, {
-                                let caller_context = self.call_site_caller_context_for_attr_writer(
-                                    AttrWriterCallSite {
+                                let caller_context =
+                                    self.call_site_caller_context_for_target(TargetedCallSite {
                                         target_class: &target_class,
                                         method_name: &method_name,
                                         method_is_singleton,
@@ -31431,8 +31437,7 @@ impl<'a> InferenceEngine<'a> {
                                         arg_types: &arg_types,
                                         keyword_arg_types: &kw_types,
                                         block: &block,
-                                    },
-                                );
+                                    });
                                 let keyword_arg_types = kw_types
                                     .into_iter()
                                     .map(|(name, ty)| (name.into(), ty))
@@ -35128,6 +35133,7 @@ impl<'a> InferenceEngine<'a> {
                             .collect()
                     })
                     .unwrap_or_default();
+                let key_type = arg_types.first().cloned();
                 arg_types.push(ty.clone());
                 self.record_desugared_call_site(
                     class_name,
@@ -35137,10 +35143,11 @@ impl<'a> InferenceEngine<'a> {
                     arg_types,
                     scope,
                 );
-                self.apply_index_write_side_effect(
+                self.apply_index_write_side_effect_with_key_type(
                     class_name,
                     Some(receiver),
                     target_node.arguments(),
+                    key_type,
                     ty,
                     parse_result,
                     scope,
@@ -35197,7 +35204,7 @@ impl<'a> InferenceEngine<'a> {
         let method_is_singleton =
             Self::receiver_is_singleton_dispatch(receiver, scope.singleton_dispatch);
         let keyword_arg_types = HashMap::new();
-        let caller_context = self.call_site_caller_context_for_attr_writer(AttrWriterCallSite {
+        let caller_context = self.call_site_caller_context_for_target(TargetedCallSite {
             target_class: &target_class,
             method_name,
             method_is_singleton,
@@ -53133,6 +53140,7 @@ impl<'a> InferenceEngine<'a> {
                         IndexWriteKey {
                             node: key_node,
                             slice: false,
+                            known_type: None,
                         },
                         result_type,
                         parse_result,
@@ -53147,6 +53155,28 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         receiver: Option<Node<'_>>,
         arguments: Option<ruby_prism::ArgumentsNode<'_>>,
+        result_type: Type,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        self.apply_index_write_side_effect_with_key_type(
+            class_name,
+            receiver,
+            arguments,
+            None,
+            result_type,
+            parse_result,
+            scope,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_index_write_side_effect_with_key_type(
+        &mut self,
+        class_name: &str,
+        receiver: Option<Node<'_>>,
+        arguments: Option<ruby_prism::ArgumentsNode<'_>>,
+        known_key_type: Option<Type>,
         result_type: Type,
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
@@ -53185,6 +53215,7 @@ impl<'a> InferenceEngine<'a> {
                 IndexWriteKey {
                     node: &key_node,
                     slice,
+                    known_type: known_key_type,
                 },
                 result_type,
                 parse_result,
@@ -53226,11 +53257,16 @@ impl<'a> InferenceEngine<'a> {
             self.write_alias_target(class_name, scope, &target, new_type);
             return;
         }
-        let key_node = key.node;
+        let IndexWriteKey {
+            node: key_node,
+            known_type,
+            ..
+        } = key;
         let key = Self::record_key_from_node(key_node);
         let key_type = key
             .as_ref()
             .map(Self::record_key_type)
+            .or(known_type)
             .unwrap_or_else(|| self.infer_node_type(class_name, key_node, parse_result, scope));
         self.write_indexed_alias_value(
             class_name,
