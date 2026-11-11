@@ -489,10 +489,6 @@ end
 
 ## Multiple assignment passes values to writer targets
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -527,5 +523,27 @@ end
 class Store
   def []=: (Integer index, String value) -> String
   def name=: (Symbol value) -> Symbol
+end
+```
+
+## Index targets in multiple assignment record Hash entries
+
+### update
+
+```ruby
+class IndexTargets
+  def run
+    table = {}
+    table[:a], table[:b] = 1, 2
+    table
+  end
+end
+```
+
+### result
+
+```rbs
+class IndexTargets
+  def run: -> Hash[:a | :b, 1 | 2]
 end
 ```

@@ -176,10 +176,6 @@ end
 
 ## Parent call through an abstract raise uses the subclass method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -207,10 +203,6 @@ end
 ```
 
 ## Parent call passes its arguments to a subclass method
-
-```yaml
-known_issue: true
-```
 
 ### update
 

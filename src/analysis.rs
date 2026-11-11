@@ -2689,9 +2689,11 @@ fn build_engine_with_timings<'a>(
             timings.resolve_subclass_method_refs = resolve_subclass_method_refs_started.elapsed();
         }
 
+        let mut subclass_dispatch_sites_added = false;
         if !resolution_depth.keeps_only_exported_facts() {
             let merge_alias_call_sites_started = Instant::now();
             engine.merge_alias_call_sites();
+            subclass_dispatch_sites_added = engine.merge_subclass_dispatch_call_sites();
             timings.merge_alias_call_sites = merge_alias_call_sites_started.elapsed();
         }
 
@@ -2700,6 +2702,13 @@ fn build_engine_with_timings<'a>(
             engine.resolve_parameter_references_from_calls();
             timings.parameter_reference_resolution =
                 parameter_reference_resolution_started.elapsed();
+        }
+        if subclass_dispatch_sites_added {
+            // Subclass methods that took their parameters from a parent's self calls now return
+            // types the parent's calls can read.
+            let resolve_subclass_method_refs_started = Instant::now();
+            engine.resolve_subclass_method_refs();
+            timings.resolve_subclass_method_refs += resolve_subclass_method_refs_started.elapsed();
         }
 
         if resolution_depth.replays_deferred_block_receiver_bodies() {

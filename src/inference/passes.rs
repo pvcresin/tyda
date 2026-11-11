@@ -631,6 +631,15 @@ impl<'a> InferenceEngine<'a> {
                     })
                     .collect(),
             ),
+            Type::SplatRef(parts) => {
+                registry.resolve_splat_parts(&Self::resolve_general_method_refs_depth(
+                    registry,
+                    context_class,
+                    parts,
+                    visiting,
+                    depth + 1,
+                ))
+            }
             _ => ty.clone(),
         }
     }
@@ -711,6 +720,7 @@ impl<'a> InferenceEngine<'a> {
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner) => Self::type_contains_method_ref(inner),
             Type::Array(Some(inner)) => Self::type_contains_method_ref(inner),
+            Type::SplatRef(_) => true,
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_method_ref),
             Type::Hash(Some(k), Some(v)) => {
                 Self::type_contains_method_ref(k) || Self::type_contains_method_ref(v)
@@ -904,14 +914,7 @@ impl<'a> InferenceEngine<'a> {
     fn resolve_subclass_refs_in_type(registry: &TypeRegistry, ty: &Type) -> Type {
         match ty {
             Type::MethodReturnRef(class_name, method_name) => {
-                if registry
-                    .resolve_method_call_owners(class_name, method_name, false)
-                    .is_empty()
-                    && registry
-                        .resolve_method_call_owners(class_name, method_name, true)
-                        .is_empty()
-                    && let Some(ret) =
-                        registry.lookup_method_return_type_in_subclasses(class_name, method_name)
+                if let Some(ret) = registry.subclass_return_for_self_call(class_name, method_name)
                     && !matches!(ret, Type::MethodReturnRef(..))
                     && !Self::type_contains_param_ref(&ret)
                 {

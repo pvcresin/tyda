@@ -360,6 +360,7 @@ fn call_site_fingerprint(call_site: &CallSite) -> u64 {
     call_site.keyword_rest_shape.hash(&mut hasher);
     call_site.block.hash(&mut hasher);
     call_site.open_splat.hash(&mut hasher);
+    call_site.self_call.hash(&mut hasher);
     if let Some(context) = call_site.caller_context.as_deref() {
         context.class_name.hash(&mut hasher);
         context.method_name.hash(&mut hasher);
@@ -382,6 +383,8 @@ pub struct CallSite {
     pub caller_context: Option<Box<CallSiteCallerContext>>,
     // Index in `arg_types` of a splat whose element count is unknown; that entry holds its element type.
     pub open_splat: Option<u16>,
+    // The receiver is `self`, so the call dispatches on the runtime class, which may be a subclass.
+    pub self_call: bool,
 }
 
 type CallSiteCallerContextKey = (SharedName, SharedName, bool);
@@ -2931,6 +2934,44 @@ impl TypeRegistry {
             current = alias.old_name.clone();
         }
         current
+    }
+
+    /// A self call to a method the class lacks or leaves abstract dispatches to the subclasses
+    /// that define it, so its call sites also feed their parameters.
+    /// Returns whether any call site was added.
+    pub fn merge_subclass_dispatch_call_sites(&mut self) -> bool {
+        if self.tail().subclass_index.is_none() {
+            return false;
+        }
+        let mut additions: Vec<(&str, CallSite)> = Vec::new();
+        for (class_name, data) in &self.class_data {
+            if data.call_sites.is_empty() || self.subclasses_of(class_name).is_empty() {
+                continue;
+            }
+            let mut targets: FxHashMap<(&str, bool), Vec<(&str, bool)>> = FxHashMap::default();
+            for site in data.call_sites.iter().filter(|site| site.self_call) {
+                let key = (site.method_name.as_ref(), site.method_is_singleton);
+                let owners = targets.entry(key).or_insert_with(|| {
+                    if self.self_call_reaches_subclasses(class_name, key.0, key.1) {
+                        self.resolve_method_in_subclasses_refs(class_name, key.0, key.1)
+                    } else {
+                        Vec::new()
+                    }
+                });
+                for &(owner, _) in owners.iter() {
+                    additions.push((owner, site.clone()));
+                }
+            }
+        }
+        let additions: Vec<(String, CallSite)> = additions
+            .into_iter()
+            .map(|(owner, site)| (owner.to_string(), site))
+            .collect();
+        let added = !additions.is_empty();
+        for (owner, site) in additions {
+            self.add_call_site(&owner, site);
+        }
+        added
     }
 
     /// union call sites within an alias group (Ruby aliases share the same body). Done once, after recording and before param resolution.
@@ -5784,6 +5825,39 @@ impl TypeRegistry {
         }
     }
 
+    /// A self call reaches the subclasses' definitions when the class lacks the method or its own
+    /// definition never returns (an abstract `raise NotImplementedError`).
+    pub(crate) fn subclass_return_for_self_call(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<Type> {
+        if ![false, true]
+            .into_iter()
+            .all(|singleton| self.self_call_reaches_subclasses(class_name, method_name, singleton))
+        {
+            return None;
+        }
+        self.lookup_method_return_type_in_subclasses(class_name, method_name)
+    }
+
+    fn self_call_reaches_subclasses(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        let Some((owner, owner_singleton)) =
+            self.resolve_method_call_owner_ref(class_name, method_name, is_singleton)
+        else {
+            return true;
+        };
+        self.class_data
+            .get(owner)
+            .and_then(|data| Self::method_for_lookup_kind(data, method_name, Some(owner_singleton)))
+            .is_some_and(|method| method.raw_return_type == Type::Bot)
+    }
+
     pub fn lookup_method_return_type_in_subclasses(
         &self,
         class_name: &str,
@@ -8017,14 +8091,7 @@ impl TypeRegistry {
     fn resolve_subclass_refs_in_type(&self, ty: &Type) -> Type {
         match ty {
             Type::MethodReturnRef(class_name, method_name) => {
-                if self
-                    .resolve_method_call_owners(class_name, method_name, false)
-                    .is_empty()
-                    && self
-                        .resolve_method_call_owners(class_name, method_name, true)
-                        .is_empty()
-                    && let Some(ret) =
-                        self.lookup_method_return_type_in_subclasses(class_name, method_name)
+                if let Some(ret) = self.subclass_return_for_self_call(class_name, method_name)
                     && !matches!(ret, Type::MethodReturnRef(..))
                     && !Self::type_contains_param_ref_static(&ret)
                 {
@@ -11734,6 +11801,7 @@ impl TypeRegistry {
                     block: None,
                     caller_context: None,
                     open_splat: None,
+                    self_call: false,
                 },
             );
         }
@@ -12944,6 +13012,7 @@ mod tests {
             block: None,
             caller_context: None,
             open_splat: None,
+            self_call: false,
         }
     }
 
@@ -13595,6 +13664,7 @@ mod tests {
                 block: None,
                 caller_context: None,
                 open_splat: None,
+                self_call: false,
             },
         );
         registry.set_file_path("Child", "child.rb");
