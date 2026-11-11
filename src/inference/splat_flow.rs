@@ -1,43 +1,32 @@
 //! Splat conversion during inference: `to_a` lookups for `Type::splat_concat`.
 
 use super::InferenceEngine;
+use crate::registry::ToAResponse;
 use crate::types::{SplatElements, SplatToA, Type};
 
 impl InferenceEngine<'_> {
+    /// Loads the value's class and ancestors, then decides as deferred resolution does
+    /// (`TypeRegistry::splat_to_a_response`); only the return lookup binds type arguments here.
     pub(super) fn splat_to_a(&mut self, ty: &Type) -> SplatToA {
-        match self.type_responds_to_method(ty, "to_a") {
-            Some(false) => {
-                let surface_complete = self
-                    .type_to_class_name(ty)
-                    .is_some_and(|class_name| self.member_surface_provably_complete(&class_name));
-                if surface_complete {
-                    SplatToA::Missing
+        if let Some(class_name) = self.type_to_class_name(ty) {
+            self.ensure_class_available_with_ancestors(&class_name, 0);
+        }
+        match self.registry.splat_to_a_response(ty) {
+            ToAResponse::Missing => SplatToA::Missing,
+            ToAResponse::Unknown => SplatToA::Unknown,
+            ToAResponse::Defined { source_defined, .. } => {
+                let ret = if source_defined {
+                    Some(self.resolve_symbol_proc_return_type(ty, "to_a"))
                 } else {
-                    SplatToA::Unknown
+                    self.resolve_rbs_no_arg_method_return_on_type(ty, "to_a", false)
+                        .or_else(|| Some(self.resolve_symbol_proc_return_type(ty, "to_a")))
+                };
+                match ret {
+                    Some(Type::Untyped) | None => SplatToA::Unknown,
+                    Some(array) => SplatToA::Returns(array),
                 }
             }
-            Some(true) => match self.splat_to_a_return(ty) {
-                Some(Type::Untyped) | None => SplatToA::Unknown,
-                Some(array) => SplatToA::Returns(array),
-            },
-            None => SplatToA::Unknown,
         }
-    }
-
-    /// A source-defined `to_a` reads its inferred return; a declared one binds the receiver's type arguments.
-    fn splat_to_a_return(&mut self, ty: &Type) -> Option<Type> {
-        let class_name = self.type_to_class_name(ty)?;
-        let is_singleton = matches!(ty, Type::Singleton(_));
-        let source_defined = self
-            .registry
-            .resolve_method_call_owners(&class_name, "to_a", is_singleton)
-            .first()
-            .is_some_and(|(owner, _)| self.registry.is_user_defined_class(owner));
-        if source_defined {
-            return Some(self.resolve_symbol_proc_return_type(ty, "to_a"));
-        }
-        self.resolve_rbs_no_arg_method_return_on_type(ty, "to_a", false)
-            .or_else(|| Some(self.resolve_symbol_proc_return_type(ty, "to_a")))
     }
 
     /// `[*parts...]`, deferred while a part is known only later.

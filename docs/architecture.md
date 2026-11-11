@@ -108,14 +108,17 @@ includer より先に定義されていても、本体を再推論して解決�
 union にまとめる。適用先や hook の定義を解決できない場合は、推測で補わず `untyped` に縮退する。
 
 splat の展開（`[*x]`、`Kernel#Array`、`push(*x)`、呼び出しの `*x`）は `types::splat` の
-一つの規則で表し、`to_a` の参照だけを呼び出し側が与える。推論中は RBS と source を引き、遅延解決では
-registry の宣言を引く。parameter など後で分かる部分を含む展開は `Type::SplatRef` として残し、各遅延
+一つの規則で表し、`to_a` の参照だけを呼び出し側が与える。値が `to_a` を持つか、持たないと言えるかは
+推論と遅延解決のどちらも `TypeRegistry::splat_to_a_response` で決め、推論中は先に class と祖先を
+読み込み、戻り値だけを型引数付きで引く。parameter など後で分かる部分を含む展開は `Type::SplatRef` として残し、各遅延
 解決 pass が中身を解決してから同じ規則で展開する。call site は要素数が分からない splat の位置を
 `open_splat` に持ち、parameter への束縛は arity が合う要素数ごとに行って union にする。
 
-親クラス本体の `self` 呼び出し（call site の `self_call`）で、そのクラスに定義がないか本体が返らない
-method は、解析の前段で定義を持つサブクラスへ call site を複製する。複製があった場合は parameter
-解決の後に subclass 参照の解決をもう一度行い、サブクラスの戻り値を親の呼び出しへ反映する。
+親クラス本体の `self` 呼び出し（call site の `self_call`）は Ruby では実行時の class へ dispatch する。
+call site は記録した class にだけ置き、method の parameter を集めるときに superclass chain の
+`self_call` も読む（`ancestor_self_call_sites`）。複製しないので、call site の数はサブクラス数に比例しない。
+定義がないか本体が返らない method への `self` 呼び出しがある場合は、parameter 解決の後に subclass
+参照の解決をもう一度行い、サブクラスの戻り値を親の呼び出しへ反映する。
 
 静的に class / module、mixin、superclass の全 edge を確認でき、かつ上限内に収まる
 `Module#ancestors` だけは探索順の `Tuple` として返す。未解決 edge、循環、深すぎる chain
