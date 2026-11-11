@@ -2,10 +2,6 @@
 
 ## Generate Sidekiq perform class methods without Active Job helpers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -24,16 +20,12 @@ class Job
   def self.perform_in: -> String?
   def self.perform_at: -> String?
   def self.perform_bulk: -> Array[String?]
-  def self.perform_inline: -> true?
-  def self.perform_sync: -> true?
+  def self.perform_inline: -> (true | nil)
+  def self.perform_sync: -> (true | nil)
 end
 ```
 
 ## Resolve worker runtime accessors
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -58,8 +50,8 @@ class CleanupWorker
   def self.perform_in: -> String?
   def self.perform_at: -> String?
   def self.perform_bulk: -> Array[String?]
-  def self.perform_inline: -> true?
-  def self.perform_sync: -> true?
+  def self.perform_inline: -> (true | nil)
+  def self.perform_sync: -> (true | nil)
   def perform: -> String?
 end
 ```

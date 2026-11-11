@@ -44,10 +44,6 @@ end
 
 ## deliver_later! returns the enqueued delivery job or false
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -69,15 +65,11 @@ class NotifyMailer < ApplicationMailer
 end
 
 class NotifyService
-  def notify: (untyped user) -> (ActionMailer::MailDeliveryJob | false)
+  def notify: (untyped user) -> (false | ActionMailer::MailDeliveryJob)
 end
 ```
 
 ## Resolve mailers from namespace scope
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -97,7 +89,7 @@ end
 
 ```rbs
 class Admin::Notifier
-  def send_alert: (untyped user) -> (ActionMailer::MailDeliveryJob | false)
+  def send_alert: (untyped user) -> (false | ActionMailer::MailDeliveryJob)
 end
 
 class AlertMailer < ApplicationMailer
@@ -220,5 +212,36 @@ end
 ```rbs
 class ItemsController < ActionController::Base
   def notice_delivery: -> ActionMailer::MessageDelivery
+end
+```
+
+## MessageDelivery#message returns Mail::Message
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class NoteMailer < ApplicationMailer
+  def ping = mail
+end
+
+class Notifier
+  def built = NoteMailer.ping.message
+end
+```
+
+### result
+
+```rbs
+class NoteMailer < ApplicationMailer
+  def ping: -> Mail::Message
+  def self.ping: -> ActionMailer::MessageDelivery
+end
+
+class Notifier
+  def built: -> Mail::Message
 end
 ```

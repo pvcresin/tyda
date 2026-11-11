@@ -87,7 +87,10 @@ Ruby code inference の順に優先する。これは query / projection の型�
 ユーザー定義クラスでも superclass が未設定なら、外部宣言の superclass を暗黙の継承として補完する。
 Ruby source に明示された `class X < Y` は外部宣言で上書きしない。
 
-framework DSL は library-scoped に有効化し、plugin のフックは `PluginCx` を通す。個別 repository の
+framework DSL は library-scoped に有効化し、plugin のフックは `PluginCx` を通す。source / RBS に定義が
+ない framework method の戻り値は plugin の `synthetic_method_return` が受け手と名前から返す。引数の型に
+依存するものは `call_return_method_names` で名前を宣言し、`synthetic_call_return` が引数の型を受け取る。
+宣言された名前の呼び出しだけが追加の引数推論を行うため、他の呼び出しの費用は hash lookup 1 回に留まる。個別 repository の
 runtime DSL 登録を解析コアへ持ち込まず、動的な API は外部 RBS / RBI を入力する。block の `self` を
 runtime semantics から補う必要がある場合も plugin の block-self hook を通し、source / RBS に明示された
 self を優先して、未解決時だけ plugin の補完を適用する。

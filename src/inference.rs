@@ -13497,9 +13497,7 @@ impl<'a> InferenceEngine<'a> {
                 if self.rails_feature_enabled() && self.is_active_record_model_class(&class_name) {
                     self.register_active_record_relation_model_methods(&class_name, class_loc);
                 }
-                if self.rails_feature_enabled() && self.is_active_job_class(&class_name) {
-                    self.propagate_perform_params_to_job_helpers(&class_name);
-                }
+                self.register_active_job_helpers(&class_name, class_loc);
             }
             Node::ModuleNode { .. } => {
                 let module_node = node.as_module_node().expect("must be ModuleNode");
@@ -15094,6 +15092,7 @@ impl<'a> InferenceEngine<'a> {
                                 });
                             });
                         }
+                        self.register_active_job_helpers(&full_name, nested_loc);
                     }
                     Node::ModuleNode { .. } => {
                         pending_sigs.clear();
@@ -30256,6 +30255,25 @@ impl<'a> InferenceEngine<'a> {
                             break 'recv wrap(override_ty);
                         }
                         if call_node.block().is_none()
+                            && plugins::plugin_claims_call_return(&method_name)
+                        {
+                            let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
+                                node,
+                                parse_result,
+                                class_name,
+                                scope,
+                            );
+                            if kw_types.is_empty()
+                                && let Some(call_ty) = self.dsl_plugin_call_return(
+                                    &safe_nav_receiver_type,
+                                    &method_name,
+                                    &arg_types,
+                                )
+                            {
+                                break 'recv wrap(call_ty);
+                            }
+                        }
+                        if call_node.block().is_none()
                             && let Some(ancestors_result) = self.resolve_static_ancestors_return(
                                 &safe_nav_receiver_type,
                                 &method_name,
@@ -30962,22 +30980,6 @@ impl<'a> InferenceEngine<'a> {
                             break 'recv wrap(Self::active_support_compact_blank_type(
                                 &safe_nav_receiver_type,
                             ));
-                        }
-
-                        if self.rails_feature_enabled()
-                            && method_name == "in_groups_of"
-                            && call_node.block().is_none()
-                            && matches!(&safe_nav_receiver_type, Type::Array(_) | Type::Tuple(_))
-                        {
-                            let element = match &safe_nav_receiver_type {
-                                Type::Array(Some(inner)) => inner.as_ref().clone(),
-                                Type::Array(None) => Type::Untyped,
-                                Type::Tuple(elems) => Type::from_type_vec(elems.clone()),
-                                _ => Type::Untyped,
-                            };
-                            let group =
-                                Type::Array(Some(Box::new(element.widen().union_with(Type::Nil))));
-                            break 'recv wrap(Type::Array(Some(Box::new(group))));
                         }
 
                         if method_name == "compact"
@@ -37463,6 +37465,17 @@ impl<'a> InferenceEngine<'a> {
             "merge" | "merge!" | "update" => {
                 self.resolve_hash_merge(class_name, receiver_type, call_node, parse_result, scope)
             }
+            "reverse_merge" | "reverse_merge!" | "with_defaults" | "with_defaults!"
+                if self.rails_feature_enabled() =>
+            {
+                self.resolve_hash_reverse_merge(
+                    class_name,
+                    receiver_type,
+                    call_node,
+                    parse_result,
+                    scope,
+                )
+            }
             "store"
                 if Self::type_is_hash_like(receiver_type)
                     || matches!(receiver_type, Type::IvarRef(_)) =>
@@ -39744,6 +39757,36 @@ impl<'a> InferenceEngine<'a> {
             )?;
         }
         Some(result)
+    }
+
+    /// Active Support's `h.reverse_merge(other)` is `other.merge(h)`.
+    fn resolve_hash_reverse_merge(
+        &mut self,
+        class_name: &str,
+        receiver_type: &Type,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<Type> {
+        if !matches!(receiver_type, Type::Record(_) | Type::Hash(_, _))
+            || call_node.block().is_some()
+        {
+            return None;
+        }
+        let args = call_node.arguments()?;
+        let mut arg_nodes = args.arguments().iter();
+        let (Some(arg), None) = (arg_nodes.next(), arg_nodes.next()) else {
+            return None;
+        };
+        let defaults = self.infer_hash_merge_arg_type(class_name, &arg, parse_result, scope);
+        self.apply_hash_merge_type(
+            class_name,
+            defaults,
+            receiver_type.clone(),
+            call_node,
+            parse_result,
+            scope,
+        )
     }
 
     fn resolve_hash_transform_keys_arg(
@@ -54453,12 +54496,7 @@ impl<'a> InferenceEngine<'a> {
             } || (Self::is_unresolved_receiver(receiver_type)
                 && self.source_method_name_is_defined(method_name));
             if !source_override {
-                return match method_name {
-                    "to_datetime" => Type::Class(Sym::new("DateTime")),
-                    "to_date" => Type::Class(Sym::new("Date")),
-                    "to_time" => Type::Class(Sym::new("Time")),
-                    _ => unreachable!(),
-                };
+                return plugins::active_support::date_conversion_return(receiver_type, method_name);
             }
         }
         if self.rails_feature_enabled() && method_name == "presence" {

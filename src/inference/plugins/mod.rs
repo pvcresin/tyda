@@ -69,6 +69,23 @@ pub(in crate::inference) trait Plugin: Sync {
         None
     }
 
+    /// Method names whose return depends on argument types. Only calls to these names pay for
+    /// argument inference before `synthetic_call_return`.
+    fn call_return_method_names(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Like `synthetic_method_return`, with the positional argument types of the call.
+    fn synthetic_call_return(
+        &self,
+        _cx: &mut PluginCx<'_, '_>,
+        _receiver_type: &Type,
+        _method_name: &str,
+        _arg_types: &[Type],
+    ) -> Option<Type> {
+        None
+    }
+
     // Returns the gem's function type before a phantom-stub receiver falls back to Kernel; yields if a real definition exists.
     fn synthetic_method_return_override(
         &self,
@@ -189,6 +206,19 @@ static PLUGINS: &[&dyn Plugin] = &[
 
 pub(crate) fn builtin_plugin_manifests() -> impl Iterator<Item = &'static PluginManifest> {
     PLUGINS.iter().map(|plugin| plugin.manifest())
+}
+
+static CALL_RETURN_METHOD_NAMES: std::sync::LazyLock<rustc_hash::FxHashSet<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        PLUGINS
+            .iter()
+            .flat_map(|plugin| plugin.call_return_method_names().iter().copied())
+            .collect()
+    });
+
+/// Cheap name check that keeps argument inference off the call path for other methods.
+pub(in crate::inference) fn plugin_claims_call_return(method_name: &str) -> bool {
+    CALL_RETURN_METHOD_NAMES.contains(method_name)
 }
 
 // Shortlist of just the overrides for the hot path (scanning all of PLUGINS is ~30 no-op virtual calls).
@@ -1194,6 +1224,35 @@ impl<'a> InferenceEngine<'a> {
             let matched = matched.map(|m| (m.id, m.features, m.base_classes, m.rails_default));
             eprintln!(
                 "[dsl-plugin] method_return recv={receiver_type:?} m={method_name} -> {result:?} matched={matched:?}"
+            );
+        }
+        result
+    }
+
+    /// Argument-aware plugin return for a method the receiver does not define in source or RBS.
+    pub(super) fn dsl_plugin_call_return(
+        &mut self,
+        receiver_type: &Type,
+        method_name: &str,
+        arg_types: &[Type],
+    ) -> Option<Type> {
+        let class_name = self.type_to_class_name(receiver_type)?;
+        let is_singleton = matches!(receiver_type, Type::Singleton(_));
+        self.ensure_class_available(&class_name);
+        if self
+            .registry
+            .lookup_method_return_type_with_hint(&class_name, method_name, is_singleton)
+            .is_some()
+        {
+            return None;
+        }
+        let mut cx = PluginCx::new(self);
+        let result = PLUGINS.iter().find_map(|plugin| {
+            plugin.synthetic_call_return(&mut cx, receiver_type, method_name, arg_types)
+        });
+        if *DSL_PLUGIN_DEBUG {
+            eprintln!(
+                "[dsl-plugin] call_return recv={receiver_type:?} m={method_name} args={arg_types:?} -> {result:?}"
             );
         }
         result

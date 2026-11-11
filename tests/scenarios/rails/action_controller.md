@@ -362,3 +362,56 @@ class StatusController < ActionController::Base
   def link: -> String
 end
 ```
+
+## permit! and permitted? follow the strong parameters contract
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class ItemsController < ActionController::Base
+  def all_params = params.permit!
+
+  def allowed = params.permitted?
+end
+```
+
+### result
+
+```rbs
+class ItemsController < ActionController::Base
+  def all_params: -> ActionController::Parameters
+  def allowed: -> bool
+end
+```
+
+## Resolve request port protocol and subdomain
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class PagesController < ActionController::Base
+  def port = request.port
+
+  def protocol = request.protocol
+
+  def subdomain = request.subdomain
+end
+```
+
+### result
+
+```rbs
+class PagesController < ActionController::Base
+  def port: -> Integer
+  def protocol: -> String
+  def subdomain: -> String
+end
+```

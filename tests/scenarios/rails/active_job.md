@@ -2,10 +2,6 @@
 
 ## Generate perform_now and perform_later on job classes
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -19,17 +15,13 @@ end
 
 ```rbs
 class CleanupJob < ApplicationJob
-  def self.perform_later: (Integer user_id) -> (CleanupJob | false)
+  def self.perform_later: (Integer user_id) -> (false | CleanupJob)
   def self.perform_now: (Integer user_id) -> (Integer | false)
   def perform: (Integer user_id) -> Integer
 end
 ```
 
 ## No-arg jobs keep no-arg perform helpers
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -43,17 +35,13 @@ end
 
 ```rbs
 class PurgeJob < ApplicationJob
-  def self.perform_later: -> (PurgeJob | false)
-  def self.perform_now: -> ("done" | false)
+  def self.perform_later: -> (false | PurgeJob)
+  def self.perform_now: -> (false | "done")
   def perform: -> "done"
 end
 ```
 
 ## queue_as discard_on and retry_on do not affect job inference
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -72,17 +60,13 @@ end
 
 ```rbs
 class NotifyJob < ApplicationJob
-  def self.perform_later: (String message) -> (NotifyJob | false)
+  def self.perform_later: (String message) -> (false | NotifyJob)
   def self.perform_now: (String message) -> void
   def perform: (String message) -> void
 end
 ```
 
 ## Resolve perform_later for a job defined in another file
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -105,15 +89,11 @@ end
 
 ```rbs
 class ItemsController < ActionController::Base
-  def enqueue: -> (SyncJob | false)
+  def enqueue: -> (false | SyncJob)
 end
 ```
 
 ## Resolve perform_now for a job defined in another file
-
-```yaml
-known_issue: true
-```
 
 ### update
 

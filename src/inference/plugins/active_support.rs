@@ -1,7 +1,7 @@
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
 use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
-use crate::types::{SourceLocation, Sym, Type};
+use crate::types::{RecordField, RecordKey, SourceLocation, Sym, Type};
 use ruby_prism::{CallNode, ParseResult};
 
 const CLASS_BODY_METHODS: &[&str] = &[
@@ -119,6 +119,23 @@ impl Plugin for ActiveSupport {
         CLASS_BODY_METHODS
     }
 
+    fn call_return_method_names(&self) -> &'static [&'static str] {
+        &["including", "in_groups", "in_groups_of"]
+    }
+
+    fn synthetic_call_return(
+        &self,
+        cx: &mut PluginCx<'_, '_>,
+        receiver_type: &Type,
+        method_name: &str,
+        arg_types: &[Type],
+    ) -> Option<Type> {
+        if !cx.dsl_enabled(DslLibrary::ActiveSupportTimeExt) {
+            return None;
+        }
+        array_call_return(receiver_type, method_name, arg_types)
+    }
+
     fn register_on_class(&self, cx: &mut PluginCx<'_, '_>, class_name: &str, loc: SourceLocation) {
         cx.register_current_attributes_class_methods(class_name, loc);
         cx.register_time_ext_class_methods(loc);
@@ -188,6 +205,14 @@ pub(in crate::inference) fn synthetic_method_return(
     receiver_type: &Type,
     method_name: &str,
 ) -> Option<Type> {
+    if let Type::Class(name) = receiver_type
+        && is_string_inquirer(name.as_str())
+    {
+        // `StringInquirer#method_missing` answers every `name?` predicate.
+        return (method_name.ends_with('?')
+            && engine.dsl_enabled(DslLibrary::ActiveSupportEnvironmentInquirer))
+        .then_some(Type::Bool);
+    }
     if !engine.dsl_enabled(DslLibrary::ActiveSupportTimeExt) {
         return None;
     }
@@ -195,7 +220,17 @@ pub(in crate::inference) fn synthetic_method_return(
         return Some(Type::String);
     }
     match receiver_type {
+        Type::Array(elem) => array_extension_return(
+            method_name,
+            elem.as_deref().cloned().unwrap_or(Type::Untyped),
+            None,
+        ),
+        Type::Tuple(elems) => {
+            array_extension_return(method_name, array_element(receiver_type)?, Some(elems))
+        }
+        Type::Hash(_, _) | Type::Record(_) => hash_extension_return(receiver_type, method_name),
         Type::Integer | Type::LiteralInteger(_) => match method_name {
+            "multiple_of?" => Some(Type::Bool),
             "bytes" => Some(receiver_type.clone()),
             "kilobyte" | "kilobytes" | "megabyte" | "megabytes" | "gigabyte" | "gigabytes" => {
                 Some(Type::Integer)
@@ -219,9 +254,16 @@ pub(in crate::inference) fn synthetic_method_return(
         Type::Singleton(name) if matches!(name.as_str(), "Date" | "DateTime") => {
             match method_name {
                 "current" => Some(Type::Class(Sym::new(name.as_str()))),
+                // Defined on `Date` as `current.yesterday`, so `DateTime` inherits a `Date` result.
+                "yesterday" | "tomorrow" => Some(Type::Class(Sym::new("Date"))),
                 _ => None,
             }
         }
+        Type::Singleton(name) if name.as_str() == "ActiveSupport::SecurityUtils" => matches!(
+            method_name,
+            "secure_compare" | "fixed_length_secure_compare"
+        )
+        .then_some(Type::Bool),
         Type::Singleton(name) if name.as_str() == "ActiveSupport::TimeZone" => match method_name {
             "all" => Some(Type::Array(Some(Box::new(Type::Class(Sym::new(
                 "ActiveSupport::TimeZone",
@@ -232,7 +274,9 @@ pub(in crate::inference) fn synthetic_method_return(
         Type::Class(name) if name.as_str() == "ActiveSupport::TimeZone" => match method_name {
             "now" => Some(time_with_zone()),
             "today" => Some(Type::Class(Sym::new("Date"))),
-            "parse" | "at" | "local" | "iso8601" => Some(time_with_zone().union_with(Type::Nil)),
+            // `parse` returns nil for a string without a date; the others raise instead.
+            "parse" => Some(time_with_zone().union_with(Type::Nil)),
+            "at" | "local" | "iso8601" | "strptime" | "rfc3339" => Some(time_with_zone()),
             "name" | "to_s" => Some(Type::String),
             "utc_offset" => Some(Type::Integer),
             _ => None,
@@ -247,7 +291,8 @@ pub(in crate::inference) fn synthetic_method_return(
             | "sec" | "wday" | "yday" | "usec" | "nsec" | "utc_offset" => Some(Type::Integer),
             "to_f" => Some(Type::Float),
             "dst?" | "utc?" | "gmt?" | "blank?" | "present?" => Some(Type::Bool),
-            "+" | "-" | "time" | "period" | "comparable_time" => Some(Type::Untyped),
+            "+" => Some(time_with_zone()),
+            "-" | "time" | "period" | "comparable_time" => Some(Type::Untyped),
             "<=>" => Some(Type::Integer.union_with(Type::Nil)),
             name => calendar_method_return(name, receiver_type),
         },
@@ -255,6 +300,237 @@ pub(in crate::inference) fn synthetic_method_return(
             calendar_method_return(method_name, receiver_type)
         }
         _ => None,
+    }
+}
+
+/// `to_date` / `to_datetime` / `to_time` from Active Support. The `String` versions return nil
+/// for a blank string, and `String#to_time` also for a string without date parts.
+pub(in crate::inference) fn date_conversion_return(
+    receiver_type: &Type,
+    method_name: &str,
+) -> Type {
+    let converted = Type::Class(Sym::new(match method_name {
+        "to_datetime" => "DateTime",
+        "to_date" => "Date",
+        _ => "Time",
+    }));
+    match receiver_type {
+        Type::LiteralString(value) if value.chars().all(char::is_whitespace) => Type::Nil,
+        Type::LiteralString(_) if method_name != "to_time" => converted,
+        Type::String | Type::LiteralString(_) => optional(converted),
+        _ => converted,
+    }
+}
+
+fn is_string_inquirer(class_name: &str) -> bool {
+    matches!(
+        class_name,
+        "ActiveSupport::StringInquirer" | "ActiveSupport::EnvironmentInquirer"
+    )
+}
+
+/// Keeps `untyped` as is, since `union_with` would drop it and leave a bare `nil`.
+fn optional(ty: Type) -> Type {
+    if ty == Type::Untyped {
+        ty
+    } else {
+        ty.union_with(Type::Nil)
+    }
+}
+
+/// `Array#second`-style accessors as an offset from the front (or from the back when negative).
+fn positional_accessor_offset(method_name: &str) -> Option<isize> {
+    Some(match method_name {
+        "second" => 1,
+        "third" => 2,
+        "fourth" => 3,
+        "fifth" => 4,
+        "forty_two" => 41,
+        "second_to_last" => -2,
+        "third_to_last" => -3,
+        _ => return None,
+    })
+}
+
+fn array_extension_return(method_name: &str, elem: Type, tuple: Option<&[Type]>) -> Option<Type> {
+    if let Some(offset) = positional_accessor_offset(method_name) {
+        let Some(elems) = tuple else {
+            return Some(optional(elem));
+        };
+        let index = if offset < 0 {
+            elems.len().checked_sub(offset.unsigned_abs())
+        } else {
+            Some(offset.unsigned_abs())
+        };
+        return Some(
+            index
+                .and_then(|i| elems.get(i))
+                .cloned()
+                .unwrap_or(Type::Nil),
+        );
+    }
+    match method_name {
+        "excluding" | "without" | "from" | "to" => Some(Type::Array(Some(Box::new(elem)))),
+        _ => None,
+    }
+}
+
+/// A tuple's literal members widen, as for other arrays built from it.
+fn array_element(receiver_type: &Type) -> Option<Type> {
+    match receiver_type {
+        Type::Array(elem) => Some(elem.as_deref().cloned().unwrap_or(Type::Untyped)),
+        Type::Tuple(elems) => Some(Type::from_type_vec(elems.to_vec()).widen()),
+        _ => None,
+    }
+}
+
+fn array_call_return(receiver_type: &Type, method_name: &str, arg_types: &[Type]) -> Option<Type> {
+    let elem = array_element(receiver_type)?;
+    let array = |elem: Type| Type::Array(Some(Box::new(elem)));
+    match method_name {
+        // `self + elements.flatten(1)`
+        "including" => {
+            let mut members = Vec::with_capacity(arg_types.len() + 1);
+            members.push(elem);
+            members.extend(
+                arg_types
+                    .iter()
+                    .map(|arg| array_element(arg).unwrap_or(arg.clone())),
+            );
+            Some(array(Type::from_type_vec_preserve_untyped(members)))
+        }
+        // Groups are padded with `fill_with` (default nil) unless it is `false`.
+        "in_groups" | "in_groups_of" if !arg_types.is_empty() && arg_types.len() <= 2 => {
+            let padded = match arg_types.get(1) {
+                None => optional(elem),
+                Some(Type::False) => elem,
+                Some(fill) => Type::from_type_vec_preserve_untyped(vec![elem, fill.clone()]),
+            };
+            Some(array(array(padded)))
+        }
+        _ => None,
+    }
+}
+
+fn hash_extension_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
+    let key_map: fn(&Type) -> Type = match method_name {
+        "symbolize_keys" | "symbolize_keys!" | "to_options" | "to_options!" => symbolized_key,
+        "stringify_keys" | "stringify_keys!" => stringified_key,
+        "deep_symbolize_keys" | "deep_symbolize_keys!" => {
+            return Some(deep_transform_keys(receiver_type, symbolized_key));
+        }
+        "deep_stringify_keys" | "deep_stringify_keys!" => {
+            return Some(deep_transform_keys(receiver_type, stringified_key));
+        }
+        "with_indifferent_access" => {
+            return Some(Type::Class(Sym::new(
+                "ActiveSupport::HashWithIndifferentAccess",
+            )));
+        }
+        "to_query" | "to_param" => return Some(Type::String),
+        _ => return None,
+    };
+    Some(transform_keys(receiver_type, key_map, &|value| {
+        value.clone()
+    }))
+}
+
+/// `symbolize_keys` rescues keys without `to_sym`, so only strings change.
+fn symbolized_key(key: &Type) -> Type {
+    match key {
+        Type::String => Type::Symbol,
+        Type::LiteralString(name) => Type::LiteralSymbol(Sym::new(name)),
+        Type::Union(parts) => Type::from_type_vec(parts.iter().map(symbolized_key).collect()),
+        other => other.clone(),
+    }
+}
+
+fn stringified_key(key: &Type) -> Type {
+    match key {
+        Type::LiteralString(_) => key.clone(),
+        Type::LiteralSymbol(name) => Type::LiteralString(name.to_string()),
+        Type::Union(parts) => Type::from_type_vec(parts.iter().map(stringified_key).collect()),
+        _ => Type::String,
+    }
+}
+
+fn record_key_type(key: &RecordKey) -> Type {
+    match key {
+        RecordKey::Symbol(name) => Type::LiteralSymbol(Sym::new(name)),
+        RecordKey::String(name) => Type::LiteralString(name.clone()),
+    }
+}
+
+fn type_record_key(key: &Type) -> Option<RecordKey> {
+    match key {
+        Type::LiteralSymbol(name) => Some(RecordKey::Symbol(name.to_string())),
+        Type::LiteralString(name) => Some(RecordKey::String(name.to_string())),
+        _ => None,
+    }
+}
+
+fn transform_keys(
+    hash: &Type,
+    key_map: fn(&Type) -> Type,
+    value_map: &dyn Fn(&Type) -> Type,
+) -> Type {
+    match hash {
+        Type::Hash(key, value) => Type::Hash(
+            key.as_deref().map(|key| Box::new(key_map(key))),
+            value.as_deref().map(|value| Box::new(value_map(value))),
+        ),
+        Type::Record(fields) => {
+            let mut mapped: Vec<RecordField> = Vec::with_capacity(fields.len());
+            for field in fields {
+                let key = type_record_key(&key_map(&record_key_type(&field.key)));
+                match key {
+                    Some(key) if mapped.iter().all(|other| other.key != key) => {
+                        mapped.push(RecordField {
+                            key,
+                            value: value_map(&field.value),
+                            optional: field.optional,
+                        });
+                    }
+                    // A key collision keeps only one value, so fall back to the widened hash.
+                    _ => {
+                        let keys = fields
+                            .iter()
+                            .map(|field| key_map(&record_key_type(&field.key)))
+                            .collect();
+                        let values = fields.iter().map(|field| value_map(&field.value)).collect();
+                        return Type::Hash(
+                            Some(Box::new(Type::from_type_vec(keys))),
+                            Some(Box::new(Type::from_type_vec(values))),
+                        );
+                    }
+                }
+            }
+            Type::Record(mapped)
+        }
+        other => other.clone(),
+    }
+}
+
+/// `deep_transform_keys` also rewrites hashes nested in values and arrays.
+fn deep_transform_keys(ty: &Type, key_map: fn(&Type) -> Type) -> Type {
+    match ty {
+        Type::Hash(_, _) | Type::Record(_) => {
+            transform_keys(ty, key_map, &|value| deep_transform_keys(value, key_map))
+        }
+        Type::Array(Some(elem)) => Type::Array(Some(Box::new(deep_transform_keys(elem, key_map)))),
+        Type::Tuple(elems) => Type::Tuple(
+            elems
+                .iter()
+                .map(|elem| deep_transform_keys(elem, key_map))
+                .collect(),
+        ),
+        Type::Union(parts) => Type::from_type_vec(
+            parts
+                .iter()
+                .map(|part| deep_transform_keys(part, key_map))
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -772,5 +1048,140 @@ impl<'a> InferenceEngine<'a> {
             );
             self.set_collecting_concern_included(prev);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn array(elem: Type) -> Type {
+        Type::Array(Some(Box::new(elem)))
+    }
+
+    fn hash(key: Type, value: Type) -> Type {
+        Type::Hash(Some(Box::new(key)), Some(Box::new(value)))
+    }
+
+    fn field(key: RecordKey, value: Type) -> RecordField {
+        RecordField {
+            key,
+            value,
+            optional: false,
+        }
+    }
+
+    #[test]
+    fn positional_accessors_are_optional_on_arrays_and_exact_on_tuples() {
+        assert_eq!(
+            array_extension_return("second", Type::Integer, None),
+            Some(Type::Integer.union_with(Type::Nil))
+        );
+        assert_eq!(
+            array_extension_return("third", Type::Untyped, None),
+            Some(Type::Untyped)
+        );
+        let tuple = [Type::LiteralInteger(1), Type::String];
+        assert_eq!(
+            array_extension_return("second", Type::Untyped, Some(&tuple)),
+            Some(Type::String)
+        );
+        assert_eq!(
+            array_extension_return("third_to_last", Type::Untyped, Some(&tuple)),
+            Some(Type::Nil)
+        );
+    }
+
+    #[test]
+    fn including_flattens_one_level_of_array_arguments() {
+        let receiver = array(Type::Integer);
+        assert_eq!(
+            array_call_return(&receiver, "including", &[array(Type::String)]),
+            Some(array(Type::Integer.union_with(Type::String)))
+        );
+    }
+
+    #[test]
+    fn in_groups_pads_with_fill_value_unless_false() {
+        let receiver = array(Type::Integer);
+        let groups = |elem: Type| Some(array(array(elem)));
+        assert_eq!(
+            array_call_return(&receiver, "in_groups_of", &[Type::Integer]),
+            groups(Type::Integer.union_with(Type::Nil))
+        );
+        assert_eq!(
+            array_call_return(&receiver, "in_groups", &[Type::Integer, Type::False]),
+            groups(Type::Integer)
+        );
+        assert_eq!(
+            array_call_return(&receiver, "in_groups", &[Type::Integer, Type::String]),
+            groups(Type::Integer.union_with(Type::String))
+        );
+    }
+
+    #[test]
+    fn symbolize_keys_only_converts_string_keys() {
+        let receiver = hash(Type::String.union_with(Type::Integer), Type::Float);
+        assert_eq!(
+            hash_extension_return(&receiver, "symbolize_keys"),
+            Some(hash(Type::Symbol.union_with(Type::Integer), Type::Float))
+        );
+    }
+
+    #[test]
+    fn stringify_keys_renames_record_keys() {
+        let receiver = Type::Record(vec![field(RecordKey::Symbol("a".into()), Type::Integer)]);
+        assert_eq!(
+            hash_extension_return(&receiver, "stringify_keys"),
+            Some(Type::Record(vec![field(
+                RecordKey::String("a".into()),
+                Type::Integer
+            )]))
+        );
+    }
+
+    #[test]
+    fn colliding_record_keys_widen_to_a_hash() {
+        let receiver = Type::Record(vec![
+            field(RecordKey::Symbol("a".into()), Type::Integer),
+            field(RecordKey::String("a".into()), Type::String),
+        ]);
+        assert_eq!(
+            hash_extension_return(&receiver, "symbolize_keys"),
+            Some(hash(
+                Type::LiteralSymbol(Sym::new("a")),
+                Type::Integer.union_with(Type::String)
+            ))
+        );
+    }
+
+    #[test]
+    fn deep_stringify_keys_rewrites_nested_hashes_in_arrays() {
+        let receiver = hash(Type::Symbol, array(hash(Type::Symbol, Type::Integer)));
+        assert_eq!(
+            hash_extension_return(&receiver, "deep_stringify_keys"),
+            Some(hash(Type::String, array(hash(Type::String, Type::Integer))))
+        );
+    }
+
+    #[test]
+    fn string_date_conversions_are_nil_for_blank_strings() {
+        let date = Type::Class(Sym::new("Date"));
+        assert_eq!(
+            date_conversion_return(&Type::String, "to_date"),
+            date.clone().union_with(Type::Nil)
+        );
+        assert_eq!(
+            date_conversion_return(&Type::LiteralString(" ".into()), "to_date"),
+            Type::Nil
+        );
+        assert_eq!(
+            date_conversion_return(&Type::LiteralString("2024-01-01".into()), "to_date"),
+            date
+        );
+        assert_eq!(
+            date_conversion_return(&Type::LiteralString("2024-01-01".into()), "to_time"),
+            Type::Class(Sym::new("Time")).union_with(Type::Nil)
+        );
     }
 }
