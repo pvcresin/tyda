@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use crate::rbs::convert::{convert_rbs_builtin_alias, convert_rbs_type};
 use crate::registry::{
-    MethodDef, MixinKind as RegistryMixinKind, ParamInfo, TypeRegistry, Visibility,
+    ConstantAlias, MethodDef, MixinKind as RegistryMixinKind, ParamInfo, TypeRegistry, Visibility,
 };
 use crate::types::{ParamKind, RecordField, RecordKey, Type};
 
@@ -290,7 +290,12 @@ fn merge_signature_into_registry(
             rbs_sys::Declaration::ClassAlias { new_name, old_name }
             | rbs_sys::Declaration::ModuleAlias { new_name, old_name } => {
                 registry.set_type_alias(new_name, Type::Class(Sym::new(old_name)));
-                register_rbs_constant(registry, new_name, Type::Singleton(Sym::new(old_name)));
+                register_rbs_constant(
+                    registry,
+                    new_name,
+                    Type::Singleton(Sym::new(old_name)),
+                    ConstantAlias::Namespace,
+                );
             }
             rbs_sys::Declaration::Constant { name, type_ } => {
                 let converted = convert_imported_rbs_type_with_templates(
@@ -299,7 +304,7 @@ fn merge_signature_into_registry(
                     alias_templates,
                     None,
                 );
-                register_rbs_constant(registry, name, converted);
+                register_rbs_constant(registry, name, converted, ConstantAlias::None);
             }
             rbs_sys::Declaration::Global { name, type_ } => {
                 let converted = convert_imported_rbs_type_with_templates(
@@ -365,12 +370,17 @@ fn resolve_rbs_type_aliases(
     resolved
 }
 
-fn register_rbs_constant(registry: &mut TypeRegistry, qualified_name: &str, ty: Type) {
+fn register_rbs_constant(
+    registry: &mut TypeRegistry,
+    qualified_name: &str,
+    ty: Type,
+    alias: ConstantAlias,
+) {
     let (owner, const_name) = match qualified_name.rsplit_once("::") {
         Some((owner, tail)) => (owner.trim_start_matches("::"), tail),
         None => ("Object", qualified_name),
     };
-    registry.set_constant(owner, const_name, ty, None, None);
+    registry.set_constant_entry(owner, const_name, ty, None, None, alias);
 }
 
 fn collect_declared_classes_from_signature(sig: &rbs_sys::Signature) -> Vec<String> {

@@ -19,7 +19,7 @@ use crate::rbs::inline::{
 };
 use crate::rbs::stdlib_loader::LazyRbsLoader;
 use crate::registry::{
-    BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, KeywordArgTypes,
+    BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, ConstantAlias, KeywordArgTypes,
     LiteralBranchedDef, MethodBlockMeta, MethodBodySummary, MethodDef, MixinKind, ParamInfo,
     PendingScopedTypeRef, TypeRegistry, Visibility,
 };
@@ -32,8 +32,8 @@ use crate::sorbet::comments::{
 };
 use crate::sorbet::rbi::LazyRbiLoader;
 use crate::types::{
-    HoverBlockSig, MethodSig, Param, ParamKind, RecordField, RecordKey, SharedPath, SourceLocation,
-    Type,
+    HoverBlockSig, MethodSig, NamespaceAliasKind, Param, ParamKind, RecordField, RecordKey,
+    SharedPath, SourceLocation, Type,
 };
 
 mod array_element_flow;
@@ -3474,10 +3474,17 @@ impl<'a> InferenceEngine<'a> {
         const_name: &str,
         ty: Type,
         loc: Option<SourceLocation>,
+        alias: ConstantAlias,
     ) {
         self.insert_class_body_constant(class_name, const_name, ty.clone());
-        self.registry
-            .set_constant(class_name, const_name, ty, loc, self.file_path.as_deref());
+        self.registry.set_constant_entry(
+            class_name,
+            const_name,
+            ty,
+            loc,
+            self.file_path.as_deref(),
+            alias,
+        );
     }
 
     fn set_constant_path_value(
@@ -3486,6 +3493,7 @@ impl<'a> InferenceEngine<'a> {
         path: &str,
         ty: Type,
         loc: Option<SourceLocation>,
+        alias: ConstantAlias,
     ) {
         let absolute = path.starts_with("::");
         let normalized = path.trim_scope_prefix();
@@ -3506,8 +3514,14 @@ impl<'a> InferenceEngine<'a> {
         if owner == "Object" {
             self.constants.insert(const_name.clone(), ty.clone());
         }
-        self.registry
-            .set_constant(&owner, &const_name, ty, loc, self.file_path.as_deref());
+        self.registry.set_constant_entry(
+            &owner,
+            &const_name,
+            ty,
+            loc,
+            self.file_path.as_deref(),
+            alias,
+        );
     }
 
     fn resolve_constant_assignment_owner(
@@ -4305,6 +4319,74 @@ impl<'a> InferenceEngine<'a> {
         Type::Singleton(Sym::new(trimmed))
     }
 
+    /// `X = Foo` binds the class object itself, so RBS output declares `X` as an alias.
+    fn constant_write_alias(
+        &mut self,
+        class_context: &str,
+        value_node: &Node<'_>,
+        value_type: &Type,
+        parse_result: &ParseResult<'_>,
+    ) -> ConstantAlias {
+        let Type::Singleton(target) = value_type else {
+            return ConstantAlias::None;
+        };
+        if !matches!(
+            value_node,
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+        ) {
+            return ConstantAlias::None;
+        }
+        let raw = self.resolve_constant_path(value_node, parse_result);
+        if !self.constant_reference_names_namespace(&raw, class_context) {
+            return ConstantAlias::None;
+        }
+        self.ensure_class_available(target.as_str());
+        match self.class_data_cross_registry(target.as_str()) {
+            Some(data) => ConstantAlias::NamespaceOf(NamespaceAliasKind::of(data.is_module)),
+            None => ConstantAlias::Namespace,
+        }
+    }
+
+    /// A singleton-typed value constant (`Y = Class.new(base)`) is not itself a class,
+    /// so only references to a class definition or to another alias qualify.
+    fn constant_reference_names_namespace(&mut self, raw: &str, class_context: &str) -> bool {
+        let absolute = raw.starts_with("::");
+        let bare = raw.trim_scope_prefix();
+        let candidates = match bare.rsplit_once("::") {
+            Some((parent, name)) => {
+                let parent = if absolute {
+                    format!("::{parent}")
+                } else {
+                    parent.to_string()
+                };
+                let Some(parent) = self.canonicalize_namespace(&parent, class_context) else {
+                    return false;
+                };
+                vec![Self::qualified_constant_name(&parent, name)]
+            }
+            None if absolute => vec![bare.to_string()],
+            None => self.scoped_constant_candidates_in_context(bare, class_context),
+        };
+        for candidate in candidates {
+            if self.class_exists_cross_registry(&candidate) {
+                return true;
+            }
+            let (owner, name) = Self::constant_owner_and_name(&candidate);
+            let is_alias = self
+                .registry
+                .constant_is_namespace_alias(&owner, &name)
+                .or_else(|| {
+                    self.external_rbs
+                        .and_then(|external| external.constant_is_namespace_alias(&owner, &name))
+                });
+            if let Some(is_alias) = is_alias {
+                return is_alias;
+            }
+        }
+        // Unresolved here: a forward reference to a namespace defined later.
+        true
+    }
+
     fn resolve_global_alias<'s>(&'s self, name: &'s str) -> &'s str {
         let mut current = name;
         let mut seen = HashSet::new();
@@ -4372,7 +4454,7 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
             AliasTarget::Constant { owner, name } => {
-                self.set_constant_value(owner, name, ty.clone(), None);
+                self.set_constant_value(owner, name, ty.clone(), None, ConstantAlias::None);
             }
         }
         self.sync_alias_views(scope, target, &ty);
@@ -13548,7 +13630,13 @@ impl<'a> InferenceEngine<'a> {
                     );
                     self.constants
                         .insert(const_name.clone(), value_type.clone());
-                    self.registry.set_constant(
+                    let alias = self.constant_write_alias(
+                        "Object",
+                        &write_node.value(),
+                        &value_type,
+                        parse_result,
+                    );
+                    self.registry.set_constant_entry(
                         "Object",
                         &const_name,
                         value_type,
@@ -13557,6 +13645,7 @@ impl<'a> InferenceEngine<'a> {
                             write_node.location().start_offset(),
                         )),
                         self.file_path.as_deref(),
+                        alias,
                     );
                 }
             }
@@ -14137,7 +14226,9 @@ impl<'a> InferenceEngine<'a> {
             )
             .unwrap_or_else(|| {
                 let value_type = self.infer_node_type(&owner, &value_node, parse_result, scope);
-                self.set_constant_value(&owner, &const_name, value_type.clone(), Some(loc));
+                let alias =
+                    self.constant_write_alias(&owner, &value_node, &value_type, parse_result);
+                self.set_constant_value(&owner, &const_name, value_type.clone(), Some(loc), alias);
                 value_type
             });
 
@@ -15967,12 +16058,19 @@ impl<'a> InferenceEngine<'a> {
                                     &write_node.value(),
                                     parse_result,
                                 );
-                                self.registry.set_constant(
+                                let alias = self.constant_write_alias(
+                                    class_name,
+                                    &write_node.value(),
+                                    &value_type,
+                                    parse_result,
+                                );
+                                self.registry.set_constant_entry(
                                     &const_owner,
                                     &const_name,
                                     value_type.clone(),
                                     Some(const_loc),
                                     self.file_path.as_deref(),
+                                    alias,
                                 );
                             }
                             self.push_hover_snapshot(HoverSnapshot {
@@ -16361,12 +16459,15 @@ impl<'a> InferenceEngine<'a> {
             self.insert_class_body_constant(class_name, &const_name, value_type.clone());
         }
         let start = write_node.location().start_offset();
-        self.registry.set_constant(
+        let alias =
+            self.constant_write_alias(class_name, &write_node.value(), &value_type, parse_result);
+        self.registry.set_constant_entry(
             class_name,
             &const_name,
             value_type.clone(),
             Some(offset_to_location(parse_result.source(), start)),
             self.file_path.as_deref(),
+            alias,
         );
         self.push_hover_snapshot(HoverSnapshot {
             start,
@@ -25848,7 +25949,13 @@ impl<'a> InferenceEngine<'a> {
                     parse_result.source(),
                     write_node.location().start_offset(),
                 ));
-                self.set_constant_value(class_name, &const_name, value_type, loc);
+                let alias = self.constant_write_alias(
+                    class_name,
+                    &write_node.value(),
+                    &value_type,
+                    parse_result,
+                );
+                self.set_constant_value(class_name, &const_name, value_type, loc, alias);
             }
             Node::ShareableConstantNode { .. } => {
                 let shareable = node
@@ -33117,6 +33224,12 @@ impl<'a> InferenceEngine<'a> {
                 let const_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
+                let alias = self.constant_write_alias(
+                    class_name,
+                    &write_node.value(),
+                    &value_type,
+                    parse_result,
+                );
                 self.set_constant_value(
                     class_name,
                     &const_name,
@@ -33125,6 +33238,7 @@ impl<'a> InferenceEngine<'a> {
                         parse_result.source(),
                         write_node.location().start_offset(),
                     )),
+                    alias,
                 );
                 self.push_hover_snapshot(HoverSnapshot {
                     start: write_node.location().start_offset(),
@@ -34936,11 +35050,11 @@ impl<'a> InferenceEngine<'a> {
                     .as_constant_target_node()
                     .expect("must be ConstantTargetNode");
                 let name = String::from_utf8_lossy(target_node.name().as_slice()).to_string();
-                self.set_constant_value(class_name, &name, ty, None);
+                self.set_constant_value(class_name, &name, ty, None, ConstantAlias::None);
             }
             Node::ConstantPathTargetNode { .. } => {
                 let path = String::from_utf8_lossy(target.location().as_slice()).to_string();
-                self.set_constant_path_value(class_name, &path, ty, None);
+                self.set_constant_path_value(class_name, &path, ty, None, ConstantAlias::None);
             }
             Node::MultiTargetNode { .. } => {
                 let mt = target
@@ -52102,7 +52216,13 @@ impl<'a> InferenceEngine<'a> {
         let value_type = self.infer_node_type(class_name, value_node, parse_result, scope);
         let result_type =
             self.infer_conditional_write_result(&current_type, &value_type, kind, operator_name);
-        self.set_constant_value(class_name, const_name, result_type.clone(), loc);
+        self.set_constant_value(
+            class_name,
+            const_name,
+            result_type.clone(),
+            loc,
+            ConstantAlias::None,
+        );
         result_type
     }
 
@@ -52128,9 +52248,14 @@ impl<'a> InferenceEngine<'a> {
         let assigned_name = path.rsplit("::").next().unwrap_or(path);
         let value_type =
             self.forward_namespace_alias_type(assigned_name, value_node, parse_result, value_type);
+        let alias = if kind == "assign" {
+            self.constant_write_alias(class_name, value_node, &value_type, parse_result)
+        } else {
+            ConstantAlias::None
+        };
         let result_type =
             self.infer_conditional_write_result(&current_type, &value_type, kind, operator_name);
-        self.set_constant_path_value(class_name, path, result_type.clone(), loc);
+        self.set_constant_path_value(class_name, path, result_type.clone(), loc, alias);
         result_type
     }
 

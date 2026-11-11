@@ -325,8 +325,9 @@ pub struct RegistryBreakdownTotals {
 }
 
 use crate::types::{
-    ClassInfo, ConstantSig, HoverBlockSig, MethodAliasSig, MethodSig, OverloadSig, Param,
-    ParamKind, RecordField, RecordKey, SharedName, SharedPath, SourceLocation, Type,
+    ClassInfo, ConstantSig, HoverBlockSig, MethodAliasSig, MethodSig, NamespaceAliasKind,
+    OverloadSig, Param, ParamKind, RecordField, RecordKey, SharedName, SharedPath, SourceLocation,
+    Type,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1404,6 +1405,24 @@ pub struct ConstantDef {
     pub file_path: Option<SharedPath>,
     // lazy stdlib constants are lookup-only and are never emitted in RBS output.
     pub external_source: bool,
+    pub alias: ConstantAlias,
+}
+
+/// `X = Foo` binds the class object itself, so RBS declares `X` as a class/module alias.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ConstantAlias {
+    #[default]
+    None,
+    /// The target's kind is read from the output registry (it may be defined later).
+    Namespace,
+    /// Kind seen at the write; stdlib and gem targets are absent from the output registry.
+    NamespaceOf(NamespaceAliasKind),
+}
+
+impl ConstantAlias {
+    pub fn is_namespace(self) -> bool {
+        !matches!(self, Self::None)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -4210,6 +4229,25 @@ impl TypeRegistry {
         loc: Option<SourceLocation>,
         file_path: Option<&str>,
     ) {
+        self.set_constant_entry(
+            class_name,
+            constant_name,
+            const_type,
+            loc,
+            file_path,
+            ConstantAlias::None,
+        );
+    }
+
+    pub fn set_constant_entry(
+        &mut self,
+        class_name: &str,
+        constant_name: &str,
+        const_type: Type,
+        loc: Option<SourceLocation>,
+        file_path: Option<&str>,
+        alias: ConstantAlias,
+    ) {
         let data = self.class_data_mut(class_name);
         data.user_defined = true;
         let name = Sym::new(constant_name);
@@ -4221,8 +4259,20 @@ impl TypeRegistry {
                 loc,
                 file_path: file_path.map(SharedPath::from),
                 external_source: false,
+                alias,
             },
         );
+    }
+
+    pub fn constant_is_namespace_alias(
+        &self,
+        class_name: &str,
+        constant_name: &str,
+    ) -> Option<bool> {
+        let data = self.class_data.get(class_name)?;
+        data.constants
+            .get(constant_name)
+            .map(|def| def.alias.is_namespace())
     }
 
     pub fn lookup_constant_type(&self, class_name: &str, constant_name: &str) -> Option<Type> {

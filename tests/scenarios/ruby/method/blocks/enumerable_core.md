@@ -1092,10 +1092,6 @@ end
 
 ## detect narrows with constant alias predicate
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
