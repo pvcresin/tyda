@@ -1905,6 +1905,7 @@ fn convert_pending_rbs_type(
                 }),
             )),
             param_count: rbs_function_type_param_count(&method_type.function_type),
+            signature: None,
         },
     }
 }
@@ -2248,6 +2249,7 @@ fn convert_imported_rbs_type_inner(
                 }),
             )),
             param_count: rbs_function_type_param_count(&method_type.function_type),
+            signature: None,
         },
         rbs_ir::RbsType::Intersection(types) => Type::Intersection(
             types

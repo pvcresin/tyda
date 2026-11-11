@@ -871,6 +871,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_block_return_refs(
                     owner_class,
@@ -878,6 +879,7 @@ impl TypeRegistry {
                     return_type,
                 )),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             _ => ty.clone(),
         }

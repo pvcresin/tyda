@@ -102,6 +102,17 @@ includer より先に定義されていても、本体を再推論して解決�
 は caller の位置・keyword に展開し、bare `super` の既定値には束縛済みの値、自身と後続の optional には
 `nil`、後続 keyword には caller が渡した値だけを渡す。別ファイルの includer は対象外。
 
+呼び出し引数と source parameter の束縛は `registry/argument_binding.rs` に集約する。method
+（`super` / local singleton method / refinement）と Proc / lambda リテラルの呼び出しは同じ規則で
+required → optional → rest → post の順に位置引数を割り当て、未指定の optional / keyword は既定値、
+keyword を受けない callable へ渡した keyword は末尾の Hash 引数にする。違いは `ArgumentRules` だけで、
+method は全 call site を要約するので値を widen し、rest は要素型にする。リテラルは呼び出しごとに解決するので
+値を保ち、rest は Tuple、`**rest` は record にする。proc は単一の配列引数を展開し、不足した必須引数を
+`nil` にする。lambda は arity を厳密に扱う。リテラルの型（`Type::Proc`）は parameter 情報を
+`ProcSignature` として共有参照で持ち、本体は `ParamRef` / `KeywordParamRef` のまま推論して呼び出し時に代入する。
+lambda の `return` / `break` は lambda の値になる。本体が外側 local に代入する場合はその型を記録し、
+定義したメソッド内で local に保持したリテラルを呼んだ文の後に外側 local へ join する。
+
 静的に解決できる mixin edge には、Ruby が実行時に呼ぶ `included` / `extended` /
 `prepended` callback の call site も対応付ける。callback の第一引数には mixin の適用先を
 `singleton(...)` として渡し、既存の call site ベースの引数型推論で同じ hook の複数の適用先を

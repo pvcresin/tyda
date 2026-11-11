@@ -755,10 +755,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .all(|f| Self::is_concrete_for_method_ref_resolve(&f.value)),
-            Type::Proc {
-                return_type,
-                param_count: _,
-            } => Self::is_concrete_for_method_ref_resolve(return_type),
+            Type::Proc { return_type, .. } => Self::is_concrete_for_method_ref_resolve(return_type),
             _ => false,
         }
     }
@@ -1884,6 +1881,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(Self::substitute_param_refs_with_keywords(
                     return_type,
@@ -1891,6 +1889,7 @@ impl<'a> InferenceEngine<'a> {
                     keyword_types,
                 )),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             Type::Tuple(elems) => Type::Tuple(
                 elems

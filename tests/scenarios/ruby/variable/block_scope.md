@@ -96,10 +96,6 @@ end
 
 ## Calling a lambda applies its captured local write
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

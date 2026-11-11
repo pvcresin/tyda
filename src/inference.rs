@@ -18,6 +18,7 @@ use crate::rbs::inline::{
     parse_rbs_shorthand, parse_rbs_shorthand_with_aliases,
 };
 use crate::rbs::stdlib_loader::LazyRbsLoader;
+use crate::registry::argument_binding::{self, ArgumentRules};
 use crate::registry::{
     BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, KeywordArgTypes,
     LiteralBranchedDef, MethodBlockMeta, MethodBodySummary, MethodDef, MixinKind, ParamInfo,
@@ -32,8 +33,8 @@ use crate::sorbet::comments::{
 };
 use crate::sorbet::rbi::LazyRbiLoader;
 use crate::types::{
-    HoverBlockSig, MethodSig, Param, ParamKind, RecordField, RecordKey, SharedPath, SourceLocation,
-    Type,
+    CapturedLocalWrites, HoverBlockSig, MethodSig, Param, ParamKind, ProcKind, ProcSignature,
+    RecordField, RecordKey, SharedPath, SourceLocation, Type,
 };
 
 mod array_element_flow;
@@ -1700,6 +1701,14 @@ enum SuperCallArguments {
         positional: Vec<Type>,
         keywords: HashMap<String, Type>,
     },
+}
+
+struct ProcLiteral<'src> {
+    params: Option<Node<'src>>,
+    body: Option<Node<'src>>,
+    kind: ProcKind,
+    // Records parameter hovers from the calls of the local or constant this literal is bound to.
+    hover_call_start: Option<usize>,
 }
 
 struct SuperCallBlockInput<'scope, 'src> {
@@ -12377,17 +12386,20 @@ impl<'a> InferenceEngine<'a> {
                             )
                         })
                         .collect();
-                    TypeRegistry::bind_positional_arguments(&params, positional_arg_types)
-                        .into_iter()
-                        .zip(&params)
-                        .map(|(bound, param)| {
-                            if bound.is_empty() {
-                                param.default_type.clone().unwrap_or(Type::Untyped)
-                            } else {
-                                Type::from_type_vec_preserve_untyped(bound)
-                            }
-                        })
-                        .collect::<Vec<Type>>()
+                    crate::registry::argument_binding::bind_positional_arguments(
+                        &params,
+                        positional_arg_types,
+                    )
+                    .into_iter()
+                    .zip(&params)
+                    .map(|(bound, param)| {
+                        if bound.is_empty() {
+                            param.default_type.clone().unwrap_or(Type::Untyped)
+                        } else {
+                            Type::from_type_vec_preserve_untyped(bound)
+                        }
+                    })
+                    .collect::<Vec<Type>>()
                 })
                 .unwrap_or_else(|| positional_arg_types.to_vec());
             let param_types: Vec<Type> = Self::substitute_user_defined_block_param_types(
@@ -12683,72 +12695,16 @@ impl<'a> InferenceEngine<'a> {
         else {
             return Some(raw_return);
         };
-        let positional_params: Vec<&ParamInfo> = method_def
-            .param_infos
-            .iter()
-            .filter(|param| {
-                matches!(
-                    param.kind,
-                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
-                )
-            })
-            .collect();
-        let positional_types: Vec<Type> =
-            TypeRegistry::bind_positional_arguments(&positional_params, positional)
-                .into_iter()
-                .zip(&positional_params)
-                .map(|(bound, param)| {
-                    if bound.is_empty() {
-                        param.default_type.clone().unwrap_or(Type::Untyped)
-                    } else {
-                        Type::from_type_vec_preserve_untyped(bound)
-                    }
-                    .widen_arg_for_param()
-                })
-                .collect();
-        let mut keyword_types: HashMap<String, Type> = method_def
-            .param_infos
-            .iter()
-            .filter(|param| {
-                matches!(
-                    param.kind,
-                    ParamKind::KeywordRequired | ParamKind::KeywordOptional
-                )
-            })
-            .map(|param| {
-                let ty = keywords
-                    .get(&param.name)
-                    .cloned()
-                    .or_else(|| param.default_type.clone())
-                    .unwrap_or(Type::Untyped)
-                    .widen_arg_for_param();
-                (param.name.clone(), ty)
-            })
-            .collect();
-        if let Some(rest) = method_def
-            .param_infos
-            .iter()
-            .find(|param| param.kind == ParamKind::DoubleRest)
-        {
-            let collected: Vec<Type> = keywords
-                .iter()
-                .filter(|(name, _)| !keyword_types.contains_key(*name))
-                .map(|(_, ty)| ty.clone().widen_arg_for_param())
-                .collect();
-            if !collected.is_empty() {
-                keyword_types.insert(
-                    rest.name.clone(),
-                    Type::Hash(
-                        Some(Box::new(Type::Symbol)),
-                        Some(Box::new(Type::from_type_vec_preserve_untyped(collected))),
-                    ),
-                );
-            }
-        }
+        let bound = argument_binding::bind_arguments(
+            &method_def.param_infos,
+            positional,
+            keywords,
+            ArgumentRules::Method,
+        );
         Some(Self::substitute_param_refs_with_keywords(
             &raw_return,
-            &positional_types,
-            &keyword_types,
+            &bound.positional,
+            &bound.keywords,
         ))
     }
 
@@ -18252,6 +18208,7 @@ impl<'a> InferenceEngine<'a> {
                             Type::Proc {
                                 return_type: Box::new(Type::BlockReturnRef),
                                 param_count: 0,
+                                signature: None,
                             },
                         );
                         scope.current_block_param_name = Some(pi.name.clone());
@@ -20255,12 +20212,27 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         parse_result: &ParseResult<'_>,
     ) -> (Vec<String>, Vec<ParamInfo>) {
+        self.collect_parameters_info(
+            def_node.parameters(),
+            class_name,
+            parse_result,
+            &mut Scope::default(),
+        )
+    }
+
+    /// Binds each positional parameter to its `ParamRef` in `scope`, so later defaults see it.
+    fn collect_parameters_info(
+        &mut self,
+        params: Option<ruby_prism::ParametersNode<'_>>,
+        class_name: &str,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) -> (Vec<String>, Vec<ParamInfo>) {
         let mut names = Vec::new();
         let mut infos = Vec::new();
-        let mut scope = Scope::default();
         let mut positional_idx = 0;
 
-        if let Some(params) = def_node.parameters() {
+        if let Some(params) = params {
             for param in params.requireds().iter() {
                 if let Node::RequiredParameterNode { .. } = &param {
                     let req = param
@@ -20295,7 +20267,7 @@ impl<'a> InferenceEngine<'a> {
                         class_name,
                         &opt.value(),
                         parse_result,
-                        &scope,
+                        scope,
                     );
                     names.push(name.clone());
                     infos.push(ParamInfo {
@@ -20325,6 +20297,7 @@ impl<'a> InferenceEngine<'a> {
                         default_type: None,
                     });
                     scope.set(&names[names.len() - 1], Type::ParamRef(positional_idx));
+                    positional_idx += 1;
                 }
             }
             for param in params.posts().iter() {
@@ -20366,7 +20339,7 @@ impl<'a> InferenceEngine<'a> {
                             class_name,
                             &kw.value(),
                             parse_result,
-                            &scope,
+                            scope,
                         );
                         names.push(name.clone());
                         infos.push(ParamInfo {
@@ -21944,6 +21917,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                self.apply_proc_call_captured_writes(class_name, &call_node, parse_result, scope);
                 return ty;
             }
         }
@@ -23422,12 +23396,14 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(Self::substitute_block_return_ref(
                     *return_type,
                     block_return_type,
                 )),
                 param_count,
+                signature,
             },
             other => other,
         }
@@ -24531,6 +24507,7 @@ impl<'a> InferenceEngine<'a> {
             let Type::Proc {
                 return_type,
                 param_count,
+                ..
             } = self.infer_node_type(class_name, &expr, parse_result, scope)
             else {
                 return None;
@@ -24842,51 +24819,16 @@ impl<'a> InferenceEngine<'a> {
             .clone();
         let (arg_types, keyword_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
-        let positional_params: Vec<&ParamInfo> = method
-            .param_infos
-            .iter()
-            .filter(|param| {
-                matches!(
-                    param.kind,
-                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
-                )
-            })
-            .collect();
-        let positional_types: Vec<Type> = positional_params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                arg_types
-                    .get(index)
-                    .cloned()
-                    .or_else(|| param.default_type.clone())
-                    .unwrap_or(Type::Untyped)
-                    .widen_arg_for_param()
-            })
-            .collect();
-        let keyword_types: HashMap<String, Type> = method
-            .param_infos
-            .iter()
-            .filter(|param| {
-                matches!(
-                    param.kind,
-                    ParamKind::KeywordRequired | ParamKind::KeywordOptional
-                )
-            })
-            .map(|param| {
-                let ty = keyword_types
-                    .get(&param.name)
-                    .cloned()
-                    .or_else(|| param.default_type.clone())
-                    .unwrap_or(Type::Untyped)
-                    .widen_arg_for_param();
-                (param.name.clone(), ty)
-            })
-            .collect();
+        let bound = argument_binding::bind_arguments(
+            &method.param_infos,
+            &arg_types,
+            &keyword_types,
+            ArgumentRules::Method,
+        );
         Some(Self::substitute_param_refs_with_keywords(
             &method.raw_return_type,
-            &positional_types,
-            &keyword_types,
+            &bound.positional,
+            &bound.keywords,
         ))
     }
 
@@ -24913,51 +24855,16 @@ impl<'a> InferenceEngine<'a> {
             .clone();
         let (arg_types, keyword_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
-        let positional_params: Vec<&ParamInfo> = method
-            .param_infos
-            .iter()
-            .filter(|param| {
-                matches!(
-                    param.kind,
-                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
-                )
-            })
-            .collect();
-        let positional_types: Vec<Type> = positional_params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                arg_types
-                    .get(index)
-                    .cloned()
-                    .or_else(|| param.default_type.clone())
-                    .unwrap_or(Type::Untyped)
-                    .widen_arg_for_param()
-            })
-            .collect();
-        let keyword_types: HashMap<String, Type> = method
-            .param_infos
-            .iter()
-            .filter(|param| {
-                matches!(
-                    param.kind,
-                    ParamKind::KeywordRequired | ParamKind::KeywordOptional
-                )
-            })
-            .map(|param| {
-                let ty = keyword_types
-                    .get(&param.name)
-                    .cloned()
-                    .or_else(|| param.default_type.clone())
-                    .unwrap_or(Type::Untyped)
-                    .widen_arg_for_param();
-                (param.name.clone(), ty)
-            })
-            .collect();
+        let bound = argument_binding::bind_arguments(
+            &method.param_infos,
+            &arg_types,
+            &keyword_types,
+            ArgumentRules::Method,
+        );
         Some(Self::substitute_param_refs_with_keywords(
             &method.raw_return_type,
-            &positional_types,
-            &keyword_types,
+            &bound.positional,
+            &bound.keywords,
         ))
     }
 
@@ -25419,6 +25326,12 @@ impl<'a> InferenceEngine<'a> {
                 );
                 if let Some(call_node) = value_node.as_call_node() {
                     self.apply_receiver_mutating_call_side_effect(
+                        class_name,
+                        &call_node,
+                        parse_result,
+                        scope,
+                    );
+                    self.apply_proc_call_captured_writes(
                         class_name,
                         &call_node,
                         parse_result,
@@ -26469,6 +26382,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                self.apply_proc_call_captured_writes(class_name, &call_node, parse_result, scope);
                 self.apply_block_dependent_enumerator_receiver_side_effect(
                     class_name,
                     &call_node,
@@ -29226,70 +29140,22 @@ impl<'a> InferenceEngine<'a> {
                             && let Some(block) = call_node.block()
                             && let Some(block_node) = block.as_block_node()
                         {
-                            let mut block_scope = scope.fork_for_branch();
-                            let mut param_count = 0usize;
-                            let required_count = block_node
-                                .parameters()
-                                .and_then(|p| p.as_block_parameters_node())
-                                .and_then(|bp| bp.parameters())
-                                .map(|inner| inner.requireds().iter().count())
-                                .unwrap_or(0);
-                            let hover_param_types =
-                                if self.record_hover_snapshots && required_count > 0 {
-                                    let mut inference_scope = scope.clone();
-                                    self.infer_lambda_block_param_types_from_call_sites_at(
-                                        class_name,
-                                        call_node.location().start_offset(),
-                                        required_count,
-                                        parse_result,
-                                        &mut inference_scope,
-                                    )
-                                    .unwrap_or_default()
-                                } else {
-                                    Vec::new()
-                                };
-                            if let Some(params) = block_node.parameters()
-                                && let Some(bp) = params.as_block_parameters_node()
-                                && let Some(inner) = bp.parameters()
-                            {
-                                for (i, req) in inner.requireds().iter().enumerate() {
-                                    if let Some(name) = Self::extract_param_name(&req) {
-                                        let inferred = hover_param_types
-                                            .get(i)
-                                            .cloned()
-                                            .unwrap_or(Type::Untyped);
-                                        block_scope.set(&name, Type::ParamRef(i));
-                                        if self.record_hover_snapshots {
-                                            let loc = req.location();
-                                            self.push_hover_snapshot(HoverSnapshot {
-                                                start: loc.start_offset(),
-                                                end: loc.end_offset(),
-                                                name: name.clone(),
-                                                target: HoverTarget::Value(inferred.clone()),
-                                                class_context: class_name.to_string(),
-                                                method_context: scope.method_name.clone(),
-                                                method_context_singleton_dispatch: scope
-                                                    .method_context_singleton_dispatch,
-                                            });
-                                        }
-                                        param_count += 1;
-                                    }
-                                }
-                            }
-                            let return_type = if let Some(body) = block_node.body() {
-                                self.infer_body_return_type(
-                                    class_name,
-                                    &body,
-                                    parse_result,
-                                    &mut block_scope,
-                                )
+                            let kind = if method_name == "lambda" {
+                                ProcKind::Lambda
                             } else {
-                                Type::Nil
+                                ProcKind::Proc
                             };
-                            break 'no_recv Type::Proc {
-                                return_type: Box::new(return_type),
-                                param_count,
-                            };
+                            break 'no_recv self.infer_proc_literal_type(
+                                class_name,
+                                ProcLiteral {
+                                    params: block_node.parameters(),
+                                    body: block_node.body(),
+                                    kind,
+                                    hover_call_start: Some(call_node.location().start_offset()),
+                                },
+                                parse_result,
+                                scope,
+                            );
                         }
 
                         if matches!(method_name.as_str(), "method" | "public_method")
@@ -30430,51 +30296,17 @@ impl<'a> InferenceEngine<'a> {
                                 && let Some(block_raw) = call_node.block()
                                 && let Some(block) = block_raw.as_block_node()
                             {
-                                let mut block_scope = scope.fork_for_branch();
-                                let mut param_count = 0;
-                                if let Some(params_node) = block.parameters() {
-                                    if let Some(bp) = params_node.as_block_parameters_node()
-                                        && let Some(inner_params) = bp.parameters()
-                                    {
-                                        for (i, req) in inner_params.requireds().iter().enumerate()
-                                        {
-                                            if let Some(name) = Self::extract_param_name(&req) {
-                                                block_scope.set(&name, Type::ParamRef(i));
-                                                param_count += 1;
-                                            }
-                                        }
-                                    } else if self.supports_numbered_params()
-                                        && let Node::NumberedParametersNode { .. } = &params_node
-                                    {
-                                        let np = params_node
-                                            .as_numbered_parameters_node()
-                                            .expect("must be NumberedParametersNode");
-                                        param_count = np.maximum() as usize;
-                                        for i in 0..param_count {
-                                            block_scope
-                                                .set(&format!("_{}", i + 1), Type::ParamRef(i));
-                                        }
-                                    } else if self.supports_it_parameter()
-                                        && let Node::ItParametersNode { .. } = &params_node
-                                    {
-                                        param_count = 1;
-                                        block_scope.set("it", Type::ParamRef(0));
-                                    }
-                                }
-                                let return_type = if let Some(body) = block.body() {
-                                    self.infer_body_return_type(
-                                        class_name,
-                                        &body,
-                                        parse_result,
-                                        &mut block_scope,
-                                    )
-                                } else {
-                                    Type::Nil
-                                };
-                                Some(Type::Proc {
-                                    return_type: Box::new(return_type),
-                                    param_count,
-                                })
+                                Some(self.infer_proc_literal_type(
+                                    class_name,
+                                    ProcLiteral {
+                                        params: block.parameters(),
+                                        body: block.body(),
+                                        kind: ProcKind::Proc,
+                                        hover_call_start: None,
+                                    },
+                                    parse_result,
+                                    scope,
+                                ))
                             } else if target_class == "Class" {
                                 self.infer_class_new_type(class_name, node, parse_result, scope)
                             } else if target_class != "Unknown" {
@@ -30972,6 +30804,7 @@ impl<'a> InferenceEngine<'a> {
                         if let Type::Proc {
                             return_type,
                             param_count,
+                            signature,
                         } = &safe_nav_receiver_type
                         {
                             if method_name == "to_proc" && call_node.arguments().is_none() {
@@ -30997,6 +30830,7 @@ impl<'a> InferenceEngine<'a> {
                                         &bound_receiver,
                                     )),
                                     param_count: param_count.saturating_sub(1),
+                                    signature: None,
                                 });
                             }
                             if method_name == "bind_call" {
@@ -31058,7 +30892,16 @@ impl<'a> InferenceEngine<'a> {
                                 {
                                     break 'recv wrap(result);
                                 }
-                                let result = if *param_count > 0 {
+                                let result = if let Some(signature) = signature {
+                                    self.call_proc_literal(
+                                        class_name,
+                                        &call_node,
+                                        return_type,
+                                        signature,
+                                        parse_result,
+                                        scope,
+                                    )
+                                } else if *param_count > 0 {
                                     let mut arg_types = Vec::new();
                                     if let Some(args) = call_node.arguments() {
                                         for arg in args.arguments().iter() {
@@ -35036,48 +34879,342 @@ impl<'a> InferenceEngine<'a> {
         scope: &Scope,
     ) -> Type {
         let lambda_node = node.as_lambda_node().expect("must be LambdaNode");
-        let mut block_scope = scope.fork_for_block();
-        let mut param_count = 0;
+        self.infer_proc_literal_type(
+            class_name,
+            ProcLiteral {
+                params: lambda_node.parameters(),
+                body: lambda_node.body(),
+                kind: ProcKind::Lambda,
+                hover_call_start: None,
+            },
+            parse_result,
+            scope,
+        )
+    }
 
-        if let Some(params) = lambda_node.parameters() {
-            if let Node::BlockParametersNode { .. } = &params {
-                if let Some(bp) = params.as_block_parameters_node()
-                    && let Some(inner_params) = bp.parameters()
-                {
-                    for (i, req) in inner_params.requireds().iter().enumerate() {
-                        if let Some(name) = Self::extract_param_name(&req) {
-                            block_scope.set(&name, Type::ParamRef(i));
-                            param_count += 1;
+    /// Types a proc literal. Its parameters stay `ParamRef`/`KeywordParamRef` placeholders that
+    /// each call binds through the signature, the same way a method call binds its arguments.
+    fn infer_proc_literal_type(
+        &mut self,
+        class_name: &str,
+        literal: ProcLiteral<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Type {
+        let mut block_scope = scope.fork_for_block();
+        block_scope.return_types.clear();
+        let params = self.bind_proc_literal_params(
+            class_name,
+            literal.params.as_ref(),
+            parse_result,
+            &mut block_scope,
+        );
+        if let (Some(call_start), Some(params_node)) = (literal.hover_call_start, &literal.params) {
+            self.record_proc_literal_param_hovers(
+                class_name,
+                call_start,
+                params_node,
+                parse_result,
+                scope,
+            );
+        }
+        let value = match &literal.body {
+            Some(body) => {
+                self.infer_body_return_type(class_name, body, parse_result, &mut block_scope)
+            }
+            None => Type::Nil,
+        };
+        // `return` and `break` leave only a lambda; in a proc they leave the enclosing method.
+        let return_type = if literal.kind == ProcKind::Lambda {
+            let mut exits = std::mem::take(&mut block_scope.return_types);
+            exits.append(&mut block_scope.break_types);
+            exits.push(value);
+            Self::merge_reachable_types(exits)
+        } else {
+            value
+        };
+        Type::Proc {
+            return_type: Box::new(return_type),
+            param_count: params
+                .iter()
+                .filter(|param| argument_binding::is_positional(param.kind))
+                .count(),
+            signature: Some(Arc::new(ProcSignature {
+                kind: literal.kind,
+                captured_writes: Self::captured_local_writes(
+                    class_name,
+                    &literal,
+                    scope,
+                    &block_scope,
+                ),
+                params: params.into(),
+            })),
+        }
+    }
+
+    fn captured_local_writes(
+        class_name: &str,
+        literal: &ProcLiteral<'_>,
+        outer: &Scope,
+        block_scope: &Scope,
+    ) -> Option<Box<CapturedLocalWrites>> {
+        let body = literal.body.as_ref()?;
+        if outer.locals.is_empty() {
+            return None;
+        }
+        let mut block_locals = HashSet::new();
+        if let Some(params_node) = &literal.params {
+            Self::collect_block_param_names(params_node, &mut block_locals);
+        }
+        let mut writes: Vec<(String, Type)> = block_flow::assigned_local_names(body)
+            .into_iter()
+            .filter(|name| outer.locals.contains_key(name) && !block_locals.contains(name))
+            .filter_map(|name| {
+                let ty = block_scope.get(&name)?.clone();
+                Some((name, ty))
+            })
+            .collect();
+        if writes.is_empty() {
+            return None;
+        }
+        writes.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(Box::new(CapturedLocalWrites {
+            class_name: Sym::new(class_name),
+            method_name: outer.method_name.as_deref().map(Sym::new),
+            writes: writes.into(),
+        }))
+    }
+
+    /// Calling a proc held in a local runs its body, so the outer locals it assigns may change.
+    fn apply_proc_call_captured_writes(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        if !matches!(
+            call_node.name().as_slice(),
+            b"call" | b"[]" | b"yield" | b"==="
+        ) {
+            return;
+        }
+        let Some(receiver) = call_node
+            .receiver()
+            .and_then(|receiver| receiver.as_local_variable_read_node())
+        else {
+            return;
+        };
+        let receiver_name = String::from_utf8_lossy(receiver.name().as_slice());
+        let Some(Type::Proc {
+            signature: Some(signature),
+            ..
+        }) = scope.get(&receiver_name)
+        else {
+            return;
+        };
+        let Some(captured) = signature.captured_writes.as_deref() else {
+            return;
+        };
+        if captured.class_name.as_str() != class_name
+            || captured.method_name.as_deref() != scope.method_name.as_deref()
+        {
+            return;
+        }
+        let signature = Arc::clone(signature);
+        let (positional, keywords) =
+            self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
+        let bound = argument_binding::bind_arguments(
+            &signature.params,
+            &positional,
+            &keywords,
+            ArgumentRules::Literal(signature.kind),
+        );
+        for (name, written) in signature
+            .captured_writes
+            .iter()
+            .flat_map(|captured| captured.writes.iter())
+        {
+            let written = Self::substitute_param_refs_with_keywords(
+                written,
+                &bound.positional,
+                &bound.keywords,
+            );
+            if let Some(current) = scope.get(name) {
+                let merged = current.clone().union_with(written);
+                scope.set(name, merged);
+            }
+        }
+    }
+
+    fn call_proc_literal(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        return_type: &Type,
+        signature: &ProcSignature,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Type {
+        let (positional, keywords) =
+            self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
+        let bound = argument_binding::bind_arguments(
+            &signature.params,
+            &positional,
+            &keywords,
+            ArgumentRules::Literal(signature.kind),
+        );
+        let mut result = Self::substitute_param_refs_with_keywords(
+            return_type,
+            &bound.positional,
+            &bound.keywords,
+        );
+        if signature
+            .params
+            .iter()
+            .any(|param| param.kind == ParamKind::Block)
+            && let Some(block) = call_node.block().and_then(|block| block.as_block_node())
+        {
+            let (block_return, control) = self.infer_block_return_with_param_types(
+                class_name,
+                &block,
+                &[],
+                parse_result,
+                scope,
+            );
+            let block_return = Self::include_optional_control_type(block_return, &control);
+            result = Self::substitute_block_return_ref(result, &block_return);
+        }
+        self.resolve_receiver_method_refs(&result)
+    }
+
+    fn bind_proc_literal_params(
+        &mut self,
+        class_name: &str,
+        params: Option<&Node<'_>>,
+        parse_result: &ParseResult<'_>,
+        block_scope: &mut Scope,
+    ) -> Vec<ParamInfo> {
+        let implicit = |names: Vec<String>, block_scope: &mut Scope| {
+            names
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    block_scope.set(&name, Type::ParamRef(index));
+                    ParamInfo {
+                        name,
+                        kind: ParamKind::Required,
+                        default_type: None,
+                    }
+                })
+                .collect()
+        };
+        match params {
+            Some(Node::BlockParametersNode { .. }) => {
+                let Some(bp) = params.and_then(Node::as_block_parameters_node) else {
+                    return Vec::new();
+                };
+                let (_, infos) = self.collect_parameters_info(
+                    bp.parameters(),
+                    class_name,
+                    parse_result,
+                    block_scope,
+                );
+                if let Some(inner) = bp.parameters() {
+                    for (index, param) in inner.requireds().iter().enumerate() {
+                        if matches!(param, Node::MultiTargetNode { .. }) {
+                            Self::bind_destructured_param_target(
+                                &param,
+                                Type::ParamRef(index),
+                                block_scope,
+                            );
                         }
                     }
                 }
-            } else if self.supports_numbered_params()
-                && let Node::NumberedParametersNode { .. } = &params
-            {
-                let np = params
-                    .as_numbered_parameters_node()
-                    .expect("must be NumberedParametersNode");
-                param_count = np.maximum() as usize;
-                for i in 0..param_count {
-                    block_scope.set(&format!("_{}", i + 1), Type::ParamRef(i));
+                for info in infos.iter().filter(|info| !info.name.is_empty()) {
+                    match info.kind {
+                        ParamKind::KeywordRequired
+                        | ParamKind::KeywordOptional
+                        | ParamKind::DoubleRest => {
+                            block_scope
+                                .set(&info.name, Type::KeywordParamRef(Sym::new(&info.name)));
+                        }
+                        ParamKind::Block => block_scope.set(
+                            &info.name,
+                            Type::Proc {
+                                return_type: Box::new(Type::BlockReturnRef),
+                                param_count: 0,
+                                signature: None,
+                            },
+                        ),
+                        _ => {}
+                    }
                 }
-            } else if self.supports_it_parameter()
-                && let Node::ItParametersNode { .. } = &params
-            {
-                param_count = 1;
-                block_scope.set("it", Type::ParamRef(0));
+                infos
             }
+            Some(Node::NumberedParametersNode { .. }) if self.supports_numbered_params() => {
+                let maximum = params
+                    .and_then(Node::as_numbered_parameters_node)
+                    .map_or(0, |np| np.maximum() as usize);
+                implicit(
+                    (1..=maximum).map(|i| format!("_{i}")).collect(),
+                    block_scope,
+                )
+            }
+            Some(Node::ItParametersNode { .. }) if self.supports_it_parameter() => {
+                implicit(vec!["it".to_string()], block_scope)
+            }
+            _ => Vec::new(),
         }
+    }
 
-        let return_type = if let Some(body) = lambda_node.body() {
-            self.infer_body_return_type(class_name, &body, parse_result, &mut block_scope)
-        } else {
-            Type::Nil
+    fn record_proc_literal_param_hovers(
+        &mut self,
+        class_name: &str,
+        call_start: usize,
+        params: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) {
+        let Some(inner) = params
+            .as_block_parameters_node()
+            .and_then(|bp| bp.parameters())
+        else {
+            return;
         };
-
-        Type::Proc {
-            return_type: Box::new(return_type),
-            param_count,
+        let required_count = inner.requireds().iter().count();
+        if !self.record_hover_snapshots || required_count == 0 {
+            return;
+        }
+        let mut inference_scope = scope.clone();
+        let hover_param_types = self
+            .infer_lambda_block_param_types_from_call_sites_at(
+                class_name,
+                call_start,
+                required_count,
+                parse_result,
+                &mut inference_scope,
+            )
+            .unwrap_or_default();
+        for (index, req) in inner.requireds().iter().enumerate() {
+            let Some(name) = Self::extract_param_name(&req) else {
+                continue;
+            };
+            let loc = req.location();
+            self.push_hover_snapshot(HoverSnapshot {
+                start: loc.start_offset(),
+                end: loc.end_offset(),
+                name,
+                target: HoverTarget::Value(
+                    hover_param_types
+                        .get(index)
+                        .cloned()
+                        .unwrap_or(Type::Untyped),
+                ),
+                class_context: class_name.to_string(),
+                method_context: scope.method_name.clone(),
+                method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
+            });
         }
     }
 
@@ -35638,6 +35775,7 @@ impl<'a> InferenceEngine<'a> {
         if let Type::Proc {
             return_type,
             param_count,
+            ..
         } = self.infer_node_type(class_name, &expr, parse_result, scope)
         {
             let resolved = if param_count == 0 {
@@ -45757,6 +45895,7 @@ impl<'a> InferenceEngine<'a> {
                 Type::Proc {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_function_type_param_count(&method_type.function_type),
+                    signature: None,
                 }
             }
             _ => convert_rbs_type(rbs_ty),
@@ -45862,6 +46001,7 @@ impl<'a> InferenceEngine<'a> {
                 Type::Proc {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_function_type_param_count(&method_type.function_type),
+                    signature: None,
                 }
             }
             _ => Self::substitute_rbs_type_vars(rbs_ty, vars),
@@ -46950,6 +47090,7 @@ impl<'a> InferenceEngine<'a> {
         let Type::Proc {
             return_type,
             param_count,
+            ..
         } = actual_type
         else {
             return false;
@@ -49407,6 +49548,7 @@ impl<'a> InferenceEngine<'a> {
             return Some(Type::Proc {
                 return_type: Box::new(return_type),
                 param_count,
+                signature: None,
             });
         }
 
@@ -49448,6 +49590,7 @@ impl<'a> InferenceEngine<'a> {
                 return Some(Type::Proc {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_method_type_positional_param_count(method_type),
+                    signature: None,
                 });
             }
         }
@@ -49458,6 +49601,7 @@ impl<'a> InferenceEngine<'a> {
                 Sym::new(target_method),
             )),
             param_count: 1,
+            signature: None,
         })
     }
 
@@ -49517,9 +49661,11 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(Self::unbound_method_return_type(return_type)),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             _ => ty.clone(),
         }
@@ -49606,12 +49752,14 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(Self::bind_first_positional_param_ref(
                     return_type,
                     bound_receiver,
                 )),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             _ => ty.clone(),
         }
@@ -49638,6 +49786,7 @@ impl<'a> InferenceEngine<'a> {
             return Some(Type::Proc {
                 return_type: Box::new(Self::unbound_method_return_type(&return_type)),
                 param_count: param_count.saturating_add(1),
+                signature: None,
             });
         }
 
@@ -49671,6 +49820,7 @@ impl<'a> InferenceEngine<'a> {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_method_type_positional_param_count(method_type)
                         .saturating_add(1),
+                    signature: None,
                 });
             }
         }
@@ -49681,6 +49831,7 @@ impl<'a> InferenceEngine<'a> {
                 Sym::new(target_method),
             )),
             param_count: 1,
+            signature: None,
         })
     }
 
@@ -49806,6 +49957,7 @@ impl<'a> InferenceEngine<'a> {
             if let Type::Proc {
                 ref return_type,
                 param_count,
+                ..
             } = var_type
             {
                 let resolved = self.proc_block_argument_return_type(
@@ -49830,6 +49982,7 @@ impl<'a> InferenceEngine<'a> {
             if let Type::Proc {
                 return_type,
                 param_count,
+                ..
             } = self.infer_node_type(class_name, &expr, parse_result, scope)
             {
                 let resolved = self.proc_block_argument_return_type(
@@ -55203,6 +55356,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_receiver_method_refs_depth(
                     return_type,
@@ -55212,6 +55366,7 @@ impl<'a> InferenceEngine<'a> {
                     preserve_untyped,
                 )),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_receiver_method_refs_depth(
@@ -55470,6 +55625,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                signature,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_receiver_method_refs_for_destructuring_depth(
                     return_type,
@@ -55478,6 +55634,7 @@ impl<'a> InferenceEngine<'a> {
                     visiting,
                 )),
                 param_count: *param_count,
+                signature: signature.clone(),
             },
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_receiver_method_refs_for_destructuring_depth(
@@ -62365,6 +62522,7 @@ impl<'a> InferenceEngine<'a> {
                             Type::Proc {
                                 return_type: Box::new(Type::BlockReturnRef),
                                 param_count: 0,
+                                signature: None,
                             },
                         );
                         scope.current_block_param_name = Some(pi.name.clone());
