@@ -4,6 +4,7 @@ pub mod project;
 pub mod relation_api;
 pub mod routes;
 pub mod schema;
+pub mod time_with_zone;
 
 pub use inflector::{
     CastTypeOwner, cast_type_keyword_to_type, classify, classify_with_known_classes,

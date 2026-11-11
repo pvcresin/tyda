@@ -452,3 +452,88 @@ class Host < ApplicationRecord
   def seen: -> ActiveSupport::TimeWithZone
 end
 ```
+
+## Attribute decorators keep the column reader and literal attribute reads use it
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "account_stats", force: :cascade do |t|
+    t.string "acct", default: "", null: false
+    t.bigint "statuses_count", default: 0, null: false
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class AccountStat < ApplicationRecord
+  normalizes :acct, with: ->(acct) { acct.strip }
+  encrypts :acct
+
+  def shout = acct.upcase
+  def statuses_count = [attributes["statuses_count"], 0].max
+  def by_index = self[:acct]
+end
+```
+
+### result
+
+```rbs
+class AccountStat < ApplicationRecord
+  def self.normalize_value_for: (Symbol name, untyped value) -> untyped
+  def shout: -> String
+  def statuses_count: -> Integer
+  def by_index: -> String
+end
+```
+
+## super in an attribute override reaches the generated column method
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "commit_statuses", force: :cascade do |t|
+    t.string "before_sha"
+    t.boolean "emails_enabled", null: false
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class CommitStatus < ApplicationRecord
+  def before_sha
+    super || "0000"
+  end
+
+  def emails_enabled?
+    !!super
+  end
+end
+```
+
+### result
+
+```rbs
+class CommitStatus < ApplicationRecord
+  def before_sha: -> String
+  def emails_enabled?: -> bool
+end
+```

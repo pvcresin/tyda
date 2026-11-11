@@ -150,62 +150,10 @@ impl Plugin for ActiveSupport {
     }
 }
 
-const TIME_WITH_ZONE: &str = "ActiveSupport::TimeWithZone";
+const TIME_WITH_ZONE: &str = crate::rails::time_with_zone::TIME_WITH_ZONE_CLASS;
 
 fn time_with_zone() -> Type {
     Type::Class(Sym::new(TIME_WITH_ZONE))
-}
-
-fn calendar_method_return(method_name: &str, receiver: &Type) -> Option<Type> {
-    match method_name {
-        "beginning_of_day"
-        | "end_of_day"
-        | "beginning_of_week"
-        | "end_of_week"
-        | "beginning_of_month"
-        | "end_of_month"
-        | "beginning_of_quarter"
-        | "end_of_quarter"
-        | "beginning_of_year"
-        | "end_of_year"
-        | "beginning_of_hour"
-        | "end_of_hour"
-        | "beginning_of_minute"
-        | "end_of_minute"
-        | "midnight"
-        | "midday"
-        | "noon"
-        | "at_midnight"
-        | "at_noon"
-        | "yesterday"
-        | "tomorrow"
-        | "next_day"
-        | "prev_day"
-        | "next_week"
-        | "prev_week"
-        | "next_month"
-        | "prev_month"
-        | "next_year"
-        | "prev_year"
-        | "weeks_ago"
-        | "weeks_since"
-        | "months_ago"
-        | "months_since"
-        | "years_ago"
-        | "years_since"
-        | "days_ago"
-        | "days_since"
-        | "advance"
-        | "change" => Some(receiver.clone()),
-        "ago" | "since" | "in" => Some(receiver.clone()),
-        "future?" | "past?" | "today?" | "tomorrow?" | "yesterday?" | "on_weekday?"
-        | "on_weekend?" => Some(Type::Bool),
-        "in_time_zone" => Some(time_with_zone()),
-        "to_fs" | "to_formatted_s" => Some(Type::String),
-        "seconds_since_midnight" => Some(Type::Float),
-        "all_day" | "all_week" | "all_month" | "all_year" => Some(Type::Untyped),
-        _ => None,
-    }
 }
 
 pub(in crate::inference) fn synthetic_method_return(
@@ -308,23 +256,12 @@ fn time_ext_return(
             "utc_offset" => Some(Type::Integer),
             _ => None,
         },
-        Type::Class(name) if name.as_str() == TIME_WITH_ZONE => match method_name {
-            "utc" | "getutc" | "to_time" | "localtime" => Some(Type::Class(Sym::new("Time"))),
-            "to_date" => Some(Type::Class(Sym::new("Date"))),
-            "to_datetime" => Some(Type::Class(Sym::new("DateTime"))),
-            "strftime" | "iso8601" | "rfc3339" | "rfc2822" | "to_s" | "inspect" | "zone"
-            | "httpdate" => Some(Type::String),
-            "to_i" | "tv_sec" | "year" | "month" | "mon" | "day" | "mday" | "hour" | "min"
-            | "sec" | "wday" | "yday" | "usec" | "nsec" | "utc_offset" => Some(Type::Integer),
-            "to_f" => Some(Type::Float),
-            "dst?" | "utc?" | "gmt?" | "blank?" | "present?" => Some(Type::Bool),
-            "time" | "period" | "comparable_time" => Some(Type::Untyped),
-            "<=>" => Some(Type::Integer.union_with(Type::Nil)),
-            name => calendar_method_return(name, receiver_type)
-                .or_else(|| time_with_zone_delegated_return(engine, name)),
-        },
+        Type::Class(name) if name.as_str() == TIME_WITH_ZONE => {
+            crate::rails::time_with_zone::own_method_return(method_name)
+                .or_else(|| time_with_zone_delegated_return(engine, method_name))
+        }
         Type::Class(name) if matches!(name.as_str(), "Time" | "Date" | "DateTime") => {
-            calendar_method_return(method_name, receiver_type)
+            crate::rails::time_with_zone::calendar_method_return(method_name, receiver_type)
         }
         _ => None,
     }
@@ -632,24 +569,11 @@ fn time_with_zone_delegated_return(
     engine: &mut PluginCx<'_, '_>,
     method_name: &str,
 ) -> Option<Type> {
-    if matches!(method_name, "+" | "-") {
-        // Defined by TimeWithZone itself with argument-dependent overloads.
-        return None;
-    }
-    let time = Type::Class(Sym::new("Time"));
-    match engine.engine.resolve_method_on_type(&time, method_name) {
+    use crate::rails::time_with_zone;
+    let target = time_with_zone::method_missing_target(TIME_WITH_ZONE, method_name)?;
+    match engine.engine.resolve_method_on_type(&target, method_name) {
         Type::Untyped | Type::ReceiverMethodRef(..) => None,
-        ty => Some(wrap_time_in_zone(ty)),
-    }
-}
-
-fn wrap_time_in_zone(ty: Type) -> Type {
-    match ty {
-        Type::Class(name) if name.as_str() == "Time" => time_with_zone(),
-        Type::Union(parts) => {
-            Type::from_type_vec(parts.into_iter().map(wrap_time_in_zone).collect())
-        }
-        other => other,
+        ty => Some(time_with_zone::wrap_forwarded_result(ty)),
     }
 }
 

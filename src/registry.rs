@@ -3873,6 +3873,48 @@ impl TypeRegistry {
     /// Column accessor type from schema/`DirtyPattern`, walking the superclass
     /// chain the same way as `schema_column_names`. Used when `attribute :x`
     /// (and other column-backed DSL) omits a type keyword.
+    /// What the generated attribute method `method_name` (`col`, `col?`, `col=`) of a schema
+    /// column returns. Rails defines these in a module the model includes, so `super` from a
+    /// source override reaches them.
+    pub(crate) fn generated_column_method_type(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<Type> {
+        let (column, is_predicate) = match method_name.strip_suffix('?') {
+            Some(column) => (column, true),
+            None => (method_name.strip_suffix('=').unwrap_or(method_name), false),
+        };
+        let mut current = Some(class_name.to_string());
+        let mut depth = 0;
+        while let Some(cls) = current {
+            if depth >= MAX_RESOLVE_DEPTH {
+                break;
+            }
+            depth += 1;
+            let data = self.class_data.get(cls.as_str())?;
+            if let Some(pattern) = data.cold().dirty_method_pattern.as_ref()
+                && let Some(base) = pattern.column_type(column)
+            {
+                if is_predicate {
+                    return Some(Type::Bool);
+                }
+                let generated = Self::method_for_lookup_kind(data, column, Some(false))
+                    .filter(|method| method.synthetic_dsl_source && method.rbs_file_source)
+                    .map(|method| method.raw_return_type.clone());
+                return Some(
+                    generated
+                        .unwrap_or_else(|| crate::rails::nullable_column_accessor_type(base, true)),
+                );
+            }
+            current = data.superclass.as_ref().map(|sc| {
+                self.resolve_superclass_ref_borrow(&cls, sc.as_ref())
+                    .to_string()
+            });
+        }
+        None
+    }
+
     pub fn schema_column_accessor_type(&self, class_name: &str, column: &str) -> Option<Type> {
         let mut current = Some(class_name.to_string());
         let mut depth = 0;
@@ -10052,6 +10094,26 @@ impl TypeRegistry {
                 self.resolve_attr_reader_return_type(&cls, method_name, prefer_singleton)
             {
                 return ivar_ty;
+            }
+            if cls == crate::rails::time_with_zone::TIME_WITH_ZONE_CLASS
+                && let Some(own) = crate::rails::time_with_zone::own_method_return(method_name)
+            {
+                return own;
+            }
+            if let Some(target) =
+                crate::rails::time_with_zone::method_missing_target(&cls, method_name)
+            {
+                let forwarded = self.resolve_method_on_resolved_receiver(
+                    _class_name,
+                    &target,
+                    method_name,
+                    depth,
+                    memo,
+                    visiting,
+                );
+                if forwarded != Type::Untyped {
+                    return crate::rails::time_with_zone::wrap_forwarded_result(forwarded);
+                }
             }
             // The deferred path has no lazy stdlib loader; return-invariant entries still apply.
             return stdlib_returns::stdlib_receiver_method_return(resolved_receiver, method_name)

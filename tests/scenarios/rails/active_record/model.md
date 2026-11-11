@@ -235,8 +235,6 @@ end
 
 ```rbs
 class User < ApplicationRecord
-  def email: -> untyped
-  def email=: (untyped email) -> untyped
   def ssn: -> untyped
   def ssn=: (untyped ssn) -> untyped
   def self.normalize_value_for: (Symbol name, untyped value) -> untyped
@@ -359,8 +357,6 @@ end
 
 ```rbs
 class User < ApplicationRecord
-  def email: -> untyped
-  def email=: (untyped email) -> untyped
   def self.normalize_value_for: (Symbol name, String value) -> String
   def normalized_literal: -> String
 end

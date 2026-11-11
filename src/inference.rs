@@ -12789,6 +12789,14 @@ impl<'a> InferenceEngine<'a> {
         if scope.singleton_dispatch && method_name == "new" {
             return Some(Type::Class(Sym::new(class_name)));
         }
+        if !scope.singleton_dispatch
+            && self.rails_feature_enabled()
+            && let Some(column_type) = self
+                .registry
+                .generated_column_method_type(class_name, &method_name)
+        {
+            return Some(column_type);
+        }
         let targets =
             self.super_call_targets(class_name, &method_name, scope.singleton_dispatch)?;
         let arguments = self.super_call_arguments(class_name, scope, super_node, parse_result);
@@ -31565,6 +31573,19 @@ impl<'a> InferenceEngine<'a> {
                             {
                                 break 'recv wrap(column_result);
                             }
+                        }
+
+                        if call_node.block().is_none()
+                            && let Some(column_result) = self.active_record_attribute_read(
+                                class_name,
+                                &receiver,
+                                &safe_nav_receiver_type,
+                                &call_node,
+                                &method_name,
+                                scope,
+                            )
+                        {
+                            break 'recv wrap(column_result);
                         }
 
                         if let Some(enumerator_result) = self.resolve_enumerator_singleton_call(
