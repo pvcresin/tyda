@@ -2870,6 +2870,7 @@ impl<'a> InferenceEngine<'a> {
 
     pub fn set_rails_version(&mut self, version: Option<RailsVersion>) {
         self.rails_version = version;
+        self.registry.set_rails_version(version);
     }
 
     pub fn set_file_path(&mut self, path: &str) {

@@ -2653,6 +2653,8 @@ pub struct TypeRegistry {
     pending_scoped_type_refs: Vec<PendingScopedTypeRef>,
     /// Source methods whose bodies are being inferred, so they are not registered yet.
     inferring_method_bodies: Vec<(Sym, Sym)>,
+    /// The project's Rails version; `None` means the latest stable release, as in the engine.
+    rails_version: Option<crate::project::RailsVersion>,
 }
 
 /// Registry state a per-file snapshot never populates, kept behind one box.
@@ -2745,6 +2747,7 @@ impl Clone for TypeRegistry {
             pending_method_aliases: self.pending_method_aliases.clone(),
             pending_scoped_type_refs: self.pending_scoped_type_refs.clone(),
             inferring_method_bodies: Vec::new(),
+            rails_version: self.rails_version,
         }
     }
 }
@@ -9876,14 +9879,23 @@ impl TypeRegistry {
         use crate::rails::relation_api;
         let model = relation_api::relation_element_type(receiver_type)?;
         let receiver = relation_api::Receiver::of_relation(receiver_type)?;
-        // The registry does not know the Rails version, so only version-independent methods apply.
-        let method =
-            relation_api::lookup(method_name, receiver).filter(|method| method.since == (0, 0))?;
+        let method = relation_api::lookup(method_name, receiver)
+            .filter(|method| self.rails_at_least(method.since.0, method.since.1))?;
         Some(method.return_type(
             || receiver_type.clone(),
             model,
             || self.active_record_primary_key_type(model),
         ))
+    }
+
+    pub fn set_rails_version(&mut self, version: Option<crate::project::RailsVersion>) {
+        self.rails_version = version;
+    }
+
+    pub(crate) fn rails_at_least(&self, major: u16, minor: u16) -> bool {
+        self.rails_version
+            .unwrap_or_else(crate::project::RailsVersion::latest_stable)
+            >= crate::project::RailsVersion::new(major, minor, 0)
     }
 
     /// The model's `id` reader type (a uuid primary key reads as String); Integer by default.
