@@ -88,10 +88,6 @@ end
 
 ## Block arg with sig
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class Foo
   sig { params(blk: T.proc.params(x: Integer).returns(String)).returns(String) }
@@ -143,10 +139,6 @@ end
 ```
 
 ## Rest keyword rest and block args together
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class Foo
@@ -240,10 +232,6 @@ end
 ```
 
 ## sig do...end + rest + block
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class Foo
@@ -345,10 +333,6 @@ end
 ```
 
 ## type_parameters with params
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class Foo

@@ -63,6 +63,8 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 `sorbet/config` がある project で、`sig`、`T.let`、`T::Struct`、`T::Enum`、`.rbi` と
 対応する comment extension を読み込む。RBS と同じ安定性や網羅性は保証しない。
+`&blk` に対応する sig param の `T.proc...` はメソッドの block 型（`{ (Integer) -> String }`）、
+`T.nilable(T.proc...)` は省略可能な block（`?{ ... }`）として扱う。
 
 ## Diagnostics
 

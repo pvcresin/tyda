@@ -1,4 +1,7 @@
-pub fn sig_source_to_rbs(sig_source: &str) -> Option<String> {
+/// Converts a `sig` to an RBS method type. `block_param_index` is the def's
+/// `&blk` position; Sorbet requires sig params in def order, so the sig param at
+/// that index becomes the method's block instead of a positional param.
+pub fn sig_source_to_rbs(sig_source: &str, block_param_index: Option<usize>) -> Option<String> {
     let inner = extract_sig_body(sig_source)?;
 
     let chain = parse_method_chain(&inner);
@@ -7,13 +10,16 @@ pub fn sig_source_to_rbs(sig_source: &str) -> Option<String> {
     }
 
     let mut params_rbs: Option<String> = None;
+    let mut block_rbs: Option<String> = None;
     let mut return_rbs = "void".to_string();
 
     for (method_name, arg_str) in &chain {
         match method_name.as_str() {
             "params" => {
                 if let Some(args) = arg_str {
-                    params_rbs = Some(convert_params_to_rbs(args));
+                    let (params, block) = convert_params_to_rbs(args, block_param_index);
+                    params_rbs = Some(params);
+                    block_rbs = block;
                 }
             }
             "returns" => {
@@ -32,12 +38,16 @@ pub fn sig_source_to_rbs(sig_source: &str) -> Option<String> {
 
     let return_rbs = wrap_complex_return_type(&return_rbs);
 
-    let rbs = if let Some(params) = params_rbs {
-        format!("({params}) -> {return_rbs}")
-    } else {
-        format!("-> {return_rbs}")
-    };
-
+    let mut rbs = String::new();
+    if let Some(params) = params_rbs.filter(|params| !params.is_empty() || block_rbs.is_none()) {
+        rbs.push_str(&format!("({params}) "));
+    }
+    if let Some(block) = block_rbs {
+        rbs.push_str(&block);
+        rbs.push(' ');
+    }
+    rbs.push_str("-> ");
+    rbs.push_str(&return_rbs);
     Some(rbs)
 }
 
@@ -195,24 +205,48 @@ fn parse_method_chain(source: &str) -> Vec<(String, Option<String>)> {
     result
 }
 
-/// Convert `x: Integer, y: String` to RBS params `Integer x, String y`.
-fn convert_params_to_rbs(params_source: &str) -> String {
+/// Convert `x: Integer, y: String` to RBS params `Integer x, String y`, splitting
+/// off the param at `block_param_index` as an RBS block when it is a proc type.
+fn convert_params_to_rbs(
+    params_source: &str,
+    block_param_index: Option<usize>,
+) -> (String, Option<String>) {
     let pairs = split_top_level(params_source, ',');
     let mut rbs_params = Vec::new();
+    let mut block = None;
 
-    for pair in &pairs {
+    let named_pairs = pairs.iter().filter_map(|pair| {
         let pair = pair.trim();
-        if let Some(colon_pos) = find_key_colon(pair) {
-            let key = pair[..colon_pos].trim();
-            let value = pair[colon_pos + 1..].trim();
-            let rbs_type = convert_sorbet_type_str(value);
-            // Quoted param names (e.g. `"&"`) — strip quotes
-            let clean_key = key.trim_matches('"').trim_matches('\'');
-            rbs_params.push(format!("{rbs_type} {clean_key}"));
+        find_key_colon(pair)
+            .map(|colon_pos| (pair[..colon_pos].trim(), pair[colon_pos + 1..].trim()))
+    });
+    for (index, (key, value)) in named_pairs.enumerate() {
+        if block_param_index == Some(index)
+            && let Some(block_rbs) = convert_block_type_str(value)
+        {
+            block = Some(block_rbs);
+            continue;
         }
+        let rbs_type = convert_sorbet_type_str(value);
+        // Quoted param names (e.g. `"&"`) — strip quotes
+        let clean_key = key.trim_matches('"').trim_matches('\'');
+        rbs_params.push(format!("{rbs_type} {clean_key}"));
     }
 
-    rbs_params.join(", ")
+    (rbs_params.join(", "), block)
+}
+
+/// `T.proc...` -> `{ ... }`, `T.nilable(T.proc...)` -> `?{ ... }`; other block
+/// types (e.g. `T.untyped`) have no RBS block form and stay untyped.
+fn convert_block_type_str(s: &str) -> Option<String> {
+    let s = s.trim();
+    if let Some(inner) = strip_call(s, "T.nilable") {
+        return convert_block_type_str(&inner)
+            .filter(|block| block.starts_with('{'))
+            .map(|block| format!("?{block}"));
+    }
+    s.starts_with("T.proc")
+        .then(|| format!("{{ {} }}", parse_sorbet_proc(s).signature()))
 }
 
 /// Find the colon separating key from value in `name: Type`.
@@ -243,7 +277,7 @@ pub fn convert_sorbet_type_str(s: &str) -> String {
 
     if let Some(inner) = strip_call(s, "T.nilable") {
         let inner_rbs = convert_sorbet_type_str(&inner);
-        if inner_rbs.contains('|') || inner_rbs.contains('&') {
+        if inner_rbs.contains('|') || inner_rbs.contains('&') || inner_rbs.starts_with('^') {
             return format!("({inner_rbs})?");
         }
         return format!("{inner_rbs}?");
@@ -367,43 +401,57 @@ pub fn convert_sorbet_type_str(s: &str) -> String {
     convert_sorbet_class_name(s)
 }
 
-fn convert_proc_type_str(s: &str) -> String {
-    let chain = parse_method_chain(s);
-    let mut proc_params = Vec::new();
-    let mut proc_return = "void".to_string();
+struct SorbetProc {
+    params: Vec<String>,
+    self_type: Option<String>,
+    return_type: String,
+}
 
-    for (name, args) in &chain {
-        match name.as_str() {
-            "params" => {
-                if let Some(args_str) = args {
-                    let pairs = split_top_level(args_str, ',');
-                    for pair in &pairs {
-                        let pair = pair.trim();
-                        if let Some(colon_pos) = find_key_colon(pair) {
-                            let value = pair[colon_pos + 1..].trim();
-                            proc_params.push(convert_sorbet_type_str(value));
-                        }
+impl SorbetProc {
+    /// The shared `(A, B) [self: S] -> R` part of RBS proc types and blocks.
+    fn signature(&self) -> String {
+        let params = self.params.join(", ");
+        match &self.self_type {
+            Some(self_type) => format!("({params}) [self: {self_type}] -> {}", self.return_type),
+            None => format!("({params}) -> {}", self.return_type),
+        }
+    }
+}
+
+fn parse_sorbet_proc(s: &str) -> SorbetProc {
+    let mut proc = SorbetProc {
+        params: Vec::new(),
+        self_type: None,
+        return_type: "void".to_string(),
+    };
+
+    for (name, args) in &parse_method_chain(s) {
+        match (name.as_str(), args) {
+            ("params", Some(args_str)) => {
+                for pair in &split_top_level(args_str, ',') {
+                    let pair = pair.trim();
+                    if let Some(colon_pos) = find_key_colon(pair) {
+                        proc.params
+                            .push(convert_sorbet_type_str(pair[colon_pos + 1..].trim()));
                     }
                 }
             }
-            "returns" => {
-                if let Some(args_str) = args {
-                    proc_return = convert_sorbet_type_str(args_str.trim());
-                }
+            ("returns", Some(args_str)) => {
+                proc.return_type = convert_sorbet_type_str(args_str.trim());
             }
-            "void" => {
-                proc_return = "void".to_string();
+            ("void", _) => proc.return_type = "void".to_string(),
+            ("bind", Some(args_str)) => {
+                proc.self_type = Some(convert_sorbet_type_str(args_str.trim()));
             }
-            // bind, etc. — skip
             _ => {}
         }
     }
 
-    if proc_params.is_empty() {
-        format!("^() -> {proc_return}")
-    } else {
-        format!("^({}) -> {proc_return}", proc_params.join(", "))
-    }
+    proc
+}
+
+fn convert_proc_type_str(s: &str) -> String {
+    format!("^{}", parse_sorbet_proc(s).signature())
 }
 
 /// Strips calls like `T.nilable(X)`, or a `Prefix[...]` bracket.
@@ -584,24 +632,27 @@ pub fn is_sig_line(source: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn to_rbs(sig_source: &str) -> Option<String> {
+        sig_source_to_rbs(sig_source, None)
+    }
+
     // ── Basic ──
 
     #[test]
     fn test_basic_returns() {
-        let rbs = sig_source_to_rbs("sig { returns(String) }").unwrap();
+        let rbs = to_rbs("sig { returns(String) }").unwrap();
         assert_eq!(rbs, "-> String");
     }
 
     #[test]
     fn test_void() {
-        let rbs = sig_source_to_rbs("sig { void }").unwrap();
+        let rbs = to_rbs("sig { void }").unwrap();
         assert_eq!(rbs, "-> void");
     }
 
     #[test]
     fn test_params_returns() {
-        let rbs =
-            sig_source_to_rbs("sig { params(x: Integer, y: String).returns(String) }").unwrap();
+        let rbs = to_rbs("sig { params(x: Integer, y: String).returns(String) }").unwrap();
         assert_eq!(rbs, "(Integer x, String y) -> String");
     }
 
@@ -610,20 +661,19 @@ mod tests {
     #[test]
     fn test_sig_do_end() {
         let rbs =
-            sig_source_to_rbs("sig do\n  params(x: Integer, y: String)\n  .returns(String)\nend")
-                .unwrap();
+            to_rbs("sig do\n  params(x: Integer, y: String)\n  .returns(String)\nend").unwrap();
         assert_eq!(rbs, "(Integer x, String y) -> String");
     }
 
     #[test]
     fn test_sig_do_end_void() {
-        let rbs = sig_source_to_rbs("sig do\n  void\nend").unwrap();
+        let rbs = to_rbs("sig do\n  void\nend").unwrap();
         assert_eq!(rbs, "-> void");
     }
 
     #[test]
     fn test_sig_do_end_multiline_params() {
-        let rbs = sig_source_to_rbs(
+        let rbs = to_rbs(
             "sig do\n  params(\n    x: Integer,\n    y: String,\n  )\n  .returns(String)\nend",
         )
         .unwrap();
@@ -634,41 +684,38 @@ mod tests {
 
     #[test]
     fn test_override() {
-        let rbs = sig_source_to_rbs("sig { override.returns(String) }").unwrap();
+        let rbs = to_rbs("sig { override.returns(String) }").unwrap();
         assert_eq!(rbs, "-> String");
     }
 
     #[test]
     fn test_overridable() {
-        let rbs =
-            sig_source_to_rbs("sig { overridable.params(x: Integer).returns(String) }").unwrap();
+        let rbs = to_rbs("sig { overridable.params(x: Integer).returns(String) }").unwrap();
         assert_eq!(rbs, "(Integer x) -> String");
     }
 
     #[test]
     fn test_abstract() {
-        let rbs = sig_source_to_rbs("sig { abstract.returns(String) }").unwrap();
+        let rbs = to_rbs("sig { abstract.returns(String) }").unwrap();
         assert_eq!(rbs, "-> String");
     }
 
     #[test]
     fn test_override_params() {
-        let rbs = sig_source_to_rbs(
-            "sig { override.params(name: String, age: Integer).returns(String) }",
-        )
-        .unwrap();
+        let rbs =
+            to_rbs("sig { override.params(name: String, age: Integer).returns(String) }").unwrap();
         assert_eq!(rbs, "(String name, Integer age) -> String");
     }
 
     #[test]
     fn test_checked() {
-        let rbs = sig_source_to_rbs("sig { checked(:never).returns(Integer) }").unwrap();
+        let rbs = to_rbs("sig { checked(:never).returns(Integer) }").unwrap();
         assert_eq!(rbs, "-> Integer");
     }
 
     #[test]
     fn test_override_overridable_chain() {
-        let rbs = sig_source_to_rbs("sig { override.overridable.params(x: String).void }").unwrap();
+        let rbs = to_rbs("sig { override.overridable.params(x: String).void }").unwrap();
         assert_eq!(rbs, "(String x) -> void");
     }
 
@@ -676,7 +723,7 @@ mod tests {
 
     #[test]
     fn test_type_parameters_simple() {
-        let rbs = sig_source_to_rbs(
+        let rbs = to_rbs(
             "sig { type_parameters(:U).params(x: T.type_parameter(:U)).returns(T.type_parameter(:U)) }",
         )
         .unwrap();
@@ -685,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_type_parameters_two() {
-        let rbs = sig_source_to_rbs(
+        let rbs = to_rbs(
             "sig { type_parameters(:U, :V).params(x: T.type_parameter(:U), y: T.type_parameter(:V)).returns(T.type_parameter(:U)) }",
         )
         .unwrap();
@@ -694,7 +741,7 @@ mod tests {
 
     #[test]
     fn test_type_parameters_do_end() {
-        let rbs = sig_source_to_rbs(
+        let rbs = to_rbs(
             "sig do\n  type_parameters(:U)\n    .params(x: T.type_parameter(:U))\n    .returns(T.type_parameter(:U))\nend",
         )
         .unwrap();
@@ -706,70 +753,65 @@ mod tests {
     #[test]
     fn test_nilable() {
         let rbs =
-            sig_source_to_rbs("sig { params(x: T.nilable(String)).returns(T.nilable(Integer)) }")
-                .unwrap();
+            to_rbs("sig { params(x: T.nilable(String)).returns(T.nilable(Integer)) }").unwrap();
         assert_eq!(rbs, "(String? x) -> Integer?");
     }
 
     #[test]
     fn test_t_any() {
-        let rbs =
-            sig_source_to_rbs("sig { params(x: T.any(String, Integer)).returns(String) }").unwrap();
+        let rbs = to_rbs("sig { params(x: T.any(String, Integer)).returns(String) }").unwrap();
         assert_eq!(rbs, "(String | Integer x) -> String");
     }
 
     #[test]
     fn test_t_all() {
         let rbs =
-            sig_source_to_rbs("sig { params(x: T.all(Enumerable, Comparable)).returns(String) }")
-                .unwrap();
+            to_rbs("sig { params(x: T.all(Enumerable, Comparable)).returns(String) }").unwrap();
         assert_eq!(rbs, "(Enumerable & Comparable x) -> String");
     }
 
     #[test]
     fn test_t_boolean() {
-        let rbs = sig_source_to_rbs("sig { params(x: T::Boolean).returns(T::Boolean) }").unwrap();
+        let rbs = to_rbs("sig { params(x: T::Boolean).returns(T::Boolean) }").unwrap();
         assert_eq!(rbs, "(bool x) -> bool");
     }
 
     #[test]
     fn test_t_array() {
         let rbs =
-            sig_source_to_rbs("sig { params(items: T::Array[String]).returns(T::Array[Integer]) }")
-                .unwrap();
+            to_rbs("sig { params(items: T::Array[String]).returns(T::Array[Integer]) }").unwrap();
         assert_eq!(rbs, "(Array[String] items) -> Array[Integer]");
     }
 
     #[test]
     fn test_t_hash() {
-        let rbs = sig_source_to_rbs(
-            "sig { params(h: T::Hash[Symbol, Integer]).returns(T::Hash[String, String]) }",
-        )
-        .unwrap();
+        let rbs =
+            to_rbs("sig { params(h: T::Hash[Symbol, Integer]).returns(T::Hash[String, String]) }")
+                .unwrap();
         assert_eq!(rbs, "(Hash[Symbol, Integer] h) -> Hash[String, String]");
     }
 
     #[test]
     fn test_untyped() {
-        let rbs = sig_source_to_rbs("sig { returns(T.untyped) }").unwrap();
+        let rbs = to_rbs("sig { returns(T.untyped) }").unwrap();
         assert_eq!(rbs, "-> untyped");
     }
 
     #[test]
     fn test_class_of() {
-        let rbs = sig_source_to_rbs("sig { returns(T.class_of(String)) }").unwrap();
+        let rbs = to_rbs("sig { returns(T.class_of(String)) }").unwrap();
         assert_eq!(rbs, "-> singleton(String)");
     }
 
     #[test]
     fn test_noreturn() {
-        let rbs = sig_source_to_rbs("sig { returns(T.noreturn) }").unwrap();
+        let rbs = to_rbs("sig { returns(T.noreturn) }").unwrap();
         assert_eq!(rbs, "-> bot");
     }
 
     #[test]
     fn test_anything() {
-        let rbs = sig_source_to_rbs("sig { returns(T.anything) }").unwrap();
+        let rbs = to_rbs("sig { returns(T.anything) }").unwrap();
         assert_eq!(rbs, "-> top");
     }
 
@@ -777,13 +819,13 @@ mod tests {
 
     #[test]
     fn test_proc_void() {
-        let rbs = sig_source_to_rbs("sig { params(blk: T.proc.void).void }").unwrap();
+        let rbs = to_rbs("sig { params(blk: T.proc.void).void }").unwrap();
         assert_eq!(rbs, "(^() -> void blk) -> void");
     }
 
     #[test]
     fn test_proc_with_params() {
-        let rbs = sig_source_to_rbs(
+        let rbs = to_rbs(
             "sig { params(blk: T.proc.params(x: Integer).returns(String)).returns(String) }",
         )
         .unwrap();
@@ -792,48 +834,110 @@ mod tests {
 
     #[test]
     fn test_proc_bind() {
+        let rbs =
+            to_rbs("sig { params(blk: T.proc.bind(MyClass).returns(Integer)).returns(Integer) }")
+                .unwrap();
+        assert_eq!(rbs, "(^() [self: MyClass] -> Integer blk) -> Integer");
+    }
+
+    #[test]
+    fn test_nilable_proc_param_is_parenthesized() {
+        let rbs = to_rbs("sig { params(cb: T.nilable(T.proc.void)).void }").unwrap();
+        assert_eq!(rbs, "((^() -> void)? cb) -> void");
+    }
+
+    // ── Block param (def `&blk` index given) ──
+
+    #[test]
+    fn test_block_param_becomes_required_block() {
         let rbs = sig_source_to_rbs(
-            "sig { params(blk: T.proc.bind(MyClass).returns(Integer)).returns(Integer) }",
+            "sig { params(items: T::Array[Integer], blk: T.proc.params(x: Integer).returns(String)).returns(T::Array[String]) }",
+            Some(1),
         )
         .unwrap();
-        assert_eq!(rbs, "(^() -> Integer blk) -> Integer");
+        assert_eq!(
+            rbs,
+            "(Array[Integer] items) { (Integer) -> String } -> Array[String]"
+        );
+    }
+
+    #[test]
+    fn test_block_only_param_omits_empty_parens() {
+        let rbs = sig_source_to_rbs("sig { params(blk: T.proc.void).void }", Some(0)).unwrap();
+        assert_eq!(rbs, "{ () -> void } -> void");
+    }
+
+    #[test]
+    fn test_nilable_block_param_becomes_optional_block() {
+        let rbs = sig_source_to_rbs(
+            "sig { params(blk: T.nilable(T.proc.params(x: Integer).void)).void }",
+            Some(0),
+        )
+        .unwrap();
+        assert_eq!(rbs, "?{ (Integer) -> void } -> void");
+    }
+
+    #[test]
+    fn test_block_param_keeps_self_binding() {
+        let rbs = sig_source_to_rbs(
+            "sig { params(blk: T.proc.bind(MyClass).returns(Integer)).returns(Integer) }",
+            Some(0),
+        )
+        .unwrap();
+        assert_eq!(rbs, "{ () [self: MyClass] -> Integer } -> Integer");
+    }
+
+    #[test]
+    fn test_untyped_block_param_stays_positional() {
+        let rbs = sig_source_to_rbs("sig { params(blk: T.untyped).void }", Some(0)).unwrap();
+        assert_eq!(rbs, "(untyped blk) -> void");
+    }
+
+    #[test]
+    fn test_proc_param_outside_block_index_stays_positional() {
+        let rbs = sig_source_to_rbs(
+            "sig { params(cb: T.proc.void, blk: T.proc.void).void }",
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(rbs, "(^() -> void cb) { () -> void } -> void");
     }
 
     // ── Complex / nested ──
 
     #[test]
     fn test_nilable_array() {
-        let rbs = sig_source_to_rbs("sig { returns(T.nilable(T::Array[String])) }").unwrap();
+        let rbs = to_rbs("sig { returns(T.nilable(T::Array[String])) }").unwrap();
         assert_eq!(rbs, "-> Array[String]?");
     }
 
     #[test]
     fn test_any_three_types() {
-        let rbs = sig_source_to_rbs("sig { returns(T.any(String, Integer, Symbol)) }").unwrap();
+        let rbs = to_rbs("sig { returns(T.any(String, Integer, Symbol)) }").unwrap();
         assert_eq!(rbs, "-> (String | Integer | Symbol)");
     }
 
     #[test]
     fn test_hash_of_arrays() {
-        let rbs = sig_source_to_rbs("sig { returns(T::Hash[String, T::Array[Integer]]) }").unwrap();
+        let rbs = to_rbs("sig { returns(T::Hash[String, T::Array[Integer]]) }").unwrap();
         assert_eq!(rbs, "-> Hash[String, Array[Integer]]");
     }
 
     #[test]
     fn test_nilclass() {
-        let rbs = sig_source_to_rbs("sig { returns(NilClass) }").unwrap();
+        let rbs = to_rbs("sig { returns(NilClass) }").unwrap();
         assert_eq!(rbs, "-> nil");
     }
 
     #[test]
     fn test_trueclass() {
-        let rbs = sig_source_to_rbs("sig { returns(TrueClass) }").unwrap();
+        let rbs = to_rbs("sig { returns(TrueClass) }").unwrap();
         assert_eq!(rbs, "-> bool");
     }
 
     #[test]
     fn test_generic_class() {
-        let rbs = sig_source_to_rbs("sig { returns(MyBox[String]) }").unwrap();
+        let rbs = to_rbs("sig { returns(MyBox[String]) }").unwrap();
         assert_eq!(rbs, "-> MyBox[String]");
     }
 
@@ -841,31 +945,30 @@ mod tests {
 
     #[test]
     fn test_empty_sig_returns_none() {
-        assert!(sig_source_to_rbs("sig { }").is_none());
+        assert!(to_rbs("sig { }").is_none());
     }
 
     #[test]
     fn test_malformed_sig_returns_none() {
-        assert!(sig_source_to_rbs("not_a_sig").is_none());
+        assert!(to_rbs("not_a_sig").is_none());
     }
 
     #[test]
     fn test_sig_with_unknown_modifier() {
-        let rbs = sig_source_to_rbs("sig { some_future_modifier.returns(String) }").unwrap();
+        let rbs = to_rbs("sig { some_future_modifier.returns(String) }").unwrap();
         assert_eq!(rbs, "-> String");
     }
 
     #[test]
     fn test_override_abstract_do_end() {
         let rbs =
-            sig_source_to_rbs("sig do\n  override\n  .params(x: Integer)\n  .returns(String)\nend")
-                .unwrap();
+            to_rbs("sig do\n  override\n  .params(x: Integer)\n  .returns(String)\nend").unwrap();
         assert_eq!(rbs, "(Integer x) -> String");
     }
 
     #[test]
     fn test_quoted_block_param_name() {
-        let rbs = sig_source_to_rbs("sig { params(\"&\": T.proc.void).void }").unwrap();
+        let rbs = to_rbs("sig { params(\"&\": T.proc.void).void }").unwrap();
         assert_eq!(rbs, "(^() -> void &) -> void");
     }
 
@@ -873,7 +976,7 @@ mod tests {
 
     #[test]
     fn test_many_params() {
-        let rbs = sig_source_to_rbs(
+        let rbs = to_rbs(
             "sig { params(a: String, b: Integer, c: Float, d: T::Boolean, e: Symbol).returns(String) }",
         )
         .unwrap();
@@ -885,38 +988,32 @@ mod tests {
 
     #[test]
     fn test_params_with_nilable() {
-        let rbs = sig_source_to_rbs(
-            "sig { params(name: String, email: T.nilable(String)).returns(String) }",
-        )
-        .unwrap();
+        let rbs = to_rbs("sig { params(name: String, email: T.nilable(String)).returns(String) }")
+            .unwrap();
         assert_eq!(rbs, "(String name, String? email) -> String");
     }
 
     #[test]
     fn test_params_with_array_type() {
-        let rbs =
-            sig_source_to_rbs("sig { params(items: T::Array[String]).returns(Integer) }").unwrap();
+        let rbs = to_rbs("sig { params(items: T::Array[String]).returns(Integer) }").unwrap();
         assert_eq!(rbs, "(Array[String] items) -> Integer");
     }
 
     #[test]
     fn test_params_with_hash_type() {
-        let rbs =
-            sig_source_to_rbs("sig { params(opts: T::Hash[Symbol, String]).returns(String) }")
-                .unwrap();
+        let rbs = to_rbs("sig { params(opts: T::Hash[Symbol, String]).returns(String) }").unwrap();
         assert_eq!(rbs, "(Hash[Symbol, String] opts) -> String");
     }
 
     #[test]
     fn test_params_with_union_return() {
-        let rbs =
-            sig_source_to_rbs("sig { params(x: Integer).returns(T.any(Integer, Float)) }").unwrap();
+        let rbs = to_rbs("sig { params(x: Integer).returns(T.any(Integer, Float)) }").unwrap();
         assert_eq!(rbs, "(Integer x) -> (Integer | Float)");
     }
 
     #[test]
     fn test_params_with_proc_param() {
-        let rbs = sig_source_to_rbs(
+        let rbs = to_rbs(
             "sig { params(items: T::Array[Integer], blk: T.proc.params(x: Integer).returns(String)).returns(T::Array[String]) }",
         )
         .unwrap();
@@ -928,7 +1025,7 @@ mod tests {
 
     #[test]
     fn test_do_end_many_params() {
-        let rbs = sig_source_to_rbs(
+        let rbs = to_rbs(
             "sig do\n  params(\n    host: String,\n    port: Integer,\n    ssl: T::Boolean,\n    timeout: Integer,\n  )\n  .returns(String)\nend",
         )
         .unwrap();
