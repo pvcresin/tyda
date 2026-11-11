@@ -1881,7 +1881,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
-                signature,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(Self::substitute_param_refs_with_keywords(
                     return_type,
@@ -1889,7 +1889,7 @@ impl<'a> InferenceEngine<'a> {
                     keyword_types,
                 )),
                 param_count: *param_count,
-                signature: signature.clone(),
+                literal: *literal,
             },
             Type::Tuple(elems) => Type::Tuple(
                 elems

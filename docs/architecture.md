@@ -107,11 +107,15 @@ includer より先に定義されていても、本体を再推論して解決�
 required → optional → rest → post の順に位置引数を割り当て、未指定の optional / keyword は既定値、
 keyword を受けない callable へ渡した keyword は末尾の Hash 引数にする。違いは `ArgumentRules` だけで、
 method は全 call site を要約するので値を widen し、rest は要素型にする。リテラルは呼び出しごとに解決するので
-値を保ち、rest は Tuple、`**rest` は record にする。proc は単一の配列引数を展開し、不足した必須引数を
-`nil` にする。lambda は arity を厳密に扱う。リテラルの型（`Type::Proc`）は parameter 情報を
-`ProcSignature` として共有参照で持ち、本体は `ParamRef` / `KeywordParamRef` のまま推論して呼び出し時に代入する。
-lambda の `return` / `break` は lambda の値になる。本体が外側 local に代入する場合はその型を記録し、
-定義したメソッド内で local に保持したリテラルを呼んだ文の後に外側 local へ join する。
+値を保ち、rest は Tuple、`**rest` は record にする。keyword を受けない callable では keyword は常に末尾の
+Hash になり、rest があれば rest に入る。proc は positional slot（rest 以外）が2つ以上、または rest と別の
+positional を持つ場合（`|a, *b|`、`|a,|`）だけ単一の配列引数を展開し、長さ不明の配列では各 slot を
+`要素 | nil` にする。不足した必須引数は `nil`、lambda は arity を厳密に扱う。リテラルの `Type::Proc` は
+`file:offset` を intern した `ProcLiteralId` だけを持ち（等価性・hash では無視し、同じ構造の Proc は union で
+まとまる）、parameter 情報と外側 local への代入は engine の side table（`ProcSignature`）に置く。本体は
+`ParamRef` / `KeywordParamRef` のまま推論して呼び出し時に代入する。lambda の `return` / `break` は lambda の値になる。
+本体が外側 local に代入する場合、定義したメソッド内の呼び出しで束縛した型を保持し、その文の後に外側 local へ
+join する（引数の推論は呼び出し 1 回分だけ）。
 
 静的に解決できる mixin edge には、Ruby が実行時に呼ぶ `included` / `extended` /
 `prepended` callback の call site も対応付ける。callback の第一引数には mixin の適用先を
