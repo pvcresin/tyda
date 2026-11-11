@@ -7856,12 +7856,30 @@ impl TypeRegistry {
 
             let positional_count = Self::positional_param_count(&init_method.param_infos);
             let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
+            let mut visiting = FxHashSet::default();
             for site in &data.call_sites {
                 if site.method_name.as_ref() == "initialize" && !site.method_is_singleton {
                     let forwarded = self.call_site_with_forwarded_args(site);
+                    let site = forwarded.as_ref().unwrap_or(site);
+                    // A parameter marker left in an argument names the caller's parameter.
+                    let caller_resolved = site
+                        .arg_types
+                        .iter()
+                        .any(Self::type_contains_param_ref_static)
+                        .then(|| {
+                            let mut resolved = site.clone();
+                            for ty in &mut resolved.arg_types {
+                                *ty = self.resolve_call_site_type_from_caller_context(
+                                    site,
+                                    ty,
+                                    &mut visiting,
+                                );
+                            }
+                            resolved
+                        });
                     Self::merge_call_site_positional_types(
                         &mut param_types,
-                        forwarded.as_ref().unwrap_or(site),
+                        caller_resolved.as_ref().unwrap_or(site),
                         &init_method.param_infos,
                     );
                 }
@@ -10789,9 +10807,9 @@ impl TypeRegistry {
             Type::PatternRestRef(subject) => Type::PatternRestRef(Box::new(
                 self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
             )),
-            Type::SplatRef(subject) => Type::SplatRef(Box::new(
-                self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
-            )),
+            Type::SplatRef(subject) => self.resolve_splat_parts(
+                &self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
+            ),
             Type::PatternTrailingRef(subject, from_end) => Type::PatternTrailingRef(
                 Box::new(
                     self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),

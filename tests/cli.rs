@@ -484,7 +484,7 @@ fn coverage_resolves_cross_file_references_after_workspace_merge() {
     .expect("failed to write producer");
     fs::write(
         dir.path().join("consumer.rb"),
-        "class Consumer\n  def value = Producer.new.value\nend\n\nConsumer.new.value\n",
+        "class Consumer\n  def value = Producer.new.value\n  def producer_class = Producer\nend\n\nConsumer.new.value\n",
     )
     .expect("failed to write consumer");
 
@@ -510,6 +510,93 @@ fn coverage_resolves_cross_file_references_after_workspace_merge() {
             .as_u64()
             .is_some_and(|count| count > 0),
         "a method call resolved through the workspace should be typed: {report}"
+    );
+}
+
+#[test]
+fn coverage_types_splat_argument_resolved_from_caller_block() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("packager.rb");
+    fs::write(
+        &rb_file,
+        r#"class Packager
+  def release
+    path = nil
+    step { path = build }
+    step { publish(path) }
+  end
+
+  def step = yield
+  def build = "pkg.gem"
+
+  def publish(path)
+    run(["gem", *command, path])
+  end
+
+  def command = ["push"]
+  def run(args) = args
+end
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["by_kind"]["method_parameter"]["total"], 2);
+    assert_eq!(
+        report["by_kind"]["method_parameter"]["typed"], 2,
+        "a splat argument whose parts are known should not stay deferred: {report}"
+    );
+}
+
+#[test]
+fn coverage_binds_constructor_ivar_through_inherited_self_call() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("holder.rb");
+    fs::write(
+        &rb_file,
+        r#"class Holder
+  def initialize(value)
+    @value = value
+  end
+end
+
+class Base
+  def update(record) = handle(record)
+end
+
+class Sub < Base
+  def handle(record) = build(record)
+  def build(record) = Holder.new(record)
+end
+
+class Caller
+  def run(item) = Base.new.update(item.record)
+end
+
+Sub.new.build("r")
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["by_kind"]["instance_variable"]["total"], 1);
+    assert_eq!(
+        report["by_kind"]["instance_variable"]["unknown"], 0,
+        "a caller's parameter marker must not leak into the ivar: {report}"
     );
 }
 

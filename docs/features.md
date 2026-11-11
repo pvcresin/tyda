@@ -103,8 +103,9 @@ position 順（line/column 昇順）で並ぶため、複数回実行した出�
 ### 型カバレッジ
 
 `--coverage` は、compact scan が記録した推論サイトを最終 workspace registry で再解決し、
-宣言スロットと合わせて決定的な JSON として出力する。通常の RBS 出力ではサイトを保持しない
-ため、明示的に指定した実行だけがこの追加コストを負う。
+宣言スロットと合わせて決定的な JSON として出力する。ファイル単体の解析で解決できなかった
+定数参照は、workspace merge 後の registry で改めて解決する。通常の RBS 出力ではサイトを
+保持しないため、明示的に指定した実行だけがこの追加コストを負う。
 
 宣言と参照は意味の違う単位なので、レポートでは分母を分ける。
 
@@ -142,7 +143,7 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 - `serialize` は `type:` がある場合だけその型を使い、型指定のないserialized attributeは `untyped` として扱う。明示されたsource/RBS methodの型は保持する
 - ActionController の `tag` helper は、引数なしでは `TagBuilder`、生成したタグ名の呼び出しでは `String` として推論する
 - ActiveRecord の `find` は単一 ID、ID 配列、複数 ID の overload とモデル／配列の戻り値を出力する
-- ActiveRecord の relation API は model class の委譲、`ActiveRecord::Relation`、association の `CollectionProxy` で同じ表から戻り値を決める（receiver ごとに定義と戻り値を区別し、`CollectionProxy` の `delete` / `destroy` は削除した record の配列、`Relation` では model class へ委譲した結果、`<<` / `push` / `concat` は `CollectionProxy` だけが持つ。Rails version で追加された method は changelog の version 以降だけ解決する。`load` / `reload` は receiver、`to_a` / `records` は model の配列、`first_or_create!` は model、`ids` は主キー型の配列、`pick` / `minimum` / `maximum` はリテラル列名の列型または `nil`）。`unscoped` は block なしで relation を返し、enum は Rails 6.0 以降の `not_<value>` scope も持つ。relation に定義のない `Enumerable` と委譲された `Array` の method（`map` など）は、Rails と同じく読み込んだ record の配列として推論する
+- ActiveRecord の relation API は model class の委譲、`ActiveRecord::Relation`、association の `CollectionProxy` で同じ表から戻り値を決める（receiver ごとに定義と戻り値を区別し、`CollectionProxy` の `delete` / `destroy` は削除した record の配列、`Relation` では model class へ委譲した結果、`<<` / `push` / `concat` は `CollectionProxy` だけが持つ。Rails version で追加された method は changelog の version 以降だけ解決する。`load` / `reload` は receiver、`to_a` / `records` は model の配列、`first_or_create!` は model、`ids` は主キー型の配列、`pick` / `minimum` / `maximum` はリテラル列名の列型または `nil`）。`unscoped` は block なしで relation を返し、enum は Rails 6.0 以降の `not_<value>` scope も持つ。relation に定義のない `Enumerable` と委譲された `Array` の method（`map` など）は、Rails と同じく読み込んだ record の配列として推論する。その配列に対する ActiveSupport の `pluck` / `pick` もリテラル列名の列型を読む
 - association の対象 class は Rails の `compute_type` と同じく owner の namespace から外側へ解決する。polymorphic `belongs_to` の `*_type` / `*_id` は schema の nullability に従う
 - `normalizes` の `with:` lambda を `normalize_value_for` の本体として扱い、`value` 引数の型から戻り値を推論する
 - ActiveRecord model の `reflections` / `base_class` と instance の `readonly!` は既知 API として扱い、返り値は未解決なら `untyped` にする

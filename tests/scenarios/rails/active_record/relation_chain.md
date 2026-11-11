@@ -672,6 +672,48 @@ class TermDates
 end
 ```
 
+## pluck on records loaded by a block filter reads the column type
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "emails", force: :cascade do |t|
+    t.string "email", null: false
+    t.boolean "confirmed", null: false
+  end
+end
+```
+
+### file: app/models/email.rb
+
+```ruby
+class Email < ApplicationRecord
+end
+```
+
+```ruby
+class EmailList
+  def confirmed_addresses = Email.all.select(&:confirmed?).pluck(:email)
+  def first_address = Email.all.select(&:confirmed?).pick(:email)
+end
+```
+
+### result
+
+```rbs
+class EmailList
+  def confirmed_addresses: -> Array[String]
+  def first_address: -> String?
+end
+```
+
 ## maximum and minimum return the nilable column type
 
 ```yaml
