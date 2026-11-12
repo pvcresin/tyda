@@ -204,7 +204,8 @@ block の入力型は、CLI / CodeLens の RBS や block parameter の hover と
 （`[1].sort` は `() -> Array[1]`）。
 hover 本文には具体化した signature だけを出す。receiver の型引数や解決済みの method 型引数は
 signature に代入済みなので別に表示しない。receiver の型引数は MCP の `type_parameters` として
-構造化データで返す。
+構造化データで返す。引数で 1 つの overload に絞れたときは、戻り値に呼び出しの推論結果を使う
+（`[1, "a"].first` は宣言の `1 | "a"` でなく CLI と同じ `1`）。
 hover 専用の block shape 絞り込みと implicit-self の追加 generic block 解決は、hover snapshot を記録する
 `Record` profile だけで有効にする。既存の receiver 付き block 推論は通常解析にも必要なため維持し、
 表示用の推論を広げても、CLI batch / coverage の facts-only profile の RBS 結果と基準値を変えない。

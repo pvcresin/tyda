@@ -4643,6 +4643,13 @@ impl<'a> InferenceEngine<'a> {
                 concretized.push(overload);
             }
         }
+        // The call's inferred result is what CLI / CodeLens print, and can be more precise
+        // than the declaration (`[1, "a"].first` is `1`, not `1 | "a"`).
+        if let [overload] = concretized.as_mut_slice()
+            && Self::is_resolved_hover_type(result_type)
+        {
+            overload.return_type = result_type.clone();
+        }
         Some(concretized)
     }
 

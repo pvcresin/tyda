@@ -5017,6 +5017,7 @@ end
             "  def b = [1].map { |v| v.to_s }\n",
             "  def c(flag) = (flag ? [1] : [2]).reverse\n",
             "  def d = 1.clamp(0, 3)\n",
+            "  def e = [1, \"a\"].last\n",
             "end\n",
         );
         let result = playground_analyze(source, "", &loader, "probe.rb");
@@ -5036,6 +5037,7 @@ end
         );
         assert_eq!(display("reverse"), "[Tyda] () -> Array[1 | 2]");
         assert_eq!(display("clamp"), "[Tyda] (0 min, 3 max) -> (0 | 1 | 3)");
+        assert_eq!(display("last"), "[Tyda] () -> \"a\"");
     }
 
     #[test]
