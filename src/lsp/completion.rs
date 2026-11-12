@@ -37,5 +37,7 @@ fn completion_item_kind(kind: CompletionEntryKind) -> CompletionItemKind {
         CompletionEntryKind::Class => CompletionItemKind::CLASS,
         CompletionEntryKind::Module => CompletionItemKind::MODULE,
         CompletionEntryKind::Constant => CompletionItemKind::CONSTANT,
+        CompletionEntryKind::Variable => CompletionItemKind::VARIABLE,
+        CompletionEntryKind::Keyword => CompletionItemKind::KEYWORD,
     }
 }

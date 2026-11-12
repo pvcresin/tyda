@@ -40,7 +40,7 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 | `registry.rs` / `registry/` | class、method、constant、ivar、mixin、call site と型宣言の索引 |
 | `types.rs` | `Type` と未解決参照の表現、union / generic / complexity の制御 |
 | `query.rs` | snapshot と registry に対する Hover、completion、definition などの query |
-| `completion.rs` | 補完位置の判定（`.`、`::`、`send(:`）と候補の整形。LSP と Playground で共有 |
+| `completion.rs` | 補完位置の判定（`.`、`::`、`send(:`、receiver なしの識別子）と候補の整形。LSP と Playground で共有 |
 | `workspace_state.rs` | snapshot、export fingerprint、dirty state、workspace registry の管理 |
 | `dep_graph.rs` | superclass / mixin / method call など種別付き依存と差分伝播 |
 | `rbs/` | inline RBS、`.rbs`、stdlib の import / lazy load / render |

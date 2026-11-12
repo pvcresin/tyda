@@ -10,7 +10,11 @@ use crate::rbs::bounded_file_cache::{BoundedFileCache, DEFAULT_FILE_CACHE_CAP};
 use crate::rbs::import::{
     RawTypeAlias, load_rbs_signature_with_dependency_aliases, signature_type_aliases,
 };
-use crate::registry::{RegistryDeepBytes, TypeRegistry};
+use crate::registry::{
+    ConstantCompletionCandidate, ConstantCompletionKind, RegistryDeepBytes, TypeRegistry,
+};
+use crate::sym::Sym;
+use crate::types::Type;
 
 const MAX_ALIAS_DEPENDENCY_DEPTH: usize = 8;
 
@@ -27,6 +31,7 @@ fn stdlib_file_cache_cap() -> usize {
 
 pub struct LazyRbsLoader {
     class_to_files: FxHashMap<String, Vec<PathBuf>>,
+    top_level_constants: FxHashMap<String, TopLevelConstant>,
     feature_to_files: FxHashMap<String, Vec<PathBuf>>,
     file_cache: Mutex<BoundedFileCache<PathBuf, StdlibFileRegistrySlot>>,
     shared_shapes: Mutex<FxHashMap<String, SharedShapeSlot>>,
@@ -42,6 +47,14 @@ pub struct FeatureExtension {
     pub owner: String,
     pub method: String,
     pub is_singleton: bool,
+}
+
+/// A constant, class, or module that an RBS file declares at the top level.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TopLevelConstant {
+    Class,
+    Module,
+    Constant(PathBuf),
 }
 
 /// What a file contributes when another file depends on its type aliases.
@@ -61,6 +74,7 @@ impl LazyRbsLoader {
 
     pub fn from_rbs_roots(roots: Vec<PathBuf>) -> Self {
         let mut class_to_files = FxHashMap::default();
+        let mut top_level_constants = FxHashMap::default();
         let mut feature_to_files: FxHashMap<String, Vec<PathBuf>> = FxHashMap::default();
         let mut stdlib_paths = FxHashSet::default();
 
@@ -78,6 +92,10 @@ impl LazyRbsLoader {
                     .is_some_and(|n| n == "stdlib");
             let rbs_files = collect_rbs_files(std::slice::from_ref(&root));
             for path in rbs_files {
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                for (name, kind) in scan_top_level_constants(&content, &path) {
+                    top_level_constants.entry(name).or_insert(kind);
+                }
                 if is_stdlib_root {
                     stdlib_paths.insert(path.clone());
                 }
@@ -106,16 +124,16 @@ impl LazyRbsLoader {
                 }
                 // stdlib often has stem != class name, so index by the leading declaration name (core skips this scan via the stem convention).
                 if is_stdlib_root {
-                    for declared in scan_top_level_declarations(&path) {
+                    for declared in scan_top_level_declarations(&content) {
                         insert_class_file(&mut class_to_files, declared, path.clone());
                     }
                 } else {
                     // Core aliases (`Mutex = Thread::Mutex`) can't use the stem convention -> lightly scan just the alias lines.
-                    for declared in scan_top_level_class_aliases(&path) {
+                    for declared in scan_top_level_class_aliases(&content) {
                         insert_class_file(&mut class_to_files, declared, path.clone());
                     }
                     // Qualified top-level nested classes (e.g. `File::Stat`) can't use the stem convention -> load via chained qualified scan.
-                    for declared in scan_top_level_qualified_declarations(&path) {
+                    for declared in scan_top_level_qualified_declarations(&content) {
                         insert_class_file(&mut class_to_files, declared, path.clone());
                     }
                 }
@@ -171,6 +189,7 @@ impl LazyRbsLoader {
 
         Self {
             class_to_files,
+            top_level_constants,
             feature_to_files,
             file_cache: Mutex::new(BoundedFileCache::with_cap(stdlib_file_cache_cap())),
             shared_shapes: Mutex::new(FxHashMap::default()),
@@ -462,6 +481,43 @@ impl LazyRbsLoader {
         crate::rbs::import::finalize_pending_method_aliases(&mut shape);
         shape.shrink_to_fit_after_compact();
         Some(Arc::new(shape))
+    }
+
+    /// Top-level classes, modules, and constants whose names start with `prefix`. Only
+    /// constant types load an RBS file; class and module kinds come from the index.
+    pub fn top_level_constant_candidates(&self, prefix: &str) -> Vec<ConstantCompletionCandidate> {
+        let mut candidates: Vec<ConstantCompletionCandidate> = self
+            .top_level_constants
+            .iter()
+            .filter(|(name, _)| name.starts_with(prefix))
+            .map(|(name, kind)| {
+                let (kind, const_type) = match kind {
+                    TopLevelConstant::Class => (
+                        ConstantCompletionKind::Class,
+                        Some(Type::Singleton(Sym::new(name))),
+                    ),
+                    TopLevelConstant::Module => (
+                        ConstantCompletionKind::Module,
+                        Some(Type::Singleton(Sym::new(name))),
+                    ),
+                    TopLevelConstant::Constant(path) => (
+                        ConstantCompletionKind::Constant,
+                        self.load_file_registry(path)
+                            .class_data_for("Object")
+                            .and_then(|data| data.constants.get(&Sym::new(name)))
+                            .map(|constant| constant.const_type.clone()),
+                    ),
+                };
+                ConstantCompletionCandidate {
+                    name: name.clone(),
+                    full_name: name.clone(),
+                    kind,
+                    const_type,
+                }
+            })
+            .collect();
+        candidates.sort_by(|a, b| a.name.cmp(&b.name));
+        candidates
     }
 
     /// stdlib namespaces safe for lazy loading (excludes `CORE_OWNED_CLASSES`, since re-merging them would reopen `Object` as a side effect).
@@ -926,10 +982,7 @@ fn reopens_core_class(path: &Path) -> bool {
     })
 }
 
-fn scan_top_level_declarations(path: &Path) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
+fn scan_top_level_declarations(content: &str) -> Vec<String> {
     let mut names = Vec::new();
     for line in content.lines() {
         let Some(rest) = line
@@ -955,11 +1008,34 @@ fn scan_top_level_declarations(path: &Path) -> Vec<String> {
     names
 }
 
+/// Scans column-0 `class`, `module`, and `NAME: Type` declarations with a single segment.
+fn scan_top_level_constants(content: &str, path: &Path) -> Vec<(String, TopLevelConstant)> {
+    let mut items = Vec::new();
+    for line in content.lines() {
+        let (rest, kind) = if let Some(rest) = line.strip_prefix("class ") {
+            (rest, TopLevelConstant::Class)
+        } else if let Some(rest) = line.strip_prefix("module ") {
+            (rest, TopLevelConstant::Module)
+        } else {
+            (line, TopLevelConstant::Constant(path.to_path_buf()))
+        };
+        let name_len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (name, after) = rest.split_at(name_len);
+        if !name.starts_with(|c: char| c.is_ascii_uppercase()) || after.starts_with("::") {
+            continue;
+        }
+        if matches!(kind, TopLevelConstant::Constant(_)) && !after.starts_with(':') {
+            continue;
+        }
+        items.push((name.to_string(), kind));
+    }
+    items
+}
+
 /// Scans only for top-level aliases (avoids stem shadowing, reduces core startup cost).
-fn scan_top_level_class_aliases(path: &Path) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
+fn scan_top_level_class_aliases(content: &str) -> Vec<String> {
     let mut names = Vec::new();
     for line in content.lines() {
         let Some(rest) = line
@@ -989,10 +1065,7 @@ fn scan_top_level_class_aliases(path: &Path) -> Vec<String> {
 }
 
 /// Scans for qualified top-level nested classes (can't use the stem convention; resolves chains like `IO#stat` -> `File::Stat`).
-fn scan_top_level_qualified_declarations(path: &Path) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
+fn scan_top_level_qualified_declarations(content: &str) -> Vec<String> {
     let mut names = Vec::new();
     for line in content.lines() {
         let Some(rest) = line
@@ -1644,11 +1717,31 @@ mod tests {
              end\n",
         )
         .expect("write rbs");
-        let mut names = scan_top_level_qualified_declarations(&path);
+        let content = std::fs::read_to_string(&path).expect("read rbs");
+        let mut names = scan_top_level_qualified_declarations(&content);
         names.sort();
         assert_eq!(
             names,
             vec!["File::Stat".to_string(), "Process::Status".to_string()]
+        );
+    }
+
+    #[test]
+    fn scan_top_level_constants_reads_single_segment_declarations() {
+        let path = PathBuf::from("sample.rbs");
+        let items = scan_top_level_constants(
+            "class Foo < Object\nend\nmodule Bar\n  BAZ: Integer\nend\nclass Foo::Inner\nend\n\
+             class Alias = Foo\nARGV: Array[String]\ninterface _Each\nend\n",
+            &path,
+        );
+        assert_eq!(
+            items,
+            vec![
+                ("Foo".to_string(), TopLevelConstant::Class),
+                ("Bar".to_string(), TopLevelConstant::Module),
+                ("Alias".to_string(), TopLevelConstant::Class),
+                ("ARGV".to_string(), TopLevelConstant::Constant(path.clone())),
+            ]
         );
     }
 
@@ -1690,7 +1783,8 @@ mod tests {
              end\n",
         )
         .expect("write rbs");
-        let mut names = scan_top_level_class_aliases(&path);
+        let content = std::fs::read_to_string(&path).expect("read rbs");
+        let mut names = scan_top_level_class_aliases(&content);
         names.sort();
         assert_eq!(names, vec!["Mutex".to_string(), "YAML".to_string()]);
     }
