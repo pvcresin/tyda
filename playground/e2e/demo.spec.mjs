@@ -502,6 +502,27 @@ test("opens Monaco Find with the platform shortcut", async ({ browser }) => {
   }
 });
 
+test("completes methods from the inferred receiver type", async ({ page }) => {
+  await page.goto(PLAYGROUND_PATH);
+  await waitForPlayground(page);
+  await page.evaluate(() => {
+    const editor = window.__editors.ruby;
+    editor.setValue("def ids = [1, 2, 3]\nids");
+    editor.setPosition({ lineNumber: 2, column: 4 });
+    editor.focus();
+  });
+
+  await page.keyboard.type(".ma");
+  const map = page.locator("#ruby .suggest-widget").getByRole("listitem", { name: /^map,/ });
+  await expect(map).toBeVisible({ timeout: 45_000 });
+  await expect(map).toContainText("Array#map");
+
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => page.evaluate(() => window.__editors.ruby.getValue()))
+    .toBe("def ids = [1, 2, 3]\nids.map");
+});
+
 test("shows annotated parameter hovers and literal interpolation", async ({ page }) => {
   await page.goto(PLAYGROUND_PATH);
   await page.waitForFunction(() => window.__tyda !== undefined, null, {

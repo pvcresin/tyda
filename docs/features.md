@@ -169,6 +169,7 @@ LSP は TypeProf VSCode 拡張が期待する起動・version・request 契約�
 - method hover は呼び出し形に合う RBS overload を選び、推論済みの引数・戻り値から generic と block 型を具体化する。あとで解決する引数（parameter や未解決 receiver の呼び出し結果。nil / truthy guard で絞った値も含む）は、受理する overload の戻り値が `nil` 以外で食い違うなら `untyped` にする（`["e"] * n` は `String` と決めない）
 - Playground は入力中の Ruby とユーザー RBS を debounce 解析し、RBS の変更も同じ hover / diagnostics に反映する
 - CodeLens は LSP と Playground で、クラスやモジュールの外にある未注釈の `def` にも推論シグネチャを表示する
+- completion は LSP と Playground で同じ判定と候補を使う。`recv.` は推論した receiver 型のメソッド、`Foo::` はネストした定数、`send(:` / `try(:` はメソッド名を補完する
 - Playground の Ruby エディタは Monaco の基本的なカーソル移動・編集、行操作、Find を有効にする。macOS の `Command+Backspace` は行頭まで削除、`Shift+Command+K` は行削除、`Command+F` はエディタ内検索
 - diagnostics の publish と workspace refresh
 - CLI と共通の `WorkspaceState` / query backend

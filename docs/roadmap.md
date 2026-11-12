@@ -61,6 +61,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] deferred param receiver の連鎖・arity 依存ケースを広げる
 - [ ] `argument_type_mismatch` の arity / external param 対応を広げる
 - [ ] LSP references / completion を拡張する
+- [ ] completion の並び順を改善する。今は名前順だけで、`!` や `!=` など記号のメソッドと `BasicObject` / `Kernel` のメソッドが先頭に来る。受け手のクラス自身、include した module や親クラス、`Kernel` / `BasicObject` の順に継承の近さで並べ、各層の中で記号のメソッドを後ろに回す。union の receiver での近さの決め方も決める。LSP（`labelDetails`）と Playground の両方で、候補の右に定義元のクラスを表示する。並び順と表示は共通の completion 経路で決め、Playground だけの実装にはしない。受け手が `untyped` のときは候補を出さない現状を保つ（使われ方からの型の推測は誤った候補を出すため採らない）
 - [ ] stdlib nested declaration の汎用 index を追加する
 
 ## 健全性

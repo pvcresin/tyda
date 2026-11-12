@@ -6,10 +6,13 @@ inference out**: inferred RBS, diagnostics (squiggles), and hover types — a
 VSCode-like experience, fully client-side.
 
 The wasm reads Ruby from stdin and prints one line of JSON on stdout:
-`{ rbs, diagnostics, hovers, code_lens }`. The front-end is a **Vite + TypeScript**
+`{ rbs, diagnostics, hovers, code_lens }`. With `completion: { line, column }`
+(0-based, UTF-16 column) it prints `{ completion }` instead: the same candidates
+the LSP returns for `recv.`, `Foo::`, and `send(:`. The front-end is a **Vite + TypeScript**
 app (`src/main.ts`): it bundles Monaco / lz-string / the WASI shim from npm (no
 CDN), renders the RBS in the output pane, diagnostics as Monaco markers, hover
-types via a hover provider, and inferred signatures as CodeLens.
+types via a hover provider, inferred signatures as CodeLens, and type-aware
+completion via a completion provider (one wasm run per request).
 
 CodeLens appears above inferred, unannotated `def` definitions, including
 top-level methods outside a class or module. The Ruby editor also loads Monaco's

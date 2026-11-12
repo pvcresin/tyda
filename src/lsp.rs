@@ -1,4 +1,3 @@
-use crate::types::Sym;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -20,6 +19,7 @@ use crate::analysis::{
     analyze_file_facts_with_deps_and_rbi, analyze_file_facts_with_deps_and_rbi_with_options_ref,
     analyze_file_for_query, analyze_source_for_display, format_hover_body,
 };
+use crate::completion::CompletionRequest;
 #[cfg(test)]
 use crate::diagnostics::has_type_hole;
 use crate::inference::{DefinitionLookupTarget, FileAnalysisSnapshot};
@@ -35,18 +35,15 @@ use crate::types::Param;
 use crate::types::{MethodSig, ParamKind, SourceLocation, Type};
 use crate::workspace_discovery::collect_rb_files_from_roots;
 use crate::workspace_state::{DisplayScopeKey, FileFingerprints, FileStamp, WorkspaceState};
-use completion::{constant_completion_items, method_completion_items};
+use completion::completion_items;
 #[cfg(test)]
 use source_support::source_line_supports_signature_comment;
 use source_support::{
-    SendMethodNameReceiver, apply_content_changes, byte_offset_to_lsp_position,
-    code_lens_range_for_method, dot_method_completion_context,
-    double_colon_constant_completion_context, fallback_code_lens_methods_from_source,
-    insert_signature_comment, lsp_position_to_byte_offset, method_definition_name_offset,
-    method_name_offset_for_definition_line, offset_to_line_col,
-    rbs_comment_type_definition_context, send_method_name_completion_context,
-    source_line_has_direct_annotation, source_line_supports_signature_comment_from_lines,
-    split_source_lines, uri_to_path,
+    apply_content_changes, byte_offset_to_lsp_position, code_lens_range_for_method,
+    fallback_code_lens_methods_from_source, insert_signature_comment, lsp_position_to_byte_offset,
+    method_definition_name_offset, method_name_offset_for_definition_line, offset_to_line_col,
+    rbs_comment_type_definition_context, source_line_has_direct_annotation,
+    source_line_supports_signature_comment_from_lines, split_source_lines, uri_to_path,
 };
 const CODE_LENS_CHANGE_REFRESH_DEBOUNCE_MS: u64 = 75;
 /// `didChange` re-infers the whole file to publish diagnostics; a burst of keystrokes
@@ -1167,98 +1164,33 @@ impl TydaLsp {
         if !self.should_analyze_ruby_path(&file_path) {
             return None;
         }
-        if let Some(completion_context) = send_method_name_completion_context(source, pos) {
-            self.ensure_workspace_scanned();
-            self.ensure_open_documents_cached_except(uri);
+        let request = CompletionRequest::at(source, lsp_position_to_byte_offset(source, pos)?)?;
+        self.ensure_workspace_scanned();
+        self.ensure_open_documents_cached_except(uri);
 
-            let mut state = self.state.lock().unwrap();
-            let output_parameter_names = state.output_parameter_names;
-            let stdlib_loader = Arc::clone(&state.stdlib_loader);
-            let external_registry =
-                Self::external_registry_for_completion(&mut state, &file_path, source);
-            let analysis = Self::analyze_completion_source(
-                &state,
-                &completion_context.source,
-                external_registry.as_deref(),
-                &file_path,
-                QueryAnalysisMode::HoverSnapshots,
-            );
-            let query = TypeQueryEngine::new(&analysis, &completion_context.source, &stdlib_loader)
-                .with_external_registry(external_registry.as_deref());
-            let completion = match completion_context.receiver {
-                SendMethodNameReceiver::Explicit { receiver_offset } => {
-                    query.method_completion_at_receiver(receiver_offset)?
-                }
-                SendMethodNameReceiver::Implicit { class_context } => {
-                    let receiver_type = if class_context.is_empty() {
-                        Type::Class(Sym::new("Object"))
-                    } else {
-                        Type::Class(Sym::new(class_context))
-                    };
-                    query.method_completion_for_receiver_type(receiver_type)
-                }
-            };
-            return Some(method_completion_items(
-                completion.candidates,
-                completion_context.replace_range,
-                output_parameter_names,
-            ));
-        }
-        if let Some(completion_context) = dot_method_completion_context(source, pos) {
-            self.ensure_workspace_scanned();
-            self.ensure_open_documents_cached_except(uri);
-
-            let mut state = self.state.lock().unwrap();
-            let output_parameter_names = state.output_parameter_names;
-            let stdlib_loader = Arc::clone(&state.stdlib_loader);
-            let external_registry =
-                Self::external_registry_for_completion(&mut state, &file_path, source);
-            let analysis = Self::analyze_completion_source(
-                &state,
-                &completion_context.source,
-                external_registry.as_deref(),
-                &file_path,
-                QueryAnalysisMode::HoverSnapshots,
-            );
-            let completion =
-                TypeQueryEngine::new(&analysis, &completion_context.source, &stdlib_loader)
-                    .with_external_registry(external_registry.as_deref())
-                    .method_completion_at_receiver(completion_context.receiver_offset)?;
-            return Some(method_completion_items(
-                completion.candidates,
-                completion_context.replace_range,
-                output_parameter_names,
-            ));
-        }
-
-        if let Some(completion_context) = double_colon_constant_completion_context(source, pos) {
-            self.ensure_workspace_scanned();
-            self.ensure_open_documents_cached_except(uri);
-
-            let mut state = self.state.lock().unwrap();
-            let stdlib_loader = Arc::clone(&state.stdlib_loader);
-            let external_registry =
-                Self::external_registry_for_completion(&mut state, &file_path, source);
-            let analysis = Self::analyze_completion_source(
-                &state,
-                &completion_context.source,
-                external_registry.as_deref(),
-                &file_path,
-                QueryAnalysisMode::FileFactsOnly,
-            );
-
-            let candidates =
-                TypeQueryEngine::new(&analysis, &completion_context.source, &stdlib_loader)
-                    .with_external_registry(external_registry.as_deref())
-                    .constant_completion_candidates(
-                        &completion_context.namespace,
-                        &completion_context.class_context,
-                        &completion_context.prefix,
-                    );
-            return Some(constant_completion_items(candidates, &completion_context));
-        }
-
-        None
+        let mut state = self.state.lock().unwrap();
+        let output_parameter_names = state.output_parameter_names;
+        let stdlib_loader = Arc::clone(&state.stdlib_loader);
+        let external_registry =
+            Self::external_registry_for_completion(&mut state, &file_path, source);
+        let analysis = Self::analyze_completion_source(
+            &state,
+            &request.source,
+            external_registry.as_deref(),
+            &file_path,
+            request.analysis_mode(),
+        );
+        let entries = request.resolve(
+            &analysis,
+            &stdlib_loader,
+            external_registry.as_deref(),
+            output_parameter_names,
+        )?;
+        let replace_range = Range::new(
+            byte_offset_to_lsp_position(source, request.replace_range.start),
+            byte_offset_to_lsp_position(source, request.replace_range.end),
+        );
+        Some(completion_items(entries, replace_range))
     }
 
     fn reload_type_definitions(&self) {
@@ -3889,7 +3821,7 @@ type MethodLocationKey = Option<(u32, u32)>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ParamKind;
+    use crate::types::{ParamKind, Sym};
     use futures::{SinkExt, StreamExt};
     use tempfile::tempdir;
     use tower::Service;

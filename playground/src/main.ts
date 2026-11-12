@@ -10,6 +10,8 @@
 // and read one JSON line from stdout:
 //   { rbs, diagnostics:[…], hovers:[…], code_lens:[…] }
 // (diagnostic/hover line 1-based, column 0-based; code_lens line 1-based.)
+// Completion adds `completion: {line, column}` (0-based, UTF-16 column) and
+// reads back `{ completion: { items, start_line, … } | null }`.
 //
 // State (ruby + rbs) is compressed into location.hash with lz-string on every
 // analysis, so the address-bar URL always restores the playground — copy it to
@@ -27,7 +29,7 @@ import {
 } from "@bjorn3/browser_wasi_shim";
 import LZString from "lz-string";
 // Minimal Monaco: the editor API + core and line-editing commands + Find + the
-// editor features the playground uses (CodeLens, comments, and hover) + Ruby grammar.
+// editor features the playground uses (CodeLens, comments, hover, and suggest) + Ruby grammar.
 // Importing the full "monaco-editor" pulls in every editor contribution and
 // language service, which dominates the bundle.
 import * as monaco from "monaco-editor/editor/editor.api";
@@ -37,6 +39,7 @@ import "monaco-editor/editor/contrib/comment/browser/comment.js";
 import "monaco-editor/editor/contrib/find/browser/findController.js";
 import "monaco-editor/editor/contrib/hover/browser/hoverContribution.js";
 import "monaco-editor/editor/contrib/linesOperations/browser/linesOperations.js";
+import "monaco-editor/editor/contrib/suggest/browser/suggestController.js";
 import "monaco-editor/languages/definitions/ruby/register.js";
 import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 
@@ -65,6 +68,18 @@ interface Hover {
 interface CodeLensItem {
   line: number;
   signature: string;
+}
+interface CompletionEntry {
+  label: string;
+  kind: "method" | "class" | "module" | "constant";
+  detail: string;
+}
+interface CompletionResult {
+  items: CompletionEntry[];
+  start_line: number;
+  start_column: number;
+  end_line: number;
+  end_column: number;
 }
 interface AnalysisResult {
   rbs: string;
@@ -368,11 +383,11 @@ async function loadAssets(): Promise<void> {
   rbsTree = buildRbsTree(bundle);
 }
 
-// One analyze = one fresh WASI instance (the command module runs `_start`
-// once). {ruby, rbs} JSON in via stdin, JSON out via stdout.
-async function analyze(ruby: string, rbs: string): Promise<AnalysisResult> {
+// One request = one fresh WASI instance (the command module runs `_start`
+// once). JSON in via stdin, the trimmed stdout text out.
+async function runWasm(input: object): Promise<string> {
   const enc = new TextEncoder();
-  const stdin = JSON.stringify({ ruby, rbs });
+  const stdin = JSON.stringify(input);
   // Capture stdout into a File buffer rather than ConsoleStdout.lineBuffered:
   // the wasm prints a single JSON line, and line buffering would withhold
   // output that isn't newline-terminated. Reading File.data is newline-safe.
@@ -388,7 +403,11 @@ async function analyze(ruby: string, rbs: string): Promise<AnalysisResult> {
     wasi_snapshot_preview1: wasi.wasiImport,
   });
   wasi.start(instance as { exports: { memory: WebAssembly.Memory; _start: () => unknown } });
-  const text = new TextDecoder().decode(stdout.data).trim();
+  return new TextDecoder().decode(stdout.data).trim();
+}
+
+async function analyze(ruby: string, rbs: string): Promise<AnalysisResult> {
+  const text = await runWasm({ ruby, rbs });
   const empty: AnalysisResult = {
     rbs: "",
     diagnostics: [],
@@ -504,6 +523,67 @@ function registerHover(): void {
   });
 }
 
+// Completion re-analyzes the current text, so results never lag behind edits.
+async function complete(
+  ruby: string,
+  rbs: string,
+  line: number,
+  column: number,
+): Promise<CompletionResult | null> {
+  const text = await runWasm({ ruby, rbs, completion: { line, column } });
+  if (!text) return null;
+  try {
+    return (JSON.parse(text) as { completion: CompletionResult | null }).completion;
+  } catch {
+    return null;
+  }
+}
+
+const COMPLETION_KINDS: Record<CompletionEntry["kind"], monaco.languages.CompletionItemKind> = {
+  method: monaco.languages.CompletionItemKind.Method,
+  class: monaco.languages.CompletionItemKind.Class,
+  module: monaco.languages.CompletionItemKind.Module,
+  constant: monaco.languages.CompletionItemKind.Constant,
+};
+
+// The rbs pane shares the "ruby" language, so only answer for the Ruby model.
+function registerCompletion(
+  rubyModel: monaco.editor.ITextModel,
+  rbsModel: monaco.editor.ITextModel,
+): void {
+  monaco.languages.registerCompletionItemProvider("ruby", {
+    triggerCharacters: [".", ":", '"', "'"],
+    async provideCompletionItems(model, position) {
+      if (model !== rubyModel || !wasmModule) return null;
+      const result = await complete(
+        model.getValue(),
+        rbsModel.getValue(),
+        position.lineNumber - 1,
+        position.column - 1,
+      );
+      if (!result) return null;
+      // Tyda positions are 0-based; Monaco's are 1-based.
+      const range = new monaco.Range(
+        result.start_line + 1,
+        result.start_column + 1,
+        result.end_line + 1,
+        result.end_column + 1,
+      );
+      return {
+        suggestions: result.items.map((item, i) => ({
+          label: item.label,
+          kind: COMPLETION_KINDS[item.kind],
+          detail: item.detail,
+          // Keep Tyda's ranking instead of Monaco's alphabetical default.
+          sortText: String(i).padStart(4, "0"),
+          insertText: item.label,
+          range,
+        })),
+      };
+    },
+  });
+}
+
 // Show / clear a "syntax error" badge next to a pane heading.
 function setSyntaxBadge(titleId: string, label: string, hasError: boolean): void {
   const el = document.getElementById(titleId);
@@ -529,6 +609,8 @@ async function main(): Promise<void> {
     scrollbar: { horizontal: "hidden" },
     automaticLayout: true,
     codeLens: true,
+    // Fallback word suggestions would otherwise mix in words from the rbs pane.
+    wordBasedSuggestions: "currentDocument",
   });
 
   // Command invoked when a CodeLens is clicked → insert its `#:` signature.
@@ -551,7 +633,11 @@ async function main(): Promise<void> {
     // Ruby analysis, so disable them here to keep the rbs pane clean.
     codeLens: false,
     hover: { enabled: "off" },
+    quickSuggestions: false,
+    suggestOnTriggerCharacters: false,
+    wordBasedSuggestions: "off",
   });
+  registerCompletion(ruby.getModel()!, rbs.getModel()!);
 
   // Expose the editors for E2E tests / debugging.
   window.__editors = { ruby, rbs };

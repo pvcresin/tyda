@@ -722,6 +722,59 @@ pub fn playground_analyze(
     )
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlaygroundCompletion {
+    pub items: Vec<crate::completion::CompletionEntry>,
+    /// Range a chosen item replaces: 0-based lines and UTF-16 columns.
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
+/// `line` and `column` are 0-based; `column` counts UTF-16 code units.
+pub fn playground_complete(
+    source: &str,
+    user_rbs_text: &str,
+    lazy_loader: &LazyRbsLoader,
+    file_path: &str,
+    line: usize,
+    column: usize,
+) -> Option<PlaygroundCompletion> {
+    let offset = crate::text_position::utf16_position_to_byte_offset(source, line, column)?;
+    let request = crate::completion::CompletionRequest::at(source, offset)?;
+
+    let mut rbs_registry = TypeRegistry::new();
+    let user_rbs = (!user_rbs_text.trim().is_empty()
+        && crate::rbs::import::rbs_parses(user_rbs_text))
+    .then(|| {
+        crate::rbs::import::load_rbs_string(user_rbs_text, &mut rbs_registry);
+        &rbs_registry
+    });
+
+    let analysis = analyze_file_for_query(
+        &request.source,
+        user_rbs,
+        Some(lazy_loader),
+        None,
+        Some(file_path),
+        AnalysisOptions::default(),
+        request.analysis_mode(),
+    );
+    let items = request.resolve(&analysis, lazy_loader, user_rbs, false)?;
+    let (start_line, start_column) =
+        crate::text_position::byte_offset_to_utf16_position(source, request.replace_range.start);
+    let (end_line, end_column) =
+        crate::text_position::byte_offset_to_utf16_position(source, request.replace_range.end);
+    Some(PlaygroundCompletion {
+        items,
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+    })
+}
+
 fn playground_result_from_snapshot(
     source: &str,
     user_rbs: Option<&TypeRegistry>,
