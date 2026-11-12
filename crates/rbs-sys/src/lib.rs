@@ -30,8 +30,14 @@ mod ffi {
         RBS_ATTR_IVAR_NAME_TAG_UNSPECIFIED,
     };
     pub use ruby_rbs_sys::bindings::rbs_attribute_kind::RBS_ATTRIBUTE_KIND_SINGLETON;
+    pub use ruby_rbs_sys::bindings::rbs_attribute_visibility::{
+        RBS_ATTRIBUTE_VISIBILITY_PRIVATE, RBS_ATTRIBUTE_VISIBILITY_PUBLIC,
+    };
     pub use ruby_rbs_sys::bindings::rbs_method_definition_kind::{
         RBS_METHOD_DEFINITION_KIND_SINGLETON, RBS_METHOD_DEFINITION_KIND_SINGLETON_INSTANCE,
+    };
+    pub use ruby_rbs_sys::bindings::rbs_method_definition_visibility::{
+        RBS_METHOD_DEFINITION_VISIBILITY_PRIVATE, RBS_METHOD_DEFINITION_VISIBILITY_PUBLIC,
     };
 
     // Supplement parse helpers missing from ruby-rbs-sys 0.3.0's bindgen allowlist.
@@ -456,6 +462,17 @@ pub struct MethodDecl {
     pub method_types: Vec<MethodType>,
     pub kind: MethodKind,
     pub attr_ivar: Option<std::string::String>,
+    /// Effective visibility, following RBS: a `private` / `public` section applies only to
+    /// instance members. For `SingletonInstance` this is the singleton side; the instance side
+    /// is always private.
+    pub visibility: MethodVisibility,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MethodVisibility {
+    #[default]
+    Public,
+    Private,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1177,13 +1194,19 @@ unsafe fn extract_members(
     }
 
     let members_ref = &*members;
+    let mut section = MethodVisibility::Public;
     let mut cur = members_ref.head;
     while !cur.is_null() {
         let entry = &*cur;
         if !entry.node.is_null() {
             let node = &*entry.node;
-            if node.type_ == ffi::rbs_node_type::RBS_AST_MEMBERS_METHOD_DEFINITION
-                && let Ok(method) = convert_method_definition(entry.node, parser, use_context)
+            if node.type_ == ffi::rbs_node_type::RBS_AST_MEMBERS_PRIVATE {
+                section = MethodVisibility::Private;
+            } else if node.type_ == ffi::rbs_node_type::RBS_AST_MEMBERS_PUBLIC {
+                section = MethodVisibility::Public;
+            } else if node.type_ == ffi::rbs_node_type::RBS_AST_MEMBERS_METHOD_DEFINITION
+                && let Ok(method) =
+                    convert_method_definition(entry.node, parser, use_context, section)
             {
                 methods.push(method);
             } else if node.type_ == ffi::rbs_node_type::RBS_AST_MEMBERS_ALIAS {
@@ -1208,6 +1231,7 @@ unsafe fn extract_members(
                     node.type_,
                     parser,
                     use_context,
+                    section,
                 )?);
             } else if matches!(
                 node.type_,
@@ -1317,6 +1341,7 @@ unsafe fn convert_attr_member(
     node_type: ffi::rbs_node_type::Type,
     parser: *mut ffi::rbs_parser_t,
     use_context: &UseContext,
+    section: MethodVisibility,
 ) -> Result<Vec<MethodDecl>, ParseError> {
     let attr = &*(node as *const ffi::rbs_ast_members_attr_t);
     let name = resolve_symbol(attr.name, parser);
@@ -1325,6 +1350,12 @@ unsafe fn convert_attr_member(
     }
     let type_ = convert_type_node(attr.type_, parser, use_context)?;
     let method_kind = method_kind_from_attr_kind(attr.kind);
+    let explicit = match attr.visibility {
+        ffi::RBS_ATTRIBUTE_VISIBILITY_PRIVATE => Some(MethodVisibility::Private),
+        ffi::RBS_ATTRIBUTE_VISIBILITY_PUBLIC => Some(MethodVisibility::Public),
+        _ => None,
+    };
+    let visibility = effective_visibility(explicit, &method_kind, section);
     let attr_ivar = resolve_attr_ivar_name(&name, attr.ivar_name, parser);
     let mut methods = Vec::new();
     let reader = matches!(
@@ -1343,6 +1374,7 @@ unsafe fn convert_attr_member(
             method_types: vec![method_type_no_args(type_.clone())],
             kind: method_kind.clone(),
             attr_ivar: attr_ivar.clone(),
+            visibility,
         });
     }
     if writer {
@@ -1351,6 +1383,7 @@ unsafe fn convert_attr_member(
             method_types: vec![method_type_one_required(type_.clone(), "value", type_)],
             kind: method_kind,
             attr_ivar,
+            visibility,
         });
     }
     Ok(methods)
@@ -1467,6 +1500,7 @@ unsafe fn convert_method_definition(
     node: *mut ffi::rbs_node_t,
     parser: *mut ffi::rbs_parser_t,
     use_context: &UseContext,
+    section: MethodVisibility,
 ) -> Result<MethodDecl, ParseError> {
     let method_def = &*(node as *const ffi::rbs_ast_members_method_definition_t);
     let name = resolve_symbol(method_def.name, parser);
@@ -1508,11 +1542,29 @@ unsafe fn convert_method_definition(
         }
     }
 
+    let explicit = match method_def.visibility {
+        ffi::RBS_METHOD_DEFINITION_VISIBILITY_PRIVATE => Some(MethodVisibility::Private),
+        ffi::RBS_METHOD_DEFINITION_VISIBILITY_PUBLIC => Some(MethodVisibility::Public),
+        _ => None,
+    };
+    let visibility = effective_visibility(explicit, &kind, section);
     Ok(MethodDecl {
         name,
         method_types,
         kind,
         attr_ivar: None,
+        visibility,
+    })
+}
+
+fn effective_visibility(
+    explicit: Option<MethodVisibility>,
+    kind: &MethodKind,
+    section: MethodVisibility,
+) -> MethodVisibility {
+    explicit.unwrap_or(match kind {
+        MethodKind::Instance => section,
+        MethodKind::Singleton | MethodKind::SingletonInstance => MethodVisibility::Public,
     })
 }
 
@@ -3038,6 +3090,36 @@ mod tests {
                 Declaration::Constant { name, .. } if name == "Net::HTTP::STATUS_CODES"
             )),
             "path-form constant should be qualified with the enclosing module"
+        );
+    }
+
+    #[test]
+    fn parse_signature_applies_visibility_sections_to_instance_members() {
+        let sig = parse_signature(
+            "class A\n  def a: () -> void\n  private\n  def b: () -> void\n  attr_reader c: Integer\n  def self.d: () -> void\n  def self?.e: () -> void\n  public def f: () -> void\n  public\n  def g: () -> void\n  private def h: () -> void\n  private def self.i: () -> void\nend\n",
+        )
+        .expect("parse");
+        let Declaration::Class { methods, .. } = &sig.declarations[0] else {
+            panic!("Expected class declaration");
+        };
+        let visibilities: Vec<(&str, MethodVisibility)> = methods
+            .iter()
+            .map(|method| (method.name.as_str(), method.visibility))
+            .collect();
+        use MethodVisibility::{Private, Public};
+        assert_eq!(
+            visibilities,
+            vec![
+                ("a", Public),
+                ("b", Private),
+                ("c", Private),
+                ("d", Public),
+                ("e", Public),
+                ("f", Public),
+                ("g", Public),
+                ("h", Private),
+                ("i", Private),
+            ]
         );
     }
 }

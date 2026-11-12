@@ -4730,11 +4730,10 @@ impl TypeRegistry {
         owner_path: &str,
         items: &mut BTreeMap<String, ConstantCompletionCandidate>,
     ) {
-        for class_name in self.class_names() {
-            let Some(name) = Self::direct_nested_constant_name(owner_path, &class_name) else {
-                continue;
-            };
-            let Some(data) = self.class_data_for(&class_name) else {
+        // `items` keeps names sorted, so the class map is scanned without sorting a copy.
+        for (class_name, data) in &self.class_data {
+            let class_name = class_name.as_str();
+            let Some(name) = Self::direct_nested_constant_name(owner_path, class_name) else {
                 continue;
             };
             let kind = if data.is_module {
@@ -4746,7 +4745,7 @@ impl TypeRegistry {
                 name.clone(),
                 ConstantCompletionCandidate {
                     name,
-                    full_name: class_name.clone(),
+                    full_name: class_name.to_string(),
                     kind,
                     const_type: Some(Type::Singleton(Sym::new(class_name))),
                 },
@@ -6261,15 +6260,22 @@ impl TypeRegistry {
         None
     }
 
+    /// `include_private` is for implicit-receiver and `self.` calls, which may reach
+    /// private methods.
     pub fn method_completion_candidates_for_type(
         &self,
         receiver_type: &Type,
+        include_private: bool,
     ) -> Vec<MethodCompletionCandidate> {
         match receiver_type {
-            Type::Union(parts) => self.method_completion_candidates_for_union(parts),
-            Type::Intersection(parts) => self.method_completion_candidates_for_intersection(parts),
+            Type::Union(parts) => {
+                self.method_completion_candidates_for_union(parts, include_private)
+            }
+            Type::Intersection(parts) => {
+                self.method_completion_candidates_for_intersection(parts, include_private)
+            }
             _ => self
-                .method_completion_candidates_for_non_union(receiver_type)
+                .method_completion_candidates_for_non_union(receiver_type, include_private)
                 .unwrap_or_default(),
         }
     }
@@ -6277,10 +6283,11 @@ impl TypeRegistry {
     fn method_completion_candidates_for_union(
         &self,
         parts: &[Type],
+        include_private: bool,
     ) -> Vec<MethodCompletionCandidate> {
         let mut per_part = Vec::new();
         for part in parts {
-            let candidates = self.method_completion_candidates_for_non_union(part);
+            let candidates = self.method_completion_candidates_for_non_union(part, include_private);
             let Some(candidates) = candidates else {
                 return Vec::new();
             };
@@ -6378,11 +6385,13 @@ impl TypeRegistry {
     fn method_completion_candidates_for_intersection(
         &self,
         parts: &[Type],
+        include_private: bool,
     ) -> Vec<MethodCompletionCandidate> {
         let mut candidates = Vec::new();
         let mut seen_methods = HashSet::new();
         for part in parts {
-            let Some(part_candidates) = self.method_completion_candidates_for_non_union(part)
+            let Some(part_candidates) =
+                self.method_completion_candidates_for_non_union(part, include_private)
             else {
                 continue;
             };
@@ -6399,6 +6408,7 @@ impl TypeRegistry {
     fn method_completion_candidates_for_non_union(
         &self,
         receiver_type: &Type,
+        include_private: bool,
     ) -> Option<Vec<MethodCompletionCandidate>> {
         let receiver_class = Self::type_to_class_name(receiver_type)?;
         let method_is_singleton = matches!(receiver_type, Type::Singleton(_));
@@ -6413,6 +6423,16 @@ impl TypeRegistry {
             &mut seen_methods,
             &mut candidates,
         );
+        // Filter after the lookup so a private override still hides a public ancestor method.
+        if !include_private {
+            candidates.retain(|candidate| {
+                !self.is_private_method(
+                    &candidate.owner_class,
+                    &candidate.name,
+                    candidate.is_singleton,
+                )
+            });
+        }
         // Candidates arrive in method lookup order, so an owner's first appearance is its rank.
         let mut owner_ranks: HashMap<String, usize> = HashMap::new();
         for candidate in &mut candidates {
@@ -6544,11 +6564,13 @@ impl TypeRegistry {
                 );
             }
             // Shared ancestors come once, after the whole chain, so they never
-            // shadow a closer owner or rank before it.
-            let fallbacks: &[&str] = if owner_class == receiver_class {
-                &["Class", "Module", "Object"]
-            } else {
+            // shadow a closer owner or rank before it. A module object is not a Class.
+            let fallbacks: &[&str] = if owner_class != receiver_class {
                 &[]
+            } else if data.is_module {
+                &["Module", "Object"]
+            } else {
+                &["Class", "Module", "Object"]
             };
             for &fallback in fallbacks {
                 if owner_class == fallback {
@@ -11970,6 +11992,20 @@ impl TypeRegistry {
             .insert(key);
     }
 
+    /// Ruby always makes these instance methods private, whatever their definition says.
+    const ALWAYS_PRIVATE_INSTANCE_METHODS: [&'static str; 5] = [
+        "initialize",
+        "initialize_copy",
+        "initialize_clone",
+        "initialize_dup",
+        "respond_to_missing?",
+    ];
+
+    pub fn is_private_method(&self, owner: &str, method_name: &str, is_singleton: bool) -> bool {
+        (!is_singleton && Self::ALWAYS_PRIVATE_INSTANCE_METHODS.contains(&method_name))
+            || self.method_visibility(owner, method_name, is_singleton) == Some(Visibility::Private)
+    }
+
     /// look up a method's visibility override. Treated as `Public` (returns `None`) if there's no entry.
     pub fn method_visibility(
         &self,
@@ -14310,7 +14346,7 @@ mod tests {
         registry.add_mixin("C", "M", MixinKind::Include);
 
         let candidates =
-            registry.method_completion_candidates_for_type(&Type::Class(Sym::new("C")));
+            registry.method_completion_candidates_for_type(&Type::Class(Sym::new("C")), false);
         let entries: Vec<(&str, &str)> = candidates
             .iter()
             .map(|candidate| (candidate.name.as_str(), candidate.owner_class.as_str()))
@@ -14342,10 +14378,10 @@ mod tests {
         registry.set_superclass("B", "Base");
 
         let names: Vec<String> = registry
-            .method_completion_candidates_for_type(&Type::Union(vec![
-                Type::Class(Sym::new("A")),
-                Type::Class(Sym::new("B")),
-            ]))
+            .method_completion_candidates_for_type(
+                &Type::Union(vec![Type::Class(Sym::new("A")), Type::Class(Sym::new("B"))]),
+                false,
+            )
             .into_iter()
             .map(|candidate| candidate.name)
             .collect();
@@ -14360,10 +14396,10 @@ mod tests {
         registry.add_method_def("A", test_method("only_a", Type::Integer));
         registry.add_method_def("B", test_method("value", Type::String));
 
-        let candidates = registry.method_completion_candidates_for_type(&Type::Union(vec![
-            Type::Class(Sym::new("A")),
-            Type::Class(Sym::new("B")),
-        ]));
+        let candidates = registry.method_completion_candidates_for_type(
+            &Type::Union(vec![Type::Class(Sym::new("A")), Type::Class(Sym::new("B"))]),
+            false,
+        );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].name, "value");
