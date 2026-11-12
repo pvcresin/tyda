@@ -399,10 +399,11 @@ const HASH_WITH_INDIFFERENT_ACCESS: &str = "ActiveSupport::HashWithIndifferentAc
 
 /// `HashWithIndifferentAccess` stores symbol keys as strings, so it dispatches as `Hash[K, V]`
 /// apart from the methods it overrides to keep its own class.
-static CLASS_DECLARATIONS: &[super::ClassDeclaration] = &[super::ClassDeclaration {
-    class_name: HASH_WITH_INDIFFERENT_ACCESS,
-    library: DslLibrary::ActiveSupportCoreExt,
-    rbs: r#"module ActiveSupport
+static CLASS_DECLARATIONS: &[super::ClassDeclaration] = &[
+    super::ClassDeclaration {
+        class_name: HASH_WITH_INDIFFERENT_ACCESS,
+        library: DslLibrary::ActiveSupportCoreExt,
+        rbs: r#"module ActiveSupport
   class HashWithIndifferentAccess[K, V] < ::Hash[K, V]
     def with_indifferent_access: () -> HashWithIndifferentAccess[K, V]
     def dup: () -> HashWithIndifferentAccess[K, V]
@@ -421,7 +422,23 @@ static CLASS_DECLARATIONS: &[super::ClassDeclaration] = &[super::ClassDeclaratio
   end
 end
 "#,
-}];
+    },
+    super::ClassDeclaration {
+        class_name: TIME_WITH_ZONE,
+        library: DslLibrary::ActiveSupportCoreExt,
+        // TimeWithZone defines its own arithmetic instead of forwarding it to `Time`. Follows
+        // gem_rbs_collection activesupport 8.1, plus `DateTime`, which `acts_like?(:time)` and so
+        // also gives seconds.
+        rbs: r#"module ActiveSupport
+  class TimeWithZone
+    def +: (::Time | ::ActiveSupport::TimeWithZone | ::Numeric | ::ActiveSupport::Duration other) -> ::ActiveSupport::TimeWithZone
+    def -: (::ActiveSupport::TimeWithZone | ::Time | ::DateTime other) -> ::Float
+         | (::Numeric | ::ActiveSupport::Duration other) -> ::ActiveSupport::TimeWithZone
+  end
+end
+"#,
+    },
+];
 
 /// `HashWithIndifferentAccess[K, V] < Hash[K, V]` stores symbol keys as strings and converts
 /// nested hashes on the way in, so Hash methods dispatch with the converted key and value types.

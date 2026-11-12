@@ -224,3 +224,31 @@ class Clock
   def new_year: -> ActiveSupport::TimeWithZone
 end
 ```
+
+## Resolve TimeWithZone arithmetic by its argument
+
+### update
+
+```ruby
+class Clock
+  def elapsed = Time.current - 1.day.ago
+
+  def later = Time.current + 1.day
+
+  def earlier = Time.current - 3600
+
+  def whole_seconds = (Time.current - Time.current).to_i
+end
+```
+
+### result
+
+```rbs
+class Clock
+  def elapsed: -> Float
+  def later: -> ActiveSupport::TimeWithZone
+  def earlier: -> ActiveSupport::TimeWithZone
+  def whole_seconds: -> Integer
+end
+```
+
