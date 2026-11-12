@@ -4407,6 +4407,42 @@ x.fo<caret>
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn lsp_completion_reads_literal_and_safe_navigation_receivers() {
+        let (mut service, mut socket) = initialize_lsp(None).await;
+        for (idx, (text, expected)) in [
+            ("[1, 2, 3].<caret>\n", "Array#map"),
+            ("x = [1, nil].first\nx&.<caret>\n", "Integer#even?"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let uri = Url::parse(&format!("file:///completion_receiver_{idx}.rb")).unwrap();
+            let (source, position) = source_with_cursor(text);
+            open_document(&mut service, &mut socket, &uri, &source).await;
+
+            let items = request_completion_items(
+                &mut service,
+                &uri,
+                position.line,
+                position.character,
+                220 + idx as i64,
+            )
+            .await;
+
+            let (_, name) = expected.split_once('#').unwrap();
+            let detail = completion_detail(&items, name);
+            assert!(detail.starts_with(expected), "{text}: {detail}");
+            assert!(
+                items.iter().all(|item| !item
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.starts_with("NilClass#"))),
+                "{text}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn lsp_completion_after_dot_includes_mixin_and_superclass_methods() {
         let (mut service, mut socket) = initialize_lsp(None).await;
         let uri = Url::parse("file:///completion_module.rb").unwrap();

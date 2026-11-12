@@ -44,9 +44,9 @@ enum CompletionKind {
 }
 
 enum MethodReceiver {
-    /// Hover offset of the receiver expression in the masked source.
+    /// The request source calls a probe method here, on the receiver to complete.
     Explicit {
-        hover_offset: usize,
+        name_offset: usize,
     },
     Implicit(LexicalScope),
 }
@@ -172,8 +172,8 @@ impl CompletionRequest {
                 include_private,
             } => {
                 let completion = match receiver {
-                    MethodReceiver::Explicit { hover_offset } => {
-                        query.method_completion_at_receiver(*hover_offset, *include_private)?
+                    MethodReceiver::Explicit { name_offset } => {
+                        query.method_completion_at_call(*name_offset, *include_private)?
                     }
                     MethodReceiver::Implicit(scope) => query
                         .method_completion_for_receiver_type(scope.self_type(), *include_private),
@@ -323,80 +323,34 @@ fn dot_method_completion_context(source: &str, pos_offset: usize) -> Option<Comp
     if dot_offset > line_start && bytes.get(dot_offset - 1) == Some(&b'.') {
         return None;
     }
-    let operator_start = if dot_offset > line_start && bytes.get(dot_offset - 1) == Some(&b'&') {
-        dot_offset - 1
-    } else {
-        dot_offset
-    };
-    let receiver = explicit_receiver_at(source, operator_start);
-    let (hover_offset, receiver_is_self) =
-        receiver.unwrap_or((operator_start.checked_sub(1)?, false));
-
-    let mut completion_source = bytes.to_vec();
-    for byte in &mut completion_source[operator_start..pos_offset] {
-        *byte = b' ';
-    }
-    let completion_source = String::from_utf8(completion_source).ok()?;
-    let replace_range = dot_offset + 1..pos_offset;
     Some(CompletionRequest {
-        source: completion_source,
-        replace_range,
+        source: with_probe_call_name(source, prefix_start..pos_offset),
+        replace_range: prefix_start..pos_offset,
         kind: CompletionKind::Method {
-            receiver: MethodReceiver::Explicit { hover_offset },
-            include_private: receiver_is_self,
+            receiver: MethodReceiver::Explicit {
+                name_offset: prefix_start,
+            },
+            include_private: receiver_is_self(bytes, dot_offset),
         },
     })
 }
 
-/// Finds the receiver of the call whose `.` or `&.` starts at `operator_start`. Returns
-/// the offset to hover for its type and whether it is `self`.
-fn explicit_receiver_at(source: &str, operator_start: usize) -> Option<(usize, bool)> {
-    struct ReceiverFinder {
-        operator_start: usize,
-        found: Option<(usize, bool)>,
+/// Whether the receiver before the `.` at `dot_offset` (or its `&.`) is `self`.
+fn receiver_is_self(bytes: &[u8], dot_offset: usize) -> bool {
+    let mut end = dot_offset;
+    if end > 0 && bytes[end - 1] == b'&' {
+        end -= 1;
     }
-    impl<'pr> Visit<'pr> for ReceiverFinder {
-        fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
-            if self.found.is_none()
-                && node
-                    .call_operator_loc()
-                    .is_some_and(|loc| loc.start_offset() == self.operator_start)
-                && let Some(receiver) = node.receiver()
-            {
-                self.found = Some((
-                    receiver_hover_offset(&receiver),
-                    receiver.as_self_node().is_some(),
-                ));
-            }
-            ruby_prism::visit_call_node(self, node);
-        }
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
     }
-    let parse_result = ruby_prism::parse(source.as_bytes());
-    let mut finder = ReceiverFinder {
-        operator_start,
-        found: None,
+    let Some(start) = end.checked_sub(4) else {
+        return false;
     };
-    finder.visit(&parse_result.node());
-    finder.found
-}
-
-/// Hover snapshots of a call sit on its method name, so a call receiver is hovered there
-/// rather than at its last byte, which may belong to an argument or a block.
-fn receiver_hover_offset(node: &Node<'_>) -> usize {
-    if let Some(call) = node.as_call_node()
-        && let Some(message) = call.message_loc()
-    {
-        return message.start_offset();
-    }
-    if let Some(parentheses) = node.as_parentheses_node()
-        && let Some(body) = parentheses.body()
-    {
-        let last = body
-            .as_statements_node()
-            .and_then(|statements| statements.body().iter().last());
-        return receiver_hover_offset(last.as_ref().unwrap_or(&body));
-    }
-    node.location().end_offset().saturating_sub(1)
+    &bytes[start..end] == b"self"
+        && (start == 0
+            || !matches!(bytes[start - 1], b'.' | b':' | b'@' | b'$' | b'_')
+                && !bytes[start - 1].is_ascii_alphanumeric())
 }
 
 fn line_start_before(bytes: &[u8], offset: usize) -> usize {
@@ -514,47 +468,48 @@ fn send_method_name_completion_context(
 
     let explicit_dot = method_start
         .checked_sub(1)
-        .and_then(|dot_offset| (bytes.get(dot_offset) == Some(&b'.')).then_some(dot_offset));
-    // `send` and `__send__` bypass visibility; `public_send` and `try` do not.
-    let bypasses_visibility = matches!(method_name, "send" | "__send__");
-    let (mask_start, explicit_receiver) = if let Some(dot_offset) = explicit_dot {
-        let mask_start = if dot_offset > line_start && bytes.get(dot_offset - 1) == Some(&b'&') {
-            dot_offset - 1
-        } else {
-            dot_offset
-        };
-        if mask_start == line_start || !source.is_char_boundary(mask_start) {
-            return None;
-        }
-        let receiver = explicit_receiver_at(source, mask_start).unwrap_or((mask_start - 1, false));
-        (mask_start, Some(receiver))
-    } else {
-        (method_start, None)
-    };
+        .is_some_and(|dot_offset| bytes.get(dot_offset) == Some(&b'.'));
+    if explicit_dot {
+        // `send` and `__send__` bypass visibility; `public_send` and `try` do not.
+        let include_private =
+            matches!(method_name, "send" | "__send__") || receiver_is_self(bytes, method_start - 1);
+        return Some(CompletionRequest {
+            source: with_probe_call_name(source, method_start..pos_offset),
+            replace_range: prefix_start..pos_offset,
+            kind: CompletionKind::Method {
+                receiver: MethodReceiver::Explicit {
+                    name_offset: method_start,
+                },
+                include_private,
+            },
+        });
+    }
 
     let mut completion_source = bytes.to_vec();
-    for byte in &mut completion_source[mask_start..pos_offset] {
+    for byte in &mut completion_source[method_start..pos_offset] {
         *byte = b' ';
     }
     let completion_source = String::from_utf8(completion_source).ok()?;
-    let (receiver, include_private) = match explicit_receiver {
-        Some((hover_offset, receiver_is_self)) => (
-            MethodReceiver::Explicit { hover_offset },
-            bypasses_visibility || receiver_is_self,
-        ),
-        None => (
-            MethodReceiver::Implicit(lexical_scope_at(&completion_source, method_start).0),
-            true,
-        ),
-    };
+    let scope = lexical_scope_at(&completion_source, method_start).0;
     Some(CompletionRequest {
         source: completion_source,
         replace_range: prefix_start..pos_offset,
         kind: CompletionKind::Method {
-            receiver,
-            include_private,
+            receiver: MethodReceiver::Implicit(scope),
+            include_private: true,
         },
     })
+}
+
+/// Replaces the partial name with a method nobody defines, so the engine infers the receiver
+/// the same way as for any call, including literals, parentheses, and leading-dot chains.
+fn with_probe_call_name(source: &str, name_range: Range<usize>) -> String {
+    const PROBE_METHOD_NAME: &str = "__tyda_completion_probe__";
+    let mut probe_source = String::with_capacity(source.len() + PROBE_METHOD_NAME.len());
+    probe_source.push_str(&source[..name_range.start]);
+    probe_source.push_str(PROBE_METHOD_NAME);
+    probe_source.push_str(&source[name_range.end..]);
+    probe_source
 }
 
 fn is_ruby_method_completion_char(byte: u8) -> bool {
@@ -864,5 +819,32 @@ fn qualify_lexical_constant_name(parent: Option<&String>, raw_name: &str) -> Str
         format!("{parent}::{raw_name}")
     } else {
         raw_name.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::receiver_is_self;
+
+    #[test]
+    fn receiver_is_self_reads_only_a_bare_self_token() {
+        for (source, expected) in [
+            ("self.", true),
+            ("self&.", true),
+            ("self\n  .", true),
+            ("x = self.", true),
+            ("myself.", false),
+            ("@self.", false),
+            ("obj.self.", false),
+            ("self_.", false),
+            (".", false),
+        ] {
+            let dot_offset = source.rfind('.').expect("dot");
+            assert_eq!(
+                receiver_is_self(source.as_bytes(), dot_offset),
+                expected,
+                "{source:?}"
+            );
+        }
     }
 }

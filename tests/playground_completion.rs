@@ -283,3 +283,27 @@ fn skips_bare_identifiers_in_comments_strings_and_def_names() {
 fn labels_of(completion: &PlaygroundCompletion) -> Vec<&str> {
     labels(completion)
 }
+
+#[test]
+fn completes_on_literal_and_parenthesized_receivers() {
+    for (source, expected, unexpected) in [
+        ("[1, 2, 3].<caret>\n", "map", "even?"),
+        ("{a: 1}.<caret>\n", "keys", "even?"),
+        ("(1..2).<caret>\n", "step", "even?"),
+        ("[[1]].<caret>\n", "flatten", "even?"),
+        ("ids = [1]\nids\n  .<caret>\n", "map", "even?"),
+    ] {
+        let completion = complete(source, "").expect("completion");
+        let labels = labels(&completion);
+        assert!(labels.contains(&expected), "{source:?}: {labels:?}");
+        assert!(!labels.contains(&unexpected), "{source:?}: {labels:?}");
+    }
+}
+
+#[test]
+fn does_not_guess_receiver_from_call_arguments() {
+    let count = complete("foo(1).<caret>\n", "")
+        .map(|completion| completion.items.len())
+        .unwrap_or_default();
+    assert_eq!(count, 0);
+}

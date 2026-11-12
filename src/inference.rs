@@ -1524,6 +1524,19 @@ impl FileAnalysisSnapshot {
         engine.find_hover_at(source, byte_offset)
     }
 
+    pub fn call_receiver_type_at(
+        &self,
+        byte_offset: usize,
+        lazy_loader: &LazyRbsLoader,
+        external_registry: Option<&TypeRegistry>,
+    ) -> Option<Type> {
+        let mut engine = InferenceEngine::from_file_analysis_snapshot(self, lazy_loader);
+        if let Some(registry) = external_registry {
+            engine.set_external_rbs(registry);
+        }
+        engine.find_call_receiver_type_at(byte_offset)
+    }
+
     pub(crate) fn unresolved_method_calls(
         &self,
         lazy_loader: &LazyRbsLoader,
