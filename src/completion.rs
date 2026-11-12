@@ -6,7 +6,7 @@
 
 use std::ops::Range;
 
-use ruby_prism::Node;
+use ruby_prism::{Node, Visit};
 
 use crate::analysis::QueryAnalysisMode;
 use crate::inference::FileAnalysisSnapshot;
@@ -29,17 +29,49 @@ pub struct CompletionRequest {
 }
 
 enum CompletionKind {
-    Method(MethodReceiver),
+    Method {
+        receiver: MethodReceiver,
+        /// Implicit-receiver, `self.`, and `send` calls may reach private methods.
+        include_private: bool,
+    },
     Constant {
         namespace: String,
         prefix: String,
         class_context: String,
     },
+    /// A bare identifier: locals, methods of `self`, constants, and keywords.
+    Identifier { prefix: String, scope: LexicalScope },
 }
 
 enum MethodReceiver {
-    Explicit { receiver_offset: usize },
-    Implicit { class_context: String },
+    /// Hover offset of the receiver expression in the masked source.
+    Explicit {
+        hover_offset: usize,
+    },
+    Implicit(LexicalScope),
+}
+
+/// What a position sees lexically: the enclosing class, the kind of `self`, and locals.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LexicalScope {
+    pub class_context: String,
+    /// `self` is the class or module itself (class body, `def self.x`, `class << self`).
+    pub singleton_self: bool,
+    pub locals: Vec<String>,
+}
+
+impl LexicalScope {
+    fn self_type(&self) -> Type {
+        if self.class_context.is_empty() {
+            return Type::Class(Sym::new("Object"));
+        }
+        let name = Sym::new(&self.class_context);
+        if self.singleton_self {
+            Type::Singleton(name)
+        } else {
+            Type::Class(name)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -49,6 +81,8 @@ pub enum CompletionEntryKind {
     Class,
     Module,
     Constant,
+    Variable,
+    Keyword,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -61,17 +95,64 @@ pub struct CompletionEntry {
     pub owner: Option<String>,
 }
 
+const RUBY_KEYWORDS: [&str; 41] = [
+    "BEGIN",
+    "END",
+    "__ENCODING__",
+    "__FILE__",
+    "__LINE__",
+    "alias",
+    "and",
+    "begin",
+    "break",
+    "case",
+    "class",
+    "def",
+    "defined?",
+    "do",
+    "else",
+    "elsif",
+    "end",
+    "ensure",
+    "false",
+    "for",
+    "if",
+    "in",
+    "module",
+    "next",
+    "nil",
+    "not",
+    "or",
+    "redo",
+    "rescue",
+    "retry",
+    "return",
+    "self",
+    "super",
+    "then",
+    "true",
+    "undef",
+    "unless",
+    "until",
+    "when",
+    "while",
+    "yield",
+];
+
 impl CompletionRequest {
     pub fn at(source: &str, byte_offset: usize) -> Option<Self> {
         send_method_name_completion_context(source, byte_offset)
             .or_else(|| dot_method_completion_context(source, byte_offset))
             .or_else(|| double_colon_constant_completion_context(source, byte_offset))
+            .or_else(|| identifier_completion_context(source, byte_offset))
     }
 
     pub(crate) fn analysis_mode(&self) -> QueryAnalysisMode {
         match self.kind {
-            CompletionKind::Method(_) => QueryAnalysisMode::HoverSnapshots,
-            CompletionKind::Constant { .. } => QueryAnalysisMode::FileFactsOnly,
+            CompletionKind::Method { .. } => QueryAnalysisMode::HoverSnapshots,
+            CompletionKind::Constant { .. } | CompletionKind::Identifier { .. } => {
+                QueryAnalysisMode::FileFactsOnly
+            }
         }
     }
 
@@ -86,19 +167,16 @@ impl CompletionRequest {
         let query = TypeQueryEngine::new(analysis, &self.source, stdlib_loader)
             .with_external_registry(external_registry);
         match &self.kind {
-            CompletionKind::Method(receiver) => {
+            CompletionKind::Method {
+                receiver,
+                include_private,
+            } => {
                 let completion = match receiver {
-                    MethodReceiver::Explicit { receiver_offset } => {
-                        query.method_completion_at_receiver(*receiver_offset)?
+                    MethodReceiver::Explicit { hover_offset } => {
+                        query.method_completion_at_receiver(*hover_offset, *include_private)?
                     }
-                    MethodReceiver::Implicit { class_context } => {
-                        let class_name = if class_context.is_empty() {
-                            "Object"
-                        } else {
-                            class_context
-                        };
-                        query.method_completion_for_receiver_type(Type::Class(Sym::new(class_name)))
-                    }
+                    MethodReceiver::Implicit(scope) => query
+                        .method_completion_for_receiver_type(scope.self_type(), *include_private),
                 };
                 Some(
                     completion
@@ -119,8 +197,65 @@ impl CompletionRequest {
                     .map(constant_entry)
                     .collect(),
             ),
+            CompletionKind::Identifier { prefix, scope } => Some(identifier_entries(
+                &query,
+                prefix,
+                scope,
+                output_parameter_names,
+            )),
         }
     }
+}
+
+/// Ranks locals first, then methods and constants (constants first for a capitalized
+/// prefix), then keywords. A local hides a method of the same name.
+fn identifier_entries(
+    query: &TypeQueryEngine<'_>,
+    prefix: &str,
+    scope: &LexicalScope,
+    output_parameter_names: bool,
+) -> Vec<CompletionEntry> {
+    let capitalized = prefix.starts_with(|c: char| c.is_ascii_uppercase());
+    let completion =
+        query.identifier_completion(scope.self_type(), &scope.class_context, prefix, capitalized);
+
+    let locals: Vec<CompletionEntry> = scope
+        .locals
+        .iter()
+        .filter(|name| name.starts_with(prefix))
+        .map(|name| CompletionEntry {
+            label: name.clone(),
+            kind: CompletionEntryKind::Variable,
+            detail: format!("local variable {name}"),
+            owner: None,
+        })
+        .collect();
+    let methods = completion
+        .methods
+        .into_iter()
+        .filter(|candidate| !scope.locals.contains(&candidate.name))
+        .map(|candidate| method_entry(candidate, output_parameter_names));
+    let constants = completion.constants.into_iter().map(constant_entry);
+    let keywords = RUBY_KEYWORDS
+        .iter()
+        .filter(|keyword| keyword.starts_with(prefix))
+        .map(|keyword| CompletionEntry {
+            label: keyword.to_string(),
+            kind: CompletionEntryKind::Keyword,
+            detail: "keyword".to_string(),
+            owner: None,
+        });
+
+    let mut entries = locals;
+    if capitalized {
+        entries.extend(constants);
+        entries.extend(methods);
+    } else {
+        entries.extend(methods);
+        entries.extend(constants);
+    }
+    entries.extend(keywords);
+    entries
 }
 
 fn method_entry(
@@ -175,11 +310,7 @@ fn dot_method_completion_context(source: &str, pos_offset: usize) -> Option<Comp
         return None;
     }
     let bytes = source.as_bytes();
-    let line_start = bytes[..pos_offset]
-        .iter()
-        .rposition(|b| *b == b'\n')
-        .map(|idx| idx + 1)
-        .unwrap_or(0);
+    let line_start = line_start_before(bytes, pos_offset);
 
     let mut prefix_start = pos_offset;
     while prefix_start > line_start && is_ruby_method_completion_char(bytes[prefix_start - 1]) {
@@ -192,16 +323,17 @@ fn dot_method_completion_context(source: &str, pos_offset: usize) -> Option<Comp
     if dot_offset > line_start && bytes.get(dot_offset - 1) == Some(&b'.') {
         return None;
     }
-    let receiver_offset = dot_offset.checked_sub(1)?;
-    if !source.is_char_boundary(dot_offset)
-        || !source.is_char_boundary(pos_offset)
-        || !source.is_char_boundary(receiver_offset)
-    {
-        return None;
-    }
+    let operator_start = if dot_offset > line_start && bytes.get(dot_offset - 1) == Some(&b'&') {
+        dot_offset - 1
+    } else {
+        dot_offset
+    };
+    let receiver = explicit_receiver_at(source, operator_start);
+    let (hover_offset, receiver_is_self) =
+        receiver.unwrap_or((operator_start.checked_sub(1)?, false));
 
     let mut completion_source = bytes.to_vec();
-    for byte in &mut completion_source[dot_offset..pos_offset] {
+    for byte in &mut completion_source[operator_start..pos_offset] {
         *byte = b' ';
     }
     let completion_source = String::from_utf8(completion_source).ok()?;
@@ -209,7 +341,116 @@ fn dot_method_completion_context(source: &str, pos_offset: usize) -> Option<Comp
     Some(CompletionRequest {
         source: completion_source,
         replace_range,
-        kind: CompletionKind::Method(MethodReceiver::Explicit { receiver_offset }),
+        kind: CompletionKind::Method {
+            receiver: MethodReceiver::Explicit { hover_offset },
+            include_private: receiver_is_self,
+        },
+    })
+}
+
+/// Finds the receiver of the call whose `.` or `&.` starts at `operator_start`. Returns
+/// the offset to hover for its type and whether it is `self`.
+fn explicit_receiver_at(source: &str, operator_start: usize) -> Option<(usize, bool)> {
+    struct ReceiverFinder {
+        operator_start: usize,
+        found: Option<(usize, bool)>,
+    }
+    impl<'pr> Visit<'pr> for ReceiverFinder {
+        fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+            if self.found.is_none()
+                && node
+                    .call_operator_loc()
+                    .is_some_and(|loc| loc.start_offset() == self.operator_start)
+                && let Some(receiver) = node.receiver()
+            {
+                self.found = Some((
+                    receiver_hover_offset(&receiver),
+                    receiver.as_self_node().is_some(),
+                ));
+            }
+            ruby_prism::visit_call_node(self, node);
+        }
+    }
+    let parse_result = ruby_prism::parse(source.as_bytes());
+    let mut finder = ReceiverFinder {
+        operator_start,
+        found: None,
+    };
+    finder.visit(&parse_result.node());
+    finder.found
+}
+
+/// Hover snapshots of a call sit on its method name, so a call receiver is hovered there
+/// rather than at its last byte, which may belong to an argument or a block.
+fn receiver_hover_offset(node: &Node<'_>) -> usize {
+    if let Some(call) = node.as_call_node()
+        && let Some(message) = call.message_loc()
+    {
+        return message.start_offset();
+    }
+    if let Some(parentheses) = node.as_parentheses_node()
+        && let Some(body) = parentheses.body()
+    {
+        let last = body
+            .as_statements_node()
+            .and_then(|statements| statements.body().iter().last());
+        return receiver_hover_offset(last.as_ref().unwrap_or(&body));
+    }
+    node.location().end_offset().saturating_sub(1)
+}
+
+fn line_start_before(bytes: &[u8], offset: usize) -> usize {
+    bytes[..offset]
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(0)
+}
+
+/// A bare identifier such as `pu|` or `Fl|`, outside comments, strings, and `def` names.
+fn identifier_completion_context(source: &str, pos_offset: usize) -> Option<CompletionRequest> {
+    if pos_offset > source.len() || !source.is_char_boundary(pos_offset) {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    let line_start = line_start_before(bytes, pos_offset);
+    let mut prefix_start = pos_offset;
+    while prefix_start > line_start && is_ruby_constant_completion_char(bytes[prefix_start - 1]) {
+        prefix_start -= 1;
+    }
+    let prefix = &source[prefix_start..pos_offset];
+    if !prefix.starts_with(|c: char| c == '_' || c.is_ascii_alphabetic()) {
+        return None;
+    }
+    if prefix_start > line_start
+        && matches!(
+            bytes[prefix_start - 1],
+            b'.' | b':' | b'@' | b'$' | b'?' | b'!' | b'&'
+        )
+    {
+        return None;
+    }
+    let before = source[line_start..prefix_start].trim_end();
+    if before == "def" || before.ends_with(" def") || before.ends_with(";def") {
+        return None;
+    }
+
+    let mut completion_source = bytes.to_vec();
+    for byte in &mut completion_source[prefix_start..pos_offset] {
+        *byte = b' ';
+    }
+    let completion_source = String::from_utf8(completion_source).ok()?;
+    let (scope, in_code) = lexical_scope_at(&completion_source, prefix_start);
+    if !in_code {
+        return None;
+    }
+    Some(CompletionRequest {
+        source: completion_source,
+        replace_range: prefix_start..pos_offset,
+        kind: CompletionKind::Identifier {
+            prefix: prefix.to_string(),
+            scope,
+        },
     })
 }
 
@@ -274,36 +515,21 @@ fn send_method_name_completion_context(
     let explicit_dot = method_start
         .checked_sub(1)
         .and_then(|dot_offset| (bytes.get(dot_offset) == Some(&b'.')).then_some(dot_offset));
-    let (receiver, mask_start) = if let Some(dot_offset) = explicit_dot {
+    // `send` and `__send__` bypass visibility; `public_send` and `try` do not.
+    let bypasses_visibility = matches!(method_name, "send" | "__send__");
+    let (mask_start, explicit_receiver) = if let Some(dot_offset) = explicit_dot {
         let mask_start = if dot_offset > line_start && bytes.get(dot_offset - 1) == Some(&b'&') {
             dot_offset - 1
         } else {
             dot_offset
         };
-        let receiver_end = mask_start;
-        if receiver_end == line_start || !source.is_char_boundary(receiver_end) {
+        if mask_start == line_start || !source.is_char_boundary(mask_start) {
             return None;
         }
-        (
-            MethodReceiver::Explicit {
-                receiver_offset: receiver_end - 1,
-            },
-            mask_start,
-        )
+        let receiver = explicit_receiver_at(source, mask_start).unwrap_or((mask_start - 1, false));
+        (mask_start, Some(receiver))
     } else {
-        let mut completion_source = bytes.to_vec();
-        for byte in &mut completion_source[method_start..pos_offset] {
-            *byte = b' ';
-        }
-        let completion_source = String::from_utf8(completion_source).ok()?;
-        let class_context =
-            lexical_class_context_at(&completion_source, pos_offset).unwrap_or_default();
-        let replace_range = prefix_start..pos_offset;
-        return Some(CompletionRequest {
-            source: completion_source,
-            replace_range,
-            kind: CompletionKind::Method(MethodReceiver::Implicit { class_context }),
-        });
+        (method_start, None)
     };
 
     let mut completion_source = bytes.to_vec();
@@ -311,11 +537,23 @@ fn send_method_name_completion_context(
         *byte = b' ';
     }
     let completion_source = String::from_utf8(completion_source).ok()?;
-    let replace_range = prefix_start..pos_offset;
+    let (receiver, include_private) = match explicit_receiver {
+        Some((hover_offset, receiver_is_self)) => (
+            MethodReceiver::Explicit { hover_offset },
+            bypasses_visibility || receiver_is_self,
+        ),
+        None => (
+            MethodReceiver::Implicit(lexical_scope_at(&completion_source, method_start).0),
+            true,
+        ),
+    };
     Some(CompletionRequest {
         source: completion_source,
-        replace_range,
-        kind: CompletionKind::Method(receiver),
+        replace_range: prefix_start..pos_offset,
+        kind: CompletionKind::Method {
+            receiver,
+            include_private,
+        },
     })
 }
 
@@ -414,62 +652,188 @@ pub(crate) fn is_valid_ruby_constant_name(name: &str) -> bool {
 }
 
 pub(crate) fn lexical_class_context_at(source: &str, byte_offset: usize) -> Option<String> {
-    let parse_result = ruby_prism::parse(source.as_bytes());
-    let root = parse_result.node();
-    let mut stack = Vec::new();
-    let mut best = None;
-    collect_lexical_class_context(&root, byte_offset, &mut stack, &mut best);
-    best
+    let (scope, _) = lexical_scope_at(source, byte_offset);
+    (!scope.class_context.is_empty()).then_some(scope.class_context)
 }
 
-fn collect_lexical_class_context(
-    node: &Node<'_>,
+/// Returns the scope and whether the offset is in code, not in a comment or string content.
+pub(crate) fn lexical_scope_at(source: &str, byte_offset: usize) -> (LexicalScope, bool) {
+    let parse_result = ruby_prism::parse(source.as_bytes());
+    let in_comment = parse_result.comments().any(|comment| {
+        let loc = comment.location();
+        loc.start_offset() <= byte_offset && byte_offset <= loc.end_offset()
+    });
+    let mut collector = LexicalScopeCollector {
+        byte_offset,
+        current: LexicalScope::default(),
+        in_singleton_class: false,
+        best: LexicalScope::default(),
+        in_string: false,
+    };
+    collector.visit(&parse_result.node());
+    (collector.best, !in_comment && !collector.in_string)
+}
+
+struct LexicalScopeCollector {
     byte_offset: usize,
-    stack: &mut Vec<String>,
-    best: &mut Option<String>,
-) {
-    let loc = node.location();
-    if byte_offset < loc.start_offset() || byte_offset > loc.end_offset() {
-        return;
+    current: LexicalScope,
+    in_singleton_class: bool,
+    /// The scope of the innermost node that contains the offset.
+    best: LexicalScope,
+    in_string: bool,
+}
+
+impl LexicalScopeCollector {
+    fn contains(&self, node_loc: &ruby_prism::Location<'_>) -> bool {
+        node_loc.start_offset() <= self.byte_offset && self.byte_offset <= node_loc.end_offset()
     }
 
-    if let Some(program) = node.as_program_node() {
-        for child in program.statements().body().iter() {
-            collect_lexical_class_context(&child, byte_offset, stack, best);
+    /// Runs `visit` inside a scope; a hard scope (`def`, `class`) drops outer locals.
+    fn with_scope(
+        &mut self,
+        update: impl FnOnce(&mut LexicalScope, &mut bool),
+        locals: ruby_prism::ConstantList<'_>,
+        hard_scope: bool,
+        visit: impl FnOnce(&mut Self),
+    ) {
+        let saved = self.current.clone();
+        let saved_singleton_class = self.in_singleton_class;
+        update(&mut self.current, &mut self.in_singleton_class);
+        if hard_scope {
+            self.current.locals.clear();
         }
-        return;
-    }
-
-    if let Some(statements) = node.as_statements_node() {
-        for child in statements.body().iter() {
-            collect_lexical_class_context(&child, byte_offset, stack, best);
-        }
-        return;
-    }
-
-    if let Some(class_node) = node.as_class_node() {
-        if let Some(raw_name) = constant_path_name_from_node(&class_node.constant_path()) {
-            let full_name = qualify_lexical_constant_name(stack.last(), &raw_name);
-            stack.push(full_name.clone());
-            *best = Some(full_name);
-            if let Some(body) = class_node.body() {
-                collect_lexical_class_context(&body, byte_offset, stack, best);
+        for local in locals.iter() {
+            let name = String::from_utf8_lossy(local.as_slice()).to_string();
+            if !self.current.locals.contains(&name) {
+                self.current.locals.push(name);
             }
-            stack.pop();
         }
-        return;
+        self.best = self.current.clone();
+        visit(self);
+        self.current = saved;
+        self.in_singleton_class = saved_singleton_class;
     }
 
-    if let Some(module_node) = node.as_module_node()
-        && let Some(raw_name) = constant_path_name_from_node(&module_node.constant_path())
-    {
-        let full_name = qualify_lexical_constant_name(stack.last(), &raw_name);
-        stack.push(full_name.clone());
-        *best = Some(full_name);
-        if let Some(body) = module_node.body() {
-            collect_lexical_class_context(&body, byte_offset, stack, best);
+    fn enter_namespace(&mut self, constant_path: &Node<'_>) -> Option<String> {
+        let raw_name = constant_path_name_from_node(constant_path)?;
+        let parent =
+            (!self.current.class_context.is_empty()).then_some(&self.current.class_context);
+        Some(qualify_lexical_constant_name(parent, &raw_name))
+    }
+}
+
+impl<'pr> Visit<'pr> for LexicalScopeCollector {
+    fn visit_program_node(&mut self, node: &ruby_prism::ProgramNode<'pr>) {
+        self.with_scope(
+            |_, _| {},
+            node.locals(),
+            true,
+            |this| ruby_prism::visit_program_node(this, node),
+        );
+    }
+
+    fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
+        if !self.contains(&node.location()) {
+            return;
         }
-        stack.pop();
+        let Some(full_name) = self.enter_namespace(&node.constant_path()) else {
+            return;
+        };
+        self.with_scope(
+            |scope, in_singleton_class| {
+                scope.class_context = full_name;
+                scope.singleton_self = true;
+                *in_singleton_class = false;
+            },
+            node.locals(),
+            true,
+            |this| ruby_prism::visit_class_node(this, node),
+        );
+    }
+
+    fn visit_module_node(&mut self, node: &ruby_prism::ModuleNode<'pr>) {
+        if !self.contains(&node.location()) {
+            return;
+        }
+        let Some(full_name) = self.enter_namespace(&node.constant_path()) else {
+            return;
+        };
+        self.with_scope(
+            |scope, in_singleton_class| {
+                scope.class_context = full_name;
+                scope.singleton_self = true;
+                *in_singleton_class = false;
+            },
+            node.locals(),
+            true,
+            |this| ruby_prism::visit_module_node(this, node),
+        );
+    }
+
+    fn visit_singleton_class_node(&mut self, node: &ruby_prism::SingletonClassNode<'pr>) {
+        if !self.contains(&node.location()) {
+            return;
+        }
+        self.with_scope(
+            |scope, in_singleton_class| {
+                scope.singleton_self = true;
+                *in_singleton_class = true;
+            },
+            node.locals(),
+            true,
+            |this| ruby_prism::visit_singleton_class_node(this, node),
+        );
+    }
+
+    fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
+        if !self.contains(&node.location()) {
+            return;
+        }
+        let singleton = node.receiver().is_some() || self.in_singleton_class;
+        self.with_scope(
+            |scope, _| scope.singleton_self = singleton,
+            node.locals(),
+            true,
+            |this| ruby_prism::visit_def_node(this, node),
+        );
+    }
+
+    fn visit_block_node(&mut self, node: &ruby_prism::BlockNode<'pr>) {
+        if !self.contains(&node.location()) {
+            return;
+        }
+        self.with_scope(
+            |_, _| {},
+            node.locals(),
+            false,
+            |this| ruby_prism::visit_block_node(this, node),
+        );
+    }
+
+    fn visit_lambda_node(&mut self, node: &ruby_prism::LambdaNode<'pr>) {
+        if !self.contains(&node.location()) {
+            return;
+        }
+        self.with_scope(
+            |_, _| {},
+            node.locals(),
+            false,
+            |this| ruby_prism::visit_lambda_node(this, node),
+        );
+    }
+
+    fn visit_string_node(&mut self, node: &ruby_prism::StringNode<'pr>) {
+        let content = node.content_loc();
+        if content.start_offset() <= self.byte_offset && self.byte_offset <= content.end_offset() {
+            self.in_string = true;
+        }
+    }
+
+    fn visit_x_string_node(&mut self, node: &ruby_prism::XStringNode<'pr>) {
+        let content = node.content_loc();
+        if content.start_offset() <= self.byte_offset && self.byte_offset <= content.end_offset() {
+            self.in_string = true;
+        }
     }
 }
 

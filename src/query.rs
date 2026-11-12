@@ -18,6 +18,12 @@ pub struct MethodCompletionQueryResult {
     pub candidates: Vec<MethodCompletionCandidate>,
 }
 
+#[derive(Debug, Clone)]
+pub struct IdentifierCompletionQueryResult {
+    pub methods: Vec<MethodCompletionCandidate>,
+    pub constants: Vec<ConstantCompletionCandidate>,
+}
+
 impl<'a> TypeQueryEngine<'a> {
     pub fn new(
         analysis: &'a FileAnalysisSnapshot,
@@ -49,28 +55,47 @@ impl<'a> TypeQueryEngine<'a> {
     pub fn method_completion_at_receiver(
         &self,
         receiver_offset: usize,
+        include_private: bool,
     ) -> Option<MethodCompletionQueryResult> {
         let hover = self.hover_at(receiver_offset)?;
-        Some(self.method_completion_for_receiver_type(hover.ty))
+        Some(self.method_completion_for_receiver_type(hover.ty, include_private))
     }
 
     pub fn method_completion_for_receiver_type(
         &self,
         receiver_type: Type,
+        include_private: bool,
     ) -> MethodCompletionQueryResult {
-        let mut registry = self.file_projection_registry();
-        ensure_completion_classes_available(
-            &mut registry,
-            self.stdlib_loader,
-            self.external_registry,
-            &receiver_type,
-        );
-        registry.apply_global_resolution();
-        let candidates = registry.method_completion_candidates_for_type(&receiver_type);
+        let registry = self.method_completion_registry(&receiver_type);
+        let candidates =
+            registry.method_completion_candidates_for_type(&receiver_type, include_private);
         MethodCompletionQueryResult {
             receiver_type,
             candidates,
         }
+    }
+
+    /// Candidates for a bare identifier: methods callable on `self` (private ones too) and,
+    /// when `include_constants`, constants visible from `class_context`.
+    pub fn identifier_completion(
+        &self,
+        self_type: Type,
+        class_context: &str,
+        prefix: &str,
+        include_constants: bool,
+    ) -> IdentifierCompletionQueryResult {
+        let registry = self.method_completion_registry(&self_type);
+        let methods = registry
+            .method_completion_candidates_for_type(&self_type, true)
+            .into_iter()
+            .filter(|candidate| candidate.name.starts_with(prefix))
+            .collect();
+        let constants = if include_constants {
+            self.lexical_constant_candidates(&registry, class_context, prefix)
+        } else {
+            Vec::new()
+        };
+        IdentifierCompletionQueryResult { methods, constants }
     }
 
     pub fn constant_completion_candidates(
@@ -80,12 +105,70 @@ impl<'a> TypeQueryEngine<'a> {
         prefix: &str,
     ) -> Vec<ConstantCompletionCandidate> {
         let mut registry = self.registry_for_projection();
+        // Load RBS declarations for the namespace, such as `File::SEPARATOR` or `Math::PI`.
+        if !namespace.is_empty() && namespace != "::" {
+            for owner in scoped_constant_paths(namespace, class_context) {
+                if !registry.has_class(&owner) {
+                    self.stdlib_loader.merge_class_into(&owner, &mut registry);
+                }
+            }
+        }
         registry.apply_global_resolution();
         registry
             .constant_completion_candidates_for_namespace(namespace, class_context)
             .into_iter()
             .filter(|candidate| candidate.name.starts_with(prefix))
             .collect()
+    }
+
+    /// Inner lexical scopes come first, then top-level constants, then RBS top-level
+    /// declarations. Reads the workspace registry in place instead of cloning it.
+    fn lexical_constant_candidates(
+        &self,
+        file_registry: &TypeRegistry,
+        class_context: &str,
+        prefix: &str,
+    ) -> Vec<ConstantCompletionCandidate> {
+        let mut seen = std::collections::HashSet::new();
+        let mut candidates = Vec::new();
+        let mut push = |candidate: ConstantCompletionCandidate| {
+            if candidate.name.starts_with(prefix) && seen.insert(candidate.name.clone()) {
+                candidates.push(candidate);
+            }
+        };
+        let registries: Vec<&TypeRegistry> = std::iter::once(file_registry)
+            .chain(self.external_registry)
+            .collect();
+        for scope in lexical_scopes(class_context) {
+            let namespace = if scope.is_empty() {
+                String::new()
+            } else {
+                format!("::{scope}")
+            };
+            for registry in &registries {
+                for candidate in
+                    registry.constant_completion_candidates_for_namespace(&namespace, "")
+                {
+                    push(candidate);
+                }
+            }
+        }
+        for candidate in self.stdlib_loader.top_level_constant_candidates(prefix) {
+            push(candidate);
+        }
+        candidates
+    }
+
+    fn method_completion_registry(&self, receiver_type: &Type) -> TypeRegistry {
+        let mut registry = self.file_projection_registry();
+        ensure_completion_classes_available(
+            &mut registry,
+            self.stdlib_loader,
+            self.external_registry,
+            receiver_type,
+        );
+        registry.apply_global_resolution();
+        registry
     }
 
     pub fn registry_for_projection(&self) -> TypeRegistry {
@@ -102,6 +185,35 @@ impl<'a> TypeQueryEngine<'a> {
         self.analysis.apply_to_registry(&mut registry);
         registry
     }
+}
+
+/// `A::B` gives `A::B`, `A`, and the top level, innermost first.
+fn lexical_scopes(class_context: &str) -> Vec<String> {
+    let mut scopes = Vec::new();
+    let mut current = class_context;
+    while !current.is_empty() {
+        scopes.push(current.to_string());
+        current = current.rsplit_once("::").map_or("", |(parent, _)| parent);
+    }
+    scopes.push(String::new());
+    scopes
+}
+
+/// Paths that `namespace` may name from `class_context`, innermost first.
+fn scoped_constant_paths(namespace: &str, class_context: &str) -> Vec<String> {
+    if let Some(absolute) = namespace.strip_prefix("::") {
+        return vec![absolute.to_string()];
+    }
+    lexical_scopes(class_context)
+        .into_iter()
+        .map(|scope| {
+            if scope.is_empty() {
+                namespace.to_string()
+            } else {
+                format!("{scope}::{namespace}")
+            }
+        })
+        .collect()
 }
 
 fn ensure_completion_classes_available(
@@ -233,7 +345,7 @@ box
         let offset = source.rfind("box").expect("receiver");
 
         let completion = TypeQueryEngine::new(&analysis, source, &loader)
-            .method_completion_at_receiver(offset)
+            .method_completion_at_receiver(offset, false)
             .expect("method completion");
 
         assert_eq!(completion.receiver_type.to_string(), "Box");
@@ -269,7 +381,7 @@ end
 
         let completion = TypeQueryEngine::new(&analysis, source, &loader)
             .with_external_registry(Some(&external))
-            .method_completion_at_receiver(offset)
+            .method_completion_at_receiver(offset, false)
             .expect("method completion");
 
         assert_eq!(completion.receiver_type.to_string(), "ApiClient");

@@ -71,7 +71,7 @@ interface CodeLensItem {
 }
 interface CompletionEntry {
   label: string;
-  kind: "method" | "class" | "module" | "constant";
+  kind: "method" | "class" | "module" | "constant" | "variable" | "keyword";
   detail: string;
   owner?: string;
 }
@@ -545,6 +545,8 @@ const COMPLETION_KINDS: Record<CompletionEntry["kind"], monaco.languages.Complet
   class: monaco.languages.CompletionItemKind.Class,
   module: monaco.languages.CompletionItemKind.Module,
   constant: monaco.languages.CompletionItemKind.Constant,
+  variable: monaco.languages.CompletionItemKind.Variable,
+  keyword: monaco.languages.CompletionItemKind.Keyword,
 };
 
 // The rbs pane shares the "ruby" language, so only answer for the Ruby model.

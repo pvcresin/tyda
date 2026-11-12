@@ -4630,6 +4630,61 @@ end
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn lsp_completion_resolves_call_receivers_and_bare_identifiers() {
+        let (mut service, mut socket) = initialize_lsp(None).await;
+        let uri = Url::parse("file:///completion_identifiers.rb").unwrap();
+        let class_source = r#"class User
+  def initialize(name)
+    @name = name
+  end
+
+  def foo = 1
+end
+
+"#;
+        let (source, position) =
+            source_with_cursor(&format!("{class_source}User.new(1).<caret>\n"));
+        open_document(&mut service, &mut socket, &uri, &source).await;
+        let items =
+            request_completion_items(&mut service, &uri, position.line, position.character, 210)
+                .await;
+        assert_eq!(completion_detail(&items, "foo"), "User#foo : -> 1");
+        for private in ["initialize", "puts"] {
+            assert!(
+                !items.iter().any(|item| item.label == private),
+                "{private}: {items:?}"
+            );
+        }
+
+        let (source, position) = source_with_cursor(&format!("{class_source}user = 1\nU<caret>\n"));
+        open_document(&mut service, &mut socket, &uri, &source).await;
+        let items =
+            request_completion_items(&mut service, &uri, position.line, position.character, 211)
+                .await;
+        let user = completion_item(&items, "User");
+        assert_eq!(user.kind, Some(CompletionItemKind::CLASS));
+        assert_eq!(
+            user.text_edit,
+            Some(CompletionTextEdit::Edit(TextEdit {
+                range: Range::new(Position::new(9, 0), Position::new(9, 1)),
+                new_text: "User".to_string(),
+            }))
+        );
+        assert!(items.iter().any(|item| item.label == "UncaughtThrowError"));
+
+        let (source, position) =
+            source_with_cursor(&format!("{class_source}user = 1\nus<caret>\n"));
+        open_document(&mut service, &mut socket, &uri, &source).await;
+        let items =
+            request_completion_items(&mut service, &uri, position.line, position.character, 212)
+                .await;
+        assert_eq!(
+            completion_item(&items, "user").kind,
+            Some(CompletionItemKind::VARIABLE)
+        );
+    }
+
     #[test]
     fn completion_external_registry_skips_empty_user_rbs_for_self_contained_file() {
         let mut state = new_test_state();
