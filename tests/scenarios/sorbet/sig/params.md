@@ -99,7 +99,7 @@ end
 
 ```rbs
 class Foo
-  def with_block: (?Proc &blk) -> String
+  def with_block: { (Integer) -> String } -> String
 end
 ```
 
@@ -140,10 +140,6 @@ end
 
 ## Rest keyword rest and block args together
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class Foo
   sig { params(args: Integer, kwargs: String, blk: T.proc.void).void }
@@ -156,7 +152,7 @@ end
 
 ```rbs
 class Foo
-  def forward: (*Integer args, **String kwargs) ?{ (?) -> untyped } -> void
+  def forward: (*Integer args, **String kwargs) { () -> void } -> void
 end
 ```
 
@@ -237,10 +233,6 @@ end
 
 ## sig do...end + rest + block
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class Foo
   sig do
@@ -258,7 +250,7 @@ end
 
 ```rbs
 class Foo
-  def map_all: (*Integer args) ?{ (?) -> untyped } -> Array[String]
+  def map_all: (*Integer args) { (Integer) -> String } -> Array[String]
 end
 ```
 
@@ -353,6 +345,6 @@ end
 
 ```rbs
 class Foo
-  def transform: (Array[T] items, ?Proc &blk) -> Array[String]
+  def transform: (Array[T] items) { (T) -> String } -> Array[String]
 end
 ```

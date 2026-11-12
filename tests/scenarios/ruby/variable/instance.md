@@ -431,10 +431,6 @@ end
 
 ## Read-before-write ivar is treated as a falsey guard
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

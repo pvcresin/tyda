@@ -649,10 +649,6 @@ end
 
 ## Truthiness narrows a repeated pure implicit self reader
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1270,10 +1266,6 @@ end
 ```
 
 ## A self call drops instance variable narrowing
-
-```yaml
-known_issue: true
-```
 
 ### update
 

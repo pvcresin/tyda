@@ -405,10 +405,6 @@ end
 
 ## Collect attr inside visibility wrappers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -518,10 +514,6 @@ end
 
 ## attr_accessor getter reflects external setter writes
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -548,10 +540,6 @@ end
 ```
 
 ## Local receiver setter refines a later getter
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -669,10 +657,6 @@ end
 ```
 
 ## Attribute readers preserve known record shape around untyped fields
-
-```yaml
-known_issue: true
-```
 
 ### update
 

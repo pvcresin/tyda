@@ -125,6 +125,25 @@ impl<'a> InferenceEngine<'a> {
         key: &str,
         parse_result: &ParseResult<'_>,
     ) -> Option<Type> {
+        Self::hash_option_value(call_node, key, parse_result)
+            .map(|value| self.static_node_type(&value))
+    }
+
+    pub(super) fn has_hash_option(
+        &self,
+        call_node: &ruby_prism::CallNode<'_>,
+        key: &str,
+        parse_result: &ParseResult<'_>,
+    ) -> bool {
+        Self::hash_option_value(call_node, key, parse_result).is_some()
+    }
+
+    /// Value node of a `key:` option in the call's trailing keyword hash.
+    pub(in crate::inference) fn hash_option_value<'pr>(
+        call_node: &ruby_prism::CallNode<'pr>,
+        key: &str,
+        parse_result: &ParseResult<'_>,
+    ) -> Option<Node<'pr>> {
         let args = call_node.arguments()?;
         for arg in args.arguments().iter() {
             let Node::KeywordHashNode { .. } = &arg else {
@@ -138,39 +157,11 @@ impl<'a> InferenceEngine<'a> {
                 let assoc = element.as_assoc_node().expect("must be AssocNode");
                 let key_name = Self::node_to_symbol_or_label(&assoc.key(), parse_result);
                 if key_name.as_deref() == Some(key) {
-                    return Some(self.static_node_type(&assoc.value()));
+                    return Some(assoc.value());
                 }
             }
         }
         None
-    }
-
-    pub(super) fn has_hash_option(
-        &self,
-        call_node: &ruby_prism::CallNode<'_>,
-        key: &str,
-        parse_result: &ParseResult<'_>,
-    ) -> bool {
-        let Some(args) = call_node.arguments() else {
-            return false;
-        };
-        for arg in args.arguments().iter() {
-            let Node::KeywordHashNode { .. } = &arg else {
-                continue;
-            };
-            let keyword_hash = arg.as_keyword_hash_node().expect("must be KeywordHashNode");
-            for element in keyword_hash.elements().iter() {
-                let Node::AssocNode { .. } = &element else {
-                    continue;
-                };
-                let assoc = element.as_assoc_node().expect("must be AssocNode");
-                let key_name = Self::node_to_symbol_or_label(&assoc.key(), parse_result);
-                if key_name.as_deref() == Some(key) {
-                    return true;
-                }
-            }
-        }
-        false
     }
 
     pub(in crate::inference) fn hash_option_names(
@@ -244,12 +235,13 @@ impl<'a> InferenceEngine<'a> {
         &self,
         call_node: &ruby_prism::CallNode<'_>,
         parse_result: &ParseResult<'_>,
+        owner: crate::rails::CastTypeOwner,
     ) -> Option<Type> {
         let args = call_node.arguments()?;
         let declared = args.arguments().iter().nth(1)?;
         let type_name = Self::node_to_string_or_symbol(&declared, parse_result)?;
-        // AR column types use the canonical map; only custom types are camelized (json/jsonb/hstore are explicitly Untyped).
-        let base = crate::rails::column_type_keyword_to_type(&type_name)
+        // Built-in type keywords use the canonical map; only custom types are camelized (json/jsonb/hstore are explicitly Untyped).
+        let base = crate::rails::cast_type_keyword_to_type(&type_name, owner)
             .unwrap_or_else(|| Type::Class(Sym::new(self.camelize(&type_name))));
         // `attribute :tags, :string, array: true` is an array column (Postgres array).
         if self.hash_option_bool(call_node, "array", parse_result) {

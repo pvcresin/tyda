@@ -1,9 +1,5 @@
 ## Open class operators affect static branch selection
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -252,10 +248,6 @@ end
 ```
 
 ## Numeric case equality preserves cross-numeric values
-
-```yaml
-known_issue: true
-```
 
 ### update
 

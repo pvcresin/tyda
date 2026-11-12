@@ -745,10 +745,6 @@ end
 
 ## class case preserves the local subject after a later Module equality override
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -969,10 +965,6 @@ end
 ```
 
 ## Narrow a memoized receiver in a class case
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class ClusterCaseProject
@@ -1221,10 +1213,6 @@ end
 
 ## A reader with a later writer keeps every branch
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class ReaderWriters
   attr_accessor :state
@@ -1334,10 +1322,6 @@ end
 ```
 
 ## A class value in when may be a subclass and keeps later branches
-
-```yaml
-known_issue: true
-```
 
 ### update
 

@@ -101,6 +101,7 @@ pub enum DslLibrary {
     ActiveResource,
     ActiveStorage,
     ActiveSupportConcern,
+    ActiveSupportCoreExt,
     ActiveSupportCurrentAttributes,
     ActiveSupportEnvironmentInquirer,
     ActiveSupportTimeExt,
@@ -235,6 +236,7 @@ impl DslLibrary {
             Self::ActiveResource => "active_resource",
             Self::ActiveStorage => "active_storage",
             Self::ActiveSupportConcern => "active_support_concern",
+            Self::ActiveSupportCoreExt => "active_support_core_ext",
             Self::ActiveSupportCurrentAttributes => "active_support_current_attributes",
             Self::ActiveSupportEnvironmentInquirer => "active_support_environment_inquirer",
             Self::ActiveSupportTimeExt => "active_support_time_ext",
@@ -299,6 +301,7 @@ impl DslLibrary {
             Self::ActiveResource,
             Self::ActiveStorage,
             Self::ActiveSupportConcern,
+            Self::ActiveSupportCoreExt,
             Self::ActiveSupportCurrentAttributes,
             Self::ActiveSupportEnvironmentInquirer,
             Self::ActiveSupportTimeExt,
@@ -364,6 +367,7 @@ impl DslLibrary {
                 | Self::ActiveResource
                 | Self::ActiveStorage
                 | Self::ActiveSupportConcern
+                | Self::ActiveSupportCoreExt
                 | Self::ActiveSupportCurrentAttributes
                 | Self::ActiveSupportEnvironmentInquirer
                 | Self::ActiveSupportTimeExt
@@ -656,19 +660,30 @@ fn detect_ruby_version_from_gemfile(root: &Path) -> Option<RubyVersion> {
     None
 }
 
+/// Reads resolved gem specs (`    name (version)`, four spaces under `specs:`); deeper lines
+/// are dependency requirements such as `      railties (>= 4.1.0)`.
 fn detect_rails_version_from_lockfile_content(content: &str) -> Option<RailsVersion> {
+    const PREFERENCE: [&str; 3] = ["rails", "railties", "activerecord"];
+    let mut found: [Option<RailsVersion>; 3] = [None; 3];
     for line in content.lines() {
-        let trimmed = line.trim_start();
-        for prefix in ["rails (", "railties ("] {
-            if let Some(version) = trimmed.strip_prefix(prefix) {
-                let version = version.strip_suffix(')')?;
-                if let Some(parsed) = RailsVersion::parse(version) {
-                    return Some(parsed);
-                }
-            }
+        let Some(spec) = line.strip_prefix("    ") else {
+            continue;
+        };
+        if spec.starts_with(' ') {
+            continue;
+        }
+        let Some((name, rest)) = spec.split_once(" (") else {
+            continue;
+        };
+        let Some(slot) = PREFERENCE.iter().position(|gem| *gem == name) else {
+            continue;
+        };
+        let version = rest.strip_suffix(')').unwrap_or(rest);
+        if found[slot].is_none() {
+            found[slot] = RailsVersion::parse(version);
         }
     }
-    None
+    found.into_iter().flatten().next()
 }
 
 pub fn detect_declared_gems(root: &Path) -> BTreeSet<String> {
@@ -1374,6 +1389,20 @@ mod tests {
     }
 
     #[test]
+    fn rails_version_reads_spec_lines_not_dependency_requirements() {
+        let lockfile = "GEM\n  remote: https://rubygems.org/\n  specs:\n    actionpack (8.1.3)\n      railties (= 8.1.3)\n    kaminari (1.2.2)\n      railties (>= 4.1.0)\n    rails (8.1.3)\n      activerecord (= 8.1.3)\n    railties (8.1.3)\n\nPLATFORMS\n  ruby\n\nDEPENDENCIES\n  rails (~> 8.1)\n";
+        assert_eq!(
+            detect_rails_version_from_lockfile_content(lockfile),
+            Some(RailsVersion::new(8, 1, 3))
+        );
+        let without_rails = "GEM\n  specs:\n    kaminari (1.2.2)\n      railties (>= 4.1.0)\n    activerecord (7.0.8)\n    railties (7.1.2)\n";
+        assert_eq!(
+            detect_rails_version_from_lockfile_content(without_rails),
+            Some(RailsVersion::new(7, 1, 2))
+        );
+    }
+
+    #[test]
     fn known_namespaces_include_rbs_unshipped_default_gems() {
         // Ruby-bundled default gems that don't appear in Gemfile.lock (irb / reline etc.)
         // should not be treated as "undefined" even without shipped RBS.
@@ -1423,6 +1452,7 @@ mod tests {
             DslLibrary::ActiveResource,
             DslLibrary::ActiveStorage,
             DslLibrary::ActiveSupportConcern,
+            DslLibrary::ActiveSupportCoreExt,
             DslLibrary::ActiveSupportCurrentAttributes,
             DslLibrary::ActiveSupportEnvironmentInquirer,
             DslLibrary::ActiveSupportTimeExt,

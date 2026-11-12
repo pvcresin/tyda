@@ -318,10 +318,6 @@ end
 
 ## `super` inside an included module continues after the module
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

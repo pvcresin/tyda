@@ -1,7 +1,7 @@
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
 use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
-use crate::types::{SourceLocation, Sym, Type};
+use crate::types::{RecordField, RecordKey, SourceLocation, Sym, Type};
 use ruby_prism::{CallNode, ParseResult};
 
 const CLASS_BODY_METHODS: &[&str] = &[
@@ -24,6 +24,10 @@ static MANIFEST: PluginManifest = PluginManifest {
     features: &[
         DslFeature {
             library: DslLibrary::ActiveSupportConcern,
+            gem_markers: &[],
+        },
+        DslFeature {
+            library: DslLibrary::ActiveSupportCoreExt,
             gem_markers: &[],
         },
         DslFeature {
@@ -119,68 +123,37 @@ impl Plugin for ActiveSupport {
         CLASS_BODY_METHODS
     }
 
+    fn class_declarations(&self) -> &'static [super::ClassDeclaration] {
+        CLASS_DECLARATIONS
+    }
+
+    fn call_return_method_names(&self) -> &'static [&'static str] {
+        &["including", "in_groups", "in_groups_of"]
+    }
+
+    fn synthetic_call_return(
+        &self,
+        cx: &mut PluginCx<'_, '_>,
+        receiver_type: &Type,
+        method_name: &str,
+        arg_types: &[Type],
+    ) -> Option<Type> {
+        if !cx.dsl_enabled(DslLibrary::ActiveSupportCoreExt) {
+            return None;
+        }
+        array_call_return(receiver_type, method_name, arg_types)
+    }
+
     fn register_on_class(&self, cx: &mut PluginCx<'_, '_>, class_name: &str, loc: SourceLocation) {
         cx.register_current_attributes_class_methods(class_name, loc);
         cx.register_time_ext_class_methods(loc);
     }
 }
 
-const TIME_WITH_ZONE: &str = "ActiveSupport::TimeWithZone";
+const TIME_WITH_ZONE: &str = crate::rails::time_with_zone::TIME_WITH_ZONE_CLASS;
 
 fn time_with_zone() -> Type {
     Type::Class(Sym::new(TIME_WITH_ZONE))
-}
-
-fn calendar_method_return(method_name: &str, receiver: &Type) -> Option<Type> {
-    match method_name {
-        "beginning_of_day"
-        | "end_of_day"
-        | "beginning_of_week"
-        | "end_of_week"
-        | "beginning_of_month"
-        | "end_of_month"
-        | "beginning_of_quarter"
-        | "end_of_quarter"
-        | "beginning_of_year"
-        | "end_of_year"
-        | "beginning_of_hour"
-        | "end_of_hour"
-        | "beginning_of_minute"
-        | "end_of_minute"
-        | "midnight"
-        | "midday"
-        | "noon"
-        | "at_midnight"
-        | "at_noon"
-        | "yesterday"
-        | "tomorrow"
-        | "next_day"
-        | "prev_day"
-        | "next_week"
-        | "prev_week"
-        | "next_month"
-        | "prev_month"
-        | "next_year"
-        | "prev_year"
-        | "weeks_ago"
-        | "weeks_since"
-        | "months_ago"
-        | "months_since"
-        | "years_ago"
-        | "years_since"
-        | "days_ago"
-        | "days_since"
-        | "advance"
-        | "change" => Some(receiver.clone()),
-        "ago" | "since" | "in" => Some(receiver.clone()),
-        "future?" | "past?" | "today?" | "tomorrow?" | "yesterday?" | "on_weekday?"
-        | "on_weekend?" => Some(Type::Bool),
-        "in_time_zone" => Some(time_with_zone()),
-        "to_fs" | "to_formatted_s" => Some(Type::String),
-        "seconds_since_midnight" => Some(Type::Float),
-        "all_day" | "all_week" | "all_month" | "all_year" => Some(Type::Untyped),
-        _ => None,
-    }
 }
 
 pub(in crate::inference) fn synthetic_method_return(
@@ -188,14 +161,41 @@ pub(in crate::inference) fn synthetic_method_return(
     receiver_type: &Type,
     method_name: &str,
 ) -> Option<Type> {
+    if let Type::Class(name) = receiver_type
+        && is_string_inquirer(name.as_str())
+    {
+        // `StringInquirer#method_missing` answers every `name?` predicate.
+        return (method_name.ends_with('?')
+            && engine.dsl_enabled(DslLibrary::ActiveSupportEnvironmentInquirer))
+        .then_some(Type::Bool);
+    }
+    if engine.dsl_enabled(DslLibrary::ActiveSupportCoreExt)
+        && let Some(ty) = core_ext_return(receiver_type, method_name)
+    {
+        return Some(ty);
+    }
     if !engine.dsl_enabled(DslLibrary::ActiveSupportTimeExt) {
         return None;
     }
+    time_ext_return(engine, receiver_type, method_name)
+}
+
+fn core_ext_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
     if method_name == "to_json" {
         return Some(Type::String);
     }
     match receiver_type {
+        Type::Array(elem) => array_extension_return(
+            method_name,
+            elem.as_deref().cloned().unwrap_or(Type::Untyped),
+            None,
+        ),
+        Type::Tuple(elems) => {
+            array_extension_return(method_name, array_element(receiver_type)?, Some(elems))
+        }
+        Type::Hash(_, _) | Type::Record(_) => hash_extension_return(receiver_type, method_name),
         Type::Integer | Type::LiteralInteger(_) => match method_name {
+            "multiple_of?" => Some(Type::Bool),
             "bytes" => Some(receiver_type.clone()),
             "kilobyte" | "kilobytes" | "megabyte" | "megabytes" | "gigabyte" | "gigabytes" => {
                 Some(Type::Integer)
@@ -210,6 +210,21 @@ pub(in crate::inference) fn synthetic_method_return(
             "ends_with?" | "starts_with?" => Some(Type::Bool),
             _ => None,
         },
+        Type::Singleton(name) if name.as_str() == "ActiveSupport::SecurityUtils" => matches!(
+            method_name,
+            "secure_compare" | "fixed_length_secure_compare"
+        )
+        .then_some(Type::Bool),
+        _ => None,
+    }
+}
+
+fn time_ext_return(
+    engine: &mut PluginCx<'_, '_>,
+    receiver_type: &Type,
+    method_name: &str,
+) -> Option<Type> {
+    match receiver_type {
         Type::Singleton(name) if name.as_str() == "Time" => match method_name {
             "current" => Some(time_with_zone()),
             "zone" => Some(Type::Class(Sym::new("ActiveSupport::TimeZone"))),
@@ -219,6 +234,8 @@ pub(in crate::inference) fn synthetic_method_return(
         Type::Singleton(name) if matches!(name.as_str(), "Date" | "DateTime") => {
             match method_name {
                 "current" => Some(Type::Class(Sym::new(name.as_str()))),
+                // Defined on `Date` as `current.yesterday`, so `DateTime` inherits a `Date` result.
+                "yesterday" | "tomorrow" => Some(Type::Class(Sym::new("Date"))),
                 _ => None,
             }
         }
@@ -232,31 +249,370 @@ pub(in crate::inference) fn synthetic_method_return(
         Type::Class(name) if name.as_str() == "ActiveSupport::TimeZone" => match method_name {
             "now" => Some(time_with_zone()),
             "today" => Some(Type::Class(Sym::new("Date"))),
-            "parse" | "at" | "local" | "iso8601" => Some(time_with_zone().union_with(Type::Nil)),
+            // `parse` returns nil for a string without a date; the others raise instead.
+            "parse" => Some(time_with_zone().union_with(Type::Nil)),
+            "at" | "local" | "iso8601" | "strptime" | "rfc3339" => Some(time_with_zone()),
             "name" | "to_s" => Some(Type::String),
             "utc_offset" => Some(Type::Integer),
             _ => None,
         },
-        Type::Class(name) if name.as_str() == TIME_WITH_ZONE => match method_name {
-            "utc" | "getutc" | "to_time" | "localtime" => Some(Type::Class(Sym::new("Time"))),
-            "to_date" => Some(Type::Class(Sym::new("Date"))),
-            "to_datetime" => Some(Type::Class(Sym::new("DateTime"))),
-            "strftime" | "iso8601" | "rfc3339" | "rfc2822" | "to_s" | "inspect" | "zone"
-            | "httpdate" => Some(Type::String),
-            "to_i" | "tv_sec" | "year" | "month" | "mon" | "day" | "mday" | "hour" | "min"
-            | "sec" | "wday" | "yday" | "usec" | "nsec" | "utc_offset" => Some(Type::Integer),
-            "to_f" => Some(Type::Float),
-            "dst?" | "utc?" | "gmt?" | "blank?" | "present?" => Some(Type::Bool),
-            "+" | "-" | "time" | "period" | "comparable_time" => Some(Type::Untyped),
-            "<=>" => Some(Type::Integer.union_with(Type::Nil)),
-            name => calendar_method_return(name, receiver_type),
-        },
+        Type::Class(name) if name.as_str() == TIME_WITH_ZONE => {
+            crate::rails::time_with_zone::own_method_return(method_name)
+                .or_else(|| time_with_zone_delegated_return(engine, method_name))
+        }
         Type::Class(name) if matches!(name.as_str(), "Time" | "Date" | "DateTime") => {
-            calendar_method_return(method_name, receiver_type)
+            crate::rails::time_with_zone::calendar_method_return(method_name, receiver_type)
         }
         _ => None,
     }
 }
+
+/// `to_date` / `to_datetime` / `to_time` from Active Support. The `String` versions return nil
+/// for a blank string, and `String#to_time` also for a string without date parts.
+pub(in crate::inference) fn date_conversion_return(
+    receiver_type: &Type,
+    method_name: &str,
+) -> Type {
+    let converted = Type::Class(Sym::new(match method_name {
+        "to_datetime" => "DateTime",
+        "to_date" => "Date",
+        _ => "Time",
+    }));
+    match receiver_type {
+        Type::LiteralString(value) if value.chars().all(char::is_whitespace) => Type::Nil,
+        Type::LiteralString(_) if method_name != "to_time" => converted,
+        Type::String | Type::LiteralString(_) => optional(converted),
+        _ => converted,
+    }
+}
+
+fn is_string_inquirer(class_name: &str) -> bool {
+    matches!(
+        class_name,
+        "ActiveSupport::StringInquirer" | "ActiveSupport::EnvironmentInquirer"
+    )
+}
+
+/// Keeps `untyped` as is, since `union_with` would drop it and leave a bare `nil`.
+fn optional(ty: Type) -> Type {
+    if ty == Type::Untyped {
+        ty
+    } else {
+        ty.union_with(Type::Nil)
+    }
+}
+
+/// `Array#second`-style accessors as an offset from the front (or from the back when negative).
+fn positional_accessor_offset(method_name: &str) -> Option<isize> {
+    Some(match method_name {
+        "second" => 1,
+        "third" => 2,
+        "fourth" => 3,
+        "fifth" => 4,
+        "forty_two" => 41,
+        "second_to_last" => -2,
+        "third_to_last" => -3,
+        _ => return None,
+    })
+}
+
+fn array_extension_return(method_name: &str, elem: Type, tuple: Option<&[Type]>) -> Option<Type> {
+    if let Some(offset) = positional_accessor_offset(method_name) {
+        let Some(elems) = tuple else {
+            return Some(optional(elem));
+        };
+        let index = if offset < 0 {
+            elems.len().checked_sub(offset.unsigned_abs())
+        } else {
+            Some(offset.unsigned_abs())
+        };
+        return Some(
+            index
+                .and_then(|i| elems.get(i))
+                .cloned()
+                .unwrap_or(Type::Nil),
+        );
+    }
+    match method_name {
+        "excluding" | "without" | "from" | "to" => Some(Type::Array(Some(Box::new(elem)))),
+        _ => None,
+    }
+}
+
+/// A tuple's literal members widen, as for other arrays built from it.
+fn array_element(receiver_type: &Type) -> Option<Type> {
+    match receiver_type {
+        Type::Array(elem) => Some(elem.as_deref().cloned().unwrap_or(Type::Untyped)),
+        Type::Tuple(elems) => Some(Type::from_type_vec(elems.to_vec()).widen()),
+        _ => None,
+    }
+}
+
+fn array_call_return(receiver_type: &Type, method_name: &str, arg_types: &[Type]) -> Option<Type> {
+    let elem = array_element(receiver_type)?;
+    let array = |elem: Type| Type::Array(Some(Box::new(elem)));
+    match method_name {
+        // `self + elements.flatten(1)`
+        "including" => {
+            let mut members = Vec::with_capacity(arg_types.len() + 1);
+            members.push(elem);
+            members.extend(
+                arg_types
+                    .iter()
+                    .map(|arg| array_element(arg).unwrap_or(arg.clone())),
+            );
+            Some(array(Type::from_type_vec_preserve_untyped(members)))
+        }
+        // Groups are padded with `fill_with` (default nil) unless it is `false`.
+        "in_groups" | "in_groups_of" if !arg_types.is_empty() && arg_types.len() <= 2 => {
+            let padded = match arg_types.get(1) {
+                None => optional(elem),
+                Some(Type::False) => elem,
+                Some(fill) => Type::from_type_vec_preserve_untyped(vec![elem, fill.clone()]),
+            };
+            Some(array(array(padded)))
+        }
+        _ => None,
+    }
+}
+
+fn hash_extension_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
+    let key_map: fn(&Type) -> Type = match method_name {
+        "symbolize_keys" | "symbolize_keys!" | "to_options" | "to_options!" => symbolized_key,
+        "stringify_keys" | "stringify_keys!" => stringified_key,
+        "deep_symbolize_keys" | "deep_symbolize_keys!" => {
+            return Some(deep_transform_keys(receiver_type, symbolized_key));
+        }
+        "deep_stringify_keys" | "deep_stringify_keys!" => {
+            return Some(deep_transform_keys(receiver_type, stringified_key));
+        }
+        "with_indifferent_access" => return Some(indifferent_access(receiver_type)),
+        "to_query" | "to_param" => return Some(Type::String),
+        _ => return None,
+    };
+    Some(transform_keys(receiver_type, key_map, &|value| {
+        value.clone()
+    }))
+}
+
+const HASH_WITH_INDIFFERENT_ACCESS: &str = "ActiveSupport::HashWithIndifferentAccess";
+
+/// `HashWithIndifferentAccess` stores symbol keys as strings, so it dispatches as `Hash[K, V]`
+/// apart from the methods it overrides to keep its own class.
+static CLASS_DECLARATIONS: &[super::ClassDeclaration] = &[
+    super::ClassDeclaration {
+        class_name: HASH_WITH_INDIFFERENT_ACCESS,
+        library: DslLibrary::ActiveSupportCoreExt,
+        rbs: r#"module ActiveSupport
+  class HashWithIndifferentAccess[K, V] < ::Hash[K, V]
+    def with_indifferent_access: () -> HashWithIndifferentAccess[K, V]
+    def dup: () -> HashWithIndifferentAccess[K, V]
+    def slice: (*untyped keys) -> HashWithIndifferentAccess[K, V]
+    def except: (*untyped keys) -> HashWithIndifferentAccess[K, V]
+    def without: (*untyped keys) -> HashWithIndifferentAccess[K, V]
+    def select: () { (K, V) -> boolish } -> HashWithIndifferentAccess[K, V]
+    def reject: () { (K, V) -> boolish } -> HashWithIndifferentAccess[K, V]
+    def compact: () -> HashWithIndifferentAccess[K, V]
+    def stringify_keys: () -> HashWithIndifferentAccess[K, V]
+    def deep_stringify_keys: () -> HashWithIndifferentAccess[K, V]
+    def symbolize_keys: () -> ::Hash[::Symbol, V]
+    def to_options: () -> ::Hash[::Symbol, V]
+    def deep_symbolize_keys: () -> ::Hash[::Symbol, untyped]
+    def to_hash: () -> ::Hash[K, V]
+  end
+end
+"#,
+    },
+    super::ClassDeclaration {
+        class_name: TIME_WITH_ZONE,
+        library: DslLibrary::ActiveSupportCoreExt,
+        // TimeWithZone defines its own arithmetic instead of forwarding it to `Time`. Follows
+        // gem_rbs_collection activesupport 8.1, plus `DateTime`, which `acts_like?(:time)` and so
+        // also gives seconds.
+        rbs: r#"module ActiveSupport
+  class TimeWithZone
+    def +: (::Time | ::ActiveSupport::TimeWithZone | ::Numeric | ::ActiveSupport::Duration other) -> ::ActiveSupport::TimeWithZone
+    def -: (::ActiveSupport::TimeWithZone | ::Time | ::DateTime other) -> ::Float
+         | (::Numeric | ::ActiveSupport::Duration other) -> ::ActiveSupport::TimeWithZone
+  end
+end
+"#,
+    },
+];
+
+/// `HashWithIndifferentAccess[K, V] < Hash[K, V]` stores symbol keys as strings and converts
+/// nested hashes on the way in, so Hash methods dispatch with the converted key and value types.
+fn indifferent_access(hash: &Type) -> Type {
+    let (key, value) = match hash {
+        Type::Hash(key, value) => (
+            key.as_deref().cloned().unwrap_or(Type::Untyped),
+            value.as_deref().cloned().unwrap_or(Type::Untyped),
+        ),
+        Type::Record(fields) => (
+            Type::from_type_vec(fields.iter().map(|f| record_key_type(&f.key)).collect()),
+            Type::from_type_vec(fields.iter().map(|f| f.value.clone()).collect()),
+        ),
+        _ => return hash.clone(),
+    };
+    Type::Generic {
+        base: Sym::new(HASH_WITH_INDIFFERENT_ACCESS),
+        args: vec![indifferent_key(&key).widen(), indifferent_value(&value)].into(),
+    }
+}
+
+fn indifferent_key(key: &Type) -> Type {
+    match key {
+        Type::Symbol => Type::String,
+        Type::LiteralSymbol(name) => Type::LiteralString(name.to_string()),
+        Type::Union(parts) => Type::from_type_vec(parts.iter().map(indifferent_key).collect()),
+        other => other.clone(),
+    }
+}
+
+fn indifferent_value(value: &Type) -> Type {
+    match value {
+        Type::Hash(_, _) | Type::Record(_) => indifferent_access(value),
+        Type::Array(Some(elem)) => Type::Array(Some(Box::new(indifferent_value(elem)))),
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(indifferent_value).collect()),
+        Type::Union(parts) => {
+            Type::from_type_vec_preserve_untyped(parts.iter().map(indifferent_value).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// `symbolize_keys` rescues keys without `to_sym`, so only strings change.
+fn symbolized_key(key: &Type) -> Type {
+    match key {
+        Type::String => Type::Symbol,
+        Type::LiteralString(name) => Type::LiteralSymbol(Sym::new(name)),
+        Type::Union(parts) => Type::from_type_vec(parts.iter().map(symbolized_key).collect()),
+        other => other.clone(),
+    }
+}
+
+fn stringified_key(key: &Type) -> Type {
+    match key {
+        Type::LiteralString(_) => key.clone(),
+        Type::LiteralSymbol(name) => Type::LiteralString(name.to_string()),
+        Type::Union(parts) => Type::from_type_vec(parts.iter().map(stringified_key).collect()),
+        _ => Type::String,
+    }
+}
+
+fn record_key_type(key: &RecordKey) -> Type {
+    match key {
+        RecordKey::Symbol(name) => Type::LiteralSymbol(Sym::new(name)),
+        RecordKey::String(name) => Type::LiteralString(name.clone()),
+    }
+}
+
+fn type_record_key(key: &Type) -> Option<RecordKey> {
+    match key {
+        Type::LiteralSymbol(name) => Some(RecordKey::Symbol(name.to_string())),
+        Type::LiteralString(name) => Some(RecordKey::String(name.to_string())),
+        _ => None,
+    }
+}
+
+fn transform_keys(
+    hash: &Type,
+    key_map: fn(&Type) -> Type,
+    value_map: &dyn Fn(&Type) -> Type,
+) -> Type {
+    match hash {
+        Type::Hash(key, value) => Type::Hash(
+            key.as_deref().map(|key| Box::new(key_map(key))),
+            value.as_deref().map(|value| Box::new(value_map(value))),
+        ),
+        Type::Record(fields) => {
+            let mut mapped: Vec<RecordField> = Vec::with_capacity(fields.len());
+            for field in fields {
+                let key = type_record_key(&key_map(&record_key_type(&field.key)));
+                match key {
+                    Some(key) if mapped.iter().all(|other| other.key != key) => {
+                        mapped.push(RecordField {
+                            key,
+                            value: value_map(&field.value),
+                            optional: field.optional,
+                        });
+                    }
+                    // A key collision keeps only one value, so fall back to the widened hash.
+                    _ => {
+                        let keys = fields
+                            .iter()
+                            .map(|field| key_map(&record_key_type(&field.key)))
+                            .collect();
+                        let values = fields.iter().map(|field| value_map(&field.value)).collect();
+                        return Type::Hash(
+                            Some(Box::new(Type::from_type_vec(keys))),
+                            Some(Box::new(Type::from_type_vec(values))),
+                        );
+                    }
+                }
+            }
+            Type::Record(mapped)
+        }
+        other => other.clone(),
+    }
+}
+
+/// `deep_transform_keys` also rewrites hashes nested in values and arrays.
+fn deep_transform_keys(ty: &Type, key_map: fn(&Type) -> Type) -> Type {
+    match ty {
+        Type::Hash(_, _) | Type::Record(_) => {
+            transform_keys(ty, key_map, &|value| deep_transform_keys(value, key_map))
+        }
+        Type::Array(Some(elem)) => Type::Array(Some(Box::new(deep_transform_keys(elem, key_map)))),
+        Type::Tuple(elems) => Type::Tuple(
+            elems
+                .iter()
+                .map(|elem| deep_transform_keys(elem, key_map))
+                .collect(),
+        ),
+        Type::Union(parts) => Type::from_type_vec(
+            parts
+                .iter()
+                .map(|part| deep_transform_keys(part, key_map))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// `TimeWithZone#method_missing` sends other methods to its local `Time` and wraps a `Time`
+/// result back into the zone (`wrap_with_time_zone`).
+fn time_with_zone_delegated_return(
+    engine: &mut PluginCx<'_, '_>,
+    method_name: &str,
+) -> Option<Type> {
+    use crate::rails::time_with_zone;
+    let target = time_with_zone::method_missing_target(TIME_WITH_ZONE, method_name)?;
+    match engine.engine.resolve_method_on_type(&target, method_name) {
+        Type::Untyped | Type::ReceiverMethodRef(..) => None,
+        ty => Some(time_with_zone::wrap_forwarded_result(ty)),
+    }
+}
+
+/// `TimeWithZone#-` / `#+` overloads: a time operand gives the difference in seconds,
+/// a numeric or duration operand shifts the time within its zone.
+const TIME_WITH_ZONE_ARITHMETIC: &[(&str, &[&str])] = &[
+    (
+        "-",
+        &[
+            "(ActiveSupport::Duration other) -> ActiveSupport::TimeWithZone",
+            "(Time | ActiveSupport::TimeWithZone | DateTime other) -> Float",
+            "(Numeric other) -> ActiveSupport::TimeWithZone",
+        ],
+    ),
+    (
+        "+",
+        &[
+            "(ActiveSupport::Duration other) -> ActiveSupport::TimeWithZone",
+            "(Numeric other) -> ActiveSupport::TimeWithZone",
+        ],
+    ),
+];
 
 use super::super::*;
 
@@ -302,6 +658,40 @@ impl<'a> InferenceEngine<'a> {
     }
 
     pub(in crate::inference) fn register_time_ext_class_methods(&mut self, loc: SourceLocation) {
+        if self.dsl_enabled(DslLibrary::ActiveSupportTimeExt)
+            && !self.registry.has_method_variant(TIME_WITH_ZONE, "-", false)
+        {
+            for (name, signatures) in TIME_WITH_ZONE_ARITHMETIC {
+                let method_types: Vec<crate::rbs::ir::MethodType> = signatures
+                    .iter()
+                    .filter_map(|signature| rbs_sys::parse_method_type(signature).ok())
+                    .map(|parsed| crate::rbs::ir::MethodType::from(&parsed))
+                    .collect();
+                self.registry.add_method_def_if_missing(
+                    TIME_WITH_ZONE,
+                    MethodDef {
+                        name: Sym::new(*name),
+                        param_infos: vec![ParamInfo {
+                            name: "other".to_string(),
+                            kind: ParamKind::Required,
+                            default_type: Some(Type::Untyped),
+                        }],
+                        raw_return_type: Type::Untyped,
+                        sorbet_modifier_comments: Vec::new(),
+                        rbs_annotated: true,
+                        rbs_inline_annotated: false,
+                        sig_annotated: false,
+                        attr_ivar: None,
+                        is_singleton: false,
+                        rbs_file_source: true,
+                        synthetic_dsl_source: true,
+                        rbs_method_types: std::sync::Arc::new(method_types),
+                        extra_overloads: Vec::new(),
+                        loc: Some(loc),
+                    },
+                );
+            }
+        }
         if self.dsl_enabled(DslLibrary::ActiveSupportTimeExt) {
             self.registry.add_method_def_if_missing(
                 "Time",
@@ -772,5 +1162,166 @@ impl<'a> InferenceEngine<'a> {
             );
             self.set_collecting_concern_included(prev);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn array(elem: Type) -> Type {
+        Type::Array(Some(Box::new(elem)))
+    }
+
+    fn hash(key: Type, value: Type) -> Type {
+        Type::Hash(Some(Box::new(key)), Some(Box::new(value)))
+    }
+
+    fn field(key: RecordKey, value: Type) -> RecordField {
+        RecordField {
+            key,
+            value,
+            optional: false,
+        }
+    }
+
+    #[test]
+    fn positional_accessors_are_optional_on_arrays_and_exact_on_tuples() {
+        assert_eq!(
+            array_extension_return("second", Type::Integer, None),
+            Some(Type::Integer.union_with(Type::Nil))
+        );
+        assert_eq!(
+            array_extension_return("third", Type::Untyped, None),
+            Some(Type::Untyped)
+        );
+        let tuple = [Type::LiteralInteger(1), Type::String];
+        assert_eq!(
+            array_extension_return("second", Type::Untyped, Some(&tuple)),
+            Some(Type::String)
+        );
+        assert_eq!(
+            array_extension_return("third_to_last", Type::Untyped, Some(&tuple)),
+            Some(Type::Nil)
+        );
+    }
+
+    #[test]
+    fn including_flattens_one_level_of_array_arguments() {
+        let receiver = array(Type::Integer);
+        assert_eq!(
+            array_call_return(&receiver, "including", &[array(Type::String)]),
+            Some(array(Type::Integer.union_with(Type::String)))
+        );
+    }
+
+    #[test]
+    fn in_groups_pads_with_fill_value_unless_false() {
+        let receiver = array(Type::Integer);
+        let groups = |elem: Type| Some(array(array(elem)));
+        assert_eq!(
+            array_call_return(&receiver, "in_groups_of", &[Type::Integer]),
+            groups(Type::Integer.union_with(Type::Nil))
+        );
+        assert_eq!(
+            array_call_return(&receiver, "in_groups", &[Type::Integer, Type::False]),
+            groups(Type::Integer)
+        );
+        assert_eq!(
+            array_call_return(&receiver, "in_groups", &[Type::Integer, Type::String]),
+            groups(Type::Integer.union_with(Type::String))
+        );
+    }
+
+    #[test]
+    fn symbolize_keys_only_converts_string_keys() {
+        let receiver = hash(Type::String.union_with(Type::Integer), Type::Float);
+        assert_eq!(
+            hash_extension_return(&receiver, "symbolize_keys"),
+            Some(hash(Type::Symbol.union_with(Type::Integer), Type::Float))
+        );
+    }
+
+    #[test]
+    fn stringify_keys_renames_record_keys() {
+        let receiver = Type::Record(vec![field(RecordKey::Symbol("a".into()), Type::Integer)]);
+        assert_eq!(
+            hash_extension_return(&receiver, "stringify_keys"),
+            Some(Type::Record(vec![field(
+                RecordKey::String("a".into()),
+                Type::Integer
+            )]))
+        );
+    }
+
+    #[test]
+    fn colliding_record_keys_widen_to_a_hash() {
+        let receiver = Type::Record(vec![
+            field(RecordKey::Symbol("a".into()), Type::Integer),
+            field(RecordKey::String("a".into()), Type::String),
+        ]);
+        assert_eq!(
+            hash_extension_return(&receiver, "symbolize_keys"),
+            Some(hash(
+                Type::LiteralSymbol(Sym::new("a")),
+                Type::Integer.union_with(Type::String)
+            ))
+        );
+    }
+
+    #[test]
+    fn deep_stringify_keys_rewrites_nested_hashes_in_arrays() {
+        let receiver = hash(Type::Symbol, array(hash(Type::Symbol, Type::Integer)));
+        assert_eq!(
+            hash_extension_return(&receiver, "deep_stringify_keys"),
+            Some(hash(Type::String, array(hash(Type::String, Type::Integer))))
+        );
+    }
+
+    #[test]
+    fn class_declarations_parse_as_rbs() {
+        for declaration in CLASS_DECLARATIONS {
+            assert!(crate::rbs::import::rbs_parses(declaration.rbs));
+        }
+    }
+
+    #[test]
+    fn indifferent_access_stringifies_keys_and_converts_nested_hashes() {
+        let receiver = Type::Record(vec![field(
+            RecordKey::Symbol("a".into()),
+            hash(Type::Symbol, Type::Integer),
+        )]);
+        let indifferent = |key: Type, value: Type| Type::Generic {
+            base: Sym::new(HASH_WITH_INDIFFERENT_ACCESS),
+            args: vec![key, value].into(),
+        };
+        assert_eq!(
+            hash_extension_return(&receiver, "with_indifferent_access"),
+            Some(indifferent(
+                Type::String,
+                indifferent(Type::String, Type::Integer)
+            ))
+        );
+    }
+
+    #[test]
+    fn string_date_conversions_are_nil_for_blank_strings() {
+        let date = Type::Class(Sym::new("Date"));
+        assert_eq!(
+            date_conversion_return(&Type::String, "to_date"),
+            date.clone().union_with(Type::Nil)
+        );
+        assert_eq!(
+            date_conversion_return(&Type::LiteralString(" ".into()), "to_date"),
+            Type::Nil
+        );
+        assert_eq!(
+            date_conversion_return(&Type::LiteralString("2024-01-01".into()), "to_date"),
+            date
+        );
+        assert_eq!(
+            date_conversion_return(&Type::LiteralString("2024-01-01".into()), "to_time"),
+            Type::Class(Sym::new("Time")).union_with(Type::Nil)
+        );
     }
 }

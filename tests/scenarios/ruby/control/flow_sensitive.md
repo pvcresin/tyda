@@ -1577,10 +1577,6 @@ end
 
 ## Regexp named capture binds local in the matched branch
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1655,10 +1651,6 @@ end
 ```
 
 ## Literal predicate return narrows union member behind a guard
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1765,10 +1757,6 @@ end
 
 ## Chained attr_reader guards keep earlier narrowing
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1805,10 +1793,6 @@ end
 
 ## Chained AND narrows a later helper call
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1834,10 +1818,6 @@ end
 ```
 
 ## AND of two is_a? narrows helper args
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1889,10 +1869,6 @@ end
 
 ## Negated is_a? narrows the helper
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1916,10 +1892,6 @@ end
 ```
 
 ## Negated OR is_a? narrows both helpers
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -2109,10 +2081,6 @@ end
 ```
 
 ## A memoized reader stays narrowed through case branches
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -2372,10 +2340,6 @@ end
 ```
 
 ## Source overrides remain authoritative for closed hash predicates
-
-```yaml
-known_issue: true
-```
 
 ### update
 

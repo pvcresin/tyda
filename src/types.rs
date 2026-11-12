@@ -1,6 +1,9 @@
 use std::fmt;
 use std::sync::Arc;
 
+mod splat;
+pub use splat::{SplatElements, SplatToA};
+
 pub use crate::sym::Sym;
 
 pub type SharedPath = Arc<str>;
@@ -112,11 +115,15 @@ pub enum Type {
     Proc {
         return_type: Box<Type>,
         param_count: usize,
+        // Source literals bind call arguments through a side table; ignored by equality.
+        literal: Option<ProcLiteralId>,
     },
     Tuple(Vec<Type>),
     TruthyProjection(Box<Type>),
     FalsyProjection(Box<Type>),
     NonNilProjection(Box<Type>),
+    // The element type of `[*a, *b, ...]` over the parts of the inner `Tuple`, waiting for a part known only later.
+    SplatRef(Box<Type>),
     // `args` is stored as `Box<[Type]>` rather than `Vec` for a narrower slot.
     Generic {
         base: Sym,
@@ -175,7 +182,8 @@ impl Type {
             }
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => SLOT + inner.deep_extra_bytes(),
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => SLOT + inner.deep_extra_bytes(),
             Type::Proc { return_type, .. } => SLOT + return_type.deep_extra_bytes(),
             _ => 0,
         }
@@ -285,7 +293,8 @@ impl Type {
             | Type::DeferredSafeNavigation(..)
             | Type::BlockReturnRef
             | Type::IvarRef(_)
-            | Type::GlobalVariableRef(_) => true,
+            | Type::GlobalVariableRef(_)
+            | Type::SplatRef(_) => true,
             Type::Union(parts) | Type::Intersection(parts) => {
                 parts.iter().any(Self::contains_deferred_receiver_ref)
             }
@@ -395,15 +404,18 @@ impl PartialEq for Type {
             }
             (Type::TruthyProjection(t1), Type::TruthyProjection(t2))
             | (Type::FalsyProjection(t1), Type::FalsyProjection(t2))
-            | (Type::NonNilProjection(t1), Type::NonNilProjection(t2)) => t1 == t2,
+            | (Type::NonNilProjection(t1), Type::NonNilProjection(t2))
+            | (Type::SplatRef(t1), Type::SplatRef(t2)) => t1 == t2,
             (
                 Type::Proc {
                     return_type: r1,
                     param_count: p1,
+                    ..
                 },
                 Type::Proc {
                     return_type: r2,
                     param_count: p2,
+                    ..
                 },
             ) => p1 == p2 && r1 == r2,
             (Type::Generic { base: b1, args: a1 }, Type::Generic { base: b2, args: a2 }) => {
@@ -468,10 +480,12 @@ impl std::hash::Hash for Type {
             }
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => inner.hash(state),
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => inner.hash(state),
             Type::Proc {
                 return_type,
                 param_count,
+                ..
             } => {
                 return_type.hash(state);
                 param_count.hash(state);
@@ -542,6 +556,7 @@ impl Type {
             Type::TruthyProjection(_) => 40,
             Type::FalsyProjection(_) => 41,
             Type::NonNilProjection(_) => 43,
+            Type::SplatRef(_) => 44,
             Type::SelfType => 31,
             Type::InstanceType => 38,
             Type::Proc { .. } => 32,
@@ -603,15 +618,18 @@ impl Type {
             }
             (Type::TruthyProjection(t1), Type::TruthyProjection(t2))
             | (Type::FalsyProjection(t1), Type::FalsyProjection(t2))
-            | (Type::NonNilProjection(t1), Type::NonNilProjection(t2)) => t1.cmp(t2),
+            | (Type::NonNilProjection(t1), Type::NonNilProjection(t2))
+            | (Type::SplatRef(t1), Type::SplatRef(t2)) => t1.cmp(t2),
             (
                 Type::Proc {
                     return_type: a,
                     param_count: pa,
+                    ..
                 },
                 Type::Proc {
                     return_type: b,
                     param_count: pb,
+                    ..
                 },
             ) => a.cmp(b).then(pa.cmp(pb)),
             (Type::Tuple(a), Type::Tuple(b)) => a.cmp(b),
@@ -674,9 +692,11 @@ impl Type {
             Type::Proc {
                 return_type,
                 param_count,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(return_type.replace_self_type(self_type)),
                 param_count: *param_count,
+                literal: *literal,
             },
             Type::TruthyProjection(inner) => {
                 Type::TruthyProjection(Box::new(inner.replace_self_type(self_type)))
@@ -687,6 +707,7 @@ impl Type {
             Type::NonNilProjection(inner) => {
                 Type::NonNilProjection(Box::new(inner.replace_self_type(self_type)))
             }
+            Type::SplatRef(inner) => Type::SplatRef(Box::new(inner.replace_self_type(self_type))),
             Type::DeferredSafeNavigation(receiver, result) => Type::DeferredSafeNavigation(
                 Box::new(receiver.replace_self_type(self_type)),
                 Box::new(result.replace_self_type(self_type)),
@@ -724,7 +745,8 @@ impl Type {
             Type::Record(fields) => fields.iter().any(|f| f.value.contains_instance_type()),
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => inner.contains_instance_type(),
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => inner.contains_instance_type(),
             Type::DeferredSafeNavigation(receiver, result) => {
                 receiver.contains_instance_type() || result.contains_instance_type()
             }
@@ -774,9 +796,11 @@ impl Type {
             Type::Proc {
                 return_type,
                 param_count,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(return_type.replace_instance_type(instance_type)),
                 param_count: *param_count,
+                literal: *literal,
             },
             Type::TruthyProjection(inner) => {
                 Type::TruthyProjection(Box::new(inner.replace_instance_type(instance_type)))
@@ -786,6 +810,9 @@ impl Type {
             }
             Type::NonNilProjection(inner) => {
                 Type::NonNilProjection(Box::new(inner.replace_instance_type(instance_type)))
+            }
+            Type::SplatRef(inner) => {
+                Type::SplatRef(Box::new(inner.replace_instance_type(instance_type)))
             }
             Type::DeferredSafeNavigation(receiver, result) => Type::DeferredSafeNavigation(
                 Box::new(receiver.replace_instance_type(instance_type)),
@@ -1392,6 +1419,7 @@ impl Type {
                 | Type::TruthyProjection(_)
                 | Type::FalsyProjection(_)
                 | Type::NonNilProjection(_)
+                | Type::SplatRef(_)
         )
     }
 }
@@ -1417,7 +1445,8 @@ impl fmt::Display for Type {
                 write!(f, "{}", parts.join(" & "))
             }
             Type::LiteralInteger(v) => write!(f, "{v}"),
-            Type::LiteralFloat(v) => write!(f, "{v}"),
+            // RBS has no float literal types.
+            Type::LiteralFloat(_) => write!(f, "Float"),
             Type::LiteralString(v) => {
                 write!(f, "\"{}\"", escape_rbs_string_literal(v))
             }
@@ -1459,7 +1488,11 @@ impl fmt::Display for Type {
                     && non_nil.len() == 1
                     && matches!(non_nil[0], Type::True | Type::False)
                 {
-                    write!(f, "{} | nil", non_nil[0])
+                    if f.alternate() {
+                        write!(f, "({} | nil)", non_nil[0])
+                    } else {
+                        write!(f, "{} | nil", non_nil[0])
+                    }
                 } else if has_nil && !non_nil.is_empty() && !absorbs_nil {
                     let non_nil_parts = Self::dedup_rendered_preserve_order(
                         &non_nil.iter().copied().cloned().collect::<Vec<_>>(),
@@ -1472,11 +1505,11 @@ impl fmt::Display for Type {
                         write!(f, "{}?", non_nil_parts[0])
                     }
                 } else {
-                    let needs_parens = types.len() > 1;
+                    let parts = Self::dedup_rendered_preserve_order(types);
+                    let needs_parens = parts.len() > 1;
                     if needs_parens && f.alternate() {
                         write!(f, "(")?;
                     }
-                    let parts = Self::dedup_rendered_preserve_order(types);
                     write!(f, "{}", parts.join(" | "))?;
                     if needs_parens && f.alternate() {
                         write!(f, ")")?;
@@ -1500,6 +1533,7 @@ impl fmt::Display for Type {
             Type::PatternKeyRestRef(_, _) => write!(f, "untyped"),
             Type::ReceiverMethodRef(_, _) => write!(f, "untyped"),
             Type::DeferredSafeNavigation(_, _) => write!(f, "untyped"),
+            Type::SplatRef(inner) => write!(f, "{}", Type::splat_fallback(inner)),
             Type::TruthyProjection(_) | Type::FalsyProjection(_) | Type::NonNilProjection(_) => {
                 write!(f, "untyped")
             }
@@ -1543,6 +1577,19 @@ pub enum ParamKind {
     KeywordOptional,
     DoubleRest,
     Block,
+}
+
+/// Identifies a source proc literal within one analysis: the analysis's nonce in the high bits
+/// and the literal's start offset in the low bits. Ids from other analyses never match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProcLiteralId(std::num::NonZeroU64);
+
+impl ProcLiteralId {
+    pub fn new(analysis_nonce: std::num::NonZeroU32, offset: usize) -> Self {
+        let offset = u32::try_from(offset).unwrap_or(u32::MAX);
+        let packed = (u64::from(analysis_nonce.get()) << 32) | u64::from(offset);
+        Self(std::num::NonZeroU64::new(packed).unwrap_or(std::num::NonZeroU64::MIN))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1609,8 +1656,29 @@ pub struct Param {
 pub struct ConstantSig {
     pub name: std::string::String,
     pub const_type: Type,
+    /// Set when the constant names a class/module object and renders as an RBS alias declaration.
+    pub alias_kind: Option<NamespaceAliasKind>,
     pub loc: Option<SourceLocation>,
     pub file_path: Option<std::string::String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NamespaceAliasKind {
+    Class,
+    Module,
+}
+
+impl NamespaceAliasKind {
+    pub fn of(is_module: bool) -> Self {
+        if is_module { Self::Module } else { Self::Class }
+    }
+
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::Class => "class",
+            Self::Module => "module",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

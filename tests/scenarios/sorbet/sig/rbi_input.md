@@ -161,10 +161,6 @@ end
 
 ## T.any type from RBI definition
 
-```yaml
-known_issue: true
-```
-
 ```rbi
 class Parser
   sig { params(input: String).returns(T.any(Integer, Float)) }
@@ -1026,10 +1022,6 @@ end
 ```
 
 ## RBI T.all intersection type
-
-```yaml
-known_issue: true
-```
 
 ```rbi
 class Validator

@@ -20,6 +20,9 @@ pub(crate) fn stdlib_receiver_method_return(receiver: &Type, method_name: &str) 
             elem.as_deref().cloned().unwrap_or(Type::Untyped),
         ),
         Type::Tuple(elems) => array_method_return(method_name, Type::from_type_vec(elems.clone())),
+        Type::Class(name) if matches!(name.as_str(), "Time" | "Date" | "DateTime") => {
+            time_method_return(method_name)
+        }
         Type::Hash(key, value) => hash_method_return(
             method_name,
             key.as_deref().cloned().unwrap_or(Type::Untyped),
@@ -81,6 +84,16 @@ fn float_method_return(method_name: &str) -> Option<Type> {
     }
 }
 
+fn time_method_return(method_name: &str) -> Option<Type> {
+    match method_name {
+        "iso8601" | "xmlschema" | "strftime" | "httpdate" | "rfc3339" | "rfc2822" | "to_s"
+        | "inspect" => Some(Type::String),
+        "year" | "month" | "mon" | "day" | "mday" | "wday" | "yday" => Some(Type::Integer),
+        "<" | "<=" | ">" | ">=" | "between?" => Some(Type::Bool),
+        _ => None,
+    }
+}
+
 fn array_method_return(method_name: &str, elem: Type) -> Option<Type> {
     match method_name {
         "sort" | "reverse" | "shuffle" | "uniq" | "rotate" | "compact" | "to_a" => {
@@ -120,6 +133,15 @@ mod tests {
         assert_eq!(
             stdlib_receiver_method_return(&arr, "sort"),
             Some(Type::Array(Some(Box::new(Type::Integer))))
+        );
+    }
+
+    #[test]
+    fn date_formatting_is_string() {
+        let date = Type::Class(crate::types::Sym::new("Date"));
+        assert_eq!(
+            stdlib_receiver_method_return(&date, "iso8601"),
+            Some(Type::String)
         );
     }
 

@@ -40,10 +40,6 @@ end
 
 ## `return true if cond` returns true or nil
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -165,10 +161,6 @@ end
 
 ## Block-internal return joins the enclosing method return union
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -192,10 +184,6 @@ end
 ```
 
 ## Multi-value return packs a tuple into the method union
-
-```yaml
-known_issue: true
-```
 
 ### update
 

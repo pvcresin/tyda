@@ -12,29 +12,52 @@ pub fn classify(table_name: &str) -> String {
     flat_classify_with(table_name, &ProjectInflector::default())
 }
 
-pub fn classify_with_known_classes(name: &str, known_classes: &[String]) -> String {
-    classify_with_inflector_and_known_classes(name, &ProjectInflector::default(), known_classes)
+pub fn classify_with_known_classes(name: &str, is_known: &dyn Fn(&str) -> bool) -> String {
+    classify_with_inflector_and_known_classes(name, &ProjectInflector::default(), is_known)
 }
 
 pub fn classify_with_project_known_classes(
     root: &Path,
     name: &str,
-    known_classes: &[String],
+    is_known: &dyn Fn(&str) -> bool,
 ) -> String {
     let inflector = load_project_inflector(root);
     let flat = flat_classify_with(name, &inflector);
     let Some(namespaced) = namespaced_classify_candidate_with(name, &inflector) else {
         return flat;
     };
-    if known_classes
-        .iter()
-        .any(|candidate| candidate == &namespaced)
-        || model_path_exists(root, &namespaced)
-    {
+    if is_known(&namespaced) || model_path_exists(root, &namespaced) {
         namespaced
     } else {
         flat
     }
+}
+
+/// Rails' `compute_type`: a relative class name resolves from the owner's namespace outward
+/// (`Admin::Report` + `Entry` tries `Admin::Report::Entry`, `Admin::Entry`, then `Entry`).
+pub fn resolve_class_name_from_owner(
+    owner: &str,
+    name: &str,
+    is_known: &dyn Fn(&str) -> bool,
+) -> String {
+    if let Some(absolute) = name.strip_prefix("::") {
+        return absolute.to_string();
+    }
+    let mut namespace = owner;
+    loop {
+        let candidate = format!("{namespace}::{name}");
+        if is_known(&candidate) {
+            return candidate;
+        }
+        match namespace.rsplit_once("::") {
+            Some((outer, _)) => namespace = outer,
+            None => return name.to_string(),
+        }
+    }
+}
+
+pub fn model_file_exists(root: &Path, class_name: &str) -> bool {
+    model_path_exists(root, class_name)
 }
 
 pub fn resolve_model_class_name(root: &Path, table_name: &str) -> String {
@@ -89,46 +112,101 @@ pub fn singularize_with_project(root: &Path, word: &str) -> String {
     singularize_with(word, &inflector)
 }
 
-fn singularize_with(word: &str, inflector: &ProjectInflector) -> String {
+pub(crate) fn singularize_with(word: &str, inflector: &ProjectInflector) -> String {
     if let Some(irregular) = inflector.irregular_singulars.get(word) {
         return irregular.clone();
     }
-    if word.ends_with("ies") && word.len() > 3 {
-        format!("{}y", &word[..word.len() - 3])
-    } else if word.ends_with("sses") {
-        word[..word.len() - 2].to_string()
-    } else if word.ends_with("ves") && word.len() > 3 {
-        format!("{}f", &word[..word.len() - 3])
-    } else if word.ends_with("ices") && word.len() > 4 {
-        format!("{}ex", &word[..word.len() - 4])
-    } else if (word.ends_with("ses") && word.len() > 3)
-        || (word.ends_with("xes") && word.len() > 3)
-        || word.ends_with("ches")
-        || word.ends_with("shes")
-    {
-        word[..word.len() - 2].to_string()
-    } else if word.ends_with('s') && !word.ends_with("ss") && word.len() > 1 {
-        word[..word.len() - 1].to_string()
-    } else {
-        word.to_string()
+    // ActiveSupport's default singular rules, most specific first.
+    let stem = |suffix: &str| &word[..word.len() - suffix.len()];
+    let ends_with_any = |stems: &[&str], suffix: &str| {
+        word.strip_suffix(suffix)
+            .is_some_and(|rest| stems.iter().any(|stem| rest.ends_with(stem)))
+    };
+    if word.len() <= 1 || !word.ends_with('s') || word.ends_with("ss") {
+        return word.to_string();
     }
+    if word.ends_with("movies") || word.ends_with("databases") {
+        return stem("s").to_string();
+    }
+    if word.ends_with("ies") && word.len() > 3 {
+        return format!("{}y", stem("ies"));
+    }
+    if ends_with_any(&["vert", "ind"], "ices") {
+        return format!("{}ex", stem("ices"));
+    }
+    if word.ends_with("matrices") {
+        return format!("{}ix", stem("ices"));
+    }
+    if ends_with_any(&["wi", "kni", "li"], "ves") {
+        return format!("{}fe", stem("ves"));
+    }
+    if ends_with_any(&["l", "r", "ea"], "ves") && !word.ends_with("hives") {
+        return format!("{}f", stem("ves"));
+    }
+    if ends_with_any(
+        &[
+            "analy", "ba", "diagno", "parenthe", "progno", "synop", "the",
+        ],
+        "ses",
+    ) {
+        return format!("{}sis", stem("ses"));
+    }
+    if ends_with_any(
+        &["x", "ch", "sh", "ss", "alias", "status", "bus", "o"],
+        "es",
+    ) {
+        return stem("es").to_string();
+    }
+    stem("s").to_string()
+}
+
+/// Which attribute API casts a type keyword. Active Record makes `datetime` attributes time
+/// zone aware (`time_zone_aware_attributes`), while `ActiveModel::Type::DateTime` casts to `Time`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CastTypeOwner {
+    ActiveRecord,
+    ActiveModel,
 }
 
 /// Canonical column-type map shared by schema / structure / DSL. `None` = unmapped (e.g. a custom cast type).
 pub fn column_type_keyword_to_type(col_type: &str) -> Option<crate::types::Type> {
+    cast_type_keyword_to_type(col_type, CastTypeOwner::ActiveRecord)
+}
+
+pub fn cast_type_keyword_to_type(
+    col_type: &str,
+    owner: CastTypeOwner,
+) -> Option<crate::types::Type> {
     use crate::types::Type;
+    let class = |name: &str| Type::Class(Sym::new(name));
+    let range = |elem: Type| Type::Generic {
+        base: Sym::new("Range"),
+        args: vec![elem].into(),
+    };
+    let time_with_zone = || match owner {
+        CastTypeOwner::ActiveRecord => class("ActiveSupport::TimeWithZone"),
+        CastTypeOwner::ActiveModel => class("Time"),
+    };
+    // Built-in ActiveModel types plus the PostgreSQL / MySQL native column types Rails maps.
     Some(match col_type {
-        "string" | "text" | "citext" | "uuid" | "binary" | "immutable_string" => Type::String,
-        "integer" | "bigint" | "smallint" | "big_integer" => Type::Integer,
-        "float" => Type::Float,
-        "decimal" | "numeric" => Type::Class(Sym::new("BigDecimal")),
+        "string" | "text" | "citext" | "uuid" | "binary" | "immutable_string" | "blob"
+        | "tinyblob" | "mediumblob" | "longblob" | "tinytext" | "mediumtext" | "longtext"
+        | "macaddr" | "xml" | "tsvector" | "ltree" | "bit" | "bit_varying" | "enum" | "line"
+        | "lseg" | "box" | "path" | "polygon" | "circle" => Type::String,
+        "integer" | "bigint" | "smallint" | "big_integer" | "primary_key" | "serial"
+        | "bigserial" | "oid" | "unsigned_integer" | "unsigned_bigint" => Type::Integer,
+        "float" | "unsigned_float" => Type::Float,
+        "decimal" | "numeric" | "money" | "unsigned_decimal" => class("BigDecimal"),
         "boolean" => Type::Bool,
-        "date" => Type::Class(Sym::new("Date")),
-        "datetime" | "timestamp" => Type::Union(vec![
-            Type::Class(Sym::new("DateTime")),
-            Type::Class(Sym::new("ActiveSupport::TimeWithZone")),
-        ]),
-        "time" => Type::Class(Sym::new("Time")),
+        "date" => class("Date"),
+        "datetime" | "timestamp" | "timestamptz" => time_with_zone(),
+        "time" => class("Time"),
+        "interval" => class("ActiveSupport::Duration"),
+        "inet" | "cidr" => class("IPAddr"),
+        "int4range" | "int8range" => range(Type::Integer),
+        "numrange" => range(class("BigDecimal")),
+        "daterange" => range(class("Date")),
+        "tsrange" | "tstzrange" => range(time_with_zone()),
         "json" | "jsonb" | "hstore" => Type::Untyped,
         _ => return None,
     })
@@ -149,16 +227,13 @@ fn flat_classify_with(table_name: &str, inflector: &ProjectInflector) -> String 
 fn classify_with_inflector_and_known_classes(
     name: &str,
     inflector: &ProjectInflector,
-    known_classes: &[String],
+    is_known: &dyn Fn(&str) -> bool,
 ) -> String {
     let flat = flat_classify_with(name, inflector);
     let Some(namespaced) = namespaced_classify_candidate_with(name, inflector) else {
         return flat;
     };
-    if known_classes
-        .iter()
-        .any(|candidate| candidate == &namespaced)
-    {
+    if is_known(&namespaced) {
         namespaced
     } else {
         flat
@@ -251,7 +326,7 @@ fn model_path_exists(root: &Path, class_name: &str) -> bool {
         .exists()
 }
 
-fn underscore(name: &str) -> String {
+pub(crate) fn underscore(name: &str) -> String {
     let mut out = String::new();
     for (idx, ch) in name.chars().enumerate() {
         if ch.is_uppercase() && idx > 0 {
@@ -284,6 +359,18 @@ mod tests {
         assert_eq!(singularize("buses"), "bus");
         assert_eq!(singularize("boxes"), "box");
         assert_eq!(singularize("matches"), "match");
+        assert_eq!(singularize("invoices"), "invoice");
+        assert_eq!(singularize("devices"), "device");
+        assert_eq!(singularize("indices"), "index");
+        assert_eq!(singularize("archives"), "archive");
+        assert_eq!(singularize("wolves"), "wolf");
+        assert_eq!(singularize("knives"), "knife");
+        assert_eq!(singularize("responses"), "response");
+        assert_eq!(singularize("databases"), "database");
+        assert_eq!(singularize("statuses"), "status");
+        assert_eq!(singularize("analyses"), "analysis");
+        assert_eq!(singularize("heroes"), "hero");
+        assert_eq!(singularize("movies"), "movie");
     }
 
     #[test]
@@ -301,10 +388,11 @@ mod tests {
         assert_eq!(column_type_to_type("date"), Type::Class(Sym::new("Date")));
         assert_eq!(
             column_type_to_type("datetime"),
-            Type::Union(vec![
-                Type::Class(Sym::new("DateTime")),
-                Type::Class(Sym::new("ActiveSupport::TimeWithZone")),
-            ])
+            Type::Class(Sym::new("ActiveSupport::TimeWithZone"))
+        );
+        assert_eq!(
+            cast_type_keyword_to_type("datetime", CastTypeOwner::ActiveModel),
+            Some(Type::Class(Sym::new("Time")))
         );
         // json/jsonb/hstore have no concrete type, so they're Untyped; unknown column types also degrade to Untyped.
         assert_eq!(column_type_to_type("jsonb"), Type::Untyped);
@@ -320,16 +408,47 @@ mod tests {
         assert_eq!(column_type_keyword_to_type("hstore"), Some(Type::Untyped));
         // A custom cast type not in the map is None (camelized on the DSL side).
         assert_eq!(column_type_keyword_to_type("account"), None);
-        assert_eq!(column_type_keyword_to_type("money"), None);
+        assert_eq!(column_type_keyword_to_type("encrypted_token"), None);
+        // PostgreSQL registers its native types (`money`, `interval`, `inet`) with the attribute API.
+        assert_eq!(
+            column_type_keyword_to_type("money"),
+            Some(Type::Class(Sym::new("BigDecimal")))
+        );
+        assert_eq!(column_type_keyword_to_type("serial"), Some(Type::Integer));
     }
 
     #[test]
     fn test_classify_with_known_classes_prefers_namespaced_model() {
-        let known = vec!["Admin::User".to_string(), "Post".to_string()];
+        let is_known = |name: &str| matches!(name, "Admin::User" | "Post");
         assert_eq!(
-            classify_with_known_classes("admin_user", &known),
+            classify_with_known_classes("admin_user", &is_known),
             "Admin::User"
         );
-        assert_eq!(classify_with_known_classes("post", &known), "Post");
+        assert_eq!(classify_with_known_classes("post", &is_known), "Post");
+    }
+
+    #[test]
+    fn resolve_class_name_from_owner_walks_namespaces_outward() {
+        let is_known = |name: &str| matches!(name, "Admin::Entry" | "Admin::Report::Note");
+        assert_eq!(
+            resolve_class_name_from_owner("Admin::Report", "Entry", &is_known),
+            "Admin::Entry"
+        );
+        assert_eq!(
+            resolve_class_name_from_owner("Admin::Report", "Note", &is_known),
+            "Admin::Report::Note"
+        );
+        assert_eq!(
+            resolve_class_name_from_owner("Admin::Report", "Post", &is_known),
+            "Post"
+        );
+        assert_eq!(
+            resolve_class_name_from_owner("Admin::Report", "::Entry", &is_known),
+            "Entry"
+        );
+        assert_eq!(
+            resolve_class_name_from_owner("Report", "Entry", &is_known),
+            "Entry"
+        );
     }
 }

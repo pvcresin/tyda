@@ -224,8 +224,11 @@ pub(in crate::inference) fn synthetic_method_return(
         | "number_with_delimiter"
         | "time_ago_in_words"
         | "pluralize"
-        | "truncate"
-        | "simple_format" => Type::String,
+        | "simple_format"
+        | "dom_id"
+        | "dom_class" => Type::String,
+        // `truncate(nil)` returns nil.
+        "truncate" => Type::String.union_with(Type::Nil),
         "session"
         | "cookies"
         | "headers"

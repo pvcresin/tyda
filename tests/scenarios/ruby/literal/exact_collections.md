@@ -252,10 +252,6 @@ end
 
 ## min and max on a non-empty tuple are never nil
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

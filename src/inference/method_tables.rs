@@ -21,12 +21,6 @@ pub const RAILS_HASH_IDENTITY_METHODS: &[&str] = &[
     "permit",
     "require",
     "expect",
-    "reverse_merge",
-    "symbolize_keys",
-    "stringify_keys",
-    "deep_symbolize_keys",
-    "deep_stringify_keys",
-    "with_indifferent_access",
     "to_unsafe_h",
     "to_unsafe_hash",
 ];

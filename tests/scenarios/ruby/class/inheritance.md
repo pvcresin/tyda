@@ -118,10 +118,6 @@ end
 
 ## Subclass can call parent predicate method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

@@ -153,10 +153,6 @@ end
 
 ## defined? global splits both branches
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

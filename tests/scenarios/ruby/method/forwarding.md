@@ -2,10 +2,6 @@
 
 ## Forward all args with ...
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -53,10 +49,6 @@ end
 ```
 
 ## Forward all parameter kinds
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -128,7 +120,7 @@ def anon_block(&) = other(&)
 
 ```rbs
 class Object < BasicObject
-  def anon_block: (?untyped &block) -> untyped
+  def anon_block: () ?{ (?) -> untyped } -> untyped
 end
 ```
 
@@ -192,10 +184,6 @@ end
 
 ## lead arg + `...` forwarding
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -213,10 +201,6 @@ end
 ```
 
 ## literal lead arg + `...` forwarding
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -237,10 +221,6 @@ end
 ```
 
 ## Forward all args to a defined method resolves its return
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -267,10 +247,6 @@ end
 
 ## Forward all args distributes the first positional to the callee
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -295,10 +271,6 @@ end
 ```
 
 ## Forwarding prepends an extra positional
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -326,10 +298,6 @@ end
 
 ## Literal lead arg before forwarded args stays out of the callee rest
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -349,10 +317,6 @@ end
 ```
 
 ## Optional param before forwarded args keeps the callee rest type
-
-```yaml
-known_issue: true
-```
 
 ### update
 

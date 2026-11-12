@@ -206,65 +206,69 @@ fn positional_param_names(def_node: &ruby_prism::DefNode<'_>) -> Vec<Option<Vec<
 
 /// Outer or block-local names written anywhere in the block, including nested closures.
 pub(super) fn block_assigned_local_names(block: &ruby_prism::BlockNode<'_>) -> HashSet<String> {
-    #[derive(Default)]
-    struct Writes(HashSet<String>);
-
-    impl Writes {
-        fn add(&mut self, name: ruby_prism::ConstantId<'_>) {
-            self.0
-                .insert(String::from_utf8_lossy(name.as_slice()).to_string());
-        }
-    }
-
-    impl<'pr> Visit<'pr> for Writes {
-        fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
-        fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
-        fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
-        fn visit_singleton_class_node(&mut self, _node: &ruby_prism::SingletonClassNode<'pr>) {}
-
-        fn visit_local_variable_write_node(
-            &mut self,
-            node: &ruby_prism::LocalVariableWriteNode<'pr>,
-        ) {
-            self.add(node.name());
-            ruby_prism::visit_local_variable_write_node(self, node);
-        }
-
-        fn visit_local_variable_or_write_node(
-            &mut self,
-            node: &ruby_prism::LocalVariableOrWriteNode<'pr>,
-        ) {
-            self.add(node.name());
-            ruby_prism::visit_local_variable_or_write_node(self, node);
-        }
-
-        fn visit_local_variable_and_write_node(
-            &mut self,
-            node: &ruby_prism::LocalVariableAndWriteNode<'pr>,
-        ) {
-            self.add(node.name());
-            ruby_prism::visit_local_variable_and_write_node(self, node);
-        }
-
-        fn visit_local_variable_operator_write_node(
-            &mut self,
-            node: &ruby_prism::LocalVariableOperatorWriteNode<'pr>,
-        ) {
-            self.add(node.name());
-            ruby_prism::visit_local_variable_operator_write_node(self, node);
-        }
-
-        fn visit_local_variable_target_node(
-            &mut self,
-            node: &ruby_prism::LocalVariableTargetNode<'pr>,
-        ) {
-            self.add(node.name());
-        }
-    }
-
-    let mut writes = Writes::default();
+    let mut writes = LocalWrites::default();
     writes.visit_block_node(block);
     writes.0
+}
+
+/// Local names written anywhere under `node`, including nested closures.
+pub(super) fn assigned_local_names(node: &Node<'_>) -> HashSet<String> {
+    let mut writes = LocalWrites::default();
+    writes.visit(node);
+    writes.0
+}
+
+#[derive(Default)]
+struct LocalWrites(HashSet<String>);
+
+impl LocalWrites {
+    fn add(&mut self, name: ruby_prism::ConstantId<'_>) {
+        self.0
+            .insert(String::from_utf8_lossy(name.as_slice()).to_string());
+    }
+}
+
+impl<'pr> Visit<'pr> for LocalWrites {
+    fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+    fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
+    fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
+    fn visit_singleton_class_node(&mut self, _node: &ruby_prism::SingletonClassNode<'pr>) {}
+
+    fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
+        self.add(node.name());
+        ruby_prism::visit_local_variable_write_node(self, node);
+    }
+
+    fn visit_local_variable_or_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableOrWriteNode<'pr>,
+    ) {
+        self.add(node.name());
+        ruby_prism::visit_local_variable_or_write_node(self, node);
+    }
+
+    fn visit_local_variable_and_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableAndWriteNode<'pr>,
+    ) {
+        self.add(node.name());
+        ruby_prism::visit_local_variable_and_write_node(self, node);
+    }
+
+    fn visit_local_variable_operator_write_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableOperatorWriteNode<'pr>,
+    ) {
+        self.add(node.name());
+        ruby_prism::visit_local_variable_operator_write_node(self, node);
+    }
+
+    fn visit_local_variable_target_node(
+        &mut self,
+        node: &ruby_prism::LocalVariableTargetNode<'pr>,
+    ) {
+        self.add(node.name());
+    }
 }
 
 fn strip_parentheses<'pr>(node: Node<'pr>) -> Node<'pr> {

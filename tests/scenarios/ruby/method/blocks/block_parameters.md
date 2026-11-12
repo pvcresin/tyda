@@ -356,10 +356,6 @@ end
 
 ## `break` in `each`
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -375,10 +371,6 @@ end
 ```
 
 ## `break` in `map`
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -860,10 +852,6 @@ end
 ```
 
 ## Yielded tuple splats into several block parameters of a source method
-
-```yaml
-known_issue: true
-```
 
 ### update
 

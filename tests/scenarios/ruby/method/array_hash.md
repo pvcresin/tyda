@@ -569,10 +569,6 @@ end
 
 ## Array#sample keeps element precision
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1738,10 +1734,6 @@ end
 
 ## Direct `[]=` call accepts a block argument
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -2505,10 +2497,6 @@ end
 
 ## Splat of an object uses its to_a tuple
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -2535,10 +2523,6 @@ end
 
 ## Splat of an object without to_a wraps the object
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -2562,10 +2546,6 @@ end
 
 ## Splat of an optional array drops nil
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -2586,10 +2566,6 @@ end
 ```
 
 ## Push of a splatted array keeps an open element count
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -2614,10 +2590,6 @@ end
 ```
 
 ## Start and length assignment adds the assigned elements, not the array
-
-```yaml
-known_issue: true
-```
 
 ### update
 

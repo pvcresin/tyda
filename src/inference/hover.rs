@@ -242,9 +242,9 @@ impl<'a> InferenceEngine<'a> {
         // Ancestor walks are memoized locally to this pass (a persistent memo could go stale while the replay registry is lazy-merging).
         let mut unknown_surface_cache: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
-        let mut ancestor_complete_cache: std::collections::HashMap<String, bool> =
+        let mut ancestor_complete_cache: std::collections::HashMap<(String, bool), bool> =
             std::collections::HashMap::new();
-        let mut union_surface_cache: std::collections::HashMap<String, bool> =
+        let mut union_surface_cache: std::collections::HashMap<(String, bool), bool> =
             std::collections::HashMap::new();
         let mut method_exists_cache: std::collections::HashMap<(Type, String), bool> =
             std::collections::HashMap::new();
@@ -394,17 +394,30 @@ impl<'a> InferenceEngine<'a> {
                     continue;
                 }
                 // Only report missing once the ancestor chain resolves to a real definition (framework bases only have a complete surface after the tapioca DSL RBI merge).
-                let complete = if let Some(cached) = ancestor_complete_cache.get(&owner) {
+                // Implicit-self calls in a class body (and its DSL blocks) run on the class object.
+                let singleton = matches!(resolved_receiver, Type::Singleton(_))
+                    || (snap.method_context.is_none() && owner == snap.class_context);
+                let cache_key = (owner.clone(), singleton);
+                let complete = if let Some(cached) = ancestor_complete_cache.get(&cache_key) {
                     *cached
                 } else {
                     self.ensure_class_available_with_ancestors(&owner, 0);
-                    let result = self
-                        .registry
-                        .method_surface_knowledge_complete(&owner, self.lazy_rbi_loader.is_some());
-                    ancestor_complete_cache.insert(owner.clone(), result);
+                    let generated = self.lazy_rbi_loader.is_some();
+                    let result = if singleton {
+                        self.registry
+                            .singleton_method_surface_knowledge_complete(&owner, generated)
+                    } else {
+                        self.registry
+                            .method_surface_knowledge_complete(&owner, generated)
+                    };
+                    ancestor_complete_cache.insert(cache_key, result);
                     result
                 };
-                if !complete {
+                if !complete
+                    || self
+                        .registry
+                        .method_may_be_runtime_attribute(&owner, &snap.name)
+                {
                     crate::diagnostics::record_gating_suppression(
                         crate::diagnostics::GatingReason::IncompleteAncestors,
                     );
@@ -1464,7 +1477,7 @@ impl<'a> InferenceEngine<'a> {
     fn union_member_missing_method_calls_for_snapshot(
         &mut self,
         snap: &HoverSnapshot,
-        surface_cache: &mut HashMap<String, bool>,
+        surface_cache: &mut HashMap<(String, bool), bool>,
     ) -> Option<Vec<UnresolvedMethodCall>> {
         let HoverTarget::MethodCall {
             receiver_type,
@@ -1535,7 +1548,14 @@ impl<'a> InferenceEngine<'a> {
             if Self::is_known_class_body_dsl_unresolved_call(snap, &unresolved_method)
                 || self.module_call_resolvable_via_includers(&unresolved_method, &snap.name)
                 || self.dsl_plugin_method_return(member, &snap.name).is_some()
-                || !self.member_surface_provably_complete_cached(&class, surface_cache)
+                || !self.member_surface_provably_complete_cached(
+                    &class,
+                    prefer_singleton,
+                    surface_cache,
+                )
+                || self
+                    .registry
+                    .method_may_be_runtime_attribute(&class, &snap.name)
                 || (!prefer_singleton
                     && class == snap.class_context
                     && self.any_subclass_defines_method(&class, &snap.name))
@@ -1565,7 +1585,11 @@ impl<'a> InferenceEngine<'a> {
         receiver
     }
 
-    fn member_surface_provably_complete(&mut self, class: &str) -> bool {
+    pub(super) fn member_surface_provably_complete(
+        &mut self,
+        class: &str,
+        singleton: bool,
+    ) -> bool {
         let owner = class.trim_scope_prefix();
         // These broad built-in types can stand in for dynamically extended receivers.
         if matches!(owner, "Object" | "Class" | "Module") {
@@ -1589,20 +1613,28 @@ impl<'a> InferenceEngine<'a> {
         }
         // The surface is only considered complete once the ancestor chain resolves to a real definition after lazy loading.
         self.ensure_class_available_with_ancestors(owner, 0);
-        self.registry
-            .method_surface_knowledge_complete(owner, self.lazy_rbi_loader.is_some())
+        let generated = self.lazy_rbi_loader.is_some();
+        if singleton {
+            self.registry
+                .singleton_method_surface_knowledge_complete(owner, generated)
+        } else {
+            self.registry
+                .method_surface_knowledge_complete(owner, generated)
+        }
     }
 
     fn member_surface_provably_complete_cached(
         &mut self,
         class: &str,
-        cache: &mut HashMap<String, bool>,
+        singleton: bool,
+        cache: &mut HashMap<(String, bool), bool>,
     ) -> bool {
-        if let Some(complete) = cache.get(class) {
+        let key = (class.to_string(), singleton);
+        if let Some(complete) = cache.get(&key) {
             return *complete;
         }
-        let complete = self.member_surface_provably_complete(class);
-        cache.insert(class.to_string(), complete);
+        let complete = self.member_surface_provably_complete(class, singleton);
+        cache.insert(key, complete);
         complete
     }
 
@@ -2134,7 +2166,9 @@ impl<'a> InferenceEngine<'a> {
             // An unknown interface whose required methods can't be looked up is unjudgeable.
             return ArgCompat::Unknown;
         }
-        if !self.member_surface_provably_complete(&actual_class) {
+        if !self
+            .member_surface_provably_complete(&actual_class, matches!(actual, Type::Singleton(_)))
+        {
             return ArgCompat::Unknown;
         }
         if required
@@ -2599,6 +2633,7 @@ impl<'a> InferenceEngine<'a> {
                 | Type::PatternRestRef(_)
                 | Type::PatternKeyRef(_, _)
                 | Type::PatternKeyRestRef(_, _)
+                | Type::SplatRef(_)
         )
     }
 
@@ -3600,10 +3635,15 @@ impl<'a> InferenceEngine<'a> {
             }
             // A bare call on a module is evaluated against the includer's surface; if that surface is unknowable, don't declare it missing.
             self.ensure_class_available_with_ancestors(includer, 0);
-            if !self
-                .registry
-                .method_surface_knowledge_complete(includer, self.lazy_rbi_loader.is_some())
-            {
+            let generated = self.lazy_rbi_loader.is_some();
+            let complete = if *prefer_singleton {
+                self.registry
+                    .singleton_method_surface_knowledge_complete(includer, generated)
+            } else {
+                self.registry
+                    .method_surface_knowledge_complete(includer, generated)
+            };
+            if !complete {
                 crate::diagnostics::record_gating_suppression(
                     crate::diagnostics::GatingReason::IncompleteAncestors,
                 );
@@ -4941,7 +4981,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(..)
             | Type::PatternTrailingRef(..)
             | Type::PatternKeyRef(..)
-            | Type::PatternKeyRestRef(..) => false,
+            | Type::PatternKeyRestRef(..)
+            | Type::SplatRef(..) => false,
             _ => true,
         }
     }
@@ -5012,7 +5053,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(receiver)
             | Type::PatternTrailingRef(receiver, _)
             | Type::PatternKeyRef(receiver, _)
-            | Type::PatternKeyRestRef(receiver, _) => Self::type_contains_type(receiver, target),
+            | Type::PatternKeyRestRef(receiver, _)
+            | Type::SplatRef(receiver) => Self::type_contains_type(receiver, target),
             _ => false,
         }
     }

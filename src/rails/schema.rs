@@ -1,13 +1,13 @@
 use crate::prism_compat::LocationExt;
 use crate::types::Sym;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ruby_prism::{Node, ParseResult};
 
 use super::inflector::{
     classify_with_project_known_classes, column_type_to_type, resolve_model_class_name,
 };
+use super::model_tables::ModelTableIndex;
 use crate::registry::{MethodDef, ParamInfo, TypeRegistry};
 use crate::types::{ParamKind, Type};
 
@@ -40,7 +40,7 @@ pub fn load_schema(root: &Path, registry: &mut TypeRegistry) {
         return;
     }
     let t = std::time::Instant::now();
-    let overrides = collect_table_name_overrides(root);
+    let overrides = ModelTableIndex::load(root);
     let overrides_ms = t.elapsed().as_secs_f64() * 1000.0;
     let t = std::time::Instant::now();
     let tables = if schema_path.exists() {
@@ -60,11 +60,9 @@ pub fn load_schema(root: &Path, registry: &mut TypeRegistry) {
     let t = std::time::Instant::now();
     for table in &tables {
         register_table_methods(table, registry);
-        if let Some(classes) = overrides.get(&table.table_name) {
-            for class in classes {
-                if class != &table.class_name {
-                    register_table_methods_as(class, table, registry);
-                }
+        for class in overrides.classes_for(&table.table_name) {
+            if class != table.class_name {
+                register_table_methods_as(class, table, registry);
             }
         }
     }
@@ -75,120 +73,6 @@ pub fn load_schema(root: &Path, registry: &mut TypeRegistry) {
             t.elapsed().as_secs_f64() * 1000.0,
         );
     }
-}
-
-/// Collects `self.table_name =` declarations, since inflection alone can't find namespaced + legacy tables.
-fn collect_table_name_overrides(root: &Path) -> HashMap<String, Vec<String>> {
-    let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    let mut files = Vec::new();
-    collect_model_files(&root.join("app").join("models"), &mut files);
-    for path in files {
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if !source.contains("table_name") {
-            continue;
-        }
-        let parse_result = ruby_prism::parse(source.as_bytes());
-        let mut namespace: Vec<String> = Vec::new();
-        collect_table_name_in_node(
-            &parse_result.node(),
-            &parse_result,
-            &mut namespace,
-            &mut map,
-        );
-    }
-    map
-}
-
-fn collect_model_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.filter_map(|entry| entry.ok()) {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_model_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rb") {
-            out.push(path);
-        }
-    }
-}
-
-fn collect_table_name_in_node(
-    node: &Node<'_>,
-    parse_result: &ParseResult<'_>,
-    namespace: &mut Vec<String>,
-    map: &mut HashMap<String, Vec<String>>,
-) {
-    match node {
-        Node::ProgramNode { .. } => {
-            let program = node.as_program_node().expect("must be ProgramNode");
-            for stmt in program.statements().body().iter() {
-                collect_table_name_in_node(&stmt, parse_result, namespace, map);
-            }
-        }
-        Node::StatementsNode { .. } => {
-            let stmts = node.as_statements_node().expect("must be StatementsNode");
-            for stmt in stmts.body().iter() {
-                collect_table_name_in_node(&stmt, parse_result, namespace, map);
-            }
-        }
-        Node::ModuleNode { .. } => {
-            let module_node = node.as_module_node().expect("must be ModuleNode");
-            let name = constant_path_text(&module_node.constant_path());
-            namespace.push(name);
-            if let Some(body) = module_node.body() {
-                collect_table_name_in_node(&body, parse_result, namespace, map);
-            }
-            namespace.pop();
-        }
-        Node::ClassNode { .. } => {
-            let class_node = node.as_class_node().expect("must be ClassNode");
-            let name = constant_path_text(&class_node.constant_path());
-            namespace.push(name);
-            if let Some(body) = class_node.body() {
-                collect_table_name_in_node(&body, parse_result, namespace, map);
-            }
-            namespace.pop();
-        }
-        Node::CallNode { .. } => {
-            let call = node.as_call_node().expect("must be CallNode");
-            if call.name().as_slice() != b"table_name=" {
-                return;
-            }
-            if namespace.is_empty() {
-                return;
-            }
-            let Some(args) = call.arguments() else {
-                return;
-            };
-            let Some(first) = args.arguments().iter().next() else {
-                return;
-            };
-            if let Some(table) = extract_string_value(&first, parse_result) {
-                let class_name = namespace.join("::");
-                let entry = map.entry(table).or_default();
-                if !entry.contains(&class_name) {
-                    entry.push(class_name);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn constant_path_text(node: &Node<'_>) -> String {
-    let text = match node {
-        Node::ConstantReadNode { .. } => {
-            let cr = node
-                .as_constant_read_node()
-                .expect("must be ConstantReadNode");
-            String::from_utf8_lossy(cr.name().as_slice()).to_string()
-        }
-        _ => String::from_utf8_lossy(node.location().as_slice()).to_string(),
-    };
-    text.trim().trim_start_matches("::").to_string()
 }
 
 fn parse_schema(source: &str, workspace_root: &Path) -> Vec<TableDef> {
@@ -209,7 +93,7 @@ fn parse_schema(source: &str, workspace_root: &Path) -> Vec<TableDef> {
 fn parse_structure_sql(
     source: &str,
     workspace_root: &Path,
-    table_name_overrides: &HashMap<String, Vec<String>>,
+    table_name_overrides: &ModelTableIndex,
 ) -> Vec<TableDef> {
     let mut tables = Vec::new();
     let mut current_table_name: Option<String> = None;
@@ -285,23 +169,9 @@ fn parse_create_table(
     let table_name = extract_string_value(&first_arg, parse_result)?;
     let class_name = resolve_model_class_name(root, &table_name);
 
-    let mut columns = vec![
-        ColumnDef {
-            name: "id".to_string(),
-            col_type: Type::Integer,
-            nullable: false,
-        },
-        ColumnDef {
-            name: "created_at".to_string(),
-            col_type: Type::Class(Sym::new("Time")),
-            nullable: false,
-        },
-        ColumnDef {
-            name: "updated_at".to_string(),
-            col_type: Type::Class(Sym::new("Time")),
-            nullable: false,
-        },
-    ];
+    let mut columns: Vec<ColumnDef> = implicit_primary_key(call, parse_result)
+        .into_iter()
+        .collect();
     let mut non_nullable_columns = Vec::new();
 
     if let Some(block_raw) = call.block()
@@ -351,6 +221,27 @@ fn parse_create_table(
         class_name,
         columns,
         associations,
+    })
+}
+
+/// `create_table` adds a bigint `id` unless `id: false`; `id: :uuid` / `primary_key:` change its type / name.
+fn implicit_primary_key(
+    call: &ruby_prism::CallNode<'_>,
+    parse_result: &ParseResult<'_>,
+) -> Option<ColumnDef> {
+    let col_type = match hash_option_node(call, "id", parse_result) {
+        None => Type::Integer,
+        Some(Node::FalseNode { .. }) => return None,
+        Some(node) => extract_string_value(&node, parse_result)
+            .map_or(Type::Integer, |keyword| column_type_to_type(&keyword)),
+    };
+    let name = hash_option_node(call, "primary_key", parse_result)
+        .and_then(|node| extract_string_value(&node, parse_result))
+        .unwrap_or_else(|| "id".to_string());
+    Some(ColumnDef {
+        name,
+        col_type,
+        nullable: false,
     })
 }
 
@@ -425,7 +316,9 @@ fn parse_structure_column_line(line: &str) -> Option<ColumnDef> {
             || lower.starts_with("check ")
             || lower.starts_with("exclude ")
             || lower.starts_with("like ")
-            || lower.starts_with("key ")
+            // MySQL `KEY idx (col)` is an index; `key text NOT NULL` is a column named `key`.
+            || (lower.starts_with("key ")
+                && structure_sql_canonical_keyword(&lower["key ".len()..]).is_none())
             || lower.starts_with("key(")
             || lower.starts_with("index ")
             || lower.starts_with("fulltext")
@@ -490,6 +383,12 @@ fn structure_sql_canonical_keyword(definition: &str) -> Option<&'static str> {
     if lower.starts_with("boolean") || lower.starts_with("bool") || lower.starts_with("tinyint(1)")
     {
         Some("boolean")
+    } else if lower.starts_with("interval") {
+        Some("interval")
+    } else if lower.starts_with("inet") || lower.starts_with("cidr") {
+        Some("inet")
+    } else if lower.starts_with("money") {
+        Some("money")
     } else if lower.starts_with("bigint")
         || lower.starts_with("integer")
         || lower.starts_with("int")
@@ -515,6 +414,11 @@ fn structure_sql_canonical_keyword(definition: &str) -> Option<&'static str> {
         || lower.starts_with("citext")
         || lower.starts_with("uuid")
         || lower.starts_with("bytea")
+        || lower.starts_with("macaddr")
+        || lower.starts_with("xml")
+        || lower.starts_with("tsvector")
+        || lower.starts_with("ltree")
+        || lower.starts_with("bit")
         || lower.starts_with("enum")
         || lower.starts_with("set(")
     {
@@ -573,6 +477,21 @@ fn parse_column_call(
     call: &ruby_prism::CallNode<'_>,
     parse_result: &ParseResult<'_>,
 ) -> Option<Vec<ColumnDef>> {
+    if col_type == "timestamps" {
+        // `t.timestamps` defaults to `null: false` since Rails 5.
+        let nullable = matches!(hash_option_bool(call, "null", parse_result), Some(true));
+        let col_type = column_type_to_type("datetime");
+        return Some(
+            ["created_at", "updated_at"]
+                .into_iter()
+                .map(|name| ColumnDef {
+                    name: name.to_string(),
+                    col_type: col_type.clone(),
+                    nullable,
+                })
+                .collect(),
+        );
+    }
     let args = call.arguments()?;
     let first_arg = args.arguments().iter().next()?;
     let col_name = extract_string_value(&first_arg, parse_result)?;
@@ -709,7 +628,7 @@ fn parse_schema_association_call(
 fn attach_structure_foreign_keys(
     source: &str,
     workspace_root: &Path,
-    table_name_overrides: &HashMap<String, Vec<String>>,
+    table_name_overrides: &ModelTableIndex,
     tables: &mut [TableDef],
 ) {
     let mut current_table: Option<String> = None;
@@ -758,12 +677,10 @@ fn attach_structure_foreign_keys(
 fn resolve_table_model_class_name(
     root: &Path,
     table_name: &str,
-    table_name_overrides: &HashMap<String, Vec<String>>,
+    table_name_overrides: &ModelTableIndex,
 ) -> String {
-    if let Some(classes) = table_name_overrides.get(table_name)
-        && let [class_name] = classes.as_slice()
-    {
-        return class_name.clone();
+    if let [class_name] = table_name_overrides.classes_for(table_name).as_slice() {
+        return class_name.to_string();
     }
     resolve_model_class_name(root, table_name)
 }
@@ -791,8 +708,7 @@ fn parse_structure_foreign_key_line(line: &str) -> Option<(String, String)> {
 }
 
 fn infer_association_target_class(root: &Path, current_class: &str, assoc_name: &str) -> String {
-    let known_classes = vec![current_class.to_string()];
-    classify_with_project_known_classes(root, assoc_name, &known_classes)
+    classify_with_project_known_classes(root, assoc_name, &|name| name == current_class)
 }
 
 fn register_table_methods(table: &TableDef, registry: &mut TypeRegistry) {
@@ -802,13 +718,18 @@ fn register_table_methods(table: &TableDef, registry: &mut TypeRegistry) {
 fn register_table_methods_as(owner: &str, table: &TableDef, registry: &mut TypeRegistry) {
     // The 15 dirty-tracking kinds per column are registered as a pattern; readers/writers/predicates are materialized (keeps RSS as a skeleton).
     let mut dirty_columns: Vec<(Sym, Type)> = Vec::with_capacity(table.columns.len());
+    let mut non_null_columns = Vec::new();
     for col in &table.columns {
         let accessor_type = nullable_type(&col.col_type, col.nullable);
         register_attribute_methods(owner, &col.name, accessor_type, registry);
         register_predicate_method(owner, &col.name, registry);
         dirty_columns.push((Sym::new(&col.name), col.col_type.clone()));
+        if !col.nullable {
+            non_null_columns.push(Sym::new(&col.name));
+        }
     }
     registry.register_dirty_pattern_columns(owner, dirty_columns);
+    registry.register_non_null_columns(owner, non_null_columns);
     for assoc in &table.associations {
         let assoc_type = nullable_type(&Type::Class(Sym::new(&assoc.target_class)), assoc.nullable);
         register_attribute_methods(owner, &assoc.name, assoc_type, registry);
@@ -1006,12 +927,17 @@ mod tests {
         assert_eq!(structure_sql_type_to_type("varchar(255)"), Type::String);
         assert_eq!(
             structure_sql_type_to_type("datetime(6)"),
-            Type::Union(vec![
-                Type::Class(Sym::new("DateTime")),
-                Type::Class(Sym::new("ActiveSupport::TimeWithZone")),
-            ])
+            Type::Class(Sym::new("ActiveSupport::TimeWithZone"))
         );
         assert_eq!(structure_sql_type_to_type("double"), Type::Float);
+        assert_eq!(
+            structure_sql_type_to_type("interval"),
+            Type::Class(Sym::new("ActiveSupport::Duration"))
+        );
+        assert_eq!(
+            structure_sql_type_to_type("inet"),
+            Type::Class(Sym::new("IPAddr"))
+        );
     }
 
     #[test]
@@ -1021,17 +947,14 @@ mod tests {
             structure_sql_type_to_type("numeric(10,2)"),
             Type::Class(Sym::new("BigDecimal"))
         );
-        // date maps to Date; timestamp maps to the datetime union.
+        // date maps to Date; timestamp maps to the time-zone-aware datetime type.
         assert_eq!(
             structure_sql_type_to_type("date"),
             Type::Class(Sym::new("Date"))
         );
         assert_eq!(
             structure_sql_type_to_type("timestamp(6) without time zone"),
-            Type::Union(vec![
-                Type::Class(Sym::new("DateTime")),
-                Type::Class(Sym::new("ActiveSupport::TimeWithZone")),
-            ])
+            Type::Class(Sym::new("ActiveSupport::TimeWithZone"))
         );
         // json / jsonb / hstore have no concrete type, so they degrade to Untyped.
         assert_eq!(structure_sql_type_to_type("jsonb"), Type::Untyped);
@@ -1086,6 +1009,59 @@ end
     }
 
     #[test]
+    fn create_table_options_shape_the_implicit_primary_key_and_timestamps() {
+        let schema = r#"
+create_table "jobs", id: :uuid do |t|
+  t.timestamps null: true
+end
+create_table "joins", id: false do |t|
+  t.string "name"
+end
+create_table "legacy", primary_key: "code", id: :string do |t|
+  t.timestamps
+end
+"#;
+        let tables = parse_schema(schema, Path::new("/nonexistent"));
+        let columns = |table: &str| -> Vec<(String, Type, bool)> {
+            tables
+                .iter()
+                .find(|def| def.table_name == table)
+                .expect("table")
+                .columns
+                .iter()
+                .map(|column| {
+                    (
+                        column.name.clone(),
+                        column.col_type.clone(),
+                        column.nullable,
+                    )
+                })
+                .collect()
+        };
+        let time = Type::Class(Sym::new("ActiveSupport::TimeWithZone"));
+        assert_eq!(
+            columns("jobs"),
+            vec![
+                ("id".to_string(), Type::String, false),
+                ("created_at".to_string(), time.clone(), true),
+                ("updated_at".to_string(), time.clone(), true),
+            ]
+        );
+        assert_eq!(
+            columns("joins"),
+            vec![("name".to_string(), Type::String, true)]
+        );
+        assert_eq!(
+            columns("legacy"),
+            vec![
+                ("code".to_string(), Type::String, false),
+                ("created_at".to_string(), time.clone(), false),
+                ("updated_at".to_string(), time, false),
+            ]
+        );
+    }
+
+    #[test]
     fn parse_structure_sql_handles_mysql_dialect() {
         // MySQL dump form: backtick names, `) ENGINE=...;` terminator, KEY lines.
         let sql = "DROP TABLE IF EXISTS `shop_users`;\n\
@@ -1096,7 +1072,8 @@ CREATE TABLE `shop_users` (\n\
   PRIMARY KEY (`id`),\n\
   KEY `index_shop_users_on_person_id` (`person_id`)\n\
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n";
-        let tables = parse_structure_sql(sql, Path::new("/nonexistent"), &HashMap::new());
+        let tables =
+            parse_structure_sql(sql, Path::new("/nonexistent"), &ModelTableIndex::default());
         assert_eq!(tables.len(), 1, "one table parsed");
         let names: Vec<&str> = tables[0].columns.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"person_id"), "person_id column: {names:?}");
@@ -1119,7 +1096,7 @@ CREATE TABLE `shop_users` (\n\
         )
         .expect("write model");
 
-        let overrides = collect_table_name_overrides(root.path());
+        let overrides = ModelTableIndex::load(root.path());
         let sql = "CREATE TABLE bulk_import_batch_trackers (\n  tracker_id bigint NOT NULL\n);\n\
 ALTER TABLE ONLY bulk_import_batch_trackers\n\
   ADD CONSTRAINT fk_tracker FOREIGN KEY (tracker_id) REFERENCES bulk_import_trackers(id);\n";

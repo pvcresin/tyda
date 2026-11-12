@@ -2,10 +2,6 @@
 
 ## Preserve unknown values resolved from an RBS union
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```rbs
@@ -58,10 +54,6 @@ end
 ```
 
 ## Preserve known boolean return values through deferred short-circuit calls
-
-```yaml
-known_issue: true
-```
 
 ```ruby
 class DeferredKnownBooleanShortCircuit

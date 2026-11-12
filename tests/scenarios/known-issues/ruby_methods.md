@@ -59,7 +59,7 @@ class Items
   include Enumerable
 
   def initialize: -> void
-  def each: (?untyped &block) -> untyped
+  def each: () ?{ (?) -> untyped } -> untyped
 end
 
 class ItemsUser

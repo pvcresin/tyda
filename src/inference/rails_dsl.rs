@@ -56,11 +56,14 @@ const ACTIVE_RECORD_RELATION_METHODS: &[&str] = &[
     "annotate",
     "select",
     "merge",
+    "strict_loading",
+    "with",
+    "in_order_of",
+    "invert_where",
+    "excluding",
+    "with_recursive",
+    "regroup",
 ];
-const ACTIVE_RECORD_RELATION_METHODS_RAILS_6_1: &[&str] = &["strict_loading"];
-const ACTIVE_RECORD_RELATION_METHODS_RAILS_7_0: &[&str] =
-    &["with", "in_order_of", "invert_where", "excluding"];
-const ACTIVE_RECORD_RELATION_METHODS_RAILS_7_1: &[&str] = &["with_recursive", "regroup"];
 const ACTIVE_RECORD_OPTIONAL_FINDER_METHODS: &[&str] = &["find_by", "first", "last", "take"];
 const ACTIVE_RECORD_REQUIRED_FINDER_METHODS: &[&str] =
     &["find_by!", "first!", "last!", "take!", "sole"];
@@ -96,7 +99,6 @@ const ACTIVE_RECORD_CALCULATION_METHODS: &[&str] = &[
     "count", "ids", "pick", "pluck", "sum", "average", "minimum", "maximum",
 ];
 const ACTIVE_RECORD_BOOL_RELATION_METHODS: &[&str] = &["exists?", "include?"];
-const ACTIVE_RECORD_WHERE_CHAIN_METHODS: &[&str] = &["not", "associated", "missing"];
 const ACTIVE_RECORD_BATCH_METHODS: &[&str] = &["find_each", "find_in_batches", "in_batches"];
 
 #[derive(Clone, Default)]
@@ -112,6 +114,16 @@ pub(super) struct AssociationOptions {
     pub(super) delegate_prefix: Option<String>,
     pub(super) delegate_prefix_target: bool,
 }
+
+const RAILS_NON_JOB_BASES: &[&str] = &[
+    "ActiveRecord::Base",
+    "ApplicationRecord",
+    "ActionController::Base",
+    "ActionController::API",
+    "ApplicationController",
+    "ActionMailer::Base",
+    "ApplicationMailer",
+];
 
 impl<'a> InferenceEngine<'a> {
     fn active_record_model_type(class_name: &str) -> Type {
@@ -194,67 +206,22 @@ impl<'a> InferenceEngine<'a> {
         Type::Union(vec![Self::active_record_model_type(class_name), Type::Nil])
     }
 
-    fn active_record_batch_method_return(class_name: &str, method_name: &str) -> Option<Type> {
-        match method_name {
-            "find_each" => Some(Type::Generic {
-                base: Sym::new("Enumerator"),
-                args: vec![Type::Class(Sym::new(class_name))].into(),
-            }),
-            "find_in_batches" => Some(Type::Generic {
-                base: Sym::new("Enumerator"),
-                args: vec![Type::Array(Some(Box::new(Type::Class(Sym::new(
-                    class_name,
-                )))))]
-                .into(),
-            }),
-            "in_batches" => Some(Type::Class(Sym::new(
-                "ActiveRecord::Batches::BatchEnumerator",
-            ))),
-            _ => None,
-        }
-    }
-
-    fn active_record_common_method_return(class_name: &str, method_name: &str) -> Option<Type> {
-        match method_name {
-            "any?" | "many?" | "none?" | "one?" => Some(Type::Bool),
-            "count" => Some(Type::Integer),
-            "ids" => Some(Type::Array(Some(Box::new(Type::Integer)))),
-            "pluck" => Some(Type::Array(Some(Box::new(Type::Untyped)))),
-            "pick" | "sum" | "average" | "minimum" | "maximum" => Some(Type::Untyped),
-            "find_by" | "first" | "last" | "take" => {
-                Some(Self::active_record_optional_model_type(class_name))
-            }
-            "second" | "third" | "fourth" | "fifth" | "forty_two" | "third_to_last"
-            | "second_to_last" => Some(Self::active_record_optional_model_type(class_name)),
-            "find_by!"
-            | "first!"
-            | "last!"
-            | "take!"
-            | "sole"
-            | "second!"
-            | "third!"
-            | "fourth!"
-            | "fifth!"
-            | "forty_two!"
-            | "third_to_last!"
-            | "second_to_last!"
-            | "find_sole_by"
-            | "find_or_create_by"
-            | "find_or_create_by!"
-            | "find_or_initialize_by"
-            | "create_or_find_by"
-            | "create_or_find_by!"
-            | "new"
-            | "build"
-            | "create"
-            | "create!"
-            | "find" => Some(Self::active_record_model_type(class_name)),
-            "exists?" | "include?" => Some(Type::Bool),
-            "find_each" | "find_in_batches" | "in_batches" => {
-                Self::active_record_batch_method_return(class_name, method_name)
-            }
-            _ => None,
-        }
+    /// Return type of a querying method delegated from the model class (`Post.where`).
+    fn active_record_model_class_method_return(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<Type> {
+        let method = crate::rails::relation_api::lookup(
+            method_name,
+            crate::rails::relation_api::Receiver::Model,
+        )?;
+        let model = Self::active_record_model_type(class_name);
+        Some(method.return_type(
+            || Self::active_record_relation_type(class_name),
+            &model,
+            || self.registry.active_record_primary_key_type(&model),
+        ))
     }
 
     pub(super) fn try_resolve_controller_respond_to(
@@ -291,13 +258,14 @@ impl<'a> InferenceEngine<'a> {
             .any(|method| method.name == "respond_to" && !method.rbs_file_source)
     }
 
+    /// Returns whether the class got Active Job helpers from a known job base.
     pub(super) fn register_rails_framework_methods(
         &mut self,
         class_name: &str,
         loc: SourceLocation,
-    ) {
+    ) -> bool {
         if !self.rails_feature_enabled() {
-            return;
+            return false;
         }
 
         if self.class_matches_or_inherits(class_name, &["ActionCable::Channel::Base"]) {
@@ -366,196 +334,15 @@ impl<'a> InferenceEngine<'a> {
                     },
                 );
             }
-
-            if self.rails_at_least(7, 0) {
-                for name in ["async", "load_async"] {
-                    self.registry.add_method_def_if_missing(
-                        class_name,
-                        MethodDef {
-                            name: Sym::new(name),
-                            param_infos: Vec::new(),
-                            raw_return_type: Type::SelfType,
-                            sorbet_modifier_comments: Vec::new(),
-                            rbs_annotated: true,
-                            rbs_inline_annotated: false,
-                            sig_annotated: false,
-                            attr_ivar: None,
-                            is_singleton: false,
-                            rbs_file_source: true,
-                            synthetic_dsl_source: false,
-                            rbs_method_types: Default::default(),
-                            extra_overloads: Vec::new(),
-                            loc: Some(loc),
-                        },
-                    );
-                }
-            }
-
-            if self.rails_at_least(7, 1) {
-                for (name, _param_names, param_infos, return_type) in [
-                    (
-                        "async_count",
-                        Vec::new(),
-                        Vec::new(),
-                        Type::Generic {
-                            base: Sym::new("ActiveRecord::Promise"),
-                            args: vec![Type::Integer].into(),
-                        },
-                    ),
-                    (
-                        "async_ids",
-                        Vec::new(),
-                        Vec::new(),
-                        Type::Generic {
-                            base: Sym::new("ActiveRecord::Promise"),
-                            args: vec![Type::Array(Some(Box::new(Type::Integer)))].into(),
-                        },
-                    ),
-                    (
-                        "async_pick",
-                        vec!["columns".to_string()],
-                        vec![ParamInfo {
-                            name: "columns".to_string(),
-                            kind: ParamKind::Rest,
-                            default_type: None,
-                        }],
-                        Type::Generic {
-                            base: Sym::new("ActiveRecord::Promise"),
-                            args: vec![Type::Untyped].into(),
-                        },
-                    ),
-                    (
-                        "async_pluck",
-                        vec!["columns".to_string()],
-                        vec![ParamInfo {
-                            name: "columns".to_string(),
-                            kind: ParamKind::Rest,
-                            default_type: None,
-                        }],
-                        Type::Generic {
-                            base: Sym::new("ActiveRecord::Promise"),
-                            args: vec![Type::Untyped].into(),
-                        },
-                    ),
-                    (
-                        "async_sum",
-                        vec!["column".to_string()],
-                        vec![ParamInfo {
-                            name: "column".to_string(),
-                            kind: ParamKind::Required,
-                            default_type: Some(Type::Untyped),
-                        }],
-                        Type::Generic {
-                            base: Sym::new("ActiveRecord::Promise"),
-                            args: vec![Type::Untyped].into(),
-                        },
-                    ),
-                    (
-                        "async_average",
-                        vec!["column".to_string()],
-                        vec![ParamInfo {
-                            name: "column".to_string(),
-                            kind: ParamKind::Required,
-                            default_type: Some(Type::Untyped),
-                        }],
-                        Type::Generic {
-                            base: Sym::new("ActiveRecord::Promise"),
-                            args: vec![Type::Untyped].into(),
-                        },
-                    ),
-                    (
-                        "async_minimum",
-                        vec!["column".to_string()],
-                        vec![ParamInfo {
-                            name: "column".to_string(),
-                            kind: ParamKind::Required,
-                            default_type: Some(Type::Untyped),
-                        }],
-                        Type::Generic {
-                            base: Sym::new("ActiveRecord::Promise"),
-                            args: vec![Type::Untyped].into(),
-                        },
-                    ),
-                    (
-                        "async_maximum",
-                        vec!["column".to_string()],
-                        vec![ParamInfo {
-                            name: "column".to_string(),
-                            kind: ParamKind::Required,
-                            default_type: Some(Type::Untyped),
-                        }],
-                        Type::Generic {
-                            base: Sym::new("ActiveRecord::Promise"),
-                            args: vec![Type::Untyped].into(),
-                        },
-                    ),
-                ] {
-                    self.registry.add_method_def_if_missing(
-                        class_name,
-                        MethodDef {
-                            name: Sym::new(name),
-                            param_infos,
-                            raw_return_type: return_type,
-                            sorbet_modifier_comments: Vec::new(),
-                            rbs_annotated: true,
-                            rbs_inline_annotated: false,
-                            sig_annotated: false,
-                            attr_ivar: None,
-                            is_singleton: false,
-                            rbs_file_source: true,
-                            synthetic_dsl_source: false,
-                            rbs_method_types: Default::default(),
-                            extra_overloads: Vec::new(),
-                            loc: Some(loc),
-                        },
-                    );
-                }
-            }
         }
 
         if self.is_active_model_serializer_class(class_name) {
             self.register_active_model_serializer_framework_methods(class_name, loc);
         }
 
-        if self.is_active_job_class(class_name) {
-            self.registry.add_method_def_if_missing(
-                class_name,
-                MethodDef {
-                    name: Sym::new("perform_later"),
-                    param_infos: Vec::new(),
-                    raw_return_type: Type::Class(Sym::new(class_name)),
-                    sorbet_modifier_comments: Vec::new(),
-                    rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
-                    attr_ivar: None,
-                    is_singleton: true,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
-                    rbs_method_types: Default::default(),
-                    extra_overloads: Vec::new(),
-                    loc: Some(loc),
-                },
-            );
-            self.registry.add_method_def_if_missing(
-                class_name,
-                MethodDef {
-                    name: Sym::new("perform_now"),
-                    param_infos: Vec::new(),
-                    raw_return_type: Type::MethodReturnRef(class_name.into(), "perform".into()),
-                    sorbet_modifier_comments: Vec::new(),
-                    rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
-                    attr_ivar: None,
-                    is_singleton: true,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
-                    rbs_method_types: Default::default(),
-                    extra_overloads: Vec::new(),
-                    loc: Some(loc),
-                },
-            );
+        let inherits_active_job = self.inherits_active_job(class_name);
+        if inherits_active_job {
+            self.add_active_job_helpers(class_name, loc);
         }
 
         if self.is_action_mailer_class(class_name) {
@@ -746,6 +533,7 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
         }
+        inherits_active_job
     }
 
     pub(super) fn register_mailer_action_proxy(
@@ -799,36 +587,27 @@ impl<'a> InferenceEngine<'a> {
 
     fn ensure_message_delivery_methods(&mut self, loc: SourceLocation) {
         let class_name = "ActionMailer::MessageDelivery";
-        self.registry.add_method_def_if_missing(
-            class_name,
-            MethodDef {
-                name: Sym::new("deliver_now"),
-                param_infos: Vec::new(),
-                raw_return_type: Type::Class(Sym::new("Mail::Message")),
-                sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
-                attr_ivar: None,
-                is_singleton: false,
-                rbs_file_source: true,
-                synthetic_dsl_source: true,
-                rbs_method_types: Default::default(),
-                extra_overloads: Vec::new(),
-                loc: Some(loc),
-            },
-        );
-        for name in ["deliver_later", "deliver_later!", "deliver_now!"] {
+        let mail_message = || Type::Class(Sym::new("Mail::Message"));
+        let enqueued =
+            self.active_job_enqueue_return(Type::Class(Sym::new(if self.rails_at_least(6, 1) {
+                "ActionMailer::MailDeliveryJob"
+            } else {
+                "ActionMailer::DeliveryJob"
+            })));
+        for (name, return_type) in [
+            ("message", mail_message()),
+            ("deliver_now", mail_message()),
+            ("deliver_now!", mail_message()),
+            ("deliver_later", enqueued.clone()),
+            ("deliver_later!", enqueued),
+            ("processed?", Type::Bool),
+        ] {
             self.registry.add_method_def_if_missing(
                 class_name,
                 MethodDef {
                     name: Sym::new(name),
                     param_infos: Vec::new(),
-                    raw_return_type: if name == "deliver_later" || name == "deliver_later!" {
-                        Type::Class(Sym::new(class_name))
-                    } else {
-                        Type::Class(Sym::new("Mail::Message"))
-                    },
+                    raw_return_type: return_type,
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
                     rbs_inline_annotated: false,
@@ -842,6 +621,16 @@ impl<'a> InferenceEngine<'a> {
                     loc: Some(loc),
                 },
             );
+        }
+    }
+
+    /// `ActiveJob::Base#enqueue` returns `false` when an `before_enqueue` callback aborts
+    /// (always since Rails 7.0; earlier versions returned the job unless configured).
+    fn active_job_enqueue_return(&self, job: Type) -> Type {
+        if self.rails_at_least(7, 0) {
+            job.union_with(Type::False)
+        } else {
+            job
         }
     }
 
@@ -864,12 +653,107 @@ impl<'a> InferenceEngine<'a> {
             .any(|m| m.name == method_name && !m.synthetic_dsl_source && !m.rbs_file_source)
     }
 
-    pub(crate) fn is_active_job_class(&self, class_name: &str) -> bool {
-        class_name.ends_with("Job")
-            || self.class_matches_or_inherits(class_name, &["ActiveJob::Base", "ApplicationJob"])
+    fn inherits_active_job(&self, class_name: &str) -> bool {
+        self.class_matches_or_inherits(class_name, &["ActiveJob::Base", "ApplicationJob"])
     }
 
-    pub(super) fn propagate_perform_params_to_job_helpers(&mut self, class_name: &str) {
+    /// The `Job` suffix stands in for a job base defined elsewhere, so it applies only when the
+    /// ancestry is not known: a reopened class or an unresolved superclass. A Sidekiq mixin or a
+    /// known non-job Rails base rules it out.
+    fn is_active_job_by_name(&self, class_name: &str) -> bool {
+        class_name.ends_with("Job")
+            && self.superclass_chain_is_open(class_name)
+            && !self.class_matches_or_inherits(class_name, RAILS_NON_JOB_BASES)
+            && !self.is_sidekiq_job_class(class_name)
+    }
+
+    fn superclass_chain_is_open(&self, class_name: &str) -> bool {
+        let Some(data) = self.registry.class_data_for(class_name) else {
+            return true;
+        };
+        if data.superclass.is_none() {
+            return true;
+        }
+        let mut current = self.resolved_superclass_name(class_name);
+        let mut seen = HashSet::new();
+        while let Some(name) = current {
+            if !seen.insert(name.clone()) {
+                return false;
+            }
+            let Some(data) = self.registry.class_data_for(&name) else {
+                return true;
+            };
+            if data.superclass_is_unknown {
+                return true;
+            }
+            current = self.resolved_superclass_name(&name);
+        }
+        false
+    }
+
+    /// Called after the class body, once `perform` and any Sidekiq mixin are known.
+    pub(super) fn register_active_job_helpers(
+        &mut self,
+        class_name: &str,
+        loc: SourceLocation,
+        inherits_active_job: bool,
+    ) {
+        if !self.rails_feature_enabled() {
+            return;
+        }
+        if !inherits_active_job {
+            if !self.is_active_job_by_name(class_name) {
+                return;
+            }
+            self.add_active_job_helpers(class_name, loc);
+        }
+        self.propagate_perform_params_to_job_helpers(class_name);
+    }
+
+    fn add_active_job_helpers(&mut self, class_name: &str, loc: SourceLocation) {
+        self.registry.add_method_def_if_missing(
+            class_name,
+            MethodDef {
+                name: Sym::new("perform_later"),
+                param_infos: Vec::new(),
+                raw_return_type: self.active_job_enqueue_return(Type::Class(Sym::new(class_name))),
+                sorbet_modifier_comments: Vec::new(),
+                rbs_annotated: true,
+                rbs_inline_annotated: false,
+                sig_annotated: false,
+                attr_ivar: None,
+                is_singleton: true,
+                rbs_file_source: false,
+                synthetic_dsl_source: false,
+                rbs_method_types: Default::default(),
+                extra_overloads: Vec::new(),
+                loc: Some(loc),
+            },
+        );
+        self.registry.add_method_def_if_missing(
+            class_name,
+            MethodDef {
+                name: Sym::new("perform_now"),
+                param_infos: Vec::new(),
+                // `run_callbacks` returns false when a `before_perform` callback aborts.
+                raw_return_type: Type::MethodReturnRef(class_name.into(), "perform".into())
+                    .union_with(Type::False),
+                sorbet_modifier_comments: Vec::new(),
+                rbs_annotated: true,
+                rbs_inline_annotated: false,
+                sig_annotated: false,
+                attr_ivar: None,
+                is_singleton: true,
+                rbs_file_source: false,
+                synthetic_dsl_source: false,
+                rbs_method_types: Default::default(),
+                extra_overloads: Vec::new(),
+                loc: Some(loc),
+            },
+        );
+    }
+
+    fn propagate_perform_params_to_job_helpers(&mut self, class_name: &str) {
         let Some(perform_def) = self
             .registry
             .lookup_method_def(class_name, "perform", false)
@@ -942,7 +826,8 @@ impl<'a> InferenceEngine<'a> {
             | "reject"
             | "compact"
             | "deep_transform_values"
-            | "deep_transform_values!" => Some(ac_params()),
+            | "deep_transform_values!"
+            | "permit!" => Some(ac_params()),
             "to_h" | "to_unsafe_h" | "to_hash" => Some(Type::Hash(
                 Some(Box::new(Type::String)),
                 Some(Box::new(Type::Untyped)),
@@ -950,7 +835,7 @@ impl<'a> InferenceEngine<'a> {
             "keys" => Some(Type::Array(Some(Box::new(Type::String)))),
             "values" | "values_at" => Some(Type::Array(Some(Box::new(Type::Untyped)))),
             "any?" | "all?" | "empty?" | "none?" | "has_key?" | "include?" | "key?" | "member?"
-            | "present?" | "blank?" => Some(Type::Bool),
+            | "present?" | "blank?" | "permitted?" => Some(Type::Bool),
             "[]" | "fetch" | "dig" | "delete" | "each_value" => Some(Type::Untyped),
             _ => None,
         }
@@ -1012,7 +897,12 @@ impl<'a> InferenceEngine<'a> {
         }
 
         match method_name {
-            "in_seconds" | "seconds" | "to_i" => Some(Type::Integer),
+            "+" | "-" | "-@" | "+@" | "*" | "%" => Some(Type::Class(*class_name)),
+            "in_seconds" | "to_i" => Some(Type::Integer),
+            // Delegated to the Integer value (`1.minute.seconds` is `60.seconds`).
+            name if super::method_tables::DURATION_METHODS.contains(&name) => {
+                Some(Type::Class(*class_name))
+            }
             "ago" | "until" | "from_now" | "since" => Some(Type::Class(Sym::new("Time"))),
             "parts" => Some(Type::Hash(
                 Some(Box::new(Type::Symbol)),
@@ -1106,7 +996,9 @@ impl<'a> InferenceEngine<'a> {
 
         match method_name {
             "fetch" | "read" | "read_multi" => Some(Type::Untyped),
-            "write" | "delete" | "delete_matched" | "exist?" | "clear" => Some(Type::Bool),
+            // `write` reports a backend error as nil instead of raising.
+            "write" => Some(Type::Bool.union_with(Type::Nil)),
+            "delete" | "delete_matched" | "exist?" | "clear" => Some(Type::Bool),
             _ => None,
         }
     }
@@ -1185,7 +1077,8 @@ impl<'a> InferenceEngine<'a> {
         match method_name {
             "host" | "host_with_port" | "remote_ip" | "referer" | "referrer" | "path"
             | "fullpath" | "original_url" | "url" | "user_agent" | "method" | "request_method"
-            | "uuid" => Some(Type::String),
+            | "uuid" | "protocol" | "scheme" | "subdomain" => Some(Type::String),
+            "port" | "server_port" => Some(Type::Integer),
             "get?" | "post?" | "put?" | "patch?" | "delete?" | "xhr?" | "ssl?" | "local?" => {
                 Some(Type::Bool)
             }
@@ -1486,32 +1379,47 @@ impl<'a> InferenceEngine<'a> {
         let optional_model_type = Self::active_record_optional_model_type(class_name);
 
         for name in ACTIVE_RECORD_RELATION_METHODS {
-            let (_param_names, param_infos) = match *name {
-                "all" | "none" => (Vec::new(), Vec::new()),
-                "merge" => (
-                    vec!["relation".to_string()],
-                    vec![ParamInfo {
-                        name: "relation".to_string(),
+            let available = crate::rails::relation_api::lookup(
+                name,
+                crate::rails::relation_api::Receiver::Model,
+            )
+            .is_some_and(|method| self.rails_at_least(method.since.0, method.since.1));
+            if !available {
+                continue;
+            }
+            let rest_args = || {
+                vec![ParamInfo {
+                    name: "args".to_string(),
+                    kind: ParamKind::Rest,
+                    default_type: None,
+                }]
+            };
+            let param_infos = match *name {
+                "all" | "none" => Vec::new(),
+                "merge" => vec![ParamInfo {
+                    name: "relation".to_string(),
+                    kind: ParamKind::Required,
+                    default_type: Some(relation_type.clone()),
+                }],
+                "limit" | "offset" => vec![ParamInfo {
+                    name: "value".to_string(),
+                    kind: ParamKind::Required,
+                    default_type: Some(Type::Integer),
+                }],
+                "in_order_of" => ["column", "values"]
+                    .into_iter()
+                    .map(|param| ParamInfo {
+                        name: param.to_string(),
                         kind: ParamKind::Required,
-                        default_type: Some(relation_type.clone()),
-                    }],
-                ),
-                "limit" | "offset" => (
-                    vec!["value".to_string()],
-                    vec![ParamInfo {
-                        name: "value".to_string(),
-                        kind: ParamKind::Required,
-                        default_type: Some(Type::Integer),
-                    }],
-                ),
-                _ => (
-                    vec!["args".to_string()],
-                    vec![ParamInfo {
-                        name: "args".to_string(),
-                        kind: ParamKind::Rest,
-                        default_type: None,
-                    }],
-                ),
+                        default_type: Some(Type::Untyped),
+                    })
+                    .collect(),
+                "strict_loading" => vec![ParamInfo {
+                    name: "value".to_string(),
+                    kind: ParamKind::Optional,
+                    default_type: Some(Type::Untyped),
+                }],
+                _ => rest_args(),
             };
             self.registry.add_method_def_if_missing(
                 class_name,
@@ -1532,71 +1440,6 @@ impl<'a> InferenceEngine<'a> {
                     loc: Some(loc),
                 },
             );
-        }
-
-        let versioned_methods: &[(&[&str], u16, u16)] = &[
-            (ACTIVE_RECORD_RELATION_METHODS_RAILS_6_1, 6, 1),
-            (ACTIVE_RECORD_RELATION_METHODS_RAILS_7_0, 7, 0),
-            (ACTIVE_RECORD_RELATION_METHODS_RAILS_7_1, 7, 1),
-        ];
-        for (methods, major, minor) in versioned_methods {
-            if !self.rails_at_least(*major, *minor) {
-                continue;
-            }
-            for name in *methods {
-                let (_param_names, param_infos) = match *name {
-                    "in_order_of" => (
-                        vec!["column".to_string(), "values".to_string()],
-                        vec![
-                            ParamInfo {
-                                name: "column".to_string(),
-                                kind: ParamKind::Required,
-                                default_type: Some(Type::Untyped),
-                            },
-                            ParamInfo {
-                                name: "values".to_string(),
-                                kind: ParamKind::Required,
-                                default_type: Some(Type::Untyped),
-                            },
-                        ],
-                    ),
-                    "strict_loading" => (
-                        vec!["value".to_string()],
-                        vec![ParamInfo {
-                            name: "value".to_string(),
-                            kind: ParamKind::Optional,
-                            default_type: Some(Type::Untyped),
-                        }],
-                    ),
-                    _ => (
-                        vec!["args".to_string()],
-                        vec![ParamInfo {
-                            name: "args".to_string(),
-                            kind: ParamKind::Rest,
-                            default_type: None,
-                        }],
-                    ),
-                };
-                self.registry.add_method_def_if_missing(
-                    class_name,
-                    MethodDef {
-                        name: Sym::new(*name),
-                        param_infos,
-                        raw_return_type: relation_type.clone(),
-                        sorbet_modifier_comments: Vec::new(),
-                        rbs_annotated: true,
-                        rbs_inline_annotated: false,
-                        sig_annotated: false,
-                        attr_ivar: None,
-                        is_singleton: true,
-                        rbs_file_source: true,
-                        synthetic_dsl_source: true,
-                        rbs_method_types: Default::default(),
-                        extra_overloads: Vec::new(),
-                        loc: Some(loc),
-                    },
-                );
-            }
         }
 
         self.registry.add_method_def_if_missing(
@@ -1824,7 +1667,8 @@ impl<'a> InferenceEngine<'a> {
                 "count" | "ids" => (
                     Vec::new(),
                     Vec::new(),
-                    Self::active_record_common_method_return(class_name, name).unwrap(),
+                    self.active_record_model_class_method_return(class_name, name)
+                        .unwrap_or(Type::Untyped),
                 ),
                 "pick" | "pluck" => (
                     vec!["columns".to_string()],
@@ -1833,7 +1677,8 @@ impl<'a> InferenceEngine<'a> {
                         kind: ParamKind::Rest,
                         default_type: None,
                     }],
-                    Self::active_record_common_method_return(class_name, name).unwrap(),
+                    self.active_record_model_class_method_return(class_name, name)
+                        .unwrap_or(Type::Untyped),
                 ),
                 _ => (
                     vec!["column".to_string()],
@@ -1842,7 +1687,8 @@ impl<'a> InferenceEngine<'a> {
                         kind: ParamKind::Required,
                         default_type: Some(Type::Untyped),
                     }],
-                    Self::active_record_common_method_return(class_name, name).unwrap(),
+                    self.active_record_model_class_method_return(class_name, name)
+                        .unwrap_or(Type::Untyped),
                 ),
             };
             self.registry.add_method_def_if_missing(
@@ -2000,7 +1846,8 @@ impl<'a> InferenceEngine<'a> {
                 MethodDef {
                     name: Sym::new(*name),
                     param_infos,
-                    raw_return_type: Self::active_record_batch_method_return(class_name, name)
+                    raw_return_type: self
+                        .active_record_model_class_method_return(class_name, name)
                         .unwrap_or(Type::Untyped),
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
@@ -2036,122 +1883,211 @@ impl<'a> InferenceEngine<'a> {
                 return None;
             };
 
-        let relation_type_for_singleton =
-            || Self::active_record_relation_type(&elem_type.to_string());
-
         let relation_return = || {
             if singleton_model {
-                relation_type_for_singleton()
+                Self::active_record_relation_type(&elem_type.to_string())
             } else {
                 receiver_type.clone()
             }
         };
 
-        match method_name {
-            "async" | "load_async" if self.rails_at_least(7, 0) => Some(relation_return()),
-            name if ACTIVE_RECORD_RELATION_METHODS.contains(&name) => Some(relation_return()),
-            name if ACTIVE_RECORD_RELATION_METHODS_RAILS_6_1.contains(&name)
-                && self.rails_at_least(6, 1) =>
-            {
-                Some(relation_return())
-            }
-            name if ACTIVE_RECORD_RELATION_METHODS_RAILS_7_0.contains(&name)
-                && self.rails_at_least(7, 0) =>
-            {
-                Some(relation_return())
-            }
-            name if ACTIVE_RECORD_RELATION_METHODS_RAILS_7_1.contains(&name)
-                && self.rails_at_least(7, 1) =>
-            {
-                Some(relation_return())
-            }
-            name if ACTIVE_RECORD_WHERE_CHAIN_METHODS.contains(&name) => Some(relation_return()),
-            "any?" | "many?" | "none?" | "one?" => Some(Type::Bool),
-            "exists?" | "include?" => Some(Type::Bool),
-            "count" => Some(Type::Integer),
-            "ids" => Some(Type::Array(Some(Box::new(Type::Integer)))),
-            "pick" | "sum" | "average" | "minimum" | "maximum" => Some(Type::Untyped),
-            "pluck" => Some(Type::Array(Some(Box::new(Type::Untyped)))),
+        let receiver = if singleton_model {
+            Some(crate::rails::relation_api::Receiver::Model)
+        } else {
+            crate::rails::relation_api::Receiver::of_relation(receiver_type)
+        };
+        if let Some(method) =
+            receiver.and_then(|receiver| crate::rails::relation_api::lookup(method_name, receiver))
+            && self.rails_at_least(method.since.0, method.since.1)
+        {
+            return Some(method.return_type(relation_return, &elem_type, || {
+                self.registry.active_record_primary_key_type(&elem_type)
+            }));
+        }
+        let model_class = elem_type.to_string();
+        if matches!(
+            method_name,
             "kept" | "undiscarded" | "discarded" | "with_discarded"
-                if self.discard_dsl_enabled()
-                    && self
-                        .registry
-                        .lookup_method_sig(&elem_type.to_string(), method_name)
-                        .is_some() =>
+        ) && self.discard_dsl_enabled()
+            && self
+                .registry
+                .lookup_method_sig(&model_class, method_name)
+                .is_some()
+        {
+            return Some(relation_return());
+        }
+        if singleton_model {
+            return None;
+        }
+        let ret =
+            self.registry
+                .lookup_method_return_type_with_hint(&model_class, method_name, true)?;
+        (Self::scope_chain_return_is_relation_like(&ret) || ret == Type::SelfType)
+            .then(relation_return)
+    }
+
+    /// `ActiveRecord::Delegation`: a relation answers `Enumerable` and the delegated `Array`
+    /// methods through its loaded records, so those calls dispatch on `Array[Model]`.
+    pub(super) fn active_record_records_receiver(
+        &mut self,
+        receiver_type: &Type,
+        method_name: &str,
+        has_block: bool,
+    ) -> Option<Type> {
+        crate::rails::relation_api::records_receiver(
+            receiver_type,
+            method_name,
+            has_block,
+            |name| {
+                self.ensure_class_available("Enumerable");
+                self.registry.has_method_variant("Enumerable", name, false)
+            },
+        )
+    }
+
+    /// Reading an attribute by a literal name (`record[:title]`, `record.read_attribute(:title)`,
+    /// `attributes["title"]`) gives the column's reader type.
+    pub(super) fn active_record_attribute_read(
+        &mut self,
+        class_name: &str,
+        receiver: &Node<'_>,
+        receiver_type: &Type,
+        call_node: &ruby_prism::CallNode<'_>,
+        method_name: &str,
+        scope: &Scope,
+    ) -> Option<Type> {
+        let model = match method_name {
+            "read_attribute" | "_read_attribute" => receiver_type.clone(),
+            "[]" => self
+                .attributes_hash_owner(class_name, receiver, scope)
+                .unwrap_or_else(|| receiver_type.clone()),
+            "fetch" | "dig" => self.attributes_hash_owner(class_name, receiver, scope)?,
+            _ => return None,
+        };
+        let Type::Class(model_name) = model else {
+            return None;
+        };
+        if !self.is_active_record_model_class(&model_name) {
+            return None;
+        }
+        let args = call_node.arguments()?;
+        let mut args = args.arguments().iter();
+        let column = Self::extract_symbol_literal_name(&args.next()?)?;
+        if args.next().is_some() {
+            return None;
+        }
+        self.registry
+            .schema_column_accessor_type(&model_name, &column)
+    }
+
+    /// The model whose `attributes` hash `receiver` is (`attributes` / `record.attributes`).
+    fn attributes_hash_owner(
+        &self,
+        class_name: &str,
+        receiver: &Node<'_>,
+        scope: &Scope,
+    ) -> Option<Type> {
+        let call = receiver.as_call_node()?;
+        if call.name().as_slice() != b"attributes" || call.arguments().is_some() {
+            return None;
+        }
+        let self_receiver = call
+            .receiver()
+            .is_none_or(|owner| matches!(owner, Node::SelfNode { .. }));
+        (self_receiver && !scope.singleton_dispatch).then(|| Type::Class(Sym::new(class_name)))
+    }
+
+    /// `select("count(*) AS total")` / `select('config')` gives the loaded records a reader for
+    /// each selected name, including names that are not columns of the model.
+    pub(super) fn record_active_record_select_aliases(
+        &mut self,
+        receiver_type: &Type,
+        call_node: &ruby_prism::CallNode<'_>,
+    ) {
+        // A query chain not resolved yet (`self.class.from_union(...)`) starts at the model class.
+        let mut base = receiver_type;
+        let mut class_of = None;
+        while let Type::ReceiverMethodRef(inner, method) = base {
+            if method.as_str() == "class"
+                && let Type::Class(name) = inner.as_ref()
             {
-                Some(relation_return())
+                class_of = Some(*name);
+                break;
             }
-            "find" => Some(elem_type.clone()),
-            "find_by" | "first" | "last" | "take" => {
-                Some(Type::Union(vec![elem_type.clone(), Type::Nil]))
-            }
-            "second" | "third" | "fourth" | "fifth" | "forty_two" | "third_to_last"
-            | "second_to_last" => Some(Type::Union(vec![elem_type.clone(), Type::Nil])),
-            "find_by!" | "first!" | "last!" | "take!" | "sole" | "find_sole_by" | "second!"
-            | "third!" | "fourth!" | "fifth!" | "forty_two!" | "third_to_last!"
-            | "second_to_last!" => Some(elem_type.clone()),
-            name if ACTIVE_RECORD_FIND_OR_CREATE_METHODS.contains(&name) => Some(elem_type.clone()),
-            "to_a" => Some(Type::Array(Some(Box::new(elem_type)))),
-            "async_count" if self.rails_at_least(7, 1) => Some(Type::Generic {
-                base: Sym::new("ActiveRecord::Promise"),
-                args: vec![Type::Integer].into(),
-            }),
-            "async_ids" if self.rails_at_least(7, 1) => Some(Type::Generic {
-                base: Sym::new("ActiveRecord::Promise"),
-                args: vec![Type::Array(Some(Box::new(Type::Integer)))].into(),
-            }),
-            "async_pick" | "async_pluck" | "async_sum" | "async_average" | "async_minimum"
-            | "async_maximum"
-                if self.rails_at_least(7, 1) =>
-            {
-                Some(Type::Generic {
-                    base: Sym::new("ActiveRecord::Promise"),
-                    args: vec![Type::Untyped].into(),
-                })
-            }
-            name if ACTIVE_RECORD_BUILDER_METHODS.contains(&name) => Some(elem_type.clone()),
-            "find_each" => Some(Type::Generic {
-                base: Sym::new("Enumerator"),
-                args: vec![elem_type].into(),
-            }),
-            "find_in_batches" => Some(Type::Generic {
-                base: Sym::new("Enumerator"),
-                args: vec![Type::Array(Some(Box::new(elem_type)))].into(),
-            }),
-            "in_batches" => Some(Type::Class(Sym::new(
-                "ActiveRecord::Batches::BatchEnumerator",
-            ))),
-            _ => {
-                if !singleton_model {
-                    let model_class = elem_type.to_string();
-                    if let Some(ret) = self.registry.lookup_method_return_type_with_hint(
-                        &model_class,
-                        method_name,
-                        true,
-                    ) {
-                        if Self::scope_chain_return_is_relation_like(&ret) {
-                            return Some(relation_return());
-                        }
-                        if ret == Type::SelfType {
-                            return Some(relation_return());
-                        }
-                    }
-                }
-                None
-            }
+            base = inner;
+        }
+        let model: Sym = match (class_of, base) {
+            (Some(name), _) => name,
+            (None, Type::Singleton(name)) => *name,
+            (None, _) => match Self::active_record_relation_element_type(base) {
+                Some(Type::Class(name)) => name,
+                _ => return,
+            },
+        };
+        let Some(args) = call_node.arguments() else {
+            return;
+        };
+        let mut names = Vec::new();
+        for arg in args.arguments().iter() {
+            let Some(string) = arg.as_string_node() else {
+                continue;
+            };
+            let sql = String::from_utf8_lossy(string.unescaped()).to_string();
+            names.extend(sql.split(',').filter_map(Self::selected_column_name));
+        }
+        if names.is_empty() || !self.is_active_record_model_class(model.as_str()) {
+            return;
+        }
+        for name in names {
+            self.registry.mark_runtime_attribute(model.as_str(), &name);
         }
     }
 
-    pub(super) fn refine_active_record_pluck_with_symbol_args(
+    /// The reader name of one select expression: the alias after `AS`, or a bare column.
+    fn selected_column_name(expression: &str) -> Option<String> {
+        let expression = expression.trim();
+        let lower = expression.to_ascii_lowercase();
+        let name = match lower.rfind(" as ") {
+            Some(index) => &expression[index + 4..],
+            None => expression.rsplit('.').next()?,
+        };
+        let name = name.trim().trim_matches(|c| c == '"' || c == '`');
+        (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .then(|| name.to_string())
+    }
+
+    /// `pluck` / `pick` / `minimum` / `maximum` with literal column names read the columns' types.
+    pub(super) fn refine_active_record_column_call(
         &self,
         receiver_type: &Type,
         method_name: &str,
         symbol_args: &[String],
     ) -> Option<Type> {
-        if method_name != "pluck" || symbol_args.is_empty() {
+        use crate::rails::relation_api::{self, RelationReturn};
+        // ActiveSupport's `Enumerable#pluck` / `#pick` read `record[key]` from loaded records.
+        let loaded_records = match receiver_type {
+            Type::Array(Some(elem)) => match elem.as_ref() {
+                Type::Class(name) if self.is_active_record_model_class(name) => Some(*name),
+                _ => None,
+            },
+            _ => None,
+        };
+        let receiver = match receiver_type {
+            Type::Singleton(_) => relation_api::Receiver::Model,
+            _ if loaded_records.is_some() => match method_name {
+                "pluck" if self.rails_at_least(5, 0) => relation_api::Receiver::Model,
+                "pick" if self.rails_at_least(6, 0) => relation_api::Receiver::Model,
+                _ => return None,
+            },
+            _ => relation_api::Receiver::of_relation(receiver_type)?,
+        };
+        let method = relation_api::lookup(method_name, receiver)?;
+        if !method.reads_columns() || symbol_args.is_empty() {
             return None;
         }
-        let elem_type = if let Some(et) = Self::active_record_relation_element_type(receiver_type) {
+        let elem_type = if let Some(model) = loaded_records {
+            Type::Class(model)
+        } else if let Some(et) = Self::active_record_relation_element_type(receiver_type) {
             et
         } else if let Type::Singleton(name) = receiver_type {
             if self.is_active_record_model_class(name) {
@@ -2183,12 +2119,15 @@ impl<'a> InferenceEngine<'a> {
             }
             col_types.push(ty);
         }
-        let element = if col_types.len() == 1 {
+        let row = if col_types.len() == 1 {
             col_types.into_iter().next().expect("len==1")
         } else {
             Type::Tuple(col_types)
         };
-        Some(Type::Array(Some(Box::new(element))))
+        Some(match method.returns {
+            RelationReturn::ColumnValues => Type::Array(Some(Box::new(row))),
+            _ => Type::from_type_vec(vec![row, Type::Nil]),
+        })
     }
 
     pub(super) fn refine_active_record_find_with_args(
@@ -2776,31 +2715,41 @@ impl<'a> InferenceEngine<'a> {
         options: &AssociationOptions,
         collection: bool,
     ) -> String {
-        let known_classes = self.registry.user_defined_class_names();
-        if let Some(class_name) = &options.class_name {
-            return class_name.clone();
-        }
-        if options.through.is_some()
-            && let Some(source) = &options.source
-        {
-            return self.classify_association_target(source, &known_classes);
-        }
+        let _ = collection;
         if let Some(inverse_of) = &options.inverse_of
+            && options.class_name.is_none()
+            && !(options.through.is_some() && options.source.is_some())
             && let Some(target) =
                 self.resolve_target_class_from_inverse_of(current_class, inverse_of)
         {
             return target;
         }
-
-        let _ = collection;
-        self.classify_association_target(assoc_name, &known_classes)
+        let relative = match (&options.class_name, &options.through, &options.source) {
+            (Some(class_name), _, _) => class_name.clone(),
+            (None, Some(_), Some(source)) => self.classify_association_target(source),
+            _ => self.classify_association_target(assoc_name),
+        };
+        crate::rails::resolve_class_name_from_owner(current_class, &relative, &|name| {
+            self.is_known_model_class_name(name)
+        })
     }
 
-    fn classify_association_target(&self, name: &str, known_classes: &[String]) -> String {
+    fn is_known_model_class_name(&self, name: &str) -> bool {
+        self.registry
+            .class_data_for(name)
+            .is_some_and(|data| data.user_defined)
+            || self
+                .project_root
+                .as_ref()
+                .is_some_and(|root| crate::rails::model_file_exists(root, name))
+    }
+
+    fn classify_association_target(&self, name: &str) -> String {
+        let is_known = |candidate: &str| self.is_known_model_class_name(candidate);
         if let Some(ref root) = self.project_root {
-            crate::rails::classify_with_project_known_classes(root, name, known_classes)
+            crate::rails::classify_with_project_known_classes(root, name, &is_known)
         } else {
-            crate::rails::classify_with_known_classes(name, known_classes)
+            crate::rails::classify_with_known_classes(name, &is_known)
         }
     }
 

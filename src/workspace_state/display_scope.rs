@@ -43,9 +43,9 @@ impl WorkspaceState {
             | Type::BlockReturnRef => true,
             Type::Array(Some(inner))
             | Type::PatternRestRef(inner)
+            | Type::SplatRef(inner)
             | Type::Proc {
-                return_type: inner,
-                param_count: _,
+                return_type: inner, ..
             } => Self::type_needs_display_workspace(inner),
             Type::Hash(Some(key), Some(value)) => {
                 Self::type_needs_display_workspace(key) || Self::type_needs_display_workspace(value)

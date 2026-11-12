@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::inference::FileAnalysisSnapshot;
 use crate::inference::hover::{HoverSnapshot, HoverTarget, UnresolvedConstantSite};
 use crate::registry::TypeRegistry;
+use crate::sym::NamePath;
 use crate::types::Type;
 
 const COVERAGE_SCHEMA_VERSION: u32 = 1;
@@ -63,6 +64,21 @@ impl CoverageCounts {
         self.typed = self.typed.saturating_add(other.typed);
         self.untyped = self.untyped.saturating_add(other.untyped);
         self.unknown = self.unknown.saturating_add(other.unknown);
+    }
+
+    fn promote(&mut self, from: CoverageLevel, to: CoverageLevel) {
+        let from_slot = self.slot(from);
+        *from_slot = from_slot.saturating_sub(1);
+        let to_slot = self.slot(to);
+        *to_slot = to_slot.saturating_add(1);
+    }
+
+    fn slot(&mut self, level: CoverageLevel) -> &mut usize {
+        match level {
+            CoverageLevel::Unknown => &mut self.unknown,
+            CoverageLevel::Untyped => &mut self.untyped,
+            CoverageLevel::Typed => &mut self.typed,
+        }
     }
 
     fn percentage(value: usize, total: usize) -> f64 {
@@ -128,11 +144,21 @@ struct CoverageCandidate {
 pub(crate) struct CoverageFile {
     references: CoverageCounts,
     by_kind: BTreeMap<CoverageSiteKind, CoverageCounts>,
+    unresolved_constants: Vec<ConstantName>,
+}
+
+/// A constant read the file-local pass could not bind. A file sees other files' declarations
+/// only after the workspace merge, so these are checked again against the final registry.
+#[derive(Clone)]
+struct ConstantName {
+    name: String,
+    class_context: String,
 }
 
 #[derive(Default)]
 pub(crate) struct CoverageRecorder {
     candidates: FxHashMap<(usize, usize), CoverageCandidate>,
+    constant_names: FxHashMap<(usize, usize), ConstantName>,
 }
 
 impl CoverageRecorder {
@@ -163,6 +189,14 @@ impl CoverageRecorder {
                 } else {
                     type_level(&ty, &class_context, method_context.as_deref())
                 };
+                if kind == CoverageSiteKind::ConstantReference {
+                    self.constant_names
+                        .entry((start, end))
+                        .or_insert_with(|| ConstantName {
+                            name: snapshot.name.clone(),
+                            class_context: class_context.clone(),
+                        });
+                }
                 (kind, level)
             }
             HoverTarget::MethodCall {
@@ -185,6 +219,12 @@ impl CoverageRecorder {
 
     pub(crate) fn record_unresolved_constant_site(&mut self, site: UnresolvedConstantSite) {
         if site.start < site.end {
+            self.constant_names
+                .entry((site.start, site.end))
+                .or_insert_with(|| ConstantName {
+                    name: site.name.clone(),
+                    class_context: site.class_context.clone(),
+                });
             self.record_candidate_with_marker(
                 (site.start, site.end),
                 CoverageSiteKind::ConstantReference,
@@ -196,7 +236,13 @@ impl CoverageRecorder {
 
     pub(crate) fn finish(self) -> CoverageFile {
         let mut file = CoverageFile::default();
-        for candidate in self.candidates.values() {
+        for (span, candidate) in &self.candidates {
+            if candidate.kind == CoverageSiteKind::ConstantReference
+                && candidate.level == CoverageLevel::Unknown
+                && let Some(constant) = self.constant_names.get(span)
+            {
+                file.unresolved_constants.push(constant.clone());
+            }
             file.references.add(candidate.level);
             file.by_kind
                 .entry(candidate.kind)
@@ -259,6 +305,7 @@ impl CoverageRecorder {
 #[derive(Default)]
 pub struct CoverageAccumulator {
     analyzed_files: usize,
+    unresolved_constants: Vec<ConstantName>,
     declarations: CoverageCounts,
     references: CoverageCounts,
     by_kind: BTreeMap<CoverageSiteKind, CoverageCounts>,
@@ -280,6 +327,23 @@ impl CoverageAccumulator {
         self.references.merge(&file.references);
         for (kind, counts) in file.by_kind {
             self.by_kind.entry(kind).or_default().merge(&counts);
+        }
+        self.unresolved_constants.extend(file.unresolved_constants);
+    }
+
+    /// Re-check the constant reads no file could bind on its own against the merged
+    /// workspace, as the RBS output does.
+    pub fn resolve_constant_references(&mut self, registry: &TypeRegistry) {
+        for constant in std::mem::take(&mut self.unresolved_constants) {
+            let level = workspace_constant_level(registry, &constant);
+            if level == CoverageLevel::Unknown {
+                continue;
+            }
+            self.references.promote(CoverageLevel::Unknown, level);
+            self.by_kind
+                .entry(CoverageSiteKind::ConstantReference)
+                .or_default()
+                .promote(CoverageLevel::Unknown, level);
         }
     }
 
@@ -362,6 +426,40 @@ impl CoverageAccumulator {
         self.declarations.add(level);
         self.by_kind.entry(kind).or_default().add(level);
     }
+}
+
+fn workspace_constant_level(registry: &TypeRegistry, constant: &ConstantName) -> CoverageLevel {
+    let name = constant.name.as_str();
+    let (bare, scopes): (&str, Vec<&str>) = match name.strip_prefix("::") {
+        Some(bare) => (bare, vec![""]),
+        None => {
+            let mut scopes = Vec::new();
+            let mut scope = constant.class_context.trim_scope_prefix();
+            while !scope.is_empty() {
+                scopes.push(scope);
+                scope = scope.rfind_scope_sep().map_or("", |idx| &scope[..idx]);
+            }
+            scopes.push("");
+            (name, scopes)
+        }
+    };
+    for scope in scopes {
+        let full = if scope.is_empty() {
+            bare.to_string()
+        } else {
+            crate::sym::join_scope(scope, bare)
+        };
+        if registry.class_data_for(&full).is_some() {
+            return CoverageLevel::Typed;
+        }
+        let (owner, last) = full.rsplit_once("::").unwrap_or(("Object", full.as_str()));
+        if let Some(ty) = registry.lookup_constant_through_ancestors(owner, last)
+            && !matches!(ty, Type::Untyped | Type::Todo)
+        {
+            return type_level(&ty, &constant.class_context, None);
+        }
+    }
+    CoverageLevel::Unknown
 }
 
 fn method_call_level(
@@ -448,12 +546,11 @@ fn type_level(ty: &Type, class_context: &str, method_context: Option<&str>) -> C
         | Type::PatternRestRef(subject)
         | Type::PatternTrailingRef(subject, _)
         | Type::PatternKeyRef(subject, _)
-        | Type::PatternKeyRestRef(subject, _) => {
-            match type_level(subject, class_context, method_context) {
-                CoverageLevel::Unknown => CoverageLevel::Unknown,
-                CoverageLevel::Untyped | CoverageLevel::Typed => CoverageLevel::Untyped,
-            }
-        }
+        | Type::PatternKeyRestRef(subject, _)
+        | Type::SplatRef(subject) => match type_level(subject, class_context, method_context) {
+            CoverageLevel::Unknown => CoverageLevel::Unknown,
+            CoverageLevel::Untyped | CoverageLevel::Typed => CoverageLevel::Untyped,
+        },
         Type::LiteralInteger(_)
         | Type::LiteralFloat(_)
         | Type::LiteralString(_)

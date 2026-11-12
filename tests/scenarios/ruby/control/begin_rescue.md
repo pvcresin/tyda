@@ -2,10 +2,6 @@
 
 ## Union types from begin and rescue
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -28,10 +24,6 @@ end
 
 ## Same type in begin and rescue
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -53,10 +45,6 @@ end
 ```
 
 ## Multiple rescue clauses
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -102,10 +90,6 @@ end
 
 ## begin rescue else uses else type for success path
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -129,10 +113,6 @@ end
 ```
 
 ## Apply begin rescue else assignment to later local
-
-```yaml
-known_issue: true
-```
 
 ### update
 

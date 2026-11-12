@@ -60,10 +60,6 @@ end
 
 ## Ternary-selected hash receiver mutation updates the chosen hash
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

@@ -369,10 +369,6 @@ end
 
 ## alias_method keeps the definition it captured before a redefinition
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

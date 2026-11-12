@@ -113,6 +113,40 @@ impl Plugin for ActiveRecord {
         synthetic_method_return(cx, receiver_type, method_name)
     }
 
+    // Relation and CollectionProxy have no definition here, so a relation method that
+    // Kernel / Object also define (`load`, `select`) would otherwise resolve to that owner.
+    fn synthetic_method_return_override(
+        &self,
+        cx: &mut PluginCx<'_, '_>,
+        receiver_type: &Type,
+        method_name: &str,
+    ) -> Option<Type> {
+        use crate::rails::relation_api;
+        if let Type::Singleton(class_name) = receiver_type {
+            return inherited_model_class_method_return(cx, class_name.as_str(), method_name);
+        }
+        let Type::Generic { base, .. } = receiver_type else {
+            return None;
+        };
+        let class_name = base.as_str();
+        let receiver = relation_api::Receiver::of_relation(receiver_type)?;
+        let method = relation_api::lookup(method_name, receiver)?;
+        if method.refined_by_args || !cx.dsl_enabled(DslLibrary::ActiveRecordPersistence) {
+            return None;
+        }
+        let has_real_definition = |registry: &crate::registry::TypeRegistry| {
+            registry
+                .lookup_method_def(class_name, method_name, false)
+                .is_some_and(|def| !def.synthetic_dsl_source)
+        };
+        if has_real_definition(cx.registry()) || cx.external_rbs().is_some_and(has_real_definition)
+        {
+            return None;
+        }
+        cx.engine
+            .synthetic_active_record_method_return(receiver_type, method_name)
+    }
+
     fn collect_class_body_call(
         &self,
         cx: &mut PluginCx<'_, '_>,
@@ -187,7 +221,10 @@ impl Plugin for ActiveRecord {
                 cx.collect_connects_to(class_name, call_node, parse_result);
                 true
             }
-            "encrypts" | "has_encrypted" if cx.rails_feature_enabled() => {
+            // Active Record encryption decorates an existing attribute; Lockbox's
+            // `has_encrypted` defines a virtual one.
+            "encrypts" if cx.rails_feature_enabled() => true,
+            "has_encrypted" if cx.rails_feature_enabled() => {
                 cx.collect_encrypted_attributes(class_name, call_node, parse_result);
                 true
             }
@@ -224,9 +261,6 @@ pub(in crate::inference) fn synthetic_method_return(
     if !engine.dsl_enabled(DslLibrary::ActiveRecordPersistence) {
         return None;
     }
-    if let Some(elem_type) = InferenceEngine::active_record_relation_element_type(receiver_type) {
-        return relation_method_return(receiver_type, &elem_type, method_name);
-    }
     match receiver_type {
         Type::Class(name) if name.as_str() == "ActiveRecord::Batches::BatchEnumerator" => {
             batch_enumerator_method_return(method_name)
@@ -249,6 +283,22 @@ fn batch_enumerator_method_return(method_name: &str) -> Option<Type> {
     }
 }
 
+/// A query method or scope generated on a parent model returns records of the class it is
+/// called on (`MavenPackage.where(...)` is `Relation[MavenPackage]`, not `Relation[Package]`).
+fn inherited_model_class_method_return(
+    cx: &mut PluginCx<'_, '_>,
+    class_name: &str,
+    method_name: &str,
+) -> Option<Type> {
+    if !cx.dsl_enabled(DslLibrary::ActiveRecordRelations) {
+        return None;
+    }
+    cx.engine
+        .ensure_class_available_with_ancestors(class_name, 0);
+    cx.registry()
+        .inherited_model_singleton_return(class_name, method_name)
+}
+
 fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
     let changes_hash = || Type::Hash(Some(Box::new(Type::String)), Some(Box::new(Type::Untyped)));
     match method_name {
@@ -266,9 +316,8 @@ fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Typ
         "destroy" | "destroy!" | "delete" | "reload" | "lock!" | "increment" | "decrement"
         | "toggle" | "tap_reload" => Some(receiver_type.clone()),
         "assign_attributes" | "attributes=" => Some(Type::Nil),
-        "attributes" | "saved_changes" | "previous_changes" | "changes" | "changes_to_save" => {
-            Some(changes_hash())
-        }
+        "attributes" | "saved_changes" | "previous_changes" | "changes" | "changes_to_save"
+        | "slice" => Some(changes_hash()),
         "becomes"
         | "becomes!"
         | "with_lock"
@@ -281,6 +330,8 @@ fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Typ
         | "transaction"
         | "read_attribute"
         | "write_attribute"
+        | "[]"
+        | "[]="
         | "logger"
         | "attribute_was" => Some(Type::Untyped),
         _ => None,
@@ -360,25 +411,6 @@ fn dynamic_finder_return(model_name: &str, method_name: &str) -> Option<Type> {
         return Some(Type::Union(vec![model(), Type::Nil]));
     }
     None
-}
-
-fn relation_method_return(
-    receiver_type: &Type,
-    elem_type: &Type,
-    method_name: &str,
-) -> Option<Type> {
-    match method_name {
-        "update_all" | "delete_all" | "touch_all" | "delete" | "destroy" | "in_order_of_count" => {
-            Some(Type::Integer)
-        }
-        "destroy_all" => Some(Type::Array(Some(Box::new(elem_type.clone())))),
-        "merge!" | "<<" | "push" | "append" | "concat" | "load" | "reset" | "prepend" => {
-            Some(receiver_type.clone())
-        }
-        "insert" | "insert!" | "insert_all" | "insert_all!" | "upsert" | "upsert_all"
-        | "replace" | "scoping" | "explain" | "calculate" | "each_batch" => Some(Type::Untyped),
-        _ => None,
-    }
 }
 
 use super::super::*;
@@ -635,12 +667,17 @@ impl<'a> InferenceEngine<'a> {
                     loc: Some(loc),
                 },
             );
-            for suffix_name in [format!("{assoc_name}_type"), format!("{assoc_name}_id")] {
-                let ret = if suffix_name.ends_with("_type") {
-                    Type::String
-                } else {
-                    Type::Integer
-                };
+            for (suffix_name, base) in [
+                (format!("{assoc_name}_type"), Type::String),
+                (format!("{assoc_name}_id"), Type::Integer),
+            ] {
+                // The schema column decides nullability; without one, `optional:` does.
+                let ret = self
+                    .registry
+                    .schema_column_accessor_type(class_name, &suffix_name)
+                    .unwrap_or_else(|| {
+                        crate::rails::nullable_column_accessor_type(&base, options.optional)
+                    });
                 self.registry.add_method_def(
                     class_name,
                     MethodDef {
@@ -1198,6 +1235,29 @@ impl<'a> InferenceEngine<'a> {
                 },
             );
             let scope_return = self.owner_relation_type_for_dsl(class_name);
+            if self.rails_at_least(6, 0) {
+                // Rails 6.0+ also defines `not_<value>`; kept out of the RBS output like other
+                // generated readers so enum declarations render as before.
+                self.registry.add_method_def_if_missing(
+                    class_name,
+                    MethodDef {
+                        name: Sym::new(format!("not_{method_base}")),
+                        param_infos: Vec::new(),
+                        raw_return_type: scope_return.clone(),
+                        sorbet_modifier_comments: Vec::new(),
+                        rbs_annotated: true,
+                        rbs_inline_annotated: false,
+                        sig_annotated: false,
+                        attr_ivar: None,
+                        is_singleton: true,
+                        rbs_file_source: true,
+                        synthetic_dsl_source: true,
+                        rbs_method_types: Default::default(),
+                        extra_overloads: Vec::new(),
+                        loc: Some(loc),
+                    },
+                );
+            }
             self.registry.add_method_def(
                 class_name,
                 MethodDef {
@@ -1516,9 +1576,9 @@ impl<'a> InferenceEngine<'a> {
         let synthetic_start = self
             .is_collecting_concern_included()
             .then(|| self.registry.method_defs_len(class_name));
-        for attr_name in Self::extract_symbol_args(call_node) {
-            self.register_untyped_attribute_accessors(class_name, &attr_name, loc);
-        }
+        // `normalizes` decorates existing attributes; it defines no accessors.
+        // The normalizer lambda is the method body: its parameter is `value`.
+        let normalized_type = self.normalizer_result_type(class_name, call_node, parse_result);
         self.registry.add_method_def_if_missing(
             class_name,
             MethodDef {
@@ -1532,12 +1592,12 @@ impl<'a> InferenceEngine<'a> {
                     ParamInfo {
                         name: "value".to_string(),
                         kind: ParamKind::Required,
-                        default_type: Some(Type::Untyped),
+                        default_type: None,
                     },
                 ],
-                raw_return_type: Type::ParamRef(1),
+                raw_return_type: normalized_type,
                 sorbet_modifier_comments: Vec::new(),
-                rbs_annotated: true,
+                rbs_annotated: false,
                 rbs_inline_annotated: false,
                 sig_annotated: false,
                 attr_ivar: None,
@@ -1552,6 +1612,28 @@ impl<'a> InferenceEngine<'a> {
         if let Some(start) = synthetic_start {
             self.registry
                 .mark_methods_synthetic_dsl_from(class_name, start);
+        }
+    }
+
+    /// `normalize_value_for(name, value)` returns what the `with:` normalizer makes of `value`.
+    fn normalizer_result_type(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+    ) -> Type {
+        let Some(normalizer) = Self::hash_option_value(call_node, "with", parse_result) else {
+            return Type::Untyped;
+        };
+        match self.infer_node_type(class_name, &normalizer, parse_result, &Scope::default()) {
+            Type::Proc {
+                return_type,
+                param_count,
+                ..
+            } if param_count >= 1 => {
+                TypeRegistry::substitute_param_refs_static(&return_type, &[Type::ParamRef(1)])
+            }
+            _ => Type::Untyped,
         }
     }
 

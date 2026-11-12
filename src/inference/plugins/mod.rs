@@ -69,6 +69,29 @@ pub(in crate::inference) trait Plugin: Sync {
         None
     }
 
+    /// RBS for framework classes the plugin's return types name, loaded on first use when no
+    /// project or gem RBS declares the class.
+    fn class_declarations(&self) -> &'static [ClassDeclaration] {
+        &[]
+    }
+
+    /// Method names whose return depends on argument types. Only calls to these names pay for
+    /// argument inference before `synthetic_call_return`.
+    fn call_return_method_names(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Like `synthetic_method_return`, with the positional argument types of the call.
+    fn synthetic_call_return(
+        &self,
+        _cx: &mut PluginCx<'_, '_>,
+        _receiver_type: &Type,
+        _method_name: &str,
+        _arg_types: &[Type],
+    ) -> Option<Type> {
+        None
+    }
+
     // Returns the gem's function type before a phantom-stub receiver falls back to Kernel; yields if a real definition exists.
     fn synthetic_method_return_override(
         &self,
@@ -191,8 +214,37 @@ pub(crate) fn builtin_plugin_manifests() -> impl Iterator<Item = &'static Plugin
     PLUGINS.iter().map(|plugin| plugin.manifest())
 }
 
+pub(in crate::inference) struct ClassDeclaration {
+    pub class_name: &'static str,
+    pub library: DslLibrary,
+    pub rbs: &'static str,
+}
+
+static CLASS_DECLARATIONS: std::sync::LazyLock<
+    rustc_hash::FxHashMap<&'static str, &'static ClassDeclaration>,
+> = std::sync::LazyLock::new(|| {
+    PLUGINS
+        .iter()
+        .flat_map(|plugin| plugin.class_declarations())
+        .map(|declaration| (declaration.class_name, declaration))
+        .collect()
+});
+
+static CALL_RETURN_METHOD_NAMES: std::sync::LazyLock<rustc_hash::FxHashSet<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        PLUGINS
+            .iter()
+            .flat_map(|plugin| plugin.call_return_method_names().iter().copied())
+            .collect()
+    });
+
+/// Cheap name check that keeps argument inference off the call path for other methods.
+pub(in crate::inference) fn plugin_claims_call_return(method_name: &str) -> bool {
+    CALL_RETURN_METHOD_NAMES.contains(method_name)
+}
+
 // Shortlist of just the overrides for the hot path (scanning all of PLUGINS is ~30 no-op virtual calls).
-static OVERRIDE_PLUGINS: &[&dyn Plugin] = &[&oj::Oj];
+static OVERRIDE_PLUGINS: &[&dyn Plugin] = &[&oj::Oj, &active_record::ActiveRecord];
 
 const EXTRA_CLASS_BODY_DSL_METHODS: &[&str] = &[
     // Sorbet markers only apply when sorbet-runtime is enabled (gated via `is_sorbet_class_body_marker_call`).
@@ -483,8 +535,10 @@ impl<'e, 'src> PluginCx<'e, 'src> {
         &self,
         call_node: &CallNode<'_>,
         parse_result: &ParseResult<'_>,
+        owner: crate::rails::CastTypeOwner,
     ) -> Option<Type> {
-        self.engine.attribute_declared_type(call_node, parse_result)
+        self.engine
+            .attribute_declared_type(call_node, parse_result, owner)
     }
 
     pub(in crate::inference) fn camelize(&self, input: &str) -> String {
@@ -686,6 +740,14 @@ impl<'e, 'src> PluginCx<'e, 'src> {
     ) {
         self.engine
             .collect_attribute_dsl(class_name, call_node, parse_result);
+        // Active Record also generates `name?` and dirty methods for an `attribute`.
+        if self.engine.is_active_record_model_class(class_name)
+            && let Some(name) = InferenceEngine::extract_symbol_args(call_node).first()
+        {
+            self.engine
+                .registry
+                .mark_runtime_attribute(class_name, name);
+        }
     }
 
     pub(in crate::inference) fn collect_serialized_attribute_dsl(
@@ -1137,6 +1199,10 @@ impl<'e, 'src> PluginCx<'e, 'src> {
     }
 }
 
+/// Gem macros that replace the accessor of the column named by their first argument with an
+/// object of their own (CarrierWave uploaders).
+const ACCESSOR_REPLACING_MACROS: &[&str] = &["mount_uploader", "mount_uploaders"];
+
 impl<'a> InferenceEngine<'a> {
     pub(super) fn dsl_plugin_block_self_type(
         &mut self,
@@ -1199,6 +1265,53 @@ impl<'a> InferenceEngine<'a> {
         result
     }
 
+    pub(super) fn ensure_plugin_class_declaration(&mut self, class_name: &str) {
+        let Some(declaration) = CLASS_DECLARATIONS.get(class_name) else {
+            return;
+        };
+        // A bare constant stub (from a known gem namespace) does not count as a declaration.
+        let declared = |registry: &TypeRegistry| {
+            registry
+                .class_data_for(class_name)
+                .is_some_and(|data| data.has_type_substance())
+        };
+        if self.dsl_enabled(declaration.library)
+            && !declared(&self.registry)
+            && !self.external_rbs.is_some_and(declared)
+        {
+            crate::rbs::import::load_rbs_string(declaration.rbs, &mut self.registry);
+        }
+    }
+
+    /// Argument-aware plugin return for a method the receiver does not define in source or RBS.
+    pub(super) fn dsl_plugin_call_return(
+        &mut self,
+        receiver_type: &Type,
+        method_name: &str,
+        arg_types: &[Type],
+    ) -> Option<Type> {
+        let class_name = self.type_to_class_name(receiver_type)?;
+        let is_singleton = matches!(receiver_type, Type::Singleton(_));
+        self.ensure_class_available(&class_name);
+        if self
+            .registry
+            .lookup_method_return_type_with_hint(&class_name, method_name, is_singleton)
+            .is_some()
+        {
+            return None;
+        }
+        let mut cx = PluginCx::new(self);
+        let result = PLUGINS.iter().find_map(|plugin| {
+            plugin.synthetic_call_return(&mut cx, receiver_type, method_name, arg_types)
+        });
+        if *DSL_PLUGIN_DEBUG {
+            eprintln!(
+                "[dsl-plugin] call_return recv={receiver_type:?} m={method_name} args={arg_types:?} -> {result:?}"
+            );
+        }
+        result
+    }
+
     pub(super) fn dsl_plugin_method_return_override(
         &mut self,
         receiver_type: &Type,
@@ -1245,38 +1358,117 @@ impl<'a> InferenceEngine<'a> {
                 return true;
             }
         }
-        self.mark_column_replaced_by_unknown_macro(class_name, method_name, call_node);
+        self.mark_names_from_class_macro(class_name, method_name, call_node, parse_result);
         false
     }
 
-    /// An unknown class macro naming a column may replace its accessor, as uploaders do, so the
-    /// schema type no longer proves what the accessor returns.
-    fn mark_column_replaced_by_unknown_macro(
+    /// A class macro Tyda does not model may define methods named after its arguments
+    /// (`attr_encrypted :token` -> `token`, `token_changed?`; `jsonb_accessor :settings,
+    /// level: :integer` -> `level`). The same holds for a macro written in a concern or parent
+    /// class (`mount_file_store_uploader Uploader` with `file_field: :file`), whose names come
+    /// from its literal arguments and symbol parameter defaults. On a model, where such a call
+    /// stays silent, those names stay unknown. A column loses its schema type only for a known
+    /// accessor-replacing macro or a source-defined macro passing the name on to another macro.
+    fn mark_names_from_class_macro(
         &mut self,
         class_name: &str,
         method_name: &str,
         call_node: &CallNode<'_>,
+        parse_result: &ParseResult<'_>,
     ) {
-        if call_node.receiver().is_some()
-            || self
-                .registry
-                .first_method_call_owner_cached(class_name, method_name, true)
-                .is_some()
-        {
+        if call_node.receiver().is_some() {
             return;
         }
-        let Some(column) = Self::extract_symbol_args(call_node).first().cloned() else {
-            return;
-        };
-        if self
+        let owner = self
             .registry
-            .schema_column_accessor_type(class_name, &column)
-            .is_none()
-        {
-            return;
+            .first_method_call_owner_cached(class_name, method_name, true);
+        let mut names = Self::extract_symbol_args(call_node);
+        let replaced_columns = match owner {
+            None => {
+                // The definition may come from a concern loaded later.
+                if self.is_active_record_dsl_target(class_name) {
+                    let args = names.iter().map(crate::types::Sym::new).collect();
+                    self.registry
+                        .push_pending_class_macro(class_name, method_name, args);
+                }
+                names.extend(Self::keyword_symbol_keys(call_node, parse_result));
+                // Without a definition only a macro known to replace the accessor counts;
+                // most name a column to validate or normalize it (`validates_formatting_of :url`).
+                if ACCESSOR_REPLACING_MACROS.contains(&method_name) {
+                    names.get(..1).unwrap_or_default().to_vec()
+                } else {
+                    Vec::new()
+                }
+            }
+            Some((owner, true)) if owner.as_ref() != class_name => {
+                // Only a macro defined in Ruby source; declared signatures say what they define.
+                let Some(method) = self
+                    .registry
+                    .lookup_method_def(&owner, method_name, true)
+                    .filter(|method| !method.rbs_file_source && method.loc.is_some())
+                else {
+                    return;
+                };
+                let replaced = self
+                    .registry
+                    .names_replaced_by_source_macro(
+                        &owner,
+                        method,
+                        names.iter().map(String::as_str),
+                    )
+                    .iter()
+                    .map(|name| name.as_str().to_string())
+                    .collect();
+                names.extend(method.param_infos.iter().filter_map(
+                    |param| match &param.default_type {
+                        Some(Type::LiteralSymbol(name)) => Some(name.as_str().to_string()),
+                        _ => None,
+                    },
+                ));
+                replaced
+            }
+            _ => return,
+        };
+        // Elsewhere an unknown macro call itself is reported, which already points at the gap.
+        if self.is_active_record_dsl_target(class_name) {
+            for name in &names {
+                self.registry.mark_runtime_attribute(class_name, name);
+            }
         }
-        self.registry
-            .mark_column_accessor_replaced(class_name, &column);
+        for column in &replaced_columns {
+            // The schema is preloaded into the external registry.
+            let is_column = self
+                .registry
+                .schema_column_accessor_type(class_name, column)
+                .or_else(|| {
+                    self.external_rbs.and_then(|registry| {
+                        registry.schema_column_accessor_type(class_name, column)
+                    })
+                })
+                .is_some();
+            if is_column {
+                self.registry
+                    .mark_column_accessor_replaced(class_name, column);
+            }
+        }
+    }
+
+    fn keyword_symbol_keys(
+        call_node: &CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+    ) -> Vec<String> {
+        let Some(args) = call_node.arguments() else {
+            return Vec::new();
+        };
+        args.arguments()
+            .iter()
+            .filter_map(|arg| arg.as_keyword_hash_node())
+            .flat_map(|hash| hash.elements().iter().collect::<Vec<_>>())
+            .filter_map(|element| {
+                let assoc = element.as_assoc_node()?;
+                Self::node_to_symbol_or_label(&assoc.key(), parse_result)
+            })
+            .collect()
     }
 
     pub(super) fn dsl_plugin_consumes_class_body_call(

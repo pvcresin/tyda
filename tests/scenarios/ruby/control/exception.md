@@ -20,10 +20,6 @@ end
 
 ## Multiple rescue clauses
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -49,10 +45,6 @@ end
 ```
 
 ## A return inside rescue contributes to the method type
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -84,10 +76,6 @@ end
 ```
 
 ## rescue => e
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -135,10 +123,6 @@ end
 
 ## fail class argument narrows bare rescue
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -161,10 +145,6 @@ end
 ```
 
 ## Source-defined raise and fail calls do not narrow rescue types
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -206,10 +186,6 @@ end
 
 ## rescue narrows by exception class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -232,10 +208,6 @@ end
 ```
 
 ## rescue narrows by multiple exception classes
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -260,10 +232,6 @@ end
 ```
 
 ## rescue narrows by splat exception classes
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -316,10 +284,6 @@ end
 ```
 
 ## rescue reference variable unions with existing local
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -491,10 +455,6 @@ end
 
 ## Modifier rescue unions success and rescue expressions
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -538,10 +498,6 @@ end
 ```
 
 ## retry only hides the fallback when the guard holds on every rescue entry
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -662,10 +618,6 @@ end
 
 ## Rescue splat unions the clause literals
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -711,10 +663,6 @@ end
 ```
 
 ## Begin rescue else tracks local per clause
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -772,10 +720,6 @@ end
 ```
 
 ## Retry unions the begin return across re-entry
-
-```yaml
-known_issue: true
-```
 
 ### update
 

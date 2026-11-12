@@ -131,10 +131,6 @@ end
 
 ## Source methods distinguish yielded blocks from unused blocks
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -493,11 +489,11 @@ end
 
 ```rbs
 class LiteralArgumentBlockPath
-  def conditionally_overwrite_alias: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_from_case: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_after_loop: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_from_rescue: (Symbol flag, ?untyped &block) -> :ignored
-  def invoke_after_short_circuit: (Symbol flag, ?untyped &block) -> :ignored
+  def conditionally_overwrite_alias: (Symbol flag) ?{ (?) -> untyped } -> :ignored
+  def invoke_from_case: (Symbol flag) ?{ (?) -> untyped } -> :ignored
+  def invoke_after_loop: (Symbol flag) ?{ (?) -> untyped } -> :ignored
+  def invoke_from_rescue: (Symbol flag) ?{ (?) -> untyped } -> :ignored
+  def invoke_after_short_circuit: (Symbol flag) ?{ (?) -> untyped } -> :ignored
   def maybe_overwritten: -> :before
   def from_case: -> :after
   def after_loop: -> :before
@@ -507,10 +503,6 @@ end
 ```
 
 ## Literal arguments decide only what the callee reads unchanged
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -670,10 +662,6 @@ end
 
 ## A redefined literal case equality keeps every when arm
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -730,8 +718,8 @@ end
 
 ```rbs
 class DirectBlockCall
-  def invoke: (?untyped &block) -> untyped
-  def ignore: (?untyped &block) -> :ignored
+  def invoke: () ?{ (?) -> untyped } -> untyped
+  def ignore: () ?{ (?) -> untyped } -> :ignored
 end
 ```
 
@@ -1004,10 +992,6 @@ end
 
 ## find with ifnone proc
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1027,10 +1011,6 @@ end
 ```
 
 ## find and detect narrow with class predicate
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1111,10 +1091,6 @@ end
 ```
 
 ## detect narrows with constant alias predicate
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1843,7 +1819,7 @@ foo { |x| x }
 
 ```rbs
 class Object < BasicObject
-  def foo: (?untyped &blk) -> [1]
+  def foo: () ?{ (?) -> untyped } -> [1]
 end
 ```
 

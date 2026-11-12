@@ -118,10 +118,6 @@ end
 
 ## Match-last-line and flip-flop predicates do not erase branch types
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

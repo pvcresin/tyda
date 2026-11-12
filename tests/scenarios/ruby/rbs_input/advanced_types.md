@@ -2,10 +2,6 @@
 
 ## Intersection return type
 
-```yaml
-known_issue: true
-```
-
 ```rbs
 class Sorter
   def sorted_first: (Array[Comparable & Enumerable] items) -> (Comparable & Enumerable)

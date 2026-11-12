@@ -32,10 +32,6 @@ end
 
 ## Forwarded arguments through explicit super ellipsis
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

@@ -285,6 +285,20 @@ impl InferenceEngine<'_> {
         let receiver_type = scope.get(&local_name(&receiver)?)?.clone();
         let value_type = match &receiver_type {
             Type::Hash(_, value) => value.as_deref().cloned(),
+            // `opts = given || {}`: the given value is not known yet, so the hash decides.
+            Type::Union(members) => {
+                let mut hashes = members.iter().filter(|m| matches!(m, Type::Hash(..)));
+                let Some(Type::Hash(_, value)) = hashes.next() else {
+                    return None;
+                };
+                let others_unknown = members
+                    .iter()
+                    .all(|m| matches!(m, Type::Hash(..) | Type::Untyped) || !Self::is_concrete(m));
+                if hashes.next().is_some() || !others_unknown {
+                    return None;
+                }
+                value.as_deref().cloned()
+            }
             _ => return None,
         };
         if self.static_collection_has_source_method_override(&receiver_type, "[]", scope) {

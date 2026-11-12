@@ -282,10 +282,6 @@ end
 
 ## Non-literal numeric subjects can match numeric literal patterns of another class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -328,10 +324,6 @@ end
 ```
 
 ## Numeric literal patterns stay reachable for other numeric subjects
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1156,10 +1148,6 @@ end
 
 ## Keep both case arms because the literal guard is not evaluated
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1438,10 +1426,6 @@ end
 
 ## Check the class before narrowing a hash pattern
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1551,10 +1535,6 @@ end
 
 ## Keep class pattern branches open under an active equality refinement
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1624,10 +1604,6 @@ end
 
 ## A catch-all binding after a nil pattern excludes nil
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```rbs
@@ -1656,10 +1632,6 @@ end
 ```
 
 ## A range pattern on an Integer keeps both branches
-
-```yaml
-known_issue: true
-```
 
 ### update
 

@@ -18,10 +18,6 @@ end
 
 ## Apply anonymous block parameter to signature
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -293,10 +289,6 @@ end
 
 ## Destructure binds inner names in order
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -499,10 +491,6 @@ end
 ```
 
 ## All parameter kinds keep their signature order
-
-```yaml
-known_issue: true
-```
 
 ### update
 

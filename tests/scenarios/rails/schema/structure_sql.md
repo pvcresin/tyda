@@ -125,3 +125,36 @@ class Post < ApplicationRecord
   def foo: -> String
 end
 ```
+
+## Read a column named key from structure.sql
+
+### update
+
+`db/structure.sql`
+
+```sql
+CREATE TABLE public.variables (
+    id bigint NOT NULL,
+    key character varying NOT NULL,
+    description text
+);
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Variable < ApplicationRecord
+  def name = key
+
+  def summary = description
+end
+```
+
+### result
+
+```rbs
+class Variable < ApplicationRecord
+  def name: -> String
+  def summary: -> String?
+end
+```

@@ -36,10 +36,6 @@ end
 
 ## Endless method inside class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

@@ -160,10 +160,6 @@ end
 
 ## Lambda optional parameter uses its default value
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -184,10 +180,6 @@ end
 ```
 
 ## Lambda rest parameter collects the call arguments
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -210,10 +202,6 @@ end
 
 ## Lambda post parameter takes the last call argument
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -234,10 +222,6 @@ end
 ```
 
 ## Lambda keyword parameter takes the call keyword or its default
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -266,10 +250,6 @@ end
 
 ## Lambda block parameter receives the call block
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -290,10 +270,6 @@ end
 ```
 
 ## Lambda positional parameter receives keyword arguments as a hash
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -316,10 +292,6 @@ end
 
 ## Proc spreads a single array argument over its parameters
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -340,10 +312,6 @@ end
 ```
 
 ## return inside a lambda leaves only the lambda
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -366,10 +334,6 @@ end
 
 ## break inside a lambda leaves only the lambda
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -386,5 +350,47 @@ end
 ```rbs
 class Runner
   def run: -> "text"
+end
+```
+
+## Proc keeps a single array argument with one positional parameter
+
+### update
+
+```ruby
+class Runner
+  def with_block = proc { |first, &block| first }.call([1, 2])
+  def with_keyword = proc { |first, key: 1| first }.call([1, 2])
+  def with_default = proc { |first = 5| first }.call([1, 2])
+  def trailing_comma = proc { |first, | first }.call([1, 2])
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def with_block: -> [1, 2]
+  def with_keyword: -> [1, 2]
+  def with_default: -> [1, 2]
+  def trailing_comma: -> 1
+end
+```
+
+## Lambda rest parameter receives keyword arguments as a hash
+
+### update
+
+```ruby
+class Runner
+  def run = ->(*items) { items }.call(1, key: 2)
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: -> [1, { key: 2 }]
 end
 ```

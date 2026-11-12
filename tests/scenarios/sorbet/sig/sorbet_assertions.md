@@ -271,10 +271,6 @@ end
 
 ## T.all T.let keeps intersection
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

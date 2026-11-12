@@ -2701,6 +2701,15 @@ fn build_engine_with_timings<'a>(
             timings.parameter_reference_resolution =
                 parameter_reference_resolution_started.elapsed();
         }
+        if !resolution_depth.keeps_only_exported_facts()
+            && engine.has_self_calls_reaching_subclass_returns()
+        {
+            // Subclass methods that took their parameters from a parent's self calls now return
+            // types the parent's calls can read.
+            let resolve_subclass_method_refs_started = Instant::now();
+            engine.resolve_subclass_method_refs();
+            timings.resolve_subclass_method_refs += resolve_subclass_method_refs_started.elapsed();
+        }
 
         if resolution_depth.replays_deferred_block_receiver_bodies() {
             let backward_propagate_started = Instant::now();

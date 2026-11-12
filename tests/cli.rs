@@ -475,6 +475,31 @@ fn coverage_includes_arguments_of_unresolved_receiver_calls() {
 }
 
 #[test]
+fn coverage_keeps_call_sites_decided_by_local_hash_key_facts() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("hash_key_fact.rb");
+    fs::write(
+        &rb_file,
+        "class Picker\n  def pick(given)\n    opts = given || {}\n    opts[:key] = \"value\"\n    opts[:key]\n  end\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    // `opts[:key]` and its receiver stay observed although the fact decides the result.
+    assert_eq!(report["references"]["total"], 7);
+    assert_eq!(report["by_kind"]["method_call"]["total"], 1);
+    assert_eq!(report["by_kind"]["value"]["total"], 5);
+    assert_eq!(report["by_kind"]["method_return"]["typed"], 1);
+}
+
+#[test]
 fn coverage_resolves_cross_file_references_after_workspace_merge() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
@@ -484,7 +509,7 @@ fn coverage_resolves_cross_file_references_after_workspace_merge() {
     .expect("failed to write producer");
     fs::write(
         dir.path().join("consumer.rb"),
-        "class Consumer\n  def value = Producer.new.value\nend\n\nConsumer.new.value\n",
+        "class Consumer\n  def value = Producer.new.value\n  def producer_class = Producer\nend\n\nConsumer.new.value\n",
     )
     .expect("failed to write consumer");
 
@@ -510,6 +535,93 @@ fn coverage_resolves_cross_file_references_after_workspace_merge() {
             .as_u64()
             .is_some_and(|count| count > 0),
         "a method call resolved through the workspace should be typed: {report}"
+    );
+}
+
+#[test]
+fn coverage_types_splat_argument_resolved_from_caller_block() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("packager.rb");
+    fs::write(
+        &rb_file,
+        r#"class Packager
+  def release
+    path = nil
+    step { path = build }
+    step { publish(path) }
+  end
+
+  def step = yield
+  def build = "pkg.gem"
+
+  def publish(path)
+    run(["gem", *command, path])
+  end
+
+  def command = ["push"]
+  def run(args) = args
+end
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["by_kind"]["method_parameter"]["total"], 2);
+    assert_eq!(
+        report["by_kind"]["method_parameter"]["typed"], 2,
+        "a splat argument whose parts are known should not stay deferred: {report}"
+    );
+}
+
+#[test]
+fn coverage_binds_constructor_ivar_through_inherited_self_call() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("holder.rb");
+    fs::write(
+        &rb_file,
+        r#"class Holder
+  def initialize(value)
+    @value = value
+  end
+end
+
+class Base
+  def update(record) = handle(record)
+end
+
+class Sub < Base
+  def handle(record) = build(record)
+  def build(record) = Holder.new(record)
+end
+
+class Caller
+  def run(item) = Base.new.update(item.record)
+end
+
+Sub.new.build("r")
+"#,
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    assert_eq!(report["by_kind"]["instance_variable"]["total"], 1);
+    assert_eq!(
+        report["by_kind"]["instance_variable"]["unknown"], 0,
+        "a caller's parameter marker must not leak into the ivar: {report}"
     );
 }
 
@@ -4795,4 +4907,175 @@ fn known_issue_io_read_through_parameters_in_a_single_file() {
         read.contains("def read_part: (File file, Integer len) -> String\n"),
         "known issue fixed (IO#read through a parameter); drop this check: {read}"
     );
+}
+
+/// Cross-file relation chains resolve in the merged registry after the engines finish, so
+/// that registry must apply the project's Rails version like the engine does.
+#[test]
+fn deferred_relation_methods_follow_the_project_rails_version() {
+    fn render_query(rails_version: &str) -> String {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+        fs::write(
+            dir.path().join("Gemfile.lock"),
+            format!("GEM\n  specs:\n    rails ({rails_version})\n"),
+        )
+        .expect("write Gemfile.lock");
+        let models = dir.path().join("app").join("models");
+        let services = dir.path().join("app").join("services");
+        fs::create_dir_all(&models).expect("models dir");
+        fs::create_dir_all(&services).expect("services dir");
+        fs::write(
+            models.join("application_record.rb"),
+            "class ApplicationRecord < ActiveRecord::Base\nend\n",
+        )
+        .expect("write application_record");
+        fs::write(
+            models.join("post.rb"),
+            "class Post < ApplicationRecord\n  def self.published = where(id: 1)\nend\n",
+        )
+        .expect("write post");
+        fs::write(
+            services.join("finder.rb"),
+            "class Finder\n  def self.scope = Post.published\nend\n",
+        )
+        .expect("write finder");
+        fs::write(
+            services.join("query.rb"),
+            "class Query\n  def reselected = Finder.scope.reselect(:id)\n  def combined = Finder.scope.and(Post.all)\n  def ordered = Finder.scope.order(:id)\nend\n",
+        )
+        .expect("write query");
+        let output = tyda_bin()
+            .current_dir(dir.path())
+            .arg("app")
+            .output()
+            .expect("failed to run");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    let relation = "-> ActiveRecord::Relation[Post]";
+    let rails_6_1 = render_query("6.1.0");
+    assert!(
+        rails_6_1.contains(&format!("def reselected: {relation}")),
+        "{rails_6_1}"
+    );
+    assert!(
+        rails_6_1.contains(&format!("def combined: {relation}")),
+        "{rails_6_1}"
+    );
+
+    // `reselect` is 6.0+ and `and` is 6.1+; `order` is available in every version.
+    let rails_5_2 = render_query("5.2.0");
+    assert!(
+        rails_5_2.contains("def reselected: -> untyped"),
+        "{rails_5_2}"
+    );
+    assert!(
+        rails_5_2.contains("def combined: -> untyped"),
+        "{rails_5_2}"
+    );
+    assert!(
+        rails_5_2.contains(&format!("def ordered: {relation}")),
+        "{rails_5_2}"
+    );
+}
+
+/// Records delegation (`length` on an association proxy) must also apply when the merged
+/// registry resolves a cross-file call after the engines finish.
+#[test]
+fn deferred_relation_calls_delegate_to_records() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+    let models = dir.path().join("app").join("models");
+    fs::create_dir_all(&models).expect("models dir");
+    fs::write(
+        models.join("application_record.rb"),
+        "class ApplicationRecord < ActiveRecord::Base\nend\n",
+    )
+    .expect("write application_record");
+    fs::write(
+        models.join("post.rb"),
+        "class Post < ApplicationRecord\n  has_many :attestations\nend\n",
+    )
+    .expect("write post");
+    fs::write(
+        models.join("attestation.rb"),
+        "class Attestation < ApplicationRecord\n  belongs_to :post\nend\n",
+    )
+    .expect("write attestation");
+    fs::write(
+        models.join("other.rb"),
+        "class Other\n  def count = Post.new.attestations.length\nend\n",
+    )
+    .expect("write other");
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("app")
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("def count: -> Integer"), "{stdout}");
+}
+
+/// A `belongs_to` declaration stays visible when the schema already provides the
+/// foreign-key reader: the source method replaces the generated one when files merge.
+#[test]
+fn association_declarations_replace_schema_foreign_key_readers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+    let db = dir.path().join("db");
+    let models = dir.path().join("app").join("models").join("achievements");
+    fs::create_dir_all(&db).expect("db dir");
+    fs::create_dir_all(&models).expect("models dir");
+    fs::write(
+        db.join("structure.sql"),
+        "CREATE TABLE achievements (\n    id bigint NOT NULL\n);\nCREATE TABLE user_achievements (\n    id bigint NOT NULL,\n    achievement_id bigint NOT NULL\n);\nALTER TABLE ONLY user_achievements\n    ADD CONSTRAINT fk_rails_1 FOREIGN KEY (achievement_id) REFERENCES achievements(id);\n",
+    )
+    .expect("write structure.sql");
+    fs::write(
+        models.join("achievement.rb"),
+        "module Achievements\n  class Achievement < ApplicationRecord\n  end\nend\n",
+    )
+    .expect("write achievement");
+    fs::write(
+        models.join("user_achievement.rb"),
+        "module Achievements\n  class UserAchievement < ApplicationRecord\n    belongs_to :achievement\n  end\nend\n",
+    )
+    .expect("write user_achievement");
+    let output = tyda_bin()
+        .current_dir(dir.path())
+        .arg("app")
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("def achievement: -> Achievements::Achievement"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("def achievement=:"), "{stdout}");
+}
+
+#[test]
+fn diagnostics_keyword_hash_read_interpolating_a_constant_is_not_nil() {
+    // A keyword hash read in a value interpolating a constant, followed by a block call,
+    // once reported `NilClass#[]`.
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("card.rb");
+    fs::write(
+        &rb_file,
+        "class Card\n  def item_link(**options)\n    options[:class] = \"#{options[:class]} #{ITEM}\"\n    wrap do\n      link(**options)\n    end\n  end\n  ITEM = \"a\"\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("NilClass"), "got: {stdout}");
 }

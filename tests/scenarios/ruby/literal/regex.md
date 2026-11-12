@@ -267,10 +267,6 @@ end
 
 ## Regexp literal in if condition
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

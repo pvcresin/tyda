@@ -27,6 +27,7 @@ Tyda はコンパイラではなく型推論器である。壊れた入力でも
 | 権威ある param との確実な型不一致 | error |
 | 権威ある戻り値型との確実な不一致 | error |
 | `untyped`、未解決 ref、開いた `method_missing` 面 | Unknown として沈黙 |
+| 実行時に計算した module の `include`、未知の class macro が生成しうる名前 | 開いた method surface として沈黙 |
 | 病的入力で complexity / fuel / union の安全上限に到達 | 影響部分を `untyped` にし、診断を出す。通常の大規模 OSS では発動させない |
 
 祖先 chain に未解決 edge がある場合、class の method surface は完全とはみなさない。

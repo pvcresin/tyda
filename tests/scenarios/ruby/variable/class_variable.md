@@ -2,10 +2,6 @@
 
 ## Read and write class variable
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -53,10 +49,6 @@ end
 ```
 
 ## Multiple class variable writes return union
-
-```yaml
-known_issue: true
-```
 
 ### update
 

@@ -95,7 +95,7 @@ def foo(&block) = 42
 
 ```rbs
 class Object < BasicObject
-  def foo: (?untyped &block) -> 42
+  def foo: () ?{ (?) -> untyped } -> 42
 end
 ```
 
@@ -169,10 +169,6 @@ end
 ```
 
 ## Splat argument that covers a required arg can also fill the optional parameter
-
-```yaml
-known_issue: true
-```
 
 ### update
 
