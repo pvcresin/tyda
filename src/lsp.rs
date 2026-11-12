@@ -5201,7 +5201,7 @@ end
     }
 
     #[test]
-    fn hover_contents_append_resolved_type_params() {
+    fn hover_contents_omit_receiver_type_params() {
         let contents = format_hover_body(&crate::analysis::HoverResult {
             name: "each".to_string(),
             ty: crate::types::Type::Array(Some(Box::new(crate::types::Type::Integer))),
@@ -5215,7 +5215,7 @@ end
         });
         assert_eq!(
             contents,
-            "[Tyda] () -> Enumerator[Integer, Array[Integer]]\n    | () { (Integer item) -> void } -> Array[Integer]\n# type params: Elem = Integer"
+            "[Tyda] () -> Enumerator[Integer, Array[Integer]]\n    | () { (Integer item) -> void } -> Array[Integer]"
         );
     }
 
@@ -5292,7 +5292,7 @@ end
         assert_eq!(hover.name, "each");
         let display_rbs = hover.display_rbs.expect("callable signature");
         assert!(display_rbs.contains("each:"));
-        assert!(display_rbs.contains("Integer element"));
+        assert!(display_rbs.contains("1 | 2 element"), "{display_rbs}");
     }
 
     #[test]
@@ -5305,7 +5305,7 @@ end
 
         assert_eq!(hover.name, "map");
         let display = format_hover_body(&hover);
-        assert!(display.contains("(Integer item) -> Integer"));
+        assert!(display.contains("(1 | 2 | 3 item) -> Integer"), "{display}");
         assert!(display.contains("-> Array[Integer]"));
         assert!(!display.contains("Enumerator"));
     }
@@ -8106,7 +8106,7 @@ end
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn lsp_hover_resolves_bare_method_call_and_type_params() {
+    async fn lsp_hover_resolves_bare_method_call() {
         let dir = tempdir().expect("tempdir");
         let uri = Url::from_file_path(dir.path().join("sample.rb")).expect("file uri");
         let source = concat!(
@@ -8149,7 +8149,7 @@ end
                 assert_eq!(language_string.language, "rbs");
                 assert_eq!(
                     language_string.value,
-                    "[Tyda] () { (Integer element) -> void } -> Array[Integer]\n# type params: E = Integer"
+                    "[Tyda] () { (Integer element) -> void } -> Array[Integer]"
                 );
             }
             other => panic!("unexpected hover contents: {other:?}"),
@@ -8185,8 +8185,12 @@ end
         match hover.contents {
             HoverContents::Scalar(MarkedString::LanguageString(language_string)) => {
                 assert_eq!(language_string.language, "rbs");
-                assert!(language_string.value.contains("[Tyda] [Integer] () {"));
-                assert!(language_string.value.contains("(Integer item) -> Integer"));
+                assert!(language_string.value.starts_with("[Tyda] () {"));
+                assert!(
+                    language_string
+                        .value
+                        .contains("(1 | 2 | 3 item) -> Integer")
+                );
                 assert!(language_string.value.contains("-> Array[Integer]"));
                 assert!(!language_string.value.contains("Enumerator"));
             }

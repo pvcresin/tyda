@@ -87,7 +87,7 @@ claude mcp add --transport stdio --scope project tyda -- tyda mcp
 }
 ```
 
-結果は `found` と推論型 `inferred_type` を中心とした JSON object で返る。`display_rbs` があれば型の RBS 表記として参照できる。型が見つからない場合は `found: false` になる。source 上限や位置が不正な場合は `code` と `message` を含む tool error を返す。
+結果は `found` と推論型 `inferred_type` を中心とした JSON object で返る。`display_rbs` があれば型の RBS 表記として参照できる。`type_parameters` は receiver（変数なら値、メソッド定義なら定義元）の型引数で、editor の hover 本文には出さない。型が見つからない場合は `found: false` になる。source 上限や位置が不正な場合は `code` と `message` を含む tool error を返す。
 
 ```json
 {

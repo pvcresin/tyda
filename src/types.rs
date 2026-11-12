@@ -1639,7 +1639,6 @@ pub struct OverloadSig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HoverOverloadSig {
-    pub method_type_params: Vec<Type>,
     pub params: Vec<Param>,
     pub return_type: Type,
     pub block: Option<HoverBlockSig>,

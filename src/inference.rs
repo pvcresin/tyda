@@ -13188,9 +13188,7 @@ impl<'a> InferenceEngine<'a> {
         for snap in snapshots {
             let key = (snap.start, snap.end);
             if let Some(index) = seen.get(&key).copied() {
-                if Self::value_hover_snapshot_is_untyped(&out[index])
-                    && Self::value_hover_snapshot_is_typed(&snap)
-                {
+                if Self::hover_snapshot_upgrades(&out[index], &snap) {
                     out[index] = snap;
                 }
             } else {
@@ -13201,12 +13199,29 @@ impl<'a> InferenceEngine<'a> {
         out
     }
 
-    fn value_hover_snapshot_is_untyped(snapshot: &HoverSnapshot) -> bool {
-        matches!(&snapshot.target, HoverTarget::Value(ty) if *ty == Type::Untyped)
-    }
-
-    fn value_hover_snapshot_is_typed(snapshot: &HoverSnapshot) -> bool {
-        matches!(&snapshot.target, HoverTarget::Value(ty) if *ty != Type::Untyped)
+    /// Blocks are walked once without and once with declared param types, so the
+    /// same span can get an untyped snapshot first and a typed one later.
+    fn hover_snapshot_upgrades(current: &HoverSnapshot, candidate: &HoverSnapshot) -> bool {
+        match (&current.target, &candidate.target) {
+            (HoverTarget::Value(current_ty), HoverTarget::Value(candidate_ty)) => {
+                *current_ty == Type::Untyped && *candidate_ty != Type::Untyped
+            }
+            (
+                HoverTarget::MethodCall {
+                    receiver_type: current_receiver,
+                    ..
+                },
+                HoverTarget::MethodCall {
+                    receiver_type: candidate_receiver,
+                    ..
+                },
+            ) => {
+                current.name == candidate.name
+                    && *current_receiver == Type::Untyped
+                    && *candidate_receiver != Type::Untyped
+            }
+            _ => false,
+        }
     }
 
     pub fn into_file_analysis_snapshot(mut self) -> FileAnalysisSnapshot {

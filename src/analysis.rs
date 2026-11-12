@@ -934,9 +934,6 @@ pub fn format_hover_body(hover_result: &HoverResult) -> String {
         })
         .unwrap_or(ty_str);
     let mut lines = vec![format!("[Tyda] {}", truncate_hover_body(&body))];
-    if let Some(type_params) = format_hover_type_params(&hover_result.type_params) {
-        lines.push(format!("# type params: {type_params}"));
-    }
     if hover_result.display_rbs.is_none()
         && let Some(ref method) = hover_result.unresolved_method
     {
@@ -963,19 +960,6 @@ fn truncate_hover_body(body: &str) -> String {
         .unwrap_or(truncated.len());
     let prefix = truncated[..end].trim_end();
     format!("{prefix}…")
-}
-
-fn format_hover_type_params(type_params: &[(String, Type)]) -> Option<String> {
-    if type_params.is_empty() {
-        return None;
-    }
-    Some(
-        type_params
-            .iter()
-            .map(|(name, ty)| format!("{name} = {}", user_facing_type(ty)))
-            .collect::<Vec<_>>()
-            .join(", "),
-    )
 }
 
 /// Suppresses broken syntax regions and one-line diagnostic comments (shared by CLI / LSP / playground).
@@ -5013,11 +4997,59 @@ end
             .find(|hover| hover.name == "map")
             .expect("expected hover on map");
 
-        assert!(hover.display.starts_with("[Tyda] [Integer] () {"));
-        assert!(hover.display.contains("(Integer item) -> Integer"));
+        assert!(
+            hover.display.starts_with("[Tyda] () {"),
+            "{}",
+            hover.display
+        );
+        assert!(hover.display.contains("(1 | 2 | 3 item) -> Integer"));
         assert!(hover.display.contains("-> Array[Integer]"));
         assert!(!hover.display.contains("Enumerator"));
         assert_eq!(hover.display.matches("-> Array[Integer]").count(), 1);
+    }
+
+    #[test]
+    fn playground_method_hover_shows_only_the_concrete_signature() {
+        let loader = playground_loader();
+        let source = "class User\n  def a = [1].sort()\n  def b = [1].map { |v| v.to_s }\nend\n";
+        let result = playground_analyze(source, "", &loader, "probe.rb");
+        let display = |name: &str| {
+            result
+                .hovers
+                .iter()
+                .find(|hover| hover.name == name)
+                .map(|hover| hover.display.clone())
+                .unwrap_or_else(|| panic!("expected hover on {name}"))
+        };
+
+        assert_eq!(display("sort"), "[Tyda] () -> Array[1]");
+        assert_eq!(
+            display("map"),
+            "[Tyda] () { (1 item) -> String } -> Array[String]"
+        );
+    }
+
+    #[test]
+    fn playground_hover_resolves_calls_on_block_values() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class User\n",
+            "  def a = [1].map { |n| n.to_s }\n",
+            "  def b = [1, 2].select { |n| n > 1 }\n",
+            "end\n",
+        );
+        let result = playground_analyze(source, "", &loader, "probe.rb");
+        let display = |name: &str| {
+            result
+                .hovers
+                .iter()
+                .find(|hover| hover.name == name)
+                .map(|hover| hover.display.clone())
+                .unwrap_or_else(|| panic!("expected hover on {name}"))
+        };
+
+        assert_eq!(display("to_s"), "[Tyda] (?Integer base) -> String");
+        assert_eq!(display(">"), "[Tyda] (Numeric arg0) -> bool");
     }
 
     #[test]
@@ -5031,7 +5063,7 @@ end
             .find(|hover| hover.name == "map")
             .expect("expected hover on map");
         assert!(
-            hover.display.contains("[1 | 2 | 3] () {"),
+            hover.display.starts_with("[Tyda] () {"),
             "{}",
             hover.display
         );
@@ -5051,7 +5083,7 @@ end
             .expect("expected hover on group_by");
 
         assert!(
-            hover.display.contains("[1 | 2 | 3] () {"),
+            hover.display.starts_with("[Tyda] () {"),
             "{}",
             hover.display
         );
@@ -5075,7 +5107,11 @@ end
             .find(|hover| hover.name == "consume")
             .expect("expected hover on consume");
 
-        assert!(hover.display.contains("[\"value\"]"), "{}", hover.display);
+        assert!(
+            hover.display.starts_with("[Tyda] () {"),
+            "{}",
+            hover.display
+        );
         assert!(
             hover.display.contains("(Integer arg0) -> \"value\""),
             "{}",
@@ -5101,7 +5137,11 @@ end
             .find(|hover| hover.name == "consume")
             .expect("expected hover on consume");
 
-        assert!(hover.display.contains("[Integer]"), "{}", hover.display);
+        assert!(
+            hover.display.starts_with("[Tyda] () {"),
+            "{}",
+            hover.display
+        );
         assert!(
             hover
                 .display
@@ -5129,7 +5169,11 @@ end
             .find(|hover| hover.name == "consume")
             .expect("expected hover on consume");
 
-        assert!(hover.display.contains("[Integer]"), "{}", hover.display);
+        assert!(
+            hover.display.starts_with("[Tyda] () {"),
+            "{}",
+            hover.display
+        );
         assert!(
             hover.display.contains("Array[Integer]"),
             "{}",
@@ -5150,7 +5194,11 @@ end
             .find(|hover| hover.name == "consume")
             .expect("expected hover on consume");
 
-        assert!(hover.display.contains("[Integer]"), "{}", hover.display);
+        assert!(
+            hover.display.starts_with("[Tyda] () {"),
+            "{}",
+            hover.display
+        );
         assert!(
             hover.display.contains("Array[Integer]"),
             "{}",
@@ -5170,7 +5218,11 @@ end
             .find(|hover| hover.name == "consume")
             .expect("expected hover on consume");
 
-        assert!(hover.display.contains("[1 | 2 | 3]"), "{}", hover.display);
+        assert!(
+            hover.display.starts_with("[Tyda] () {"),
+            "{}",
+            hover.display
+        );
         assert!(
             hover.display.contains("(1 | 2 | 3 arg0) -> (1 | 2 | 3)?"),
             "{}",

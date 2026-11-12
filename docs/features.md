@@ -166,7 +166,7 @@ LSP は TypeProf VSCode 拡張が期待する起動・version・request 契約�
 
 - incremental text sync（full change も受理）
 - Hover、CodeLens、definition、typeDefinition、completion
-- method hover は呼び出し形に合う RBS overload を選び、推論済みの引数・戻り値から generic と block 型を具体化する。あとで解決する引数（parameter や未解決 receiver の呼び出し結果。nil / truthy guard で絞った値も含む）は、受理する overload の戻り値が `nil` 以外で食い違うなら `untyped` にする（`["e"] * n` は `String` と決めない）
+- method hover は呼び出し形に合う RBS overload を選び、推論済みの引数・戻り値から generic と block 型を具体化する。型の精度は CLI / CodeLens の RBS と揃え、型引数は signature に代入して別に表示しない。あとで解決する引数（parameter や未解決 receiver の呼び出し結果。nil / truthy guard で絞った値も含む）は、受理する overload の戻り値が `nil` 以外で食い違うなら `untyped` にする（`["e"] * n` は `String` と決めない）
 - Playground は入力中の Ruby とユーザー RBS を debounce 解析し、RBS の変更も同じ hover / diagnostics に反映する
 - CodeLens は LSP と Playground で、クラスやモジュールの外にある未注釈の `def` にも推論シグネチャを表示する
 - completion は LSP と Playground で同じ判定と候補を使う。`recv.` は推論した receiver 型のメソッド、`Foo::` はネストした定数、`send(:` / `try(:` はメソッド名を補完する。receiver 型は補完位置を未定義メソッドの呼び出しに置き換えて推論するので、`[1, 2].`、`(a + b).`、行頭の `.` で続くチェーン、`x&.`（nil を除く）でも通常の呼び出しと同じ型になる。メソッド候補は継承の近さ（受け手のクラス、include した module や親クラス、`Kernel` / `BasicObject` の順）で並べ、各層の中では `!=` や `[]` などの記号のメソッドを後ろに置く。union の receiver では各型でいちばん遠い位置を使う。候補の右には定義元のクラスを表示する（LSP は `labelDetails.description`）
