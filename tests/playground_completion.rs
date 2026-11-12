@@ -185,9 +185,39 @@ fn completes_module_functions_without_class_methods() {
     let completion = complete("Math.<caret>\n", "").expect("completion");
     let labels = labels(&completion);
     assert!(labels.contains(&"sqrt"), "{labels:?}");
-    assert!(labels.contains(&"module_function"), "{labels:?}");
-    assert!(!labels.contains(&"new"), "{labels:?}");
-    assert!(!labels.contains(&"superclass"), "{labels:?}");
+    assert!(labels.contains(&"const_get"), "{labels:?}");
+    for hidden in ["new", "superclass", "module_function"] {
+        assert!(!labels.contains(&hidden), "{hidden}: {labels:?}");
+    }
+}
+
+#[test]
+fn hides_methods_declared_private_in_rbs() {
+    let rbs = "class Service\n  def self.build: () -> Service\n  def run: () -> void\n  alias start run\n\n  private\n\n  def helper: () -> void\n  attr_reader cache: Integer\n  alias assist helper\n  def self.cached: () -> Service\n  public def open: () -> void\n\n  public\n\n  def close: () -> void\nend\n";
+    let completion = complete("Service.build.<caret>\n", rbs).expect("completion");
+    let names = labels(&completion);
+    for shown in ["run", "start", "open", "close"] {
+        assert!(names.contains(&shown), "{shown}: {names:?}");
+    }
+    for hidden in ["helper", "cache", "assist", "raise", "fail"] {
+        assert!(!names.contains(&hidden), "{hidden}: {names:?}");
+    }
+
+    let completion = complete("Service.<caret>\n", rbs).expect("completion");
+    let names = labels(&completion);
+    for shown in ["build", "cached", "new"] {
+        assert!(names.contains(&shown), "{shown}: {names:?}");
+    }
+    for hidden in ["inherited", "module_function", "raise"] {
+        assert!(!names.contains(&hidden), "{hidden}: {names:?}");
+    }
+
+    let source = "class Service\n  def call\n    self.<caret>\n  end\nend\n";
+    let completion = complete(source, rbs).expect("completion");
+    let names = labels(&completion);
+    for shown in ["helper", "assist", "run"] {
+        assert!(names.contains(&shown), "{shown}: {names:?}");
+    }
 }
 
 #[test]

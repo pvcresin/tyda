@@ -57,7 +57,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 
 ## 低
 
-- [ ] `.rbs` / `.rbi` 宣言の visibility を取り込む（RBS の `private` 節が未対応のため、`Kernel#raise` や `Class#inherited` が明示 receiver の補完に残る）
+- [ ] `.rbi` 宣言の visibility を取り込む
 - [ ] deferred param receiver の連鎖・arity 依存ケースを広げる
 - [ ] `argument_type_mismatch` の arity / external param 対応を広げる
 - [ ] LSP references / completion を拡張する

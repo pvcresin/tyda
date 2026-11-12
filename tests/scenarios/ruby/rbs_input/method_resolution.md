@@ -1198,3 +1198,46 @@ class Child < Base
   def run: -> :ok
 end
 ```
+
+## An explicit receiver cannot call a method declared private in RBS
+
+### update
+
+```rbs
+class Service
+  def run: () -> Integer
+  alias start run
+
+  private
+
+  def helper: () -> Integer
+  alias assist helper
+  def self.build: () -> Service
+
+  public def open: () -> String
+end
+```
+
+```ruby
+class Client
+  def run = Service.new.run
+  def start = Service.new.start
+  def open = Service.new.open
+  def build = Service.build
+  def helper = Service.new.helper
+  def assist = Service.new.assist
+end
+```
+
+### result
+
+```rbs
+class Client
+  def run: -> Integer
+  def start: -> Integer
+  def open: -> String
+  def build: -> Service
+  def helper: -> untyped
+  def assist: -> untyped
+end
+```

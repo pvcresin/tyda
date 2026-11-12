@@ -736,6 +736,15 @@ fn apply_method_aliases(
                     loc: None,
                 },
             );
+            // An alias keeps the visibility of its original method.
+            if declared_method_is_private(original, is_singleton) {
+                registry.set_method_visibility(
+                    class_name,
+                    &alias.new_name,
+                    is_singleton,
+                    Some(Visibility::Private),
+                );
+            }
         } else {
             apply_registry_method_alias(registry, class_name, alias);
         }
@@ -796,6 +805,16 @@ fn register_method_alias_side(
     alias_method.synthetic_dsl_source = false;
     alias_method.loc = None;
     registry.add_method_def(class_name, alias_method);
+    if registry.method_visibility(&source_owner, old_name, source_is_singleton)
+        == Some(Visibility::Private)
+    {
+        registry.set_method_visibility(
+            class_name,
+            new_name,
+            is_singleton,
+            Some(Visibility::Private),
+        );
+    }
     true
 }
 
@@ -1606,16 +1625,23 @@ fn add_methods_to_registry(
                 },
             );
         }
-        // `def self?.x` is a module function: the instance side is private.
-        if matches!(method.kind, rbs_sys::MethodKind::SingletonInstance) {
-            registry.set_method_visibility(
-                class_name,
-                &method.name,
-                false,
-                Some(Visibility::Private),
-            );
+        for &is_singleton in kinds {
+            if declared_method_is_private(method, is_singleton) {
+                registry.set_method_visibility(
+                    class_name,
+                    &method.name,
+                    is_singleton,
+                    Some(Visibility::Private),
+                );
+            }
         }
     }
+}
+
+fn declared_method_is_private(method: &rbs_sys::MethodDecl, is_singleton: bool) -> bool {
+    // `def self?.x` is a module function: the instance side is private.
+    (!is_singleton && matches!(method.kind, rbs_sys::MethodKind::SingletonInstance))
+        || method.visibility == rbs_sys::MethodVisibility::Private
 }
 
 fn method_type_callable_without_block(
