@@ -248,3 +248,33 @@ class Rack::Directory::DirectoryBody
   def each: -> nil
 end
 ```
+
+## Do not infer method params from unbound lambda params
+
+### update
+
+```ruby
+class Headers
+  def [](key)
+    key
+  end
+
+  def to_proc
+    lambda { |x| self[x] }
+  end
+
+  def to_block
+    proc { |x| self[x] }
+  end
+end
+```
+
+### result
+
+```rbs
+class Headers
+  def []: (untyped key) -> untyped
+  def to_proc: -> Proc
+  def to_block: -> Proc
+end
+```
