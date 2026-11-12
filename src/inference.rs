@@ -44,6 +44,7 @@ mod deps;
 mod dsl_patterns;
 mod hash_key_flow;
 pub(crate) mod hover;
+mod macro_forwarding;
 mod method_tables;
 mod passes;
 mod plugins;
@@ -18066,6 +18067,13 @@ impl<'a> InferenceEngine<'a> {
         let saved_ctx = self.enter_method_body_context(body_ctx);
 
         let (_, param_infos) = self.collect_param_info(&def_node, class_name, parse_result);
+        if is_singleton {
+            self.registry.record_macro_forwarded_params(
+                class_name,
+                &method_name,
+                macro_forwarding::forwarded_macro_params(&def_node, &param_infos),
+            );
+        }
 
         // Record hand-written bare ivar readers (no args, body is just reading a single `@ivar`) into the cold set. This is so they qualify for the pure-reader exception in self fact narrowing; it doesn't participate in render's return type resolution (independent of the attr_ivar channel).
         if param_infos.is_empty() && Self::def_body_is_single_ivar_read(&def_node) {

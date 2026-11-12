@@ -33,10 +33,10 @@ impl TypeRegistry {
     }
 
     /// A macro written in Ruby source (`mount_file_store_uploader Uploader` with
-    /// `file_field: :file`) can define methods and replace column accessors named by its
-    /// literal arguments and symbol parameter defaults.
+    /// `file_field: :file`) can define methods named by its literal arguments and symbol
+    /// parameter defaults, and replaces the column accessors its body passes on.
     fn apply_pending_class_macros(&mut self) {
-        let mut jobs: Vec<(String, Vec<Sym>)> = Vec::new();
+        let mut jobs: Vec<(String, Vec<Sym>, Vec<Sym>)> = Vec::new();
         for (class_name, data) in &self.class_data {
             let Some(cold) = data.cold_opt() else {
                 continue;
@@ -56,6 +56,11 @@ impl TypeRegistry {
                 else {
                     continue;
                 };
+                let replaced = self.names_replaced_by_source_macro(
+                    &owner,
+                    method,
+                    args.iter().map(Sym::as_str),
+                );
                 let mut names = args.clone();
                 names.extend(method.param_infos.iter().filter_map(
                     |param| match &param.default_type {
@@ -63,15 +68,17 @@ impl TypeRegistry {
                         _ => None,
                     },
                 ));
-                jobs.push((class_name.to_string(), names));
+                jobs.push((class_name.to_string(), names, replaced));
             }
         }
-        for (class_name, names) in jobs {
+        for (class_name, names, replaced) in jobs {
             if !self.class_inherits_from_active_record(&class_name) {
                 continue;
             }
             for name in names {
                 self.mark_runtime_attribute(&class_name, name.as_str());
+            }
+            for name in replaced {
                 if self
                     .schema_column_accessor_type(&class_name, name.as_str())
                     .is_some()

@@ -415,6 +415,11 @@ impl TypeRegistry {
             if src_cold.has_dynamic_mixin {
                 data.cold_mut().has_dynamic_mixin = true;
             }
+            for entry in &src_cold.macro_forwarded_params {
+                if !data.cold().macro_forwarded_params.contains(entry) {
+                    data.cold_mut().macro_forwarded_params.push(entry.clone());
+                }
+            }
             for entry in &src_cold.pending_class_macros {
                 if !data.cold().pending_class_macros.contains(entry) {
                     data.cold_mut().pending_class_macros.push(entry.clone());

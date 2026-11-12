@@ -2007,6 +2007,9 @@ pub struct ClassDataCold {
     /// Class-body calls (macro name, literal symbol arguments) whose definition was not loaded
     /// yet; resolved against source-defined class methods once the ancestors are known.
     pub pending_class_macros: Vec<(Sym, Vec<Sym>)>,
+    /// Class methods (name, parameter names) whose body passes those parameters on to another
+    /// receiverless call (`mount_uploader(field, uploader)`), so their values name accessors.
+    pub macro_forwarded_params: Vec<(Sym, Vec<Sym>)>,
     /// `include` / `extend` / `prepend` of a module computed at runtime (`include Routing.url_helpers`).
     pub has_dynamic_mixin: bool,
 }
@@ -4009,6 +4012,64 @@ impl TypeRegistry {
         if !names.contains(&name) {
             names.push(name);
         }
+    }
+
+    pub(crate) fn record_macro_forwarded_params(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        params: Vec<Sym>,
+    ) {
+        let method_name = Sym::new(method_name);
+        let entries = &mut self
+            .class_data_mut(class_name)
+            .cold_mut()
+            .macro_forwarded_params;
+        entries.retain(|(name, _)| *name != method_name);
+        if !params.is_empty() {
+            entries.push((method_name, params));
+        }
+    }
+
+    /// The columns a source-defined class macro replaces when called with the literal symbol
+    /// `args`: only names its body passes on to another macro, either from the positional
+    /// arguments or from symbol defaults of forwarded parameters. A macro that merely stores
+    /// the names (`self.attributes_to_nullify += attributes`) leaves the columns alone.
+    pub(crate) fn names_replaced_by_source_macro<'n>(
+        &self,
+        owner: &str,
+        method: &MethodDef,
+        args: impl IntoIterator<Item = &'n str>,
+    ) -> Vec<Sym> {
+        let Some(forwarded) = self.class_data.get(owner).and_then(|data| {
+            data.cold_opt()?
+                .macro_forwarded_params
+                .iter()
+                .find(|(name, _)| *name == method.name)
+                .map(|(_, params)| params)
+        }) else {
+            return Vec::new();
+        };
+        let is_forwarded =
+            |param: &ParamInfo| forwarded.iter().any(|name| name.as_str() == param.name);
+        let forwards_positional = method.param_infos.iter().any(|param| {
+            matches!(
+                param.kind,
+                ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+            ) && is_forwarded(param)
+        });
+        let mut names: Vec<Sym> = if forwards_positional {
+            args.into_iter().map(Sym::new).collect()
+        } else {
+            Vec::new()
+        };
+        names.extend(method.param_infos.iter().filter_map(|param| {
+            match (&param.default_type, is_forwarded(param)) {
+                (Some(Type::LiteralSymbol(name)), true) => Some(*name),
+                _ => None,
+            }
+        }));
+        names
     }
 
     /// Whether a runtime attribute on the class or its ancestors may have generated

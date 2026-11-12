@@ -1199,6 +1199,10 @@ impl<'e, 'src> PluginCx<'e, 'src> {
     }
 }
 
+/// Gem macros that replace the accessor of the column named by their first argument with an
+/// object of their own (CarrierWave uploaders).
+const ACCESSOR_REPLACING_MACROS: &[&str] = &["mount_uploader", "mount_uploaders"];
+
 impl<'a> InferenceEngine<'a> {
     pub(super) fn dsl_plugin_block_self_type(
         &mut self,
@@ -1360,11 +1364,11 @@ impl<'a> InferenceEngine<'a> {
 
     /// A class macro Tyda does not model may define methods named after its arguments
     /// (`attr_encrypted :token` -> `token`, `token_changed?`; `jsonb_accessor :settings,
-    /// level: :integer` -> `level`) and may replace a column's accessor, as uploaders do. The
-    /// same holds for a macro written in a concern or parent class
-    /// (`mount_file_store_uploader Uploader` with `file_field: :file`), whose names come from
-    /// its literal arguments and symbol parameter defaults. On a model, where such a call stays
-    /// silent, those names stay unknown and a named column's schema type no longer applies.
+    /// level: :integer` -> `level`). The same holds for a macro written in a concern or parent
+    /// class (`mount_file_store_uploader Uploader` with `file_field: :file`), whose names come
+    /// from its literal arguments and symbol parameter defaults. On a model, where such a call
+    /// stays silent, those names stay unknown. A column loses its schema type only for a known
+    /// accessor-replacing macro or a source-defined macro passing the name on to another macro.
     fn mark_names_from_class_macro(
         &mut self,
         class_name: &str,
@@ -1379,7 +1383,7 @@ impl<'a> InferenceEngine<'a> {
             .registry
             .first_method_call_owner_cached(class_name, method_name, true);
         let mut names = Self::extract_symbol_args(call_node);
-        let replaces_all_columns = match owner {
+        let replaced_columns = match owner {
             None => {
                 // The definition may come from a concern loaded later.
                 if self.is_active_record_dsl_target(class_name) {
@@ -1388,7 +1392,13 @@ impl<'a> InferenceEngine<'a> {
                         .push_pending_class_macro(class_name, method_name, args);
                 }
                 names.extend(Self::keyword_symbol_keys(call_node, parse_result));
-                false
+                // Without a definition only a macro known to replace the accessor counts;
+                // most name a column to validate or normalize it (`validates_formatting_of :url`).
+                if ACCESSOR_REPLACING_MACROS.contains(&method_name) {
+                    names.get(..1).unwrap_or_default().to_vec()
+                } else {
+                    Vec::new()
+                }
             }
             Some((owner, true)) if owner.as_ref() != class_name => {
                 // Only a macro defined in Ruby source; declared signatures say what they define.
@@ -1399,13 +1409,23 @@ impl<'a> InferenceEngine<'a> {
                 else {
                     return;
                 };
+                let replaced = self
+                    .registry
+                    .names_replaced_by_source_macro(
+                        &owner,
+                        method,
+                        names.iter().map(String::as_str),
+                    )
+                    .iter()
+                    .map(|name| name.as_str().to_string())
+                    .collect();
                 names.extend(method.param_infos.iter().filter_map(
                     |param| match &param.default_type {
                         Some(Type::LiteralSymbol(name)) => Some(name.as_str().to_string()),
                         _ => None,
                     },
                 ));
-                true
+                replaced
             }
             _ => return,
         };
@@ -1415,12 +1435,7 @@ impl<'a> InferenceEngine<'a> {
                 self.registry.mark_runtime_attribute(class_name, name);
             }
         }
-        let columns = if replaces_all_columns {
-            &names[..]
-        } else {
-            names.get(..1).unwrap_or_default()
-        };
-        for column in columns {
+        for column in &replaced_columns {
             // The schema is preloaded into the external registry.
             let is_column = self
                 .registry

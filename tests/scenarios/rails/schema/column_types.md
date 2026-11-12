@@ -608,6 +608,38 @@ class Document < ApplicationRecord
 end
 ```
 
+## Keep a column named by an unknown validation macro
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "hooks", force: :cascade do |t|
+    t.string "url"
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Hook < ApplicationRecord
+  validates_formatting_of :url, using: :url
+
+  def payload = { "url" => url }
+end
+```
+
+### result
+
+```rbs
+class Hook < ApplicationRecord
+  def payload: -> { "url" => String? }
+end
+```
+
 ## Treat a column named by a macro from a concern as replaced
 
 ### update
@@ -658,5 +690,54 @@ class Document < ApplicationRecord
 
   def attachment: -> untyped
   def heading: -> String?
+end
+```
+
+## Keep a column named by a concern macro that only stores the name
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "clusters", force: :cascade do |t|
+    t.string "namespace"
+  end
+end
+```
+
+`app/models/concerns/nullify_if_blank.rb`
+
+```ruby
+module NullifyIfBlank
+  extend ActiveSupport::Concern
+
+  class_methods do
+    def nullify_if_blank(*attributes)
+      self.attributes_to_nullify += attributes
+    end
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Cluster < ApplicationRecord
+  include NullifyIfBlank
+  nullify_if_blank :namespace
+
+  def lower_namespace = namespace&.downcase
+end
+```
+
+### result
+
+```rbs
+class Cluster < ApplicationRecord
+  include NullifyIfBlank
+
+  def lower_namespace: -> String?
 end
 ```
