@@ -1,5 +1,6 @@
 use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionTextEdit, Range, TextEdit,
+    CompletionItem, CompletionItemKind, CompletionItemLabelDetails, CompletionTextEdit, Range,
+    TextEdit,
 };
 
 use crate::completion::{CompletionEntry, CompletionEntryKind};
@@ -14,6 +15,10 @@ pub(super) fn completion_items(
         .map(|(idx, entry)| CompletionItem {
             label: entry.label.clone(),
             kind: Some(completion_item_kind(entry.kind)),
+            label_details: entry.owner.map(|owner| CompletionItemLabelDetails {
+                detail: None,
+                description: Some(owner),
+            }),
             detail: Some(entry.detail),
             sort_text: Some(format!("{idx:04}_{}", entry.label)),
             filter_text: Some(entry.label.clone()),

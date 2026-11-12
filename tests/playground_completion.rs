@@ -50,6 +50,26 @@ fn completes_methods_of_inferred_receiver_after_dot() {
 }
 
 #[test]
+fn lists_receiver_methods_before_inherited_and_operator_methods() {
+    let completion = complete("name = \"tyda\"\nname.|\n", "").expect("completion");
+    let first = &completion.items[0];
+    assert_eq!(first.owner.as_deref(), Some("String"));
+    assert!(
+        first
+            .label
+            .starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+    );
+    let owners: Vec<&str> = completion
+        .items
+        .iter()
+        .filter_map(|item| item.owner.as_deref())
+        .collect();
+    let last_string = owners.iter().rposition(|owner| *owner == "String").unwrap();
+    let first_kernel = owners.iter().position(|owner| *owner == "Kernel").unwrap();
+    assert!(last_string < first_kernel, "{owners:?}");
+}
+
+#[test]
 fn replaces_partial_method_name_after_dot() {
     let completion = complete("name = \"tyda\"\nname.up|\n", "").expect("completion");
     assert!(labels(&completion).contains(&"upcase"));

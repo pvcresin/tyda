@@ -1179,6 +1179,8 @@ pub struct MethodCompletionCandidate {
     pub owner_class: String,
     pub is_singleton: bool,
     pub sig: MethodSig,
+    /// Position of `owner_class` in method lookup order; lower is closer to the receiver.
+    pub ancestor_rank: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5982,7 +5984,7 @@ impl TypeRegistry {
                 candidates.push(Self::merge_union_method_completion_candidate(variants));
             }
         }
-        candidates.sort_by(|a, b| a.name.cmp(&b.name));
+        Self::sort_method_completion_candidates(&mut candidates);
         candidates
     }
 
@@ -6002,6 +6004,12 @@ impl TypeRegistry {
         if owner_classes.len() > 1 {
             merged.owner_class = owner_classes.join(" | ");
         }
+        // A method ranks as close only when it is close for every member.
+        merged.ancestor_rank = variants
+            .iter()
+            .map(|candidate| candidate.ancestor_rank)
+            .max()
+            .unwrap_or_default();
 
         merged.sig.return_type = Type::from_type_vec(
             variants
@@ -6051,7 +6059,7 @@ impl TypeRegistry {
                 }
             }
         }
-        candidates.sort_by(|a, b| a.name.cmp(&b.name));
+        Self::sort_method_completion_candidates(&mut candidates);
         candidates
     }
 
@@ -6072,8 +6080,33 @@ impl TypeRegistry {
             &mut seen_methods,
             &mut candidates,
         );
-        candidates.sort_by(|a, b| a.name.cmp(&b.name));
+        // Candidates arrive in method lookup order, so an owner's first appearance is its rank.
+        let mut owner_ranks: HashMap<String, usize> = HashMap::new();
+        for candidate in &mut candidates {
+            let next_rank = owner_ranks.len();
+            candidate.ancestor_rank = *owner_ranks
+                .entry(candidate.owner_class.clone())
+                .or_insert(next_rank);
+        }
+        Self::sort_method_completion_candidates(&mut candidates);
         Some(candidates)
+    }
+
+    /// Closer owners first; within an owner, named methods before operators like `!=` or `[]`.
+    fn sort_method_completion_candidates(candidates: &mut [MethodCompletionCandidate]) {
+        fn is_operator(name: &str) -> bool {
+            !name
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        }
+        candidates.sort_by(|a, b| {
+            (a.ancestor_rank, is_operator(&a.name), &a.name).cmp(&(
+                b.ancestor_rank,
+                is_operator(&b.name),
+                &b.name,
+            ))
+        });
     }
 
     fn collect_method_completion_candidates<'a>(
@@ -6177,7 +6210,14 @@ impl TypeRegistry {
                     candidates,
                 );
             }
-            for fallback in ["Class", "Module", "Object"] {
+            // Shared ancestors come once, after the whole chain, so they never
+            // shadow a closer owner or rank before it.
+            let fallbacks: &[&str] = if owner_class == receiver_class {
+                &["Class", "Module", "Object"]
+            } else {
+                &[]
+            };
+            for &fallback in fallbacks {
                 if owner_class == fallback {
                     continue;
                 }
@@ -6231,6 +6271,9 @@ impl TypeRegistry {
                 );
             }
 
+            if owner_class != receiver_class {
+                return;
+            }
             if owner_class != "Object" {
                 self.collect_method_completion_candidates(
                     receiver_class,
@@ -6285,6 +6328,7 @@ impl TypeRegistry {
                 owner_class: owner_class.to_string(),
                 is_singleton: method.is_singleton,
                 sig: self.build_method_sig_for_receiver(receiver_class, owner_class, method),
+                ancestor_rank: 0,
             });
         }
     }
@@ -13602,6 +13646,65 @@ mod tests {
         assert_eq!(singleton.raw_return_type, Type::String);
         assert!(registry.has_method_variant("Foo", "call", false));
         assert!(registry.has_method_variant("Foo", "call", true));
+    }
+
+    #[test]
+    fn method_completion_orders_by_lookup_distance_then_operators_last() {
+        let mut registry = TypeRegistry::new();
+        registry.add_method_def("P", test_method("parent", Type::Integer));
+        registry.add_method_def("M", test_method("mixed", Type::Integer));
+        registry.add_method_def("C", test_method("zeta", Type::Integer));
+        registry.add_method_def("C", test_method("==", Type::Bool));
+        registry.add_method_def("C", test_method("alpha", Type::Integer));
+        registry.add_method_def("C", test_method("_private_ish", Type::Integer));
+        registry.add_method_def("P", test_method("to_s", Type::Integer));
+        registry.add_method_def("Kernel", test_method("to_s", Type::String));
+        registry.add_method_def("Kernel", test_method("puts", Type::Nil));
+        registry.set_superclass("C", "P");
+        registry.add_mixin("C", "M", MixinKind::Include);
+
+        let candidates =
+            registry.method_completion_candidates_for_type(&Type::Class(Sym::new("C")));
+        let entries: Vec<(&str, &str)> = candidates
+            .iter()
+            .map(|candidate| (candidate.name.as_str(), candidate.owner_class.as_str()))
+            .collect();
+
+        // `P#to_s` overrides `Kernel#to_s` even though `M` is visited before `P`.
+        assert_eq!(
+            entries,
+            [
+                ("_private_ish", "C"),
+                ("alpha", "C"),
+                ("zeta", "C"),
+                ("==", "C"),
+                ("mixed", "M"),
+                ("parent", "P"),
+                ("to_s", "P"),
+                ("puts", "Kernel"),
+            ]
+        );
+    }
+
+    #[test]
+    fn method_completion_for_union_ranks_by_farthest_member() {
+        let mut registry = TypeRegistry::new();
+        registry.add_method_def("Base", test_method("shared", Type::Integer));
+        registry.add_method_def("A", test_method("value", Type::Integer));
+        registry.add_method_def("B", test_method("value", Type::String));
+        registry.set_superclass("A", "Base");
+        registry.set_superclass("B", "Base");
+
+        let names: Vec<String> = registry
+            .method_completion_candidates_for_type(&Type::Union(vec![
+                Type::Class(Sym::new("A")),
+                Type::Class(Sym::new("B")),
+            ]))
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .collect();
+
+        assert_eq!(names, ["value", "shared"]);
     }
 
     #[test]
