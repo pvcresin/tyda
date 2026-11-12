@@ -38,8 +38,13 @@ enum CompletionKind {
 }
 
 enum MethodReceiver {
-    Explicit { receiver_offset: usize },
-    Implicit { class_context: String },
+    /// The request source calls a probe method here, on the receiver to complete.
+    Explicit {
+        name_offset: usize,
+    },
+    Implicit {
+        class_context: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -85,8 +90,8 @@ impl CompletionRequest {
         match &self.kind {
             CompletionKind::Method(receiver) => {
                 let completion = match receiver {
-                    MethodReceiver::Explicit { receiver_offset } => {
-                        query.method_completion_at_receiver(*receiver_offset)?
+                    MethodReceiver::Explicit { name_offset } => {
+                        query.method_completion_at_call(*name_offset)?
                     }
                     MethodReceiver::Implicit { class_context } => {
                         let class_name = if class_context.is_empty() {
@@ -187,24 +192,12 @@ fn dot_method_completion_context(source: &str, pos_offset: usize) -> Option<Comp
     if dot_offset > line_start && bytes.get(dot_offset - 1) == Some(&b'.') {
         return None;
     }
-    let receiver_offset = dot_offset.checked_sub(1)?;
-    if !source.is_char_boundary(dot_offset)
-        || !source.is_char_boundary(pos_offset)
-        || !source.is_char_boundary(receiver_offset)
-    {
-        return None;
-    }
-
-    let mut completion_source = bytes.to_vec();
-    for byte in &mut completion_source[dot_offset..pos_offset] {
-        *byte = b' ';
-    }
-    let completion_source = String::from_utf8(completion_source).ok()?;
-    let replace_range = dot_offset + 1..pos_offset;
     Some(CompletionRequest {
-        source: completion_source,
-        replace_range,
-        kind: CompletionKind::Method(MethodReceiver::Explicit { receiver_offset }),
+        source: with_probe_call_name(source, prefix_start..pos_offset),
+        replace_range: prefix_start..pos_offset,
+        kind: CompletionKind::Method(MethodReceiver::Explicit {
+            name_offset: prefix_start,
+        }),
     })
 }
 
@@ -268,50 +261,40 @@ fn send_method_name_completion_context(
 
     let explicit_dot = method_start
         .checked_sub(1)
-        .and_then(|dot_offset| (bytes.get(dot_offset) == Some(&b'.')).then_some(dot_offset));
-    let (receiver, mask_start) = if let Some(dot_offset) = explicit_dot {
-        let mask_start = if dot_offset > line_start && bytes.get(dot_offset - 1) == Some(&b'&') {
-            dot_offset - 1
-        } else {
-            dot_offset
-        };
-        let receiver_end = mask_start;
-        if receiver_end == line_start || !source.is_char_boundary(receiver_end) {
-            return None;
-        }
-        (
-            MethodReceiver::Explicit {
-                receiver_offset: receiver_end - 1,
-            },
-            mask_start,
-        )
-    } else {
-        let mut completion_source = bytes.to_vec();
-        for byte in &mut completion_source[method_start..pos_offset] {
-            *byte = b' ';
-        }
-        let completion_source = String::from_utf8(completion_source).ok()?;
-        let class_context =
-            lexical_class_context_at(&completion_source, pos_offset).unwrap_or_default();
-        let replace_range = prefix_start..pos_offset;
+        .is_some_and(|dot_offset| bytes.get(dot_offset) == Some(&b'.'));
+    if explicit_dot {
         return Some(CompletionRequest {
-            source: completion_source,
-            replace_range,
-            kind: CompletionKind::Method(MethodReceiver::Implicit { class_context }),
+            source: with_probe_call_name(source, method_start..pos_offset),
+            replace_range: prefix_start..pos_offset,
+            kind: CompletionKind::Method(MethodReceiver::Explicit {
+                name_offset: method_start,
+            }),
         });
-    };
+    }
 
     let mut completion_source = bytes.to_vec();
-    for byte in &mut completion_source[mask_start..pos_offset] {
+    for byte in &mut completion_source[method_start..pos_offset] {
         *byte = b' ';
     }
     let completion_source = String::from_utf8(completion_source).ok()?;
-    let replace_range = prefix_start..pos_offset;
+    let class_context =
+        lexical_class_context_at(&completion_source, pos_offset).unwrap_or_default();
     Some(CompletionRequest {
         source: completion_source,
-        replace_range,
-        kind: CompletionKind::Method(receiver),
+        replace_range: prefix_start..pos_offset,
+        kind: CompletionKind::Method(MethodReceiver::Implicit { class_context }),
     })
+}
+
+/// Replaces the partial name with a method nobody defines, so the engine infers the receiver
+/// the same way as for any call, including literals, parentheses, and leading-dot chains.
+fn with_probe_call_name(source: &str, name_range: Range<usize>) -> String {
+    const PROBE_METHOD_NAME: &str = "__tyda_completion_probe__";
+    let mut probe_source = String::with_capacity(source.len() + PROBE_METHOD_NAME.len());
+    probe_source.push_str(&source[..name_range.start]);
+    probe_source.push_str(PROBE_METHOD_NAME);
+    probe_source.push_str(&source[name_range.end..]);
+    probe_source
 }
 
 fn is_ruby_method_completion_char(byte: u8) -> bool {

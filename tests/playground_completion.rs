@@ -99,3 +99,27 @@ fn returns_none_outside_completion_sites() {
     assert!(complete("x = 1|\n", "").is_none());
     assert!(playground_complete("x = 1\n", "", &loader(), "stdin.rb", 5, 0).is_none());
 }
+
+#[test]
+fn completes_on_literal_and_parenthesized_receivers() {
+    for (source, expected, unexpected) in [
+        ("[1, 2, 3].|\n", "map", "even?"),
+        ("{a: 1}.|\n", "keys", "even?"),
+        ("(1..2).|\n", "step", "even?"),
+        ("[[1]].|\n", "flatten", "even?"),
+        ("ids = [1]\nids\n  .|\n", "map", "even?"),
+    ] {
+        let completion = complete(source, "").expect("completion");
+        let labels = labels(&completion);
+        assert!(labels.contains(&expected), "{source:?}: {labels:?}");
+        assert!(!labels.contains(&unexpected), "{source:?}: {labels:?}");
+    }
+}
+
+#[test]
+fn does_not_guess_receiver_from_call_arguments() {
+    let count = complete("foo(1).|\n", "")
+        .map(|completion| completion.items.len())
+        .unwrap_or_default();
+    assert_eq!(count, 0);
+}
