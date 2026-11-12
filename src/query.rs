@@ -46,12 +46,17 @@ impl<'a> TypeQueryEngine<'a> {
         )
     }
 
-    pub fn method_completion_at_receiver(
+    /// Completes on the receiver of the explicit-receiver call whose name is at `name_offset`.
+    pub fn method_completion_at_call(
         &self,
-        receiver_offset: usize,
+        name_offset: usize,
     ) -> Option<MethodCompletionQueryResult> {
-        let hover = self.hover_at(receiver_offset)?;
-        Some(self.method_completion_for_receiver_type(hover.ty))
+        let receiver_type = self.analysis.call_receiver_type_at(
+            name_offset,
+            self.stdlib_loader,
+            self.external_registry,
+        )?;
+        Some(self.method_completion_for_receiver_type(receiver_type))
     }
 
     pub fn method_completion_for_receiver_type(
@@ -220,7 +225,7 @@ class Box
 end
 
 box = Box.new
-box
+box.probe
 "#;
         let loader = loader();
         let (analysis, _) = analyze_cached_file_with_deps(
@@ -230,10 +235,10 @@ box
             Some("query.rb"),
             AnalysisOptions::default(),
         );
-        let offset = source.rfind("box").expect("receiver");
+        let offset = source.rfind("probe").expect("call name");
 
         let completion = TypeQueryEngine::new(&analysis, source, &loader)
-            .method_completion_at_receiver(offset)
+            .method_completion_at_call(offset)
             .expect("method completion");
 
         assert_eq!(completion.receiver_type.to_string(), "Box");
@@ -247,7 +252,7 @@ box
 
     #[test]
     fn method_completion_uses_external_classes_without_full_projection_clone() {
-        let source = "client = ApiClient.new\nclient\n";
+        let source = "client = ApiClient.new\nclient.probe\n";
         let loader = loader();
         let mut external = TypeRegistry::new();
         load_rbs_string(
@@ -265,11 +270,11 @@ end
             Some("query_external.rb"),
             AnalysisOptions::default(),
         );
-        let offset = source.rfind("client").expect("receiver");
+        let offset = source.rfind("probe").expect("call name");
 
         let completion = TypeQueryEngine::new(&analysis, source, &loader)
             .with_external_registry(Some(&external))
-            .method_completion_at_receiver(offset)
+            .method_completion_at_call(offset)
             .expect("method completion");
 
         assert_eq!(completion.receiver_type.to_string(), "ApiClient");

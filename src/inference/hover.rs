@@ -2767,6 +2767,26 @@ impl<'a> InferenceEngine<'a> {
             .is_some_and(|ch| ch == '_' || ch.is_ascii_uppercase())
     }
 
+    /// Receiver type of the explicit-receiver call whose name is at `byte_offset`.
+    pub(crate) fn find_call_receiver_type_at(&mut self, byte_offset: usize) -> Option<Type> {
+        let snap = self.find_best_snapshot(byte_offset)?.clone();
+        let HoverTarget::MethodCall {
+            receiver_type,
+            safe_navigation,
+            singleton_dispatch,
+            ..
+        } = &snap.target
+        else {
+            return None;
+        };
+        let resolved = self.resolve_type_for_snapshot(receiver_type, &snap, *singleton_dispatch);
+        Some(if *safe_navigation {
+            Self::remove_nil(&resolved)
+        } else {
+            resolved
+        })
+    }
+
     pub fn find_hover_at(
         &mut self,
         source: &str,
