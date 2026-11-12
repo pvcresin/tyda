@@ -15,6 +15,8 @@
 
 ### 診断・速度
 
+- [ ] block 内の型あり走査の呼び出しにも `missing_method` を出す。先に誤検出の原因（`reduce(nil)` の累積値が block の戻り値を含まない、`each { |a, b| }` で分解した要素が `nil` になる、関連や `find_by_sql` の要素型など）を直し、subject の差分が真陽性だけになることを確かめる
+
 - [ ] coverage を file / source-site 単位で base/head 比較し、aggregate では隠れる局所的な `typed` → `untyped` / `unknown` 化をCIで検出する
 
 ### AI agent 支援

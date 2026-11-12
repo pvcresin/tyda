@@ -199,13 +199,23 @@ method hover の signature は、scan で保存した receiver / result 型を�
 引数型（splat / forwarding / `**kwargs` は確定部分だけ）と block の有無・shape で RBS overload を
 絞り込む。method の generic は引数、block の戻り値、呼び出し結果を RBS 型構造に沿って再帰的に
 unify し、`Array` / `Hash` / tuple / record / union / intersection などのネストした型引数も具体化
-する。block の入力型は、receiver の型変数が結果にも残る場合は literal の精度を保ち、block の処理で
-結果が widening された場合は dispatch と同じ広い型を表示する。
+する。class の型変数には receiver の推論型をそのまま使い、literal も広げない。そのため戻り値と
+block の入力型は、CLI / CodeLens の RBS や block parameter の hover と同じ精度になる
+（`[1].sort` は `() -> Array[1]`）。
+hover 本文には具体化した signature だけを出す。receiver の型引数や解決済みの method 型引数は
+signature に代入済みなので別に表示しない。receiver の型引数は MCP の `type_parameters` として
+構造化データで返す。引数で 1 つの overload に絞れたときは、戻り値に呼び出しの推論結果を使う
+（`[1, "a"].first` は宣言の `1 | "a"` でなく CLI と同じ `1`）。
 hover 専用の block shape 絞り込みと implicit-self の追加 generic block 解決は、hover snapshot を記録する
 `Record` profile だけで有効にする。既存の receiver 付き block 推論は通常解析にも必要なため維持し、
 表示用の推論を広げても、CLI batch / coverage の facts-only profile の RBS 結果と基準値を変えない。
 RBS の block 付き呼び出しは、宣言の型なしと型ありの 2 回 block を走査する。ネストした呼び出しは外側の走査と
-同じ種類だけを行い、走査回数がネストの深さに対して指数的に増えないようにする。
+同じ種類だけを行い、走査回数がネストの深さに対して指数的に増えないようにする。同じ範囲の hover snapshot は
+最初のものを使うが、値の型や method 呼び出しの receiver 型に `untyped` を含むものは、後の走査で型が付いた
+snapshot に置き換える（block 内の `n.to_s` や `n * 2` も型あり走査の結果を表示する）。置き換える前の呼び出し
+snapshot は `first_walk_call_snapshots` に残し、`missing_method` 診断はそちらで判定する。block 内の推論には
+`reduce` の累積値などまだ粗い部分があり、hover の改善で診断を変えない（誤検出を増やさない）ためである。
+`proc` / `lambda` の block 引数は、型なし走査でも `untyped` として束縛する（未束縛のまま `nil` にしない）。
 引数なしの self 呼び出しへの nil ガードは、後続の文が self facts を無効化するまで同じ呼び出しに効く。定義が後方にある
 メソッドも遅延参照のまま絞り込む。
 引数型と block の戻り値は既存の scan site を共有して hover snapshot に複製せず、scan で得た戻り値を

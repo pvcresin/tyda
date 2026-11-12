@@ -6,7 +6,6 @@ use crate::rbs::display::{
 use crate::rbs::ir as rbs_ir;
 use crate::types::Sym;
 use crate::types::{HoverBlockSig, HoverOverloadSig, Param, ParamKind};
-use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone)]
@@ -248,7 +247,15 @@ impl<'a> InferenceEngine<'a> {
             std::collections::HashMap::new();
         let mut method_exists_cache: std::collections::HashMap<(Type, String), bool> =
             std::collections::HashMap::new();
+        let mut first_walk_calls: rustc_hash::FxHashMap<(usize, usize), HoverSnapshot> =
+            std::mem::take(&mut self.first_walk_call_snapshots)
+                .into_iter()
+                .map(|snap| ((snap.start, snap.end), snap))
+                .collect();
         for snap in snapshots {
+            let snap = first_walk_calls
+                .remove(&(snap.start, snap.end))
+                .unwrap_or(snap);
             if snap.start >= snap.end {
                 continue;
             }
@@ -4522,6 +4529,7 @@ impl<'a> InferenceEngine<'a> {
         has_block: bool,
         call_arguments: Option<&HoverCallArguments>,
     ) -> Option<Vec<HoverOverloadSig>> {
+        let receiver_type = &Self::normalize_union_receiver(receiver_type);
         let receiver_class = TypeRegistry::type_to_class_name_pub(receiver_type)?;
         self.preload_hover_lookup_hierarchy(&receiver_class);
         let prefer_singleton = matches!(receiver_type, Type::Singleton(_));
@@ -4579,16 +4587,10 @@ impl<'a> InferenceEngine<'a> {
             overloads
         };
 
-        let normalized_receiver_type = Self::normalize_receiver_type_for_signature(receiver_type);
         let mut seen = HashSet::new();
         let mut concretized = Vec::with_capacity(overloads.len());
         for overload in &overloads {
-            let signature_receiver_type = if overload.method_type.type_params.is_empty() {
-                &normalized_receiver_type
-            } else {
-                receiver_type
-            };
-            let receiver_type_args = Self::extract_type_args(signature_receiver_type);
+            let receiver_type_args = Self::extract_type_args(receiver_type);
             let mut base_type_vars =
                 self.class_type_vars_from_args(&receiver_class, &receiver_type_args);
             Self::seed_enumerable_elem_type_var(
@@ -4598,7 +4600,7 @@ impl<'a> InferenceEngine<'a> {
             );
             let mut type_vars = self.class_type_vars_for_method_owner(
                 &receiver_class,
-                signature_receiver_type,
+                receiver_type,
                 &overload.owner_class,
             );
             for (name, ty) in &base_type_vars {
@@ -4613,7 +4615,7 @@ impl<'a> InferenceEngine<'a> {
                     &overload.method_type,
                     &arguments.positional,
                     &arguments.keywords,
-                    signature_receiver_type,
+                    receiver_type,
                     &mut type_vars,
                 );
             }
@@ -4625,27 +4627,28 @@ impl<'a> InferenceEngine<'a> {
                     &overload.method_type,
                     &block.function_type.return_type,
                     block_return_type,
-                    signature_receiver_type,
+                    receiver_type,
                     &mut type_vars,
                 );
             }
             self.resolve_hover_type_vars_from_result(
                 &overload.method_type,
                 result_type,
-                signature_receiver_type,
+                receiver_type,
                 &mut type_vars,
             );
-            let block_type_vars =
-                self.hover_block_type_vars_for_display(&overload.method_type, &type_vars);
-            let overload = self.concretize_hover_overload(
-                &overload.method_type,
-                signature_receiver_type,
-                &type_vars,
-                block_type_vars.as_ref(),
-            );
+            let overload =
+                self.concretize_hover_overload(&overload.method_type, receiver_type, &type_vars);
             if seen.insert(overload.clone()) {
                 concretized.push(overload);
             }
+        }
+        // The call's inferred result is what CLI / CodeLens print, and can be more precise
+        // than the declaration (`[1, "a"].first` is `1`, not `1 | "a"`).
+        if let [overload] = concretized.as_mut_slice()
+            && Self::is_resolved_hover_type(result_type)
+        {
+            overload.return_type = result_type.clone();
         }
         Some(concretized)
     }
@@ -4963,11 +4966,17 @@ impl<'a> InferenceEngine<'a> {
         if !Self::is_resolved_hover_type(result_type) {
             return;
         }
+        // Vars bound by the receiver or arguments stay as they are; the result only
+        // fills the rest (`1.clamp(0, 3)` keeps `A = 0` instead of the whole result).
+        let mut from_result = HashMap::new();
         self.resolve_type_variable(
             &method_type.function_type.return_type,
             result_type,
-            type_vars,
+            &mut from_result,
         );
+        for (name, ty) in from_result {
+            type_vars.entry(name).or_insert(ty);
+        }
         self.fill_unresolved_method_type_vars_from_upper_bounds(
             method_type,
             receiver_type,
@@ -5007,147 +5016,13 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn hover_block_type_vars_for_display<'b>(
-        &self,
-        method_type: &rbs_ir::MethodType,
-        type_vars: &'b HashMap<String, Type>,
-    ) -> Cow<'b, HashMap<String, Type>> {
-        let Some(block) = method_type.block.as_deref() else {
-            return Cow::Borrowed(type_vars);
-        };
-        let method_type_params: HashSet<&str> =
-            method_type.type_params.iter().map(Sym::as_str).collect();
-        let mut widened = Vec::new();
-        for (name, ty) in type_vars {
-            if method_type_params.contains(name.as_str())
-                || !Self::rbs_function_type_uses_variable(&block.function_type, name)
-                || Self::rbs_type_uses_variable(&method_type.function_type.return_type, name)
-            {
-                continue;
-            }
-            let method_type_var_preserves_shape = method_type.type_params.iter().any(|param| {
-                type_vars
-                    .get(param.as_str())
-                    .is_some_and(|method_ty| Self::type_contains_type(method_ty, ty))
-            });
-            if !method_type_var_preserves_shape {
-                widened.push((name.clone(), ty.widen()));
-            }
-        }
-        if widened.is_empty() {
-            Cow::Borrowed(type_vars)
-        } else {
-            let mut block_type_vars = type_vars.clone();
-            for (name, ty) in widened {
-                block_type_vars.insert(name, ty);
-            }
-            Cow::Owned(block_type_vars)
-        }
-    }
-
-    fn type_contains_type(container: &Type, target: &Type) -> bool {
-        if container == target {
-            return true;
-        }
-        match container {
-            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => parts
-                .iter()
-                .any(|part| Self::type_contains_type(part, target)),
-            Type::Array(Some(inner)) => Self::type_contains_type(inner, target),
-            Type::Hash(key, value) => {
-                key.as_deref()
-                    .is_some_and(|key| Self::type_contains_type(key, target))
-                    || value
-                        .as_deref()
-                        .is_some_and(|value| Self::type_contains_type(value, target))
-            }
-            Type::Record(fields) => fields
-                .iter()
-                .any(|field| Self::type_contains_type(&field.value, target)),
-            Type::Proc { return_type, .. } => Self::type_contains_type(return_type, target),
-            Type::Generic { args, .. } => {
-                args.iter().any(|arg| Self::type_contains_type(arg, target))
-            }
-            Type::ReceiverMethodRef(receiver, _)
-            | Type::PatternIndexRef(receiver, _)
-            | Type::PatternRestRef(receiver)
-            | Type::PatternTrailingRef(receiver, _)
-            | Type::PatternKeyRef(receiver, _)
-            | Type::PatternKeyRestRef(receiver, _)
-            | Type::SplatRef(receiver) => Self::type_contains_type(receiver, target),
-            _ => false,
-        }
-    }
-
-    fn rbs_function_type_uses_variable(ft: &rbs_ir::FunctionType, name: &str) -> bool {
-        ft.required_positionals
-            .iter()
-            .chain(ft.optional_positionals.iter())
-            .chain(ft.rest_positionals.iter().map(Box::as_ref))
-            .chain(ft.trailing_positionals.iter())
-            .any(|param| Self::rbs_type_uses_variable(&param.type_, name))
-            || ft
-                .required_keywords
-                .iter()
-                .chain(ft.optional_keywords.iter())
-                .any(|(_, param)| Self::rbs_type_uses_variable(&param.type_, name))
-            || ft
-                .rest_keywords
-                .as_ref()
-                .is_some_and(|param| Self::rbs_type_uses_variable(&param.type_, name))
-    }
-
-    fn rbs_type_uses_variable(rbs_type: &rbs_ir::RbsType, name: &str) -> bool {
-        match rbs_type {
-            rbs_ir::RbsType::Variable(variable) => variable.as_str() == name,
-            rbs_ir::RbsType::Class(_, args)
-            | rbs_ir::RbsType::Alias(_, args)
-            | rbs_ir::RbsType::Union(args)
-            | rbs_ir::RbsType::Intersection(args)
-            | rbs_ir::RbsType::Tuple(args) => args
-                .iter()
-                .any(|arg| Self::rbs_type_uses_variable(arg, name)),
-            rbs_ir::RbsType::Optional(inner) => Self::rbs_type_uses_variable(inner, name),
-            rbs_ir::RbsType::Record(fields) => fields
-                .iter()
-                .any(|field| Self::rbs_type_uses_variable(&field.type_, name)),
-            rbs_ir::RbsType::Proc(method_type) => {
-                Self::rbs_function_type_uses_variable(&method_type.function_type, name)
-                    || Self::rbs_type_uses_variable(&method_type.function_type.return_type, name)
-                    || method_type.block.as_deref().is_some_and(|block| {
-                        Self::rbs_function_type_uses_variable(&block.function_type, name)
-                            || block
-                                .self_type
-                                .as_deref()
-                                .is_some_and(|ty| Self::rbs_type_uses_variable(ty, name))
-                    })
-            }
-            _ => false,
-        }
-    }
-
     fn concretize_hover_overload(
         &self,
         overload: &rbs_ir::MethodType,
         receiver_type: &Type,
         type_vars: &HashMap<String, Type>,
-        block_type_vars: &HashMap<String, Type>,
     ) -> HoverOverloadSig {
-        let method_type_params = if overload.type_params.iter().all(|name| {
-            type_vars
-                .get(name.as_str())
-                .is_some_and(Self::is_resolved_hover_type)
-        }) {
-            overload
-                .type_params
-                .iter()
-                .filter_map(|name| type_vars.get(name.as_str()).cloned())
-                .collect()
-        } else {
-            Vec::new()
-        };
         HoverOverloadSig {
-            method_type_params,
             params: self.concretize_hover_function_params(
                 &overload.function_type,
                 receiver_type,
@@ -5162,12 +5037,12 @@ impl<'a> InferenceEngine<'a> {
                 params: self.concretize_hover_function_params(
                     &block.function_type,
                     receiver_type,
-                    block_type_vars,
+                    type_vars,
                 ),
                 return_type: self.concretize_hover_type(
                     &block.function_type.return_type,
                     receiver_type,
-                    block_type_vars,
+                    type_vars,
                 ),
                 required: block.required,
             }),

@@ -261,8 +261,8 @@ test("infers RBS, emits CodeLens + diagnostics + hover", async ({ page }) => {
   const hoverTypes = result.hovers.map((h) => h.display).join(" ");
   expect(hoverTypes.length).toBeGreaterThan(0);
   const mapHover = result.hovers.find((h) => h.name === "map");
-  expect(mapHover?.display).toContain("[Integer] () {");
-  expect(mapHover?.display).toContain("(Integer item) -> Integer");
+  expect(mapHover?.display).toContain("[Tyda] () {");
+  expect(mapHover?.display).toContain("(1 | 2 | 3 item) -> Integer");
   expect(mapHover?.display).toContain("-> Array[Integer]");
   expect(mapHover?.display).not.toContain("Enumerator");
 
