@@ -4440,6 +4440,48 @@ x.<caret>
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn lsp_completion_ranks_closer_owners_first_and_labels_owner() {
+        let (mut service, mut socket) = initialize_lsp(None).await;
+        let uri = Url::parse("file:///completion_rank.rb").unwrap();
+        let (source, position) = source_with_cursor(
+            r#"module M
+  def bar = :BAR
+end
+
+class P
+  def baz = :BAZ
+end
+
+class C < P
+  include M
+  def <=>(other) = 0
+  def foo = :FOO
+end
+
+C.new.<caret>
+"#,
+        );
+        open_document(&mut service, &mut socket, &uri, &source).await;
+
+        let items =
+            request_completion_items(&mut service, &uri, position.line, position.character, 203)
+                .await;
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+
+        assert_eq!(&labels[..4], ["foo", "<=>", "bar", "baz"]);
+        let owner = |label: &str| {
+            completion_item(&items, label)
+                .label_details
+                .as_ref()
+                .and_then(|details| details.description.as_deref())
+        };
+        assert_eq!(owner("foo"), Some("C"));
+        assert_eq!(owner("bar"), Some("M"));
+        assert_eq!(owner("baz"), Some("P"));
+        assert_eq!(owner("nil?"), Some("Kernel"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn lsp_completion_inside_send_symbol_uses_explicit_receiver_type() {
         let (mut service, mut socket) = initialize_lsp(None).await;
         let uri = Url::parse("file:///completion_send_receiver.rb").unwrap();

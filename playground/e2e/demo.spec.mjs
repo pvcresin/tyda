@@ -515,7 +515,10 @@ test("completes methods from the inferred receiver type", async ({ page }) => {
   await page.keyboard.type(".ma");
   const map = page.locator("#ruby .suggest-widget").getByRole("listitem", { name: /^map,/ });
   await expect(map).toBeVisible({ timeout: 45_000 });
-  await expect(map).toContainText("Array#map");
+  // Each row shows its defining class; the first row is the receiver's own method.
+  await expect(map).toContainText("Array");
+  const max = page.locator("#ruby .suggest-widget").getByRole("listitem", { name: /^max,/ });
+  await expect(max).toContainText("Array");
 
   await page.keyboard.press("Enter");
   await expect
