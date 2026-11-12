@@ -117,10 +117,6 @@ end
 
 ## Rails.cache write returns nil when the cache store fails
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -134,5 +130,30 @@ end
 ```rbs
 class Probe
   def store: -> bool?
+end
+```
+
+## Default environment predicates return bool without environment files
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Probe
+  def production = Rails.env.production?
+
+  def local = Rails.env.local?
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def production: -> bool
+  def local: -> bool
 end
 ```

@@ -1001,6 +1001,7 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
             eprintln!("coverage accumulator was not initialized");
             std::process::exit(1);
         };
+        coverage.resolve_constant_references(&workspace_rbs);
         coverage.add_declarations(&workspace_rbs);
         let report = coverage.report(total_files);
         match serde_json::to_writer_pretty(&mut stdout, &report) {

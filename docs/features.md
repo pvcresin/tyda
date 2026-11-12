@@ -8,6 +8,12 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 - Ruby source と `.rbs` を中心にした query 型推論 engine
 - CLI の RBS 出力、JSON Lines diagnostics、型カバレッジ JSON
+  - RBS 出力は公式 parser が受理する構文に限る。戻り値の union / intersection は括弧で囲み、
+    型注釈のない `&block` は `?{ (?) -> untyped }`、Float literal は `Float` で出す。戻り値の `void` を含む
+    union は使える値がないため `void` にまとめる
+  - class / module を定数参照で代入した定数（`A = B`、alias の連鎖、RBS の `class A = B` /
+    `module A = B` 入力）は、定数宣言ではなく対象の種類に合わせた `class A = B` / `module A = B` で出す。
+    `Class.new` の結果のように型だけが `singleton(...)` の値定数は従来どおり定数宣言にする
 - TypeProf VSCode 拡張と接続できる LSP server
 - stdio MCP server による AI agent 向けの位置指定型推論と、明示queryによる同一source内の型由来説明
 - Rails / gem DSL plugin
@@ -30,7 +36,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
   loop 内 yield は条件による local の絞り込みを反映し、statement 位置の pre-test `while` で条件全体が括弧付き単一 local 代入の場合に限り body を絞り込む。複合条件内の代入、式位置の loop、post-test loop は対象外。`for` は source-defined `each` の yield 型を
   index に反映し、単一 yield の複数 block 引数への destructuring も tuple / Array の形に沿って扱う。
   全経路で yield が保証される場合だけ本体が必ず実行されると扱い（source method が位置引数で分岐する場合は、その引数に渡されたリテラルの真偽と `when` の一致で経路を選ぶ）、そのblock末尾のnon-local `return` 後は呼び出し後の処理を到達不能とする。Array / Tuple の `sort_by(&:method)` は要素型を保つ。yield 型が不明な
-  保存された Proc / lambda の callsite では、確定した receiver 型の標準 RBS method を読み込み、引数推論に反映する。yield 型が不明な
+  保存された Proc / lambda の callsite では、確定した receiver 型の標準 RBS method を読み込み、引数推論に反映する。Proc / lambda リテラルの `call` / `.()` / `[]` は source method と同じ引数束縛（optional の既定値、rest、post、keyword と既定値、`**rest`、block 引数、keyword を受けない parameter への Hash 化）で戻り値を求め、proc は Ruby と同じ条件で単一の配列引数を展開し、lambda 内の `return` / `break` は lambda の値にする。定義したメソッド内での lambda の呼び出しは、本体で代入する外側 local をその文の後に join する。yield 型が不明な
   block 引数は `untyped` にする）
 - Array / Hash / Set / Tuple / Record の要素型と shape。unknown な値を `Kernel.Array` に渡した結果は `Array[untyped]` を保ち、unknown な添字の Array index は `untyped` を保つ。型引数のない `Hash` の iteration も key/value を別々の `untyped` block 引数として扱い、keyword-rest の caller record が持つ optional key を保持して `Hash#[]` の `nil` と `Hash#fetch` の fallback / block を反映する。`Hash#delete` は既知のvalue型に `nil` を加え、value型がunknownなら `nil` だけに誤縮退しない。Record の `Hash#fetch` / `Hash#fetch_values` は欠落キーと fallback を反映し、`Array#clear` の呼び出し結果は空 Tuple にし、instance variable の共有要素型は維持
 - ループ後の到達性はリテラル条件だけで判定する（推論型では後続コードを捨てない）。抜けられない `while` / `until` / `for` の後は戻り値に含めず、ループの値は `break` 値と正常終了の値の union にする。rescue の先頭が本体の唯一の `raise ... if P` と同じ `retry if P` なら、その rescue は値を返さない
@@ -41,7 +47,8 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - `Array[T]` の local に対する標準の `size` / `length` の比較・`!empty?` guard と truthy な `values[i]` 条件は、要素 fact として残す。範囲内の literal index の `[]` は `T`（truthy 条件の添字は `nil` / `false` を除く）、範囲内から始まる `[start..]` / `[start, length]` は `Array[T]` にする。local の別用途・再代入・任意の call / `yield` / `super` を含む文や source override・singleton method がある場合は fact を捨てる
 - 多重代入、右辺型を使った RBS operator overload の選択と source-defined operator を優先する operator-write、method 内の instance variable 再代入（literal を receiver にする引数・block なしの call の結果も含む。式が読む fact は末尾の call より先に評価される）、文字列・シンボル補間（静的な literal / union の展開を含む）
 - Thread / Fiber / Queue の bounded な値伝播。Queue は未解決の要素型を既知の sentinel 要素で上書きしない
-- 呼び出し側の引数から parameter 型を集める。`untyped` だけの引数は型を加えず、`untyped` と `nil` の union は `untyped` のまま保ち、到達不能な分岐の `bot` 引数は加えない
+- 呼び出し側の引数から parameter 型を集める。`untyped` だけの引数は型を加えず、`untyped` と `nil` の union は `untyped` のまま保ち、到達不能な分岐の `bot` 引数は加えない。要素数が分からない splat 引数は arity が合うすべての要素数で束縛し、optional parameter にも要素型を加える。Ruby が暗黙に呼ぶ writer（多重代入の `a.b, c[i] = ...` の `b=` / `[]=`、`a.b += 1` や `a.b &&= v` の `b=`）も通常の呼び出しとして記録する。親クラスの本体にある `self` 呼び出しの引数は、その method を上書きするすべてのサブクラスの定義へ渡す（superclass chain が対象で、mixin の上書きは対象外）。呼び先が親自身にないか、本体が返らない（`raise NotImplementedError` の）場合は、親の呼び出しがサブクラスの戻り値を読む
+- splat は Ruby の `to_a` 変換に従う。`[*x]`、`Kernel#Array(x)`、`push(*x)`、呼び出しの `*x` で同じ規則を使い、Array / Tuple はその要素、`nil` は要素なし、`to_a` を持つ値はその戻り値、`to_a` を持たない値は自身を要素にする（literal 以外の名前型はサブクラスが `to_a` を足し得るので要素数を確定しない）。parameter など後で分かる値は要素型だけを遅延参照として残し（値は `Array` のまま扱う）、型が分かってから展開する。`a[start, length] = v` と `a[range] = v` は Array の `v` を要素として加える。複数の block parameter は yield された単一の Array を分解する
 - 静的に名前を求められる `alias` / `define_method` / `attr_*`（Record / Tuple の静的 iterator 内で束縛された属性名、静的に判定できる `next if` / `next unless`、束縛やDSLに影響しない条件付き代入を含む。receiver上でiterator methodが上書きされている場合は展開しない。生成 writer の戻り値は引数型に一致し、代入値は対応する reader にも反映） /
   `Struct.new` / `Data.define`（位置引数・キーワード引数の `new` 呼び出しからmember型を推定） / `Forwardable` / `send` / `const_get`
 
@@ -61,6 +68,8 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 
 `sorbet/config` がある project で、`sig`、`T.let`、`T::Struct`、`T::Enum`、`.rbi` と
 対応する comment extension を読み込む。RBS と同じ安定性や網羅性は保証しない。
+`&blk` に対応する sig param の `T.proc...` はメソッドの block 型（`{ (Integer) -> String }`）、
+`T.nilable(T.proc...)` は省略可能な block（`?{ ... }`）として扱う。
 
 ## Diagnostics
 
@@ -72,7 +81,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 | `return_type_mismatch` | error | inline RBS、`@rbs`、Sorbet `sig`、外部RBS/RBIの戻り値型と、メソッド本体の到達可能な返却型が確実に不一致のとき。`untyped` や未解決型を含む不確かな結果は報告しない |
 | `arity_mismatch` | error / experimental | Union receiver は候補型と権威ある署名が分かる場合に、引数個数・必須キーワードの不一致を候補型ごとに報告する。ソース定義の `initialize` を標準の `Class#new` 経由で呼ぶ場合は必須引数の不一致を error にする。祖先解決では `::` による絶対指定を保つ。`Struct.new` 由来の constructor は member の省略を許し、上限超過だけを報告する。`Data.define` 由来は、member 名が静的に分かり独自 `initialize` がない場合に限り、必須 member 数と位置・キーワード引数の規則で判定する。それ以外は `TYDA_EXPERIMENTAL_CHECKS=1` のときだけ |
 | `missing_record_key` | warning | 形状が分かる非空 record のすべての候補にリテラルキーが存在しないとき。空 record は動的な `to_h` の推論結果と区別できないため対象外。`Hash#merge` の引数が `untyped` や未解決型なら、結果を動的な Hash として扱い対象外。record のキー存在確認後は既知のキーへ絞り、`[] ||= ...` 後の同一 receiver・key も既知として扱う。同じrecordを位置引数またはキーワード引数でblock付き呼び出しに渡した場合、calleeがyield前に変更できるため、そのblock内のチェックは対象外。`Hash#[]` は `nil` を返すため warning にする |
-| `missing_method` | warning | receiver が既知 class / singleton、または `nil`（`NilClass`）で、その method surface と祖先が完全に既知のときだけ。遅延型はcall siteのsingleton dispatchを保って解決し、class instance variable と instance variable を混同しない。Union receiver は各候補型で欠けている method を報告し、instance variable の集約型に含まれる `nil` も候補にする。安全 navigation の `nil` は候補から除く。bare `Object` / `Class` / `Module`、plugin が解決する method、既知の class-body DSL は対象外。Concern の `class_methods` 内は includer の singleton surface も確認する。ActiveRecord 系ではDBスキーマや宣言RBIから動的なカラム属性を確認できない場合も対象外 |
+| `missing_method` | warning | receiver が既知 class / singleton、または `nil`（`NilClass`）で、その method surface と祖先が完全に既知のときだけ。遅延型はcall siteのsingleton dispatchを保って解決し、class instance variable と instance variable を混同しない。Union receiver は各候補型で欠けている method を報告し、instance variable の集約型に含まれる `nil` も候補にする。安全 navigation の `nil` は候補から除く。bare `Object` / `Class` / `Module`、plugin が解決する method、既知の class-body DSL は対象外。Concern の `class_methods` 内は includer の singleton surface も確認する。ActiveRecord 系ではDBスキーマや宣言RBIから動的なカラム属性を確認できない場合も対象外。モデルのクラスメソッド（class body と Concern の `class_methods` を含む）は Rails / gem の API を部分的にしか持たないため、宣言 RBI がない限り対象外。未知の class macro に渡した名前とキーワード（`attr_encrypted :token` の `token` / `token_changed?`、`jsonb_accessor` のキーなど）、Concern や親クラスにソースで定義された macro のリテラル引数と symbol の既定値、`attribute` の生成メソッド、relation の `select("... AS name")` の別名、実行時に計算した module の `include`（Devise の modules を含む）、ソースにクラス定義のないテーブル名由来のモデルも対象外 |
 | `unresolved_constant` | information | receiver 文脈で未定義と証明できるときだけ |
 
 Unknown、`untyped`、動的な record key、開いた `method_missing` 面、未解決の祖先は誤検知を避けて沈黙する。Union の候補型を名前付き class に解決できない場合、引数型チェックはその呼び出し全体を Unknown として扱う。戻り値の判定では `return` / 末尾式 / 分岐 / loop の到達可能な返却型を使い、到達不能な末尾や `bot` は不一致に含めない。
@@ -94,8 +103,9 @@ position 順（line/column 昇順）で並ぶため、複数回実行した出�
 ### 型カバレッジ
 
 `--coverage` は、compact scan が記録した推論サイトを最終 workspace registry で再解決し、
-宣言スロットと合わせて決定的な JSON として出力する。通常の RBS 出力ではサイトを保持しない
-ため、明示的に指定した実行だけがこの追加コストを負う。
+宣言スロットと合わせて決定的な JSON として出力する。ファイル単体の解析で解決できなかった
+定数参照は、workspace merge 後の registry で改めて解決する。通常の RBS 出力ではサイトを
+保持しないため、明示的に指定した実行だけがこの追加コストを負う。
 
 宣言と参照は意味の違う単位なので、レポートでは分母を分ける。
 
@@ -126,15 +136,24 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 個別 gem の一覧をこの文書に重複して持たない。
 
 - schema / `attribute` / relation から model の型を補う。migration と schema の `t.column name, type` も型引数を読み取り、単純な `column IS NOT NULL` check constraint は非 nullable として扱う
+- ActiveRecord の `datetime` column / attribute は time zone aware な `ActiveSupport::TimeWithZone`、ActiveModel の `attribute :x, :datetime` は `Time` とする。`create_table` の暗黙の主キーは `id:` / `primary_key:` に従い（`id: :uuid` は `String`、`id: false` は列なし）、`created_at` / `updated_at` は `t.timestamps` がある場合だけ追加する。PostgreSQL / MySQL の native 型（`serial` / `bigserial`、`inet`、`interval`、`money`、range 型など）も Rails の cast 型に対応付ける。namespace 内の model は Rails の `table_name` 計算（外側の module や abstract な基底 class の `table_name_prefix`、外側 model の単数 table 名、STI）で table と対応付ける。source の `belongs_to` や `def` は schema の列・外部キーから生成した reader を置き換える（戻り値が `untyped` のままの定義は列の型を残す）。`super` は生成された列 method の型を返し、`self[:col]` / `attributes["col"]` は列の型を読む。`normalizes` / Active Record の `encrypts` は既存 attribute を修飾するだけで accessor を定義しない。class macro が列の reader を置き換えたとみなすのは、置き換えが分かっている gem macro（CarrierWave の `mount_uploader` / `mount_uploaders`）の第1引数と、ソースで定義された macro が本体で別の macro に渡す引数（`mount_uploader(field, uploader)`）とその symbol 既定値だけで、名前を保存・検証するだけの macro（`nullify_if_blank :namespace`、未知の `validates_formatting_of :url`）では列の型を保つ
+- `ActiveSupport::TimeWithZone` は `-` / `+` の overload（時刻との差は `Float`、数値や `Duration` との演算は `TimeWithZone`。gem_rbs_collection activesupport 8.1 に従い、`acts_like?(:time)` な `DateTime` との差も `Float`。プロジェクトや gem の RBS が class を宣言していればそちらを使う）を持ち、それ以外の method は `Time` の定義に委譲して `Time` の戻り値を `TimeWithZone` に置き換える
+- Rails version は `Gemfile.lock` の `specs:` 直下の spec 行（`rails`、なければ `railties` / `activerecord`）から読む
 - Concern、association（`belongs_to` / `has_one` の optional attribute hash を取る `build_*` / `create_*` / `create_*!` を含む）、scope、enum（plural map method、文字列キーを返すreader、静的に読めるHash/Array/`HashWithIndifferentAccess.new`定数mappingを含む）、delegate などの静的な DSL を展開する。`alias_attribute` は reader / writer / predicate を追加する。`structure.sql` の外部キー先は明示的な `self.table_name` も参照する
 - `serialize` は `type:` がある場合だけその型を使い、型指定のないserialized attributeは `untyped` として扱う。明示されたsource/RBS methodの型は保持する
 - ActionController の `tag` helper は、引数なしでは `TagBuilder`、生成したタグ名の呼び出しでは `String` として推論する
 - ActiveRecord の `find` は単一 ID、ID 配列、複数 ID の overload とモデル／配列の戻り値を出力する
-- ActiveRecord relation と association proxy の `count` / `size` / `length` は `Integer` を返す
+- ActiveRecord の relation API は model class の委譲、`ActiveRecord::Relation`、association の `CollectionProxy` で同じ表から戻り値を決める（receiver ごとに定義と戻り値を区別し、`CollectionProxy` の `delete` / `destroy` は削除した record の配列、`Relation` では model class へ委譲した結果、`<<` / `push` / `concat` は `CollectionProxy` だけが持つ。Rails version で追加された method は changelog の version 以降だけ解決する。`load` / `reload` は receiver、`to_a` / `records` は model の配列、`first_or_create!` は model、`ids` は主キー型の配列、`pick` / `minimum` / `maximum` はリテラル列名の列型または `nil`）。`unscoped` は block なしで relation を返し、enum は Rails 6.0 以降の `not_<value>` scope も持つ。relation に定義のない `Enumerable` と委譲された `Array` の method（`map` など）は、Rails と同じく読み込んだ record の配列として推論する。その配列に対する ActiveSupport の `pluck` / `pick` もリテラル列名の列型を読む
+- association の対象 class は Rails の `compute_type` と同じく owner の namespace から外側へ解決する。polymorphic `belongs_to` の `*_type` / `*_id` は schema の nullability に従う
+- `normalizes` の `with:` lambda を `normalize_value_for` の本体として扱い、`value` 引数の型から戻り値を推論する
 - ActiveRecord model の `reflections` / `base_class` と instance の `readonly!` は既知 API として扱い、返り値は未解決なら `untyped` にする
 - StateMachines は `state_machine` reader、`<attribute>_name`、state predicate、event method を追加する。machine descriptor の内部 API は `untyped` にする
 - Devise は `devise` に指定した module に対応する model instance method を追加し、Paperclip は ActiveRecord model の `has_attached_file` から attachment reader を追加する。Rack::Attack が有効な場合、`Rack::Attack::Request` は `Rack::Request` の request method surface を継承する
+- `config/routes.rb` から `*_path` / `*_url` helper を生成する。ActionDispatch の命名規則に沿って `namespace` / `scope`（`as:`、動的 segment）/ `resources` / `resource`（`as:`、`only:` / `except:`、`shallow`）/ `member` / `collection` / `new` / `concern` / `concerns` / `direct` を合成し、除外された action の helper は生成しない。`config/routes/*.rb` の `draw` は未対応
+- ActionView helper の `dom_id` / `dom_class` は `String`、`truncate` は nil を受けると nil を返すため `String?` を返す
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
+- ActiveJob の `perform_later` と ActionMailer の `deliver_later` は Rails 7.0 以降 enqueue callback の中断で `false` を返し、`perform_now` は perform callback の中断で `false` を返す。Sidekiq の `perform_async` などは client middleware の中断で `nil` を返す。ActiveJob の判定は継承関係を優先し、名前が `Job` で終わることによる補完は superclass が未解決のクラスに限る（`Sidekiq::Job` を include するクラスや既知の ActiveRecord / controller / mailer の基底を継承するクラスは対象外）
+- ActiveSupport の core extension は `active_support_core_ext`、時刻系は `active_support_time_ext` で有効化し、plugin の戻り値テーブルで補う。引数の型で戻り値が決まるもの（`Array#including` / `in_groups` など）は plugin が名前を宣言した呼び出しだけ引数を推論する。`String#to_date` などは空白だけの文字列で `nil` を返す。`with_indifferent_access` は key を文字列にした `ActiveSupport::HashWithIndifferentAccess[K, V]` を返し、`Hash` の method をその型引数で解決する
 - Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
 - Rake が有効な project では、`String#ext` / `String#pathmap` の戻り値を `String` として扱う。Gemfile の引数なし `gemspec` は root の唯一の `*.gemspec` の gem 名も宣言済み gem として扱う
 - GitLab in-tree の Presenter / CurrentSettings / Metrics / EE 拡張を検出する
@@ -150,7 +169,7 @@ LSP は TypeProf VSCode 拡張が期待する起動・version・request 契約�
 - method hover は呼び出し形に合う RBS overload を選び、推論済みの引数・戻り値から generic と block 型を具体化する。あとで解決する引数（parameter や未解決 receiver の呼び出し結果。nil / truthy guard で絞った値も含む）は、受理する overload の戻り値が `nil` 以外で食い違うなら `untyped` にする（`["e"] * n` は `String` と決めない）
 - Playground は入力中の Ruby とユーザー RBS を debounce 解析し、RBS の変更も同じ hover / diagnostics に反映する
 - CodeLens は LSP と Playground で、クラスやモジュールの外にある未注釈の `def` にも推論シグネチャを表示する
-- completion は LSP と Playground で同じ判定と候補を使う。`recv.` は推論した receiver 型のメソッド、`Foo::` はネストした定数、`send(:` / `try(:` はメソッド名を補完する。receiver 型は補完位置を未定義メソッドの呼び出しに置き換えて推論するので、`[1, 2].`、`(a + b).`、行頭の `.` で続くチェーン、`x&.`（nil を除く）でも通常の呼び出しと同じ型になる
+- completion は LSP と Playground で同じ判定と候補を使う。`recv.` は推論した receiver 型のメソッド、`Foo::` はネストした定数、`send(:` / `try(:` はメソッド名を補完する。receiver 型は補完位置を未定義メソッドの呼び出しに置き換えて推論するので、`[1, 2].`、`(a + b).`、行頭の `.` で続くチェーン、`x&.`（nil を除く）でも通常の呼び出しと同じ型になる。メソッド候補は継承の近さ（受け手のクラス、include した module や親クラス、`Kernel` / `BasicObject` の順）で並べ、各層の中では `!=` や `[]` などの記号のメソッドを後ろに置く。union の receiver では各型でいちばん遠い位置を使う。候補の右には定義元のクラスを表示する（LSP は `labelDetails.description`）
 - Playground の Ruby エディタは Monaco の基本的なカーソル移動・編集、行操作、Find を有効にする。macOS の `Command+Backspace` は行頭まで削除、`Shift+Command+K` は行削除、`Command+F` はエディタ内検索
 - diagnostics の publish と workspace refresh
 - CLI と共通の `WorkspaceState` / query backend

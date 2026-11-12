@@ -704,14 +704,13 @@ impl<'a> InferenceEngine<'a> {
                 if index < skip_positionals {
                     continue;
                 }
-                if let Node::CallNode { .. } = &arg {
-                    self.dsl_plugin_collect_mixin_argument(
+                let consumed_by_plugin = matches!(arg, Node::CallNode { .. })
+                    && self.dsl_plugin_collect_mixin_argument(
                         &target_class,
                         &kind,
                         &arg,
                         parse_result,
                     );
-                }
                 let Some(module_names) = self.static_mixin_names_from_arg(
                     class_name,
                     &target_class,
@@ -720,6 +719,10 @@ impl<'a> InferenceEngine<'a> {
                     &kind,
                     scope,
                 ) else {
+                    // A module computed at runtime adds methods Tyda cannot see.
+                    if !consumed_by_plugin {
+                        self.registry.mark_dynamic_mixin(&target_class);
+                    }
                     continue;
                 };
                 for module_name in module_names {

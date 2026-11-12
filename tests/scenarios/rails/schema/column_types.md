@@ -50,10 +50,6 @@ end
 
 ## Map datetime from schema.rb to TimeWithZone
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 `db/schema.rb`
@@ -90,10 +86,6 @@ end
 ```
 
 ## Map explicit types in `t.column`
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -174,10 +166,6 @@ end
 ```
 
 ## Map datetime from structure.sql to TimeWithZone
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -284,5 +272,472 @@ class Post < ApplicationRecord
   def d: -> Array[String?]?
   def e: -> Integer?
   def f: -> void
+end
+```
+
+## Timestamps columns use the datetime column type
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "posts", force: :cascade do |t|
+    t.timestamps
+  end
+end
+```
+
+### file: app/models/post.rb
+
+```ruby
+class Post < ApplicationRecord
+end
+```
+
+```ruby
+class PostTimes
+  def created = Post.new.created_at
+  def updated = Post.new.updated_at
+end
+```
+
+### result
+
+```rbs
+class PostTimes
+  def created: -> ActiveSupport::TimeWithZone
+  def updated: -> ActiveSupport::TimeWithZone
+end
+```
+
+## A uuid primary key types id as String
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "jobs", id: :uuid, force: :cascade do |t|
+    t.string "name"
+  end
+end
+```
+
+### file: app/models/job.rb
+
+```ruby
+class Job < ApplicationRecord
+end
+```
+
+```ruby
+class JobIds
+  def job_id = Job.new.id
+  def job_ids = Job.ids
+end
+```
+
+### result
+
+```rbs
+class JobIds
+  def job_id: -> String
+  def job_ids: -> Array[String]
+end
+```
+
+## TimeWithZone columns answer Time methods through the zone
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "users", id: :serial, force: :cascade do |t|
+    t.datetime "updated_at", null: false
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class User < ApplicationRecord
+  def key = id
+  def elapsed = updated_at - Time.now
+  def shifted = updated_at + 1.day
+  def earlier = updated_at - 60
+  def before = updated_at - 1.day
+  def rounded = updated_at.round
+  def sunday = updated_at.sunday?
+  def day = updated_at.to_date
+end
+```
+
+### result
+
+```rbs
+class User < ApplicationRecord
+  def key: -> Integer
+  def elapsed: -> Float
+  def shifted: -> ActiveSupport::TimeWithZone
+  def earlier: -> ActiveSupport::TimeWithZone
+  def before: -> ActiveSupport::TimeWithZone
+  def rounded: -> ActiveSupport::TimeWithZone
+  def sunday: -> bool
+  def day: -> Date
+end
+```
+
+## Map PostgreSQL native column types
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "hosts", id: :bigserial, force: :cascade do |t|
+    t.inet "address", null: false
+    t.interval "ttl", null: false
+    t.money "price", null: false
+    t.daterange "window", null: false
+    t.timestamptz "seen_at", null: false
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Host < ApplicationRecord
+  def key = id
+  def ip = address
+  def lifetime = ttl
+  def cost = price
+  def span = window
+  def seen = seen_at
+end
+```
+
+### result
+
+```rbs
+class Host < ApplicationRecord
+  def key: -> Integer
+  def ip: -> IPAddr
+  def lifetime: -> ActiveSupport::Duration
+  def cost: -> BigDecimal
+  def span: -> Range[Date]
+  def seen: -> ActiveSupport::TimeWithZone
+end
+```
+
+## Attribute decorators keep the column reader and literal attribute reads use it
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "account_stats", force: :cascade do |t|
+    t.string "acct", default: "", null: false
+    t.bigint "statuses_count", default: 0, null: false
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class AccountStat < ApplicationRecord
+  normalizes :acct, with: ->(acct) { acct.strip }
+  encrypts :acct
+
+  def shout = acct.upcase
+  def statuses_count = [attributes["statuses_count"], 0].max
+  def by_index = self[:acct]
+end
+```
+
+### result
+
+```rbs
+class AccountStat < ApplicationRecord
+  def self.normalize_value_for: (Symbol name, untyped value) -> untyped
+  def shout: -> String
+  def statuses_count: -> Integer
+  def by_index: -> String
+end
+```
+
+## super in an attribute override reaches the generated column method
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "commit_statuses", force: :cascade do |t|
+    t.string "before_sha"
+    t.boolean "emails_enabled", null: false
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class CommitStatus < ApplicationRecord
+  def before_sha
+    super || "0000"
+  end
+
+  def emails_enabled?
+    !!super
+  end
+end
+```
+
+### result
+
+```rbs
+class CommitStatus < ApplicationRecord
+  def before_sha: -> String
+  def emails_enabled?: -> bool
+end
+```
+
+## Keep column nullability for super in an accessor override
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "logs", force: :cascade do |t|
+    t.string "action", default: "", null: false
+    t.string "kind"
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Log < ApplicationRecord
+  def action = super
+
+  def kind = super
+end
+```
+
+### result
+
+```rbs
+class Log < ApplicationRecord
+  def action: -> String
+  def kind: -> String?
+end
+```
+
+## Treat a column named by an unknown macro as replaced
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "documents", force: :cascade do |t|
+    t.string "file"
+    t.string "title"
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Document < ApplicationRecord
+  mount_uploader :file, DocumentUploader
+
+  def attachment = file
+
+  def heading = title
+end
+```
+
+### result
+
+```rbs
+class Document < ApplicationRecord
+  def attachment: -> untyped
+  def heading: -> String?
+end
+```
+
+## Keep a column named by an unknown validation macro
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "hooks", force: :cascade do |t|
+    t.string "url"
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Hook < ApplicationRecord
+  validates_formatting_of :url, using: :url
+
+  def payload = { "url" => url }
+end
+```
+
+### result
+
+```rbs
+class Hook < ApplicationRecord
+  def payload: -> { "url" => String? }
+end
+```
+
+## Treat a column named by a macro from a concern as replaced
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "documents", force: :cascade do |t|
+    t.string "file"
+    t.string "title"
+  end
+end
+```
+
+`app/models/concerns/file_mounter.rb`
+
+```ruby
+module FileMounter
+  extend ActiveSupport::Concern
+
+  class_methods do
+    def mount_file(uploader, field: :file)
+      mount_uploader(field, uploader)
+    end
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Document < ApplicationRecord
+  include FileMounter
+  mount_file DocumentUploader
+
+  def attachment = file
+
+  def heading = title
+end
+```
+
+### result
+
+```rbs
+class Document < ApplicationRecord
+  include FileMounter
+
+  def attachment: -> untyped
+  def heading: -> String?
+end
+```
+
+## Keep a column named by a concern macro that only stores the name
+
+### update
+
+`db/schema.rb`
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "clusters", force: :cascade do |t|
+    t.string "namespace"
+  end
+end
+```
+
+`app/models/concerns/nullify_if_blank.rb`
+
+```ruby
+module NullifyIfBlank
+  extend ActiveSupport::Concern
+
+  class_methods do
+    def nullify_if_blank(*attributes)
+      self.attributes_to_nullify += attributes
+    end
+  end
+end
+```
+
+```ruby
+class ApplicationRecord; end
+
+class Cluster < ApplicationRecord
+  include NullifyIfBlank
+  nullify_if_blank :namespace
+
+  def lower_namespace = namespace&.downcase
+end
+```
+
+### result
+
+```rbs
+class Cluster < ApplicationRecord
+  include NullifyIfBlank
+
+  def lower_namespace: -> String?
 end
 ```

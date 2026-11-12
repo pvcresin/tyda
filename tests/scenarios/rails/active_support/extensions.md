@@ -121,10 +121,6 @@ end
 
 ## String to_date returns nil for a blank string
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```rbs
@@ -144,5 +140,203 @@ end
 ```rbs
 class DateInput
   def date: -> Date?
+end
+```
+
+## Array access extensions return the element or nil
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Picker
+  # @rbs items: Array[Integer]
+  def second(items) = items.second
+
+  # @rbs items: Array[Integer]
+  def third(items) = items.third
+end
+```
+
+### result
+
+```rbs
+class Picker
+  def second: (Array[Integer] items) -> Integer?
+  def third: (Array[Integer] items) -> Integer?
+end
+```
+
+## Array excluding including and in_groups keep the element type
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Picker
+  # @rbs items: Array[Integer]
+  def without_one(items) = items.excluding(1)
+
+  # @rbs items: Array[Integer]
+  def with_three(items) = items.including(3)
+
+  # @rbs items: Array[Integer]
+  def groups(items) = items.in_groups(2)
+end
+```
+
+### result
+
+```rbs
+class Picker
+  def without_one: (Array[Integer] items) -> Array[Integer]
+  def with_three: (Array[Integer] items) -> Array[Integer]
+  def groups: (Array[Integer] items) -> Array[Array[Integer?]]
+end
+```
+
+## symbolize_keys and stringify_keys change the key type
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Keys
+  # @rbs hash: Hash[String, Integer]
+  def symbolized(hash) = hash.symbolize_keys
+
+  # @rbs hash: Hash[Symbol, Integer]
+  def stringified(hash) = hash.stringify_keys
+end
+```
+
+### result
+
+```rbs
+class Keys
+  def symbolized: (Hash[String, Integer] hash) -> Hash[Symbol, Integer]
+  def stringified: (Hash[Symbol, Integer] hash) -> Hash[String, Integer]
+end
+```
+
+## reverse_merge keeps keys from both record hashes
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Options
+  def merged = { a: 1 }.reverse_merge(b: 2)
+end
+```
+
+### result
+
+```rbs
+class Options
+  def merged: -> { b: 2, a: 1 }
+end
+```
+
+## with_indifferent_access returns HashWithIndifferentAccess
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Options
+  # @rbs hash: Hash[Symbol, Integer]
+  def indifferent(hash) = hash.with_indifferent_access
+end
+```
+
+### result
+
+```rbs
+class Options
+  def indifferent: (Hash[Symbol, Integer] hash) -> ActiveSupport::HashWithIndifferentAccess[String, Integer]
+end
+```
+
+## Resolve multiple_of? to_query and secure_compare
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Checks
+  def even = 4.multiple_of?(2)
+
+  def query = { page: 1 }.to_query
+
+  def same = ActiveSupport::SecurityUtils.secure_compare("a", "b")
+end
+```
+
+### result
+
+```rbs
+class Checks
+  def even: -> bool
+  def query: -> String
+  def same: -> bool
+end
+```
+
+## HashWithIndifferentAccess dispatches Hash methods with string keys
+
+### update
+
+```ruby
+class Roles
+  ROLES = { maintainer: 40, owner: 50 }.with_indifferent_access.freeze
+
+  def role(name) = ROLES.fetch(name)
+
+  def lookup = ROLES[:owner]
+
+  def names = ROLES.keys
+
+  def subset = ROLES.slice(:owner)
+
+  def plain = ROLES.to_h
+
+  def symbolized = ROLES.symbolize_keys
+
+  def nested = { a: { b: 1 } }.with_indifferent_access
+end
+```
+
+### result
+
+```rbs
+class Roles
+  ROLES: ActiveSupport::HashWithIndifferentAccess[String, 40 | 50]
+
+  def role: (untyped name) -> (40 | 50)
+  def lookup: -> (40 | 50)?
+  def names: -> Array[String]
+  def subset: -> ActiveSupport::HashWithIndifferentAccess[String, 40 | 50]
+  def plain: -> Hash[String, 40 | 50]
+  def symbolized: -> Hash[Symbol, 40 | 50]
+  def nested: -> ActiveSupport::HashWithIndifferentAccess[String, ActiveSupport::HashWithIndifferentAccess[String, 1]]
 end
 ```

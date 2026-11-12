@@ -45,7 +45,7 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 | `dep_graph.rs` | superclass / mixin / method call など種別付き依存と差分伝播 |
 | `rbs/` | inline RBS、`.rbs`、stdlib の import / lazy load / render |
 | `sorbet/` | `sig`、`.rbi`、Sorbet comment の実験的な import |
-| `rails/` | project 検出、schema / routes / inflector、Rails 共通情報 |
+| `rails/` | project 検出、schema / routes / inflector、relation API 表（`relation_api.rs`）、Rails 共通情報 |
 | `diagnostics.rs` | missing method、unresolved constant、argument / return type mismatch などの判定 |
 | `lsp.rs` | LSP protocol、document / file cache、CodeLens、Hover、refresh |
 | `mcp.rs` | stdio MCP transport、位置指定推論、明示query時の型由来説明 |
@@ -54,6 +54,9 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 Sorbet `sig { ... }` のブロック本体は型 DSL として扱い、通常コードとして推論しない。ブロック内の
 `returns` / `void` / `params` を enclosing class のメソッド呼び出しとして診断しない（実行時の
 self は `T::Private::Methods::DeclBuilder` であるため）。
+`sig` は `src/sorbet/sig.rs` で rbs-inline と同じ `#:` method type に変換し、以降は rbs-inline と
+同じ経路で登録する。Sorbet は sig param を def と同じ順序で書くため、def の `&blk` と同じ位置の
+`T.proc` / `T.nilable(T.proc)` param を RBS の block 節（`{ }` / `?{ }`）へ移す。
 
 ## Semantic backend
 
@@ -85,7 +88,13 @@ Ruby code inference の順に優先する。これは query / projection の型�
 ユーザー定義クラスでも superclass が未設定なら、外部宣言の superclass を暗黙の継承として補完する。
 Ruby source に明示された `class X < Y` は外部宣言で上書きしない。
 
-framework DSL は library-scoped に有効化し、plugin のフックは `PluginCx` を通す。個別 repository の
+framework DSL は library-scoped に有効化し、plugin のフックは `PluginCx` を通す。source / RBS に定義が
+ない framework method の戻り値は plugin の `synthetic_method_return` が受け手と名前から返す。引数の型に
+依存するものは `call_return_method_names` で名前を宣言し、`synthetic_call_return` が引数の型を受け取る。
+宣言された名前の呼び出しだけが追加の引数推論を行うため、他の呼び出しの費用は hash lookup 1 回に留まる。
+plugin の戻り値が指す framework class（`ActiveSupport::HashWithIndifferentAccess[K, V] < Hash[K, V]` など）は
+plugin が `class_declarations` に RBS として持ち、project / gem の RBS に宣言がない場合だけ、その class を
+初めて解決するときに読み込む。継承した method は通常の RBS dispatch で解決する。個別 repository の
 runtime DSL 登録を解析コアへ持ち込まず、動的な API は外部 RBS / RBI を入力する。block の `self` を
 runtime semantics から補う必要がある場合も plugin の block-self hook を通し、source / RBS に明示された
 self を優先して、未解決時だけ plugin の補完を適用する。
@@ -103,10 +112,41 @@ includer より先に定義されていても、本体を再推論して解決�
 は caller の位置・keyword に展開し、bare `super` の既定値には束縛済みの値、自身と後続の optional には
 `nil`、後続 keyword には caller が渡した値だけを渡す。別ファイルの includer は対象外。
 
+呼び出し引数と source parameter の束縛は `registry/argument_binding.rs` に集約する。method
+（`super` / local singleton method / refinement）と Proc / lambda リテラルの呼び出しは同じ規則で
+required → optional → rest → post の順に位置引数を割り当て、未指定の optional / keyword は既定値、
+keyword を受けない callable へ渡した keyword は末尾の Hash 引数にする。違いは `ArgumentRules` だけで、
+method は全 call site を要約するので値を widen し、rest は要素型にする。リテラルは呼び出しごとに解決するので
+値を保ち、rest は Tuple、`**rest` は record にする。keyword を受けない callable では keyword は常に末尾の
+Hash になり、rest があれば rest に入る。proc は positional slot（rest 以外）が2つ以上、または rest と別の
+positional を持つ場合（`|a, *b|`、`|a,|`）だけ単一の配列引数を展開し、長さ不明の配列では各 slot を
+`要素 | nil` にする。不足した必須引数は `nil`、lambda は arity を厳密に扱う。リテラルの `Type::Proc` は
+解析ごとの nonce と開始 offset を詰めた `ProcLiteralId`（u64、文字列を作らない）だけを持ち（等価性・hash では
+無視し、同じ構造の Proc は union でまとまる）、parameter 情報と外側 local への代入はファイル単位の engine が持つ
+side table（`ProcSignature`）に置く。表は engine と一緒に破棄され、再推論は同じ entry を置き換える。別の解析の
+id は一致しないので、registry 経由で届いた古い Proc は通常の `ParamRef` 代入に戻る。本体は
+`ParamRef` / `KeywordParamRef` のまま推論して呼び出し時に代入する。lambda の `return` / `break` は lambda の値になる。
+本体が外側 local に代入する場合、定義したメソッド内の呼び出しで束縛した型を保持し、その文の後に外側 local へ
+join する（引数の推論は呼び出し 1 回分だけ）。
+
 静的に解決できる mixin edge には、Ruby が実行時に呼ぶ `included` / `extended` /
 `prepended` callback の call site も対応付ける。callback の第一引数には mixin の適用先を
 `singleton(...)` として渡し、既存の call site ベースの引数型推論で同じ hook の複数の適用先を
 union にまとめる。適用先や hook の定義を解決できない場合は、推測で補わず `untyped` に縮退する。
+
+splat の展開（`[*x]`、`Kernel#Array`、`push(*x)`、呼び出しの `*x`）は `types::splat` の
+一つの規則で表し、`to_a` の参照だけを呼び出し側が与える。値が `to_a` を持つか、持たないと言えるかは
+推論と遅延解決のどちらも `TypeRegistry::splat_to_a_response` で決め、推論中は先に class と祖先を
+読み込み、戻り値だけを型引数付きで引く。parameter など後で分かる部分を含む展開は要素数を確定せず `Array[SplatRef]` とし、要素型だけを
+遅延参照として残す。値は Array のまま後続の呼び出しや `<<` に渡り、各遅延解決 pass が中身を解決してから
+同じ規則で要素型を求める。最後まで解決できない部分は `untyped` の要素として表示する。call site は要素数が分からない splat の位置を
+`open_splat` に持ち、parameter への束縛は arity が合う要素数ごとに行って union にする。
+
+親クラス本体の `self` 呼び出し（call site の `self_call`）は Ruby では実行時の class へ dispatch する。
+call site は記録した class にだけ置き、method の parameter を集めるときに superclass chain の
+`self_call` も読む（`ancestor_self_call_sites`）。複製しないので、call site の数はサブクラス数に比例しない。
+定義がないか本体が返らない method への `self` 呼び出しがある場合は、parameter 解決の後に subclass
+参照の解決をもう一度行い、サブクラスの戻り値を親の呼び出しへ反映する。
 
 静的に class / module、mixin、superclass の全 edge を確認でき、かつ上限内に収まる
 `Module#ancestors` だけは探索順の `Tuple` として返す。未解決 edge、循環、深すぎる chain

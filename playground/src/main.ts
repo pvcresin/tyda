@@ -73,6 +73,7 @@ interface CompletionEntry {
   label: string;
   kind: "method" | "class" | "module" | "constant";
   detail: string;
+  owner?: string;
 }
 interface CompletionResult {
   items: CompletionEntry[];
@@ -571,7 +572,7 @@ function registerCompletion(
       );
       return {
         suggestions: result.items.map((item, i) => ({
-          label: item.label,
+          label: { label: item.label, description: item.owner },
           kind: COMPLETION_KINDS[item.kind],
           detail: item.detail,
           // Keep Tyda's ranking instead of Monaco's alphabetical default.

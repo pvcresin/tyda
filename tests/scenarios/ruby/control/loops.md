@@ -436,10 +436,6 @@ end
 
 ## Ignore code after loop returns from the method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1267,10 +1263,6 @@ end
 
 ## for preserves the zero-yield path for conditional source-defined each
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 class Array
   def each
@@ -1433,10 +1425,6 @@ end
 
 ## Conditional break in times unions with the receiver
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1454,10 +1442,6 @@ end
 ```
 
 ## Break index from each_with_index unions with the receiver
-
-```yaml
-known_issue: true
-```
 
 ### update
 

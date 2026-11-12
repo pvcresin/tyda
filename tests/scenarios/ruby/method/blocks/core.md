@@ -60,7 +60,7 @@ def with_block_param(&block) = 42
 
 ```rbs
 class Object < BasicObject
-  def with_block_param: (?untyped &block) -> 42
+  def with_block_param: () ?{ (?) -> untyped } -> 42
 end
 ```
 
@@ -383,11 +383,11 @@ end
 
 ```rbs
 class BlockLocalParameterShadow
-  def run: (?untyped &blk) -> untyped
+  def run: () ?{ (?) -> untyped } -> untyped
 end
 
 class NestedBlockParameterShadow
-  def run: (?untyped &blk) -> [1]
+  def run: () ?{ (?) -> untyped } -> [1]
 end
 ```
 

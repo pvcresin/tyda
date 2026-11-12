@@ -32,9 +32,11 @@ pub fn user_facing_type(ty: &Type) -> Type {
         Type::Proc {
             return_type,
             param_count,
+            literal,
         } => Type::Proc {
             return_type: Box::new(user_facing_type(return_type)),
             param_count: *param_count,
+            literal: *literal,
         },
         _ => ty.clone(),
     }

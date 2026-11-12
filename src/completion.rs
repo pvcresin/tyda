@@ -61,6 +61,9 @@ pub struct CompletionEntry {
     pub label: String,
     pub kind: CompletionEntryKind,
     pub detail: String,
+    /// Class or module that defines a method candidate, shown next to the label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 impl CompletionRequest {
@@ -141,6 +144,7 @@ fn method_entry(
         label: candidate.name,
         kind: CompletionEntryKind::Method,
         detail,
+        owner: Some(candidate.owner_class),
     }
 }
 
@@ -167,6 +171,7 @@ fn constant_entry(candidate: ConstantCompletionCandidate) -> CompletionEntry {
         label: candidate.name,
         kind,
         detail,
+        owner: None,
     }
 }
 

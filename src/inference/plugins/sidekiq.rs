@@ -96,19 +96,29 @@ impl<'a> InferenceEngine<'a> {
         module_name: &str,
         loc: SourceLocation,
     ) {
-        if self.dsl_enabled(DslLibrary::SidekiqWorker)
-            && matches!(module_name, "Sidekiq::Worker" | "Sidekiq::Job")
+        if !self.dsl_enabled(DslLibrary::SidekiqWorker)
+            || !matches!(module_name, "Sidekiq::Worker" | "Sidekiq::Job")
         {
-            self.add_simple_method_if_missing(class_name, "perform_async", Type::String, true, loc);
-            self.add_simple_method_if_missing(class_name, "perform_in", Type::String, true, loc);
-            self.add_simple_method_if_missing(class_name, "perform_at", Type::String, true, loc);
-            self.add_simple_method_if_missing(
-                class_name,
-                "perform_bulk",
-                Type::Array(Some(Box::new(Type::String))),
-                true,
-                loc,
-            );
+            return;
         }
+        // Client middleware can halt a push; the client then returns nil instead of a jid.
+        let jid = || Type::String.union_with(Type::Nil);
+        let ran_inline = || Type::True.union_with(Type::Nil);
+        for (name, return_type) in [
+            ("perform_async", jid()),
+            ("perform_in", jid()),
+            ("perform_at", jid()),
+            ("perform_bulk", Type::Array(Some(Box::new(jid())))),
+            ("perform_inline", ran_inline()),
+            ("perform_sync", ran_inline()),
+        ] {
+            self.add_simple_method_if_missing(class_name, name, return_type, true, loc);
+        }
+    }
+
+    pub(in crate::inference) fn is_sidekiq_job_class(&self, class_name: &str) -> bool {
+        WORKER_MODULES
+            .iter()
+            .any(|module| self.class_or_ancestors_include_module(class_name, module))
     }
 }

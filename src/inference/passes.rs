@@ -212,11 +212,15 @@ impl<'a> InferenceEngine<'a> {
             let mut all_param_types: Vec<Vec<Type>> = Vec::with_capacity(data.methods.len());
             let caller_ctx_memo = CallerCtxMemoScope::enter();
             for method in &data.methods {
-                let empty: [&CallSite; 0] = [];
-                let method_call_sites = grouped_call_sites
+                let mut method_call_sites: Vec<&CallSite> = grouped_call_sites
                     .get(&(method.name.as_str(), method.is_singleton))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&empty);
+                    .cloned()
+                    .unwrap_or_default();
+                method_call_sites.extend(self.registry.ancestor_self_call_sites(
+                    class_name,
+                    method.name.as_str(),
+                    method.is_singleton,
+                ));
                 let forwarded_call_sites: Vec<Option<CallSite>> = method_call_sites
                     .iter()
                     .map(|site| self.registry.call_site_with_forwarded_args(site))
@@ -631,6 +635,15 @@ impl<'a> InferenceEngine<'a> {
                     })
                     .collect(),
             ),
+            Type::SplatRef(parts) => {
+                registry.resolve_splat_parts(&Self::resolve_general_method_refs_depth(
+                    registry,
+                    context_class,
+                    parts,
+                    visiting,
+                    depth + 1,
+                ))
+            }
             _ => ty.clone(),
         }
     }
@@ -711,6 +724,7 @@ impl<'a> InferenceEngine<'a> {
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner) => Self::type_contains_method_ref(inner),
             Type::Array(Some(inner)) => Self::type_contains_method_ref(inner),
+            Type::SplatRef(_) => true,
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_method_ref),
             Type::Hash(Some(k), Some(v)) => {
                 Self::type_contains_method_ref(k) || Self::type_contains_method_ref(v)
@@ -755,10 +769,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .all(|f| Self::is_concrete_for_method_ref_resolve(&f.value)),
-            Type::Proc {
-                return_type,
-                param_count: _,
-            } => Self::is_concrete_for_method_ref_resolve(return_type),
+            Type::Proc { return_type, .. } => Self::is_concrete_for_method_ref_resolve(return_type),
             _ => false,
         }
     }
@@ -882,9 +893,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternRestRef(inner)
             | Type::PatternIndexRef(inner, _)
             | Type::PatternKeyRef(inner, _)
-            | Type::PatternKeyRestRef(inner, _) => {
-                Self::type_contains_subclass_ref_candidate(inner)
-            }
+            | Type::PatternKeyRestRef(inner, _)
+            | Type::SplatRef(inner) => Self::type_contains_subclass_ref_candidate(inner),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_subclass_ref_candidate),
             Type::Hash(Some(key), Some(value)) => {
                 Self::type_contains_subclass_ref_candidate(key)
@@ -905,14 +915,7 @@ impl<'a> InferenceEngine<'a> {
     fn resolve_subclass_refs_in_type(registry: &TypeRegistry, ty: &Type) -> Type {
         match ty {
             Type::MethodReturnRef(class_name, method_name) => {
-                if registry
-                    .resolve_method_call_owners(class_name, method_name, false)
-                    .is_empty()
-                    && registry
-                        .resolve_method_call_owners(class_name, method_name, true)
-                        .is_empty()
-                    && let Some(ret) =
-                        registry.lookup_method_return_type_in_subclasses(class_name, method_name)
+                if let Some(ret) = registry.subclass_return_for_self_call(class_name, method_name)
                     && !matches!(ret, Type::MethodReturnRef(..))
                     && !Self::type_contains_param_ref(&ret)
                 {
@@ -1030,9 +1033,9 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_contains_param_ref(&field.value)),
-            Type::PatternIndexRef(subject, _) | Type::PatternRestRef(subject) => {
-                Self::type_contains_param_ref(subject)
-            }
+            Type::PatternIndexRef(subject, _)
+            | Type::PatternRestRef(subject)
+            | Type::SplatRef(subject) => Self::type_contains_param_ref(subject),
             Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
                 Self::type_contains_param_ref(subject)
             }
@@ -1863,6 +1866,9 @@ impl<'a> InferenceEngine<'a> {
                     Self::resolve_pattern_rest_ref(&resolved_subject)
                 }
             }
+            Type::SplatRef(parts) => Type::SplatRef(Box::new(
+                Self::substitute_param_refs_with_keywords(parts, param_types, keyword_types),
+            )),
             Type::PatternKeyRef(subject, key) => {
                 let resolved_subject =
                     Self::substitute_param_refs_with_keywords(subject, param_types, keyword_types);
@@ -1884,6 +1890,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(Self::substitute_param_refs_with_keywords(
                     return_type,
@@ -1891,6 +1898,7 @@ impl<'a> InferenceEngine<'a> {
                     keyword_types,
                 )),
                 param_count: *param_count,
+                literal: *literal,
             },
             Type::Tuple(elems) => Type::Tuple(
                 elems

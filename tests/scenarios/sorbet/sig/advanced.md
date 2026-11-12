@@ -236,7 +236,7 @@ end
 
 ```rbs
 class Wrapper
-  def with_timer: (?Proc &blk) -> U
+  def with_timer: { () -> U } -> U
 end
 ```
 
@@ -304,7 +304,7 @@ end
 
 ```rbs
 class Iterator
-  def map_items: (Array[Integer] items, ?Proc &blk) -> Array[String]
+  def map_items: (Array[Integer] items) { (Integer) -> String } -> Array[String]
 end
 ```
 
@@ -324,7 +324,24 @@ end
 
 ```rbs
 class Logger
-  def log: (String msg, ?Proc &blk) -> void
+  def log: (String msg) { () -> void } -> void
+end
+```
+
+## Block with T.nilable(T.proc)
+
+```ruby
+class Hooks
+  sig { params(name: String, blk: T.nilable(T.proc.params(x: Integer).returns(String))).returns(T.nilable(String)) }
+  def run(name, &blk) = blk&.call(1)
+end
+```
+
+### result
+
+```rbs
+class Hooks
+  def run: (String name) ?{ (Integer) -> String } -> String?
 end
 ```
 

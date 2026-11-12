@@ -197,10 +197,7 @@ impl<'a> InferenceEngine<'a> {
                     Self::collect_type_references_into(&field.value, defined, refs);
                 }
             }
-            Type::Proc {
-                return_type,
-                param_count: _,
-            } => {
+            Type::Proc { return_type, .. } => {
                 Self::collect_type_references_into(return_type, defined, refs);
             }
             Type::ReceiverMethodRef(recv, _) => {

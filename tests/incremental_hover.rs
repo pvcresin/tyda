@@ -212,7 +212,7 @@ fn class_constant_and_local_hovers_remain_correct_after_each_keystroke() {
                 occurrence: 0,
                 ready_after: "  TAX_RATE = 0.1",
                 name: "TAX_RATE",
-                display: "[Tyda] 0.1",
+                display: "[Tyda] Float",
             },
             ExpectedHover {
                 token: "Invoice",

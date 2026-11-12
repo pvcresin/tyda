@@ -71,7 +71,7 @@ fn write_rbs_from_classes<W: Write>(
         first_entry = false;
     }
     for constant in top_level_constants {
-        writeln!(writer, "{}: {}", constant.name, constant.const_type)?;
+        write_constant(writer, "", constant)?;
     }
 
     let non_empty: Vec<_> = classes
@@ -102,7 +102,7 @@ fn write_rbs_from_registry<W: Write>(
         first_entry = false;
     }
     for constant in &top_level_constants {
-        writeln!(writer, "{}: {}", constant.name, constant.const_type)?;
+        write_constant(writer, "", constant)?;
     }
 
     // Chunked parallel render writes classes out in order, so output is byte-stable (the `resolve_params` cache is pure).
@@ -178,7 +178,7 @@ fn write_class_body<W: Write>(
         writer.write_all(b"\n")?;
     }
     for constant in renderable_constants {
-        writeln!(writer, "  {}: {}", constant.name, constant.const_type)?;
+        write_constant(writer, "  ", constant)?;
     }
     if !renderable_constants.is_empty() && !renderable_methods.is_empty() {
         writer.write_all(b"\n")?;
@@ -193,6 +193,23 @@ fn write_class_body<W: Write>(
         write_alias(writer, alias)?;
     }
     writer.write_all(b"end\n")
+}
+
+// A class/module alias is its own RBS declaration (`class A = B`), not a constant entry.
+fn write_constant<W: Write>(
+    writer: &mut W,
+    indent: &str,
+    constant: &ConstantSig,
+) -> io::Result<()> {
+    match (constant.alias_kind, &constant.const_type) {
+        (Some(kind), Type::Singleton(target)) => writeln!(
+            writer,
+            "{indent}{} {} = {target}",
+            kind.keyword(),
+            constant.name
+        ),
+        _ => writeln!(writer, "{indent}{}: {}", constant.name, constant.const_type),
+    }
 }
 
 fn write_alias<W: Write>(writer: &mut W, alias: &MethodAliasSig) -> io::Result<()> {
@@ -325,37 +342,40 @@ fn write_signature<W: Write>(
     return_type: &Type,
     widen_params: bool,
 ) -> io::Result<()> {
+    // RBS has no `&block` parameter syntax; an unannotated block param becomes an untyped block.
+    let has_untyped_block = block.is_none()
+        && params
+            .iter()
+            .any(|param| matches!(param.kind, ParamKind::Block));
     let mut has_params = false;
-    let mut first = true;
     for param in params {
-        if matches!(param.kind, ParamKind::Block) && block.is_some() {
+        if matches!(param.kind, ParamKind::Block) {
             continue;
         }
-        if !has_params {
-            writer.write_all(b"(")?;
-        }
+        writer.write_all(if has_params { b", " } else { b"(" })?;
         has_params = true;
-        if !first {
-            writer.write_all(b", ")?;
-        }
-        first = false;
         write_param(writer, param, widen_params)?;
     }
     if has_params {
         writer.write_all(b")")?;
+        if let Some(block) = block {
+            write_block_signature(writer, block, widen_params)?;
+        }
     } else if let Some(block) = block {
         write_block_signature_trimmed(writer, block, widen_params)?;
-        writer.write_all(b" -> ")?;
-        return write_return_type(writer, return_type, false);
+    } else if has_untyped_block {
+        writer.write_all(b"()")?;
     } else {
-        writer.write_all(b"-> ")?;
-        return write_return_type(writer, return_type, false);
+        writer.write_all(b"->")?;
     }
-    if let Some(block) = block {
-        write_block_signature(writer, block, widen_params)?;
+    if has_untyped_block {
+        writer.write_all(b" ?{ (?) -> untyped }")?;
     }
-    writer.write_all(b" -> ")?;
-    write_return_type(writer, return_type, true)
+    if has_params || block.is_some() || has_untyped_block {
+        writer.write_all(b" ->")?;
+    }
+    writer.write_all(b" ")?;
+    write_return_type(writer, return_type)
 }
 
 fn write_param<W: Write>(writer: &mut W, param: &Param, widen_param: bool) -> io::Result<()> {
@@ -391,7 +411,7 @@ fn write_param<W: Write>(writer: &mut W, param: &Param, widen_param: bool) -> io
                 write!(writer, " {}", param.name)?;
             }
         }
-        ParamKind::Block => write!(writer, "?{param_type:#} &{}", param.name)?,
+        ParamKind::Block => unreachable!("block params are rendered as a block signature"),
     }
     Ok(())
 }
@@ -433,21 +453,32 @@ fn write_block_signature_body<W: Write>(
         }
     }
     writer.write_all(b") -> ")?;
-    write_return_type(writer, &block.return_type, !block.params.is_empty())?;
+    write_return_type(writer, &block.return_type)?;
     writer.write_all(b" }")
 }
 
-fn write_return_type<W: Write>(writer: &mut W, ty: &Type, has_params: bool) -> io::Result<()> {
-    if has_params {
-        write!(writer, "{ty:#}")
-    } else {
-        write!(writer, "{ty}")
+// RBS rejects a bare union or intersection after `->` (`| B` reads as another overload).
+// It also rejects `void` as a union member; a return that may be `void` has no usable value.
+fn write_return_type<W: Write>(writer: &mut W, ty: &Type) -> io::Result<()> {
+    match ty {
+        Type::Union(types) if types.contains(&Type::Void) => writer.write_all(b"void"),
+        Type::Intersection(types) if types.len() > 1 => write!(writer, "({ty})"),
+        _ => write!(writer, "{ty:#}"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::NamespaceAliasKind;
+
+    #[test]
+    fn signature_renders_a_union_with_void_as_void() {
+        let mut buf = Vec::new();
+        let ty = Type::Union(vec![Type::False, Type::Void]);
+        write_signature(&mut buf, &[], None, &ty, false).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "-> void");
+    }
 
     #[test]
     fn signature_formats_empty_tuple_as_rbs_empty_tuple() {
@@ -459,5 +490,43 @@ mod tests {
         assert!(
             rbs_sys::parse_signature(&format!("class A\n  def empty: {rendered}\nend\n")).is_ok()
         );
+    }
+
+    fn constant(name: &str, target: &str, alias_kind: Option<NamespaceAliasKind>) -> ConstantSig {
+        ConstantSig {
+            name: name.to_string(),
+            const_type: Type::Singleton(target.into()),
+            alias_kind,
+            loc: None,
+            file_path: None,
+        }
+    }
+
+    #[test]
+    fn namespace_alias_constants_render_as_alias_declarations() {
+        let mut buf = Vec::new();
+        write_constant(
+            &mut buf,
+            "",
+            &constant("A", "Foo", Some(NamespaceAliasKind::Class)),
+        )
+        .unwrap();
+        writeln!(buf, "module Outer").unwrap();
+        write_constant(
+            &mut buf,
+            "  ",
+            &constant("M", "Mod", Some(NamespaceAliasKind::Module)),
+        )
+        .unwrap();
+        write_constant(&mut buf, "  ", &constant("V", "Foo", None)).unwrap();
+        writeln!(buf, "end").unwrap();
+        let rendered = String::from_utf8(buf).unwrap();
+
+        assert_eq!(
+            rendered,
+            "class A = Foo\nmodule Outer\n  module M = Mod\n  V: singleton(Foo)\nend\n"
+        );
+        let with_targets = format!("class Foo\nend\nmodule Mod\nend\n{rendered}");
+        assert!(rbs_sys::parse_signature(&with_targets).is_ok());
     }
 }

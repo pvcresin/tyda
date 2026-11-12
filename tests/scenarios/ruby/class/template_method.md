@@ -57,10 +57,6 @@ end
 
 ## Union return values from multiple subclasses
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -180,10 +176,6 @@ end
 
 ## Parent call through an abstract raise uses the subclass method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -212,10 +204,6 @@ end
 
 ## Parent call passes its arguments to a subclass method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -237,5 +225,33 @@ end
 
 class Child < Base
   def step: (Integer value) -> String
+end
+```
+
+## Parent call passes its arguments to a subclass override of a default hook
+
+### update
+
+```ruby
+class Base
+  def run = hook(1)
+  def hook(value) = nil
+end
+
+class Child < Base
+  def hook(value) = value
+end
+```
+
+### result
+
+```rbs
+class Base
+  def run: -> nil
+  def hook: (Integer value) -> nil
+end
+
+class Child < Base
+  def hook: (Integer value) -> Integer
 end
 ```

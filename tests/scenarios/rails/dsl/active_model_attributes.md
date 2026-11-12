@@ -44,10 +44,6 @@ end
 
 ## A datetime attribute is a Time
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

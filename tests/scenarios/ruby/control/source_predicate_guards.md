@@ -206,7 +206,7 @@ class PredicateOverriddenBelow
 end
 
 class PredicateOverrideChild < PredicateOverriddenBelow
-  def present?: (untyped _value) -> true
+  def present?: (String? _value) -> true
 end
 
 class PredicatePrepended
@@ -352,10 +352,6 @@ end
 ```
 
 ## Nil guards on a local narrow the guarded branch
-
-```yaml
-known_issue: true
-```
 
 ### update
 

@@ -151,10 +151,6 @@ end
 
 ## Use defined? as branch condition
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

@@ -291,6 +291,7 @@ impl Drop for CallerCtxMemoScope {
     }
 }
 
+pub(crate) mod argument_binding;
 mod external_types;
 mod file_local;
 mod includer_dsl;
@@ -325,8 +326,9 @@ pub struct RegistryBreakdownTotals {
 }
 
 use crate::types::{
-    ClassInfo, ConstantSig, HoverBlockSig, MethodAliasSig, MethodSig, OverloadSig, Param,
-    ParamKind, RecordField, RecordKey, SharedName, SharedPath, SourceLocation, Type,
+    ClassInfo, ConstantSig, HoverBlockSig, MethodAliasSig, MethodSig, NamespaceAliasKind,
+    OverloadSig, Param, ParamKind, RecordField, RecordKey, SharedName, SharedPath, SourceLocation,
+    SplatToA, Type,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,6 +336,17 @@ pub struct ParamInfo {
     pub name: String,
     pub kind: ParamKind,
     pub default_type: Option<Type>,
+}
+
+/// How a splatted value answers `to_a`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToAResponse {
+    Defined {
+        source_defined: bool,
+        owner_singleton: bool,
+    },
+    Missing,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -359,6 +372,8 @@ fn call_site_fingerprint(call_site: &CallSite) -> u64 {
     keyword_acc.hash(&mut hasher);
     call_site.keyword_rest_shape.hash(&mut hasher);
     call_site.block.hash(&mut hasher);
+    call_site.open_splat.hash(&mut hasher);
+    call_site.self_call.hash(&mut hasher);
     if let Some(context) = call_site.caller_context.as_deref() {
         context.class_name.hash(&mut hasher);
         context.method_name.hash(&mut hasher);
@@ -379,6 +394,10 @@ pub struct CallSite {
     pub block: Option<Box<HoverBlockSig>>,
     // same for `caller_context` (generic param forwarding is rare).
     pub caller_context: Option<Box<CallSiteCallerContext>>,
+    // Index in `arg_types` of a splat whose element count is unknown; that entry holds its element type.
+    pub open_splat: Option<u16>,
+    // The receiver is `self`, so the call dispatches on the runtime class, which may be a subclass.
+    pub self_call: bool,
 }
 
 type CallSiteCallerContextKey = (SharedName, SharedName, bool);
@@ -922,6 +941,8 @@ pub struct MethodDef {
 #[derive(Debug, Clone, Default)]
 pub struct DirtyPattern {
     columns: Vec<(Sym, Type)>,
+    /// Columns declared `null: false` (or with a default), whose readers never return nil.
+    non_null_columns: Vec<Sym>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DirtyKind {
@@ -1019,7 +1040,10 @@ fn split_dirty_method_name(name: &str) -> Option<(&str, DirtyKind)> {
 
 impl DirtyPattern {
     pub fn from_columns(columns: Vec<(Sym, Type)>) -> Self {
-        Self { columns }
+        Self {
+            columns,
+            non_null_columns: Vec::new(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1029,8 +1053,21 @@ impl DirtyPattern {
         for (name, ty) in &other.columns {
             if !self.columns.iter().any(|(existing, _)| existing == name) {
                 self.columns.push((*name, ty.clone()));
+                if other.non_null_columns.contains(name) {
+                    self.non_null_columns.push(*name);
+                }
             }
         }
+    }
+
+    /// Reader type of a column: nilable unless the schema declares it non-null.
+    fn column_accessor_type(&self, col: &str) -> Option<Type> {
+        let base = self.column_type(col)?;
+        let nullable = !self
+            .non_null_columns
+            .iter()
+            .any(|name| name.as_str() == col);
+        Some(crate::rails::nullable_column_accessor_type(base, nullable))
     }
 
     fn column_type(&self, col: &str) -> Option<&Type> {
@@ -1179,6 +1216,8 @@ pub struct MethodCompletionCandidate {
     pub owner_class: String,
     pub is_singleton: bool,
     pub sig: MethodSig,
+    /// Position of `owner_class` in method lookup order; lower is closer to the receiver.
+    pub ancestor_rank: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1404,6 +1443,24 @@ pub struct ConstantDef {
     pub file_path: Option<SharedPath>,
     // lazy stdlib constants are lookup-only and are never emitted in RBS output.
     pub external_source: bool,
+    pub alias: ConstantAlias,
+}
+
+/// `X = Foo` binds the class object itself, so RBS declares `X` as a class/module alias.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ConstantAlias {
+    #[default]
+    None,
+    /// The target's kind is read from the output registry (it may be defined later).
+    Namespace,
+    /// Kind seen at the write; stdlib and gem targets are absent from the output registry.
+    NamespaceOf(NamespaceAliasKind),
+}
+
+impl ConstantAlias {
+    pub fn is_namespace(self) -> bool {
+        !matches!(self, Self::None)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1946,6 +2003,17 @@ pub struct ClassDataCold {
     /// DSL recorded in a concern `included do` that must run against each includer
     /// (resource name / serializer owner), not the concern module itself.
     pub includer_bound_dsl: Vec<IncluderBoundDsl>,
+    /// Attribute names whose methods are generated at runtime by macros Tyda does not model
+    /// (`attr_encrypted :token` -> `token`, `token=`, `token_changed?`) or by `select` aliases.
+    pub runtime_attributes: Vec<Sym>,
+    /// Class-body calls (macro name, literal symbol arguments) whose definition was not loaded
+    /// yet; resolved against source-defined class methods once the ancestors are known.
+    pub pending_class_macros: Vec<(Sym, Vec<Sym>)>,
+    /// Class methods (name, parameter names) whose body passes those parameters on to another
+    /// receiverless call (`mount_uploader(field, uploader)`), so their values name accessors.
+    pub macro_forwarded_params: Vec<(Sym, Vec<Sym>)>,
+    /// `include` / `extend` / `prepend` of a module computed at runtime (`include Routing.url_helpers`).
+    pub has_dynamic_mixin: bool,
 }
 
 /// Owner-dependent DSL collected on a concern and applied at each includer.
@@ -2630,6 +2698,8 @@ pub struct TypeRegistry {
     has_source_base_case_equality_override: bool,
     has_source_numeric_case_equality_override: bool,
     has_source_block_given_override: bool,
+    /// Lazy RBI declarations exist, so a method surface is complete only when they back it.
+    generated_artifacts_present: bool,
     /// skip the dirty-synthesis path entirely for registries with no dirty patterns (avoids per-miss matching cost for non-Rails).
     has_dirty_patterns: bool,
     /// resolved-param cache: valid because the registry is immutable during resolution. Call `invalidate_resolve_cache` after mutation.
@@ -2653,6 +2723,8 @@ pub struct TypeRegistry {
     pending_scoped_type_refs: Vec<PendingScopedTypeRef>,
     /// Source methods whose bodies are being inferred, so they are not registered yet.
     inferring_method_bodies: Vec<(Sym, Sym)>,
+    /// The project's Rails version; `None` means the latest stable release, as in the engine.
+    rails_version: Option<crate::project::RailsVersion>,
 }
 
 /// Registry state a per-file snapshot never populates, kept behind one box.
@@ -2732,6 +2804,7 @@ impl Clone for TypeRegistry {
             has_source_numeric_case_equality_override: self
                 .has_source_numeric_case_equality_override,
             has_source_block_given_override: self.has_source_block_given_override,
+            generated_artifacts_present: self.generated_artifacts_present,
             has_dirty_patterns: self.has_dirty_patterns,
             resolve_params_cache: ParamCache::default(),
             resolve_params_cache_frozen: std::sync::atomic::AtomicBool::new(false),
@@ -2745,6 +2818,7 @@ impl Clone for TypeRegistry {
             pending_method_aliases: self.pending_method_aliases.clone(),
             pending_scoped_type_refs: self.pending_scoped_type_refs.clone(),
             inferring_method_bodies: Vec::new(),
+            rails_version: self.rails_version,
         }
     }
 }
@@ -3292,40 +3366,21 @@ impl TypeRegistry {
             .count()
     }
 
-    fn method_accepts_keywords(param_infos: &[ParamInfo]) -> bool {
-        param_infos.iter().any(|pi| {
-            matches!(
-                pi.kind,
-                ParamKind::KeywordRequired | ParamKind::KeywordOptional | ParamKind::DoubleRest
-            )
-        })
-    }
-
     pub(crate) fn synthesize_keyword_hash_arg(
         call_site: &CallSite,
         param_infos: &[ParamInfo],
     ) -> Vec<Type> {
         let mut arg_types = call_site.arg_types.clone();
-        if call_site.keyword_arg_types.is_empty() || Self::method_accepts_keywords(param_infos) {
+        if call_site.keyword_arg_types.is_empty() || argument_binding::accepts_keywords(param_infos)
+        {
             return arg_types;
         }
-
-        let positional_count = Self::positional_param_count(param_infos);
-        if arg_types.len() >= positional_count {
-            return arg_types;
-        }
-
-        let mut fields: Vec<RecordField> = call_site
-            .keyword_arg_types
-            .iter()
-            .map(|(name, ty)| RecordField {
-                key: RecordKey::Symbol(name.to_string()),
-                value: ty.clone(),
-                optional: false,
-            })
-            .collect();
-        fields.sort_by(|a, b| a.key.cmp(&b.key));
-        arg_types.push(Type::Record(fields));
+        arg_types.push(argument_binding::keyword_hash_argument(
+            call_site
+                .keyword_arg_types
+                .iter()
+                .map(|(name, ty)| (name.as_ref(), ty)),
+        ));
         arg_types
     }
 
@@ -3335,12 +3390,18 @@ impl TypeRegistry {
         param_infos: &[ParamInfo],
     ) {
         let arg_types = Self::synthesize_keyword_hash_arg(call_site, param_infos);
-        Self::merge_resolved_positional_arg_types(param_types, &arg_types, param_infos);
+        Self::merge_resolved_positional_arg_types(
+            param_types,
+            &arg_types,
+            call_site.open_splat,
+            param_infos,
+        );
     }
 
     fn merge_resolved_positional_arg_types(
         param_types: &mut [Vec<Type>],
         arg_types: &[Type],
+        open_splat: Option<u16>,
         param_infos: &[ParamInfo],
     ) {
         let positional_infos: Vec<&ParamInfo> = param_infos
@@ -3352,46 +3413,19 @@ impl TypeRegistry {
                 )
             })
             .collect();
-        let bound = Self::bind_positional_arguments(&positional_infos, arg_types);
+        let bound = match open_splat {
+            Some(index) => argument_binding::bind_positional_arguments_with_open_splat(
+                &positional_infos,
+                arg_types,
+                usize::from(index),
+            ),
+            None => argument_binding::bind_positional_arguments(&positional_infos, arg_types),
+        };
         for (slot, arg_types) in param_types.iter_mut().zip(bound) {
             for arg_type in arg_types {
                 Type::append_argument_parts(slot, arg_type);
             }
         }
-    }
-
-    /// Ruby's positional binding: required parameters first, then optionals, then the rest.
-    pub(crate) fn bind_positional_arguments(
-        params: &[&ParamInfo],
-        args: &[Type],
-    ) -> Vec<Vec<Type>> {
-        let required_count = params
-            .iter()
-            .filter(|param| matches!(param.kind, ParamKind::Required))
-            .count();
-        let optional_count = params
-            .iter()
-            .filter(|param| matches!(param.kind, ParamKind::Optional))
-            .count();
-        let mut optional_args = args.len().saturating_sub(required_count);
-        let mut rest_args = optional_args.saturating_sub(optional_count);
-        let mut args = args.iter().cloned();
-        params
-            .iter()
-            .map(|param| match param.kind {
-                ParamKind::Optional if optional_args == 0 => Vec::new(),
-                ParamKind::Optional => {
-                    optional_args -= 1;
-                    args.next().into_iter().collect()
-                }
-                ParamKind::Rest => {
-                    let collected = args.by_ref().take(rest_args).collect();
-                    rest_args = 0;
-                    collected
-                }
-                _ => args.next().into_iter().collect(),
-            })
-            .collect()
     }
 
     pub fn new() -> Self {
@@ -3870,6 +3904,45 @@ impl TypeRegistry {
     /// Column accessor type from schema/`DirtyPattern`, walking the superclass
     /// chain the same way as `schema_column_names`. Used when `attribute :x`
     /// (and other column-backed DSL) omits a type keyword.
+    /// What the generated attribute method `method_name` (`col`, `col?`, `col=`) of a schema
+    /// column returns. Rails defines these in a module the model includes, so `super` from a
+    /// source override reaches them.
+    pub(crate) fn generated_column_method_type(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<Type> {
+        let (column, is_predicate) = match method_name.strip_suffix('?') {
+            Some(column) => (column, true),
+            None => (method_name.strip_suffix('=').unwrap_or(method_name), false),
+        };
+        let mut current = Some(class_name.to_string());
+        let mut depth = 0;
+        while let Some(cls) = current {
+            if depth >= MAX_RESOLVE_DEPTH {
+                break;
+            }
+            depth += 1;
+            let data = self.class_data.get(cls.as_str())?;
+            if let Some(pattern) = data.cold().dirty_method_pattern.as_ref()
+                && let Some(accessor) = pattern.column_accessor_type(column)
+            {
+                if is_predicate {
+                    return Some(Type::Bool);
+                }
+                let generated = Self::method_for_lookup_kind(data, column, Some(false))
+                    .filter(|method| method.synthetic_dsl_source && method.rbs_file_source)
+                    .map(|method| method.raw_return_type.clone());
+                return Some(generated.unwrap_or(accessor));
+            }
+            current = data.superclass.as_ref().map(|sc| {
+                self.resolve_superclass_ref_borrow(&cls, sc.as_ref())
+                    .to_string()
+            });
+        }
+        None
+    }
+
     pub fn schema_column_accessor_type(&self, class_name: &str, column: &str) -> Option<Type> {
         let mut current = Some(class_name.to_string());
         let mut depth = 0;
@@ -3882,14 +3955,14 @@ impl TypeRegistry {
                 break;
             };
             if let Some(pattern) = data.cold().dirty_method_pattern.as_ref()
-                && let Some(base) = pattern.column_type(column)
+                && let Some(accessor) = pattern.column_accessor_type(column)
             {
                 if let Some(method) = Self::method_for_lookup_kind(data, column, Some(false))
                     && !matches!(method.raw_return_type, Type::Untyped)
                 {
                     return Some(method.raw_return_type.clone());
                 }
-                return Some(crate::rails::nullable_column_accessor_type(base, true));
+                return Some(accessor);
             }
             current = data.superclass.as_ref().map(|sc| {
                 self.resolve_superclass_ref_borrow(&cls, sc.as_ref())
@@ -3919,6 +3992,131 @@ impl TypeRegistry {
         let mut method = DirtyPattern::build_method_def(column, Type::Untyped);
         method.attr_ivar = Some(ivar);
         self.add_method_def(class_name, method);
+    }
+
+    pub(crate) fn mark_dynamic_mixin(&mut self, class_name: &str) {
+        self.class_data_mut(class_name).cold_mut().has_dynamic_mixin = true;
+    }
+
+    fn walked_closure_has_dynamic_mixin(&self, classes: &[String]) -> bool {
+        classes
+            .iter()
+            .filter_map(|name| self.class_data.get(name.as_str()))
+            .any(|data| data.cold_opt().is_some_and(|cold| cold.has_dynamic_mixin))
+    }
+
+    pub(crate) fn mark_runtime_attribute(&mut self, class_name: &str, name: &str) {
+        let name = Sym::new(name);
+        let names = &mut self
+            .class_data_mut(class_name)
+            .cold_mut()
+            .runtime_attributes;
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+
+    pub(crate) fn record_macro_forwarded_params(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        params: Vec<Sym>,
+    ) {
+        let method_name = Sym::new(method_name);
+        let entries = &mut self
+            .class_data_mut(class_name)
+            .cold_mut()
+            .macro_forwarded_params;
+        entries.retain(|(name, _)| *name != method_name);
+        if !params.is_empty() {
+            entries.push((method_name, params));
+        }
+    }
+
+    /// The columns a source-defined class macro replaces when called with the literal symbol
+    /// `args`: only names its body passes on to another macro, either from the positional
+    /// arguments or from symbol defaults of forwarded parameters. A macro that merely stores
+    /// the names (`self.attributes_to_nullify += attributes`) leaves the columns alone.
+    pub(crate) fn names_replaced_by_source_macro<'n>(
+        &self,
+        owner: &str,
+        method: &MethodDef,
+        args: impl IntoIterator<Item = &'n str>,
+    ) -> Vec<Sym> {
+        let Some(forwarded) = self.class_data.get(owner).and_then(|data| {
+            data.cold_opt()?
+                .macro_forwarded_params
+                .iter()
+                .find(|(name, _)| *name == method.name)
+                .map(|(_, params)| params)
+        }) else {
+            return Vec::new();
+        };
+        let is_forwarded =
+            |param: &ParamInfo| forwarded.iter().any(|name| name.as_str() == param.name);
+        let forwards_positional = method.param_infos.iter().any(|param| {
+            matches!(
+                param.kind,
+                ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+            ) && is_forwarded(param)
+        });
+        let mut names: Vec<Sym> = if forwards_positional {
+            args.into_iter().map(Sym::new).collect()
+        } else {
+            Vec::new()
+        };
+        names.extend(method.param_infos.iter().filter_map(|param| {
+            match (&param.default_type, is_forwarded(param)) {
+                (Some(Type::LiteralSymbol(name)), true) => Some(*name),
+                _ => None,
+            }
+        }));
+        names
+    }
+
+    /// Whether a runtime attribute on the class or its ancestors may have generated
+    /// `method_name`: the attribute itself, its writer / predicate, a dirty-family method, or
+    /// a name that contains it as a word (`remove_avatar!` for `mount_uploader :avatar`).
+    pub fn method_may_be_runtime_attribute(&self, class_name: &str, method_name: &str) -> bool {
+        let attribute = split_dirty_method_name(method_name)
+            .map(|(column, _)| column)
+            .unwrap_or_else(|| method_name.trim_end_matches(['=', '?', '!']));
+        // Generated names wrap the attribute in words (`remove_avatar!`, `can_start?`).
+        let wrapped = format!("_{attribute}_");
+        let mut visited: Vec<String> = Vec::new();
+        let mut touched_framework_base = false;
+        self.ancestor_knowledge_complete_inner(
+            class_name.trim_scope_prefix(),
+            &mut visited,
+            &mut touched_framework_base,
+        );
+        visited.iter().any(|name| {
+            self.class_data
+                .get(name.as_str())
+                .and_then(|data| data.cold_opt())
+                .is_some_and(|cold| {
+                    cold.runtime_attributes.iter().any(|macro_name| {
+                        macro_name.as_str() == attribute
+                            || wrapped.contains(&format!("_{}_", macro_name.as_str()))
+                    })
+                })
+        })
+    }
+
+    pub fn register_non_null_columns(&mut self, class_name: &str, columns: Vec<Sym>) {
+        let Some(pattern) = self
+            .class_data_mut(class_name)
+            .cold_mut()
+            .dirty_method_pattern
+            .as_mut()
+        else {
+            return;
+        };
+        for name in columns {
+            if !pattern.non_null_columns.contains(&name) {
+                pattern.non_null_columns.push(name);
+            }
+        }
     }
 
     pub fn register_dirty_pattern_columns(&mut self, class_name: &str, columns: Vec<(Sym, Type)>) {
@@ -4210,6 +4408,25 @@ impl TypeRegistry {
         loc: Option<SourceLocation>,
         file_path: Option<&str>,
     ) {
+        self.set_constant_entry(
+            class_name,
+            constant_name,
+            const_type,
+            loc,
+            file_path,
+            ConstantAlias::None,
+        );
+    }
+
+    pub fn set_constant_entry(
+        &mut self,
+        class_name: &str,
+        constant_name: &str,
+        const_type: Type,
+        loc: Option<SourceLocation>,
+        file_path: Option<&str>,
+        alias: ConstantAlias,
+    ) {
         let data = self.class_data_mut(class_name);
         data.user_defined = true;
         let name = Sym::new(constant_name);
@@ -4221,8 +4438,20 @@ impl TypeRegistry {
                 loc,
                 file_path: file_path.map(SharedPath::from),
                 external_source: false,
+                alias,
             },
         );
+    }
+
+    pub fn constant_is_namespace_alias(
+        &self,
+        class_name: &str,
+        constant_name: &str,
+    ) -> Option<bool> {
+        let data = self.class_data.get(class_name)?;
+        data.constants
+            .get(constant_name)
+            .map(|def| def.alias.is_namespace())
     }
 
     pub fn lookup_constant_type(&self, class_name: &str, constant_name: &str) -> Option<Type> {
@@ -5712,6 +5941,112 @@ impl TypeRegistry {
         }
     }
 
+    /// A self call reaches the subclasses' definitions when the class lacks the method or its own
+    /// definition never returns (an abstract `raise NotImplementedError`).
+    pub(crate) fn subclass_return_for_self_call(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<Type> {
+        if ![false, true]
+            .into_iter()
+            .all(|singleton| self.self_call_reaches_subclasses(class_name, method_name, singleton))
+        {
+            return None;
+        }
+        self.lookup_method_return_type_in_subclasses(class_name, method_name)
+    }
+
+    fn self_call_reaches_subclasses(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        let Some((owner, owner_singleton)) =
+            self.resolve_method_call_owner_ref(class_name, method_name, is_singleton)
+        else {
+            return true;
+        };
+        self.class_data
+            .get(owner)
+            .and_then(|data| Self::method_for_lookup_kind(data, method_name, Some(owner_singleton)))
+            .is_some_and(|method| method.raw_return_type == Type::Bot)
+    }
+
+    /// Self calls that ancestor bodies make to `method_name`. Ruby dispatches them on the runtime
+    /// class, so on an instance of `class_name` they run its own definition and feed its parameters.
+    pub(crate) fn ancestor_self_call_sites(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Vec<&CallSite> {
+        let mut sites = Vec::new();
+        let mut current = class_name;
+        for _ in 0..MAX_RESOLVE_DEPTH {
+            let Some(parent) = self.get_superclass(current) else {
+                break;
+            };
+            if parent == current || parent == class_name {
+                break;
+            }
+            if let Some(data) = self.class_data.get(parent)
+                && !data.call_sites.is_empty()
+            {
+                sites.extend(
+                    self.method_call_sites(parent, data, method_name, is_singleton)
+                        .filter(|site| site.self_call),
+                );
+            }
+            current = parent;
+        }
+        sites
+    }
+
+    /// The call sites recorded on `class_name` for one method.
+    fn method_call_sites<'d>(
+        &self,
+        class_name: &str,
+        data: &'d ClassData,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Box<dyn Iterator<Item = &'d CallSite> + 'd> {
+        match self.matching_call_site_indices(class_name, data, method_name, is_singleton) {
+            Some(indices) => Box::new(
+                indices
+                    .into_iter()
+                    .map(move |idx| data.call_sites.get(idx as usize)),
+            ),
+            None => {
+                let method_name: SharedName = self.shared_name(method_name);
+                Box::new(data.call_sites.iter().filter(move |site| {
+                    site.method_name == method_name && site.method_is_singleton == is_singleton
+                }))
+            }
+        }
+    }
+
+    /// Whether some self call reaches a subclass definition whose return the parent reads.
+    pub(crate) fn has_self_calls_reaching_subclass_returns(&self) -> bool {
+        if self.tail().subclass_index.is_none() {
+            return false;
+        }
+        self.class_data.iter().any(|(class_name, data)| {
+            if self.subclasses_of(class_name).is_empty() {
+                return false;
+            }
+            let mut checked: FxHashSet<&str> = FxHashSet::default();
+            data.call_sites.iter().any(|site| {
+                site.self_call
+                    && checked.insert(site.method_name.as_ref())
+                    && self
+                        .subclass_return_for_self_call(class_name, &site.method_name)
+                        .is_some()
+            })
+        })
+    }
+
     pub fn lookup_method_return_type_in_subclasses(
         &self,
         class_name: &str,
@@ -5982,7 +6317,7 @@ impl TypeRegistry {
                 candidates.push(Self::merge_union_method_completion_candidate(variants));
             }
         }
-        candidates.sort_by(|a, b| a.name.cmp(&b.name));
+        Self::sort_method_completion_candidates(&mut candidates);
         candidates
     }
 
@@ -6002,6 +6337,12 @@ impl TypeRegistry {
         if owner_classes.len() > 1 {
             merged.owner_class = owner_classes.join(" | ");
         }
+        // A method ranks as close only when it is close for every member.
+        merged.ancestor_rank = variants
+            .iter()
+            .map(|candidate| candidate.ancestor_rank)
+            .max()
+            .unwrap_or_default();
 
         merged.sig.return_type = Type::from_type_vec(
             variants
@@ -6051,7 +6392,7 @@ impl TypeRegistry {
                 }
             }
         }
-        candidates.sort_by(|a, b| a.name.cmp(&b.name));
+        Self::sort_method_completion_candidates(&mut candidates);
         candidates
     }
 
@@ -6072,8 +6413,33 @@ impl TypeRegistry {
             &mut seen_methods,
             &mut candidates,
         );
-        candidates.sort_by(|a, b| a.name.cmp(&b.name));
+        // Candidates arrive in method lookup order, so an owner's first appearance is its rank.
+        let mut owner_ranks: HashMap<String, usize> = HashMap::new();
+        for candidate in &mut candidates {
+            let next_rank = owner_ranks.len();
+            candidate.ancestor_rank = *owner_ranks
+                .entry(candidate.owner_class.clone())
+                .or_insert(next_rank);
+        }
+        Self::sort_method_completion_candidates(&mut candidates);
         Some(candidates)
+    }
+
+    /// Closer owners first; within an owner, named methods before operators like `!=` or `[]`.
+    fn sort_method_completion_candidates(candidates: &mut [MethodCompletionCandidate]) {
+        fn is_operator(name: &str) -> bool {
+            !name
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        }
+        candidates.sort_by(|a, b| {
+            (a.ancestor_rank, is_operator(&a.name), &a.name).cmp(&(
+                b.ancestor_rank,
+                is_operator(&b.name),
+                &b.name,
+            ))
+        });
     }
 
     fn collect_method_completion_candidates<'a>(
@@ -6177,7 +6543,14 @@ impl TypeRegistry {
                     candidates,
                 );
             }
-            for fallback in ["Class", "Module", "Object"] {
+            // Shared ancestors come once, after the whole chain, so they never
+            // shadow a closer owner or rank before it.
+            let fallbacks: &[&str] = if owner_class == receiver_class {
+                &["Class", "Module", "Object"]
+            } else {
+                &[]
+            };
+            for &fallback in fallbacks {
                 if owner_class == fallback {
                     continue;
                 }
@@ -6231,6 +6604,9 @@ impl TypeRegistry {
                 );
             }
 
+            if owner_class != receiver_class {
+                return;
+            }
             if owner_class != "Object" {
                 self.collect_method_completion_candidates(
                     receiver_class,
@@ -6285,6 +6661,7 @@ impl TypeRegistry {
                 owner_class: owner_class.to_string(),
                 is_singleton: method.is_singleton,
                 sig: self.build_method_sig_for_receiver(receiver_class, owner_class, method),
+                ancestor_rank: 0,
             });
         }
     }
@@ -7064,7 +7441,7 @@ impl TypeRegistry {
                 !method.synthetic_dsl_source
                     && Self::type_contains_param_ref_static(&method.raw_return_type)
             });
-            if !has_candidate || data.call_sites.is_empty() {
+            if !has_candidate {
                 continue;
             }
             let mut grouped: FxHashMap<(&str, bool), Vec<&CallSite>> = FxHashMap::default();
@@ -7083,10 +7460,21 @@ impl TypeRegistry {
                     {
                         return None;
                     }
-                    let sites = grouped.get(&(method.name.as_str(), method.is_singleton))?;
+                    let mut sites: Vec<&CallSite> = grouped
+                        .get(&(method.name.as_str(), method.is_singleton))
+                        .cloned()
+                        .unwrap_or_default();
+                    sites.extend(self.ancestor_self_call_sites(
+                        class_name,
+                        method.name.as_str(),
+                        method.is_singleton,
+                    ));
+                    if sites.is_empty() {
+                        return None;
+                    }
                     let positional_count = Self::positional_param_count(&method.param_infos);
                     let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
-                    for site in sites {
+                    for site in &sites {
                         let forwarded = self.call_site_with_forwarded_args(site);
                         Self::merge_call_site_positional_types(
                             &mut param_types,
@@ -7116,7 +7504,7 @@ impl TypeRegistry {
                         })
                         .collect();
                     let mut keyword_merged: FxHashMap<String, Vec<Type>> = FxHashMap::default();
-                    for site in sites {
+                    for site in &sites {
                         for (name, ty) in &site.keyword_arg_types {
                             keyword_merged
                                 .entry(name.as_ref().to_string())
@@ -7177,7 +7565,71 @@ impl TypeRegistry {
         if self.argless_overloads_disagree(class_name, method_name, prefer_singleton) {
             return None;
         }
+        if prefer_singleton
+            && let Some(ret) = self.inherited_model_singleton_return(class_name, method_name)
+        {
+            return Some(ret);
+        }
         self.lookup_method_return_type_with_hint(class_name, method_name, prefer_singleton)
+    }
+
+    /// A query method or scope generated on a parent model returns records of the class it
+    /// is called on (`MavenPackage.where(...)` is `Relation[MavenPackage]`).
+    pub(crate) fn inherited_model_singleton_return(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<Type> {
+        // Without the call's arguments `first(3)` / `find(1, 2)` cannot be told from the
+        // single-record form, so those keep their argument-blind owner type.
+        if crate::rails::relation_api::lookup(
+            method_name,
+            crate::rails::relation_api::Receiver::Model,
+        )
+        .is_some_and(|method| method.refined_by_args)
+        {
+            return None;
+        }
+        let (owner, owner_singleton) =
+            self.first_method_call_owner_cached(class_name, method_name, true)?;
+        if !owner_singleton || owner.as_ref() == class_name {
+            return None;
+        }
+        let method = self.lookup_method_def(&owner, method_name, true)?;
+        let returns = &method.raw_return_type;
+        // Generated query methods, and scopes, which return a relation of their owner.
+        let owner_relation = crate::rails::relation_api::relation_element_type(returns)
+            .is_some_and(|elem| matches!(elem, Type::Class(name) if *name == owner.as_ref()));
+        if !(method.synthetic_dsl_source || owner_relation)
+            || !self.class_inherits_from_active_record(class_name)
+        {
+            return None;
+        }
+        let replaced = Self::replace_model_class(returns, &owner, class_name);
+        (replaced != *returns).then_some(replaced)
+    }
+
+    fn replace_model_class(ty: &Type, from: &str, to: &str) -> Type {
+        match ty {
+            Type::Class(name) if name.as_str() == from => Type::Class(Sym::new(to)),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args
+                    .iter()
+                    .map(|arg| Self::replace_model_class(arg, from, to))
+                    .collect(),
+            },
+            Type::Array(Some(elem)) => {
+                Type::Array(Some(Box::new(Self::replace_model_class(elem, from, to))))
+            }
+            Type::Union(members) => Type::Union(
+                members
+                    .iter()
+                    .map(|member| Self::replace_model_class(member, from, to))
+                    .collect(),
+            ),
+            _ => ty.clone(),
+        }
     }
 
     fn argless_overloads_disagree(
@@ -7280,6 +7732,12 @@ impl TypeRegistry {
             | Type::NonNilProjection(subject) => {
                 *subject.as_ref() == Type::Untyped || Self::is_projection_of_unknown(subject)
             }
+            Type::SplatRef(parts) => match parts.as_ref() {
+                Type::Tuple(parts) => parts
+                    .iter()
+                    .any(|part| *part == Type::Untyped || Self::is_projection_of_unknown(part)),
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -7405,6 +7863,14 @@ impl TypeRegistry {
             | Type::NonNilProjection(inner) => {
                 self.collect_deferred_receiver_classes(inner, classes);
             }
+            Type::SplatRef(parts) => {
+                if let Type::Tuple(parts) = parts.as_ref() {
+                    for part in parts {
+                        self.collect_receiver_owner_classes(part, "to_a", classes);
+                    }
+                }
+                self.collect_deferred_receiver_classes(parts, classes);
+            }
             _ => {}
         }
     }
@@ -7498,12 +7964,30 @@ impl TypeRegistry {
 
             let positional_count = Self::positional_param_count(&init_method.param_infos);
             let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
+            let mut visiting = FxHashSet::default();
             for site in &data.call_sites {
                 if site.method_name.as_ref() == "initialize" && !site.method_is_singleton {
                     let forwarded = self.call_site_with_forwarded_args(site);
+                    let site = forwarded.as_ref().unwrap_or(site);
+                    // A parameter marker left in an argument names the caller's parameter.
+                    let caller_resolved = site
+                        .arg_types
+                        .iter()
+                        .any(Self::type_contains_param_ref_static)
+                        .then(|| {
+                            let mut resolved = site.clone();
+                            for ty in &mut resolved.arg_types {
+                                *ty = self.resolve_call_site_type_from_caller_context(
+                                    site,
+                                    ty,
+                                    &mut visiting,
+                                );
+                            }
+                            resolved
+                        });
                     Self::merge_call_site_positional_types(
                         &mut param_types,
-                        forwarded.as_ref().unwrap_or(site),
+                        caller_resolved.as_ref().unwrap_or(site),
                         &init_method.param_infos,
                     );
                 }
@@ -7624,7 +8108,8 @@ impl TypeRegistry {
             | Type::ReceiverMethodRef(subject, _)
             | Type::TruthyProjection(subject)
             | Type::FalsyProjection(subject)
-            | Type::NonNilProjection(subject) => Self::type_contains_param_ref_static(subject),
+            | Type::NonNilProjection(subject)
+            | Type::SplatRef(subject) => Self::type_contains_param_ref_static(subject),
             Type::DeferredSafeNavigation(receiver, result) => {
                 Self::type_contains_param_ref_static(receiver)
                     || Self::type_contains_param_ref_static(result)
@@ -7787,6 +8272,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                literal,
             } => {
                 let (ret, resolved, unresolved) =
                     self.resolve_scoped_refs_in_type(scope_class, return_type);
@@ -7795,6 +8281,7 @@ impl TypeRegistry {
                 Type::Proc {
                     return_type: Box::new(ret),
                     param_count: *param_count,
+                    literal: *literal,
                 }
             }
             Type::DeferredSafeNavigation(receiver, result) => {
@@ -7908,7 +8395,8 @@ impl TypeRegistry {
             | Type::PatternKeyRestRef(inner, _)
             | Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => Self::type_contains_subclass_ref_candidate(inner),
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => Self::type_contains_subclass_ref_candidate(inner),
             Type::Proc { return_type, .. } => {
                 Self::type_contains_subclass_ref_candidate(return_type)
             }
@@ -7929,14 +8417,7 @@ impl TypeRegistry {
     fn resolve_subclass_refs_in_type(&self, ty: &Type) -> Type {
         match ty {
             Type::MethodReturnRef(class_name, method_name) => {
-                if self
-                    .resolve_method_call_owners(class_name, method_name, false)
-                    .is_empty()
-                    && self
-                        .resolve_method_call_owners(class_name, method_name, true)
-                        .is_empty()
-                    && let Some(ret) =
-                        self.lookup_method_return_type_in_subclasses(class_name, method_name)
+                if let Some(ret) = self.subclass_return_for_self_call(class_name, method_name)
                     && !matches!(ret, Type::MethodReturnRef(..))
                     && !Self::type_contains_param_ref_static(&ret)
                 {
@@ -8040,9 +8521,11 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_subclass_refs_in_type(return_type)),
                 param_count: *param_count,
+                literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_subclass_refs_in_type(subject);
@@ -8058,6 +8541,14 @@ impl TypeRegistry {
                     Type::PatternRestRef(Box::new(resolved_subject))
                 } else {
                     Self::resolve_pattern_rest_ref(&resolved_subject)
+                }
+            }
+            Type::SplatRef(subject) => {
+                let resolved_subject = self.resolve_subclass_refs_in_type(subject);
+                if Self::type_contains_subclass_ref_candidate(&resolved_subject) {
+                    Type::SplatRef(Box::new(resolved_subject))
+                } else {
+                    self.resolve_splat_parts(&resolved_subject)
                 }
             }
             Type::PatternTrailingRef(subject, from_end) => {
@@ -8298,6 +8789,7 @@ impl TypeRegistry {
             | Type::TruthyProjection(subject)
             | Type::FalsyProjection(subject)
             | Type::NonNilProjection(subject) => Self::global_type_contains_ref(subject),
+            Type::SplatRef(_) => true,
             _ => false,
         }
     }
@@ -8854,6 +9346,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_global_refs(
                     context_class,
@@ -8864,6 +9357,7 @@ impl TypeRegistry {
                     budget,
                 )),
                 param_count: *param_count,
+                literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_global_refs(
@@ -8899,6 +9393,24 @@ impl TypeRegistry {
                     Type::PatternRestRef(Box::new(resolved_subject))
                 } else {
                     Self::resolve_pattern_rest_ref(&resolved_subject)
+                }
+            }
+            Type::SplatRef(subject) => {
+                let resolved_subject = self.resolve_global_refs(
+                    context_class,
+                    subject,
+                    visiting,
+                    memo,
+                    depth + 1,
+                    budget,
+                );
+                if budget.is_exhausted() {
+                    return Type::Untyped;
+                }
+                if Self::global_type_contains_ref(&resolved_subject) {
+                    Type::SplatRef(Box::new(resolved_subject))
+                } else {
+                    self.resolve_splat_parts(&resolved_subject)
                 }
             }
             Type::PatternTrailingRef(subject, from_end) => {
@@ -9036,6 +9548,10 @@ impl TypeRegistry {
                 let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
                 Self::resolve_pattern_rest_ref(&resolved_subject)
             }
+            Type::SplatRef(subject) => {
+                let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
+                self.resolve_splat_parts(&resolved_subject)
+            }
             Type::PatternTrailingRef(subject, from_end) => {
                 let resolved_subject = self.resolve_param_refs_from_resolved(subject, params);
                 Self::resolve_pattern_trailing_ref(&resolved_subject, *from_end)
@@ -9095,9 +9611,11 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_param_refs_from_resolved(return_type, params)),
                 param_count: *param_count,
+                literal: *literal,
             },
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 let resolved_inner = self.resolve_param_refs_from_resolved(inner, params);
@@ -9155,7 +9673,8 @@ impl TypeRegistry {
             | Type::PatternKeyRestRef(..)
             | Type::TruthyProjection(..)
             | Type::FalsyProjection(..)
-            | Type::NonNilProjection(..) => true,
+            | Type::NonNilProjection(..)
+            | Type::SplatRef(_) => true,
             Type::Union(parts) | Type::Intersection(parts) => parts
                 .iter()
                 .any(|part| Self::type_needs_deferred_resolution_depth(part, depth + 1)),
@@ -9274,7 +9793,8 @@ impl TypeRegistry {
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
-            | Type::PatternKeyRestRef(subject, _) => Self::type_is_memo_small(subject, budget),
+            | Type::PatternKeyRestRef(subject, _)
+            | Type::SplatRef(subject) => Self::type_is_memo_small(subject, budget),
             Type::DeferredSafeNavigation(receiver, result) => {
                 Self::type_is_memo_small(receiver, budget)
                     && Self::type_is_memo_small(result, budget)
@@ -9548,6 +10068,17 @@ impl TypeRegistry {
                 );
                 Self::resolve_pattern_rest_ref(&resolved_subject)
             }
+            Type::SplatRef(subject) => {
+                let resolved_subject = self.resolve_deferred_refs_depth(
+                    class_name,
+                    singleton_context,
+                    subject,
+                    depth + 1,
+                    memo,
+                    visiting,
+                );
+                self.resolve_splat_parts(&resolved_subject)
+            }
             Type::PatternTrailingRef(subject, from_end) => {
                 let resolved_subject = self.resolve_deferred_refs_depth(
                     class_name,
@@ -9711,6 +10242,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_deferred_refs_depth(
                     class_name,
@@ -9721,6 +10253,7 @@ impl TypeRegistry {
                     visiting,
                 )),
                 param_count: *param_count,
+                literal: *literal,
             },
             Type::Tuple(elems) => Type::Tuple(
                 elems
@@ -9794,9 +10327,24 @@ impl TypeRegistry {
             );
         }
         if let Some(result) =
-            Self::active_record_relation_method_return(resolved_receiver, method_name)
+            self.active_record_relation_method_return(resolved_receiver, method_name)
         {
             return result;
+        }
+        if let Some(records) = crate::rails::relation_api::records_receiver(
+            resolved_receiver,
+            method_name,
+            false,
+            |name| self.has_method_variant("Enumerable", name, false),
+        ) {
+            return self.resolve_method_on_resolved_receiver(
+                _class_name,
+                &records,
+                method_name,
+                depth,
+                memo,
+                visiting,
+            );
         }
         if let Some(cls) = Self::type_to_class_name(resolved_receiver) {
             let prefer_singleton = matches!(resolved_receiver, Type::Singleton(_));
@@ -9824,7 +10372,29 @@ impl TypeRegistry {
             {
                 return ivar_ty;
             }
-            return resolved;
+            if cls == crate::rails::time_with_zone::TIME_WITH_ZONE_CLASS
+                && let Some(own) = crate::rails::time_with_zone::own_method_return(method_name)
+            {
+                return own;
+            }
+            if let Some(target) =
+                crate::rails::time_with_zone::method_missing_target(&cls, method_name)
+            {
+                let forwarded = self.resolve_method_on_resolved_receiver(
+                    _class_name,
+                    &target,
+                    method_name,
+                    depth,
+                    memo,
+                    visiting,
+                );
+                if forwarded != Type::Untyped {
+                    return crate::rails::time_with_zone::wrap_forwarded_result(forwarded);
+                }
+            }
+            // The deferred path has no lazy stdlib loader; return-invariant entries still apply.
+            return stdlib_returns::stdlib_receiver_method_return(resolved_receiver, method_name)
+                .unwrap_or(resolved);
         }
         if let Type::Union(parts) = resolved_receiver {
             let mut resolved_parts: Vec<Type> = Vec::new();
@@ -9869,37 +10439,45 @@ impl TypeRegistry {
     /// registry has no AST call node at that point, but these methods preserve
     /// the relation shape independently of their arguments.
     fn active_record_relation_method_return(
+        &self,
         receiver_type: &Type,
         method_name: &str,
     ) -> Option<Type> {
-        let elem_type = match receiver_type {
-            Type::Generic { base, args }
-                if matches!(
-                    base.as_str(),
-                    "ActiveRecord::Relation"
-                        | "ActiveRecord::AssociationRelation"
-                        | "ActiveRecord::CollectionProxy"
-                        | "ActiveRecord::Associations::CollectionProxy"
-                ) =>
-            {
-                args.first()?.clone()
-            }
-            _ => return None,
-        };
+        use crate::rails::relation_api;
+        let model = relation_api::relation_element_type(receiver_type)?;
+        let receiver = relation_api::Receiver::of_relation(receiver_type)?;
+        let method = relation_api::lookup(method_name, receiver)
+            .filter(|method| self.rails_at_least(method.since.0, method.since.1))?;
+        Some(method.return_type(
+            || receiver_type.clone(),
+            model,
+            || self.active_record_primary_key_type(model),
+        ))
+    }
 
-        match method_name {
-            "all" | "where" | "rewhere" | "not" | "or" | "and" | "merge" | "order" | "reorder"
-            | "limit" | "offset" | "reselect" | "group" | "regroup" | "having" | "joins"
-            | "left_outer_joins" | "includes" | "eager_load" | "preload" | "references"
-            | "unscope" | "extending" | "optimizer_hints" | "annotate" | "excluding"
-            | "create_with" | "distinct" | "distinct!" | "readonly" | "lock" | "strict_loading"
-            | "skip_query_cache" | "without" | "load" | "load_async" | "async" | "none"
-            | "invert_where" | "reverse_order" => Some(receiver_type.clone()),
-            "ids" => Some(Type::Array(Some(Box::new(Type::Integer)))),
-            "count" | "size" | "length" => Some(Type::Integer),
-            "any?" | "many?" | "none?" | "one?" | "exists?" | "include?" => Some(Type::Bool),
-            "to_a" => Some(Type::Array(Some(Box::new(elem_type)))),
-            _ => None,
+    pub fn set_rails_version(&mut self, version: Option<crate::project::RailsVersion>) {
+        self.rails_version = version;
+    }
+
+    pub(crate) fn rails_at_least(&self, major: u16, minor: u16) -> bool {
+        self.rails_version
+            .unwrap_or_else(crate::project::RailsVersion::latest_stable)
+            >= crate::project::RailsVersion::new(major, minor, 0)
+    }
+
+    /// The model's `id` reader type (a uuid primary key reads as String); Integer by default.
+    pub(crate) fn active_record_primary_key_type(&self, model: &Type) -> Type {
+        let Type::Class(name) = model else {
+            return Type::Integer;
+        };
+        match self.lookup_method_return_type(name, "id") {
+            Some(ty) if !Type::contains_deferred_receiver_ref(&ty) => {
+                match Type::project_non_nil(&ty) {
+                    Type::Untyped | Type::Nil => Type::Integer,
+                    key => key,
+                }
+            }
+            _ => Type::Integer,
         }
     }
 
@@ -10140,7 +10718,8 @@ impl TypeRegistry {
             | Type::PatternTrailingRef(subject, _)
             | Type::PatternKeyRef(subject, _)
             | Type::PatternKeyRestRef(subject, _)
-            | Type::ReceiverMethodRef(subject, _) => {
+            | Type::ReceiverMethodRef(subject, _)
+            | Type::SplatRef(subject) => {
                 Self::call_site_walk_is_identity(subject, resolve_method_return_refs)
             }
             Type::Proc { return_type, .. } => {
@@ -10181,9 +10760,8 @@ impl TypeRegistry {
             | Type::PatternKeyRestRef(inner, _)
             | Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => {
-                Self::type_contains_receiver_method_ref(inner, method_name)
-            }
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => Self::type_contains_receiver_method_ref(inner, method_name),
             Type::Proc { return_type, .. } => {
                 Self::type_contains_receiver_method_ref(return_type, method_name)
             }
@@ -10337,6 +10915,9 @@ impl TypeRegistry {
             Type::PatternRestRef(subject) => Type::PatternRestRef(Box::new(
                 self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
             )),
+            Type::SplatRef(subject) => self.resolve_splat_parts(
+                &self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
+            ),
             Type::PatternTrailingRef(subject, from_end) => Type::PatternTrailingRef(
                 Box::new(
                     self.resolve_call_site_type_from_caller_context(call_site, subject, visiting),
@@ -10406,6 +10987,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_call_site_type_from_caller_context(
                     call_site,
@@ -10413,6 +10995,7 @@ impl TypeRegistry {
                     visiting,
                 )),
                 param_count: *param_count,
+                literal: *literal,
             },
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
@@ -10885,16 +11468,13 @@ impl TypeRegistry {
 
         let positional_count = Self::positional_param_count(&method.param_infos);
         let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
-        let indexed = self.matching_call_site_indices(
-            class_name,
-            data,
-            method.name.as_str(),
-            method.is_singleton,
-        );
-        let site_iter: Box<dyn Iterator<Item = &CallSite>> = match &indexed {
-            Some(indices) => Box::new(indices.iter().map(|&idx| data.call_sites.get(idx as usize))),
-            None => Box::new(data.call_sites.iter()),
-        };
+        let site_iter = self
+            .method_call_sites(class_name, data, method.name.as_str(), method.is_singleton)
+            .chain(self.ancestor_self_call_sites(
+                class_name,
+                method.name.as_str(),
+                method.is_singleton,
+            ));
         for call_site in site_iter {
             if call_site.method_name.as_ref() == method.name.as_str()
                 && call_site.method_is_singleton == method.is_singleton
@@ -10927,6 +11507,7 @@ impl TypeRegistry {
                 Self::merge_resolved_positional_arg_types(
                     &mut param_types,
                     &resolved_arg_types,
+                    call_site.open_splat,
                     &method.param_infos,
                 );
             }
@@ -11160,12 +11741,9 @@ impl TypeRegistry {
         visiting: &mut FxHashSet<(String, String, bool)>,
     ) -> Type {
         let mut types = Vec::new();
-        let indexed =
-            self.matching_call_site_indices(class_name, data, method_name, method_is_singleton);
-        let site_iter: Box<dyn Iterator<Item = &CallSite>> = match &indexed {
-            Some(indices) => Box::new(indices.iter().map(|&idx| data.call_sites.get(idx as usize))),
-            None => Box::new(data.call_sites.iter()),
-        };
+        let site_iter = self
+            .method_call_sites(class_name, data, method_name, method_is_singleton)
+            .chain(self.ancestor_self_call_sites(class_name, method_name, method_is_singleton));
         for call_site in site_iter {
             if call_site.method_name.as_ref() == method_name
                 && call_site.method_is_singleton == method_is_singleton
@@ -11597,6 +12175,8 @@ impl TypeRegistry {
                     keyword_rest_shape: None,
                     block: None,
                     caller_context: None,
+                    open_splat: None,
+                    self_call: false,
                 },
             );
         }
@@ -11908,7 +12488,9 @@ impl TypeRegistry {
         ) {
             return false;
         }
-        if self.walked_closure_defines_method_missing(&visited) {
+        if self.walked_closure_defines_method_missing(&visited)
+            || self.walked_closure_has_dynamic_mixin(&visited)
+        {
             return false;
         }
         // ActiveRecord synthesizes attribute methods from the database schema.
@@ -11916,7 +12498,13 @@ impl TypeRegistry {
         // still open even when its superclass chain is known.
         let generated_surface_known = generated_artifacts_present
             && self.walked_closure_has_declaration_backed_methods(&visited);
-        if self.class_inherits_from_active_record(class_name)
+        let inherits_active_record = self.class_inherits_from_active_record(class_name);
+        // A table can name a model whose class is not in the analyzed source (`License` from an
+        // `ee/` directory); its columns alone say nothing about the rest of its surface.
+        if !inherits_active_record && self.schema_column_names(class_name).is_some() {
+            return false;
+        }
+        if inherits_active_record
             && self.schema_column_names(class_name).is_none()
             && !generated_surface_known
         {
@@ -11926,6 +12514,32 @@ impl TypeRegistry {
             return true;
         }
         !generated_artifacts_present || generated_surface_known
+    }
+
+    /// Like `method_surface_knowledge_complete`, for calls on the class object. A model
+    /// class answers the whole `ActiveRecord::Base` class API (naming, schema, persistence,
+    /// connection handling) and class methods that gems add to it. Tyda models only part of
+    /// that API and the schema only proves instance attributes, so the class surface is
+    /// provable only from generated declarations.
+    pub fn singleton_method_surface_knowledge_complete(
+        &self,
+        class_name: &str,
+        generated_artifacts_present: bool,
+    ) -> bool {
+        if !self.method_surface_knowledge_complete(class_name, generated_artifacts_present) {
+            return false;
+        }
+        if !self.class_inherits_from_active_record(class_name) {
+            return true;
+        }
+        let mut visited: Vec<String> = Vec::new();
+        let mut touched_framework_base = false;
+        self.ancestor_knowledge_complete_inner(
+            class_name.trim_scope_prefix(),
+            &mut visited,
+            &mut touched_framework_base,
+        );
+        generated_artifacts_present && self.walked_closure_has_declaration_backed_methods(&visited)
     }
 
     fn class_inherits_from_active_record(&self, class_name: &str) -> bool {
@@ -12106,7 +12720,8 @@ impl TypeRegistry {
                 .any(|field| Self::type_contains_param_ref(&field.value)),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
-            | Type::PatternTrailingRef(subject, _) => Self::type_contains_param_ref(subject),
+            | Type::PatternTrailingRef(subject, _)
+            | Type::SplatRef(subject) => Self::type_contains_param_ref(subject),
             Type::PatternKeyRef(subject, _) | Type::PatternKeyRestRef(subject, _) => {
                 Self::type_contains_param_ref(subject)
             }
@@ -12363,7 +12978,7 @@ impl TypeRegistry {
         }
     }
 
-    fn substitute_param_refs_static(ty: &Type, param_types: &[Type]) -> Type {
+    pub(crate) fn substitute_param_refs_static(ty: &Type, param_types: &[Type]) -> Type {
         Self::substitute_param_refs_static_with_keywords(ty, param_types, &HashMap::new())
     }
 
@@ -12417,9 +13032,11 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                literal,
             } => Type::Proc {
                 return_type: Box::new(recur(return_type)),
                 param_count: *param_count,
+                literal: *literal,
             },
             // don't eagerly resolve while a param marker remains (`_ => Untyped` would destroy the marker -> leave it for call-site substitution).
             Type::PatternIndexRef(subject, index) => {
@@ -12438,6 +13055,7 @@ impl TypeRegistry {
                     Self::resolve_pattern_rest_ref(&resolved_subject)
                 }
             }
+            Type::SplatRef(parts) => Type::SplatRef(Box::new(recur(parts))),
             Type::PatternTrailingRef(subject, from_end) => {
                 let resolved_subject = recur(subject);
                 if Self::type_contains_param_ref_static(&resolved_subject) {
@@ -12488,6 +13106,74 @@ impl TypeRegistry {
         } else {
             Type::from_type_vec_preserve_untyped(found)
         }
+    }
+
+    pub(crate) fn set_generated_artifacts_present(&mut self, present: bool) {
+        self.generated_artifacts_present = present;
+    }
+
+    /// Whether a splatted value responds to `to_a`, judged from the loaded declarations. Inference
+    /// and deferred resolution both decide through this, so they agree on exact and open shapes.
+    pub(crate) fn splat_to_a_response(&self, ty: &Type) -> ToAResponse {
+        let Some(class_name) = Self::type_to_class_name(ty) else {
+            return ToAResponse::Unknown;
+        };
+        let is_singleton = matches!(ty, Type::Singleton(_));
+        // Broad built-in types stand in for dynamically extended values.
+        if matches!(
+            class_name.as_str(),
+            "Object" | "BasicObject" | "Class" | "Module"
+        ) || !self
+            .class_data
+            .get(class_name.as_str())
+            .is_some_and(|data| data.has_type_substance())
+        {
+            return ToAResponse::Unknown;
+        }
+        let custom_respond_to = ["respond_to?", "respond_to_missing?"].iter().any(|method| {
+            self.resolve_method_call_owner_ref(&class_name, method, is_singleton)
+                .is_some_and(|(owner, _)| !matches!(owner, "BasicObject" | "Kernel" | "Object"))
+        });
+        if custom_respond_to {
+            return ToAResponse::Unknown;
+        }
+        if let Some((owner, owner_singleton)) =
+            self.resolve_method_call_owner_ref(&class_name, "to_a", is_singleton)
+        {
+            return ToAResponse::Defined {
+                source_defined: self.is_user_defined_class(owner),
+                owner_singleton,
+            };
+        }
+        if self.method_surface_knowledge_complete(&class_name, self.generated_artifacts_present) {
+            ToAResponse::Missing
+        } else {
+            ToAResponse::Unknown
+        }
+    }
+
+    /// What `to_a` gives for a splatted value, as far as the loaded declarations tell.
+    pub(crate) fn splat_to_a(&self, ty: &Type) -> SplatToA {
+        match self.splat_to_a_response(ty) {
+            ToAResponse::Missing => SplatToA::Missing,
+            ToAResponse::Unknown => SplatToA::Unknown,
+            ToAResponse::Defined { .. } => {
+                let Some(class_name) = Self::type_to_class_name(ty) else {
+                    return SplatToA::Unknown;
+                };
+                let prefer_singleton = matches!(ty, Type::Singleton(_));
+                match self.lookup_argless_receiver_return(&class_name, "to_a", prefer_singleton) {
+                    Some(ret) => SplatToA::Returns(Self::deferred_self_return(&ret, ty)),
+                    None => SplatToA::Unknown,
+                }
+            }
+        }
+    }
+
+    /// Resolves the parts of a `SplatRef`, keeping it deferred while a part is still unknown.
+    pub(crate) fn resolve_splat_parts(&self, parts: &Type) -> Type {
+        Type::resolve_splat_ref(parts, &mut |ty| self.splat_to_a(ty))
+            .unwrap_or_else(|| Type::SplatRef(Box::new(parts.clone())))
     }
 
     pub(crate) fn resolve_pattern_rest_ref(subject: &Type) -> Type {
@@ -12737,6 +13423,8 @@ mod tests {
             keyword_rest_shape: None,
             block: None,
             caller_context: None,
+            open_splat: None,
+            self_call: false,
         }
     }
 
@@ -13387,6 +14075,8 @@ mod tests {
                 keyword_rest_shape: None,
                 block: None,
                 caller_context: None,
+                open_splat: None,
+                self_call: false,
             },
         );
         registry.set_file_path("Child", "child.rb");
@@ -13605,6 +14295,65 @@ mod tests {
     }
 
     #[test]
+    fn method_completion_orders_by_lookup_distance_then_operators_last() {
+        let mut registry = TypeRegistry::new();
+        registry.add_method_def("P", test_method("parent", Type::Integer));
+        registry.add_method_def("M", test_method("mixed", Type::Integer));
+        registry.add_method_def("C", test_method("zeta", Type::Integer));
+        registry.add_method_def("C", test_method("==", Type::Bool));
+        registry.add_method_def("C", test_method("alpha", Type::Integer));
+        registry.add_method_def("C", test_method("_private_ish", Type::Integer));
+        registry.add_method_def("P", test_method("to_s", Type::Integer));
+        registry.add_method_def("Kernel", test_method("to_s", Type::String));
+        registry.add_method_def("Kernel", test_method("puts", Type::Nil));
+        registry.set_superclass("C", "P");
+        registry.add_mixin("C", "M", MixinKind::Include);
+
+        let candidates =
+            registry.method_completion_candidates_for_type(&Type::Class(Sym::new("C")));
+        let entries: Vec<(&str, &str)> = candidates
+            .iter()
+            .map(|candidate| (candidate.name.as_str(), candidate.owner_class.as_str()))
+            .collect();
+
+        // `P#to_s` overrides `Kernel#to_s` even though `M` is visited before `P`.
+        assert_eq!(
+            entries,
+            [
+                ("_private_ish", "C"),
+                ("alpha", "C"),
+                ("zeta", "C"),
+                ("==", "C"),
+                ("mixed", "M"),
+                ("parent", "P"),
+                ("to_s", "P"),
+                ("puts", "Kernel"),
+            ]
+        );
+    }
+
+    #[test]
+    fn method_completion_for_union_ranks_by_farthest_member() {
+        let mut registry = TypeRegistry::new();
+        registry.add_method_def("Base", test_method("shared", Type::Integer));
+        registry.add_method_def("A", test_method("value", Type::Integer));
+        registry.add_method_def("B", test_method("value", Type::String));
+        registry.set_superclass("A", "Base");
+        registry.set_superclass("B", "Base");
+
+        let names: Vec<String> = registry
+            .method_completion_candidates_for_type(&Type::Union(vec![
+                Type::Class(Sym::new("A")),
+                Type::Class(Sym::new("B")),
+            ]))
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .collect();
+
+        assert_eq!(names, ["value", "shared"]);
+    }
+
+    #[test]
     fn method_completion_for_union_merges_common_method_signature() {
         let mut registry = TypeRegistry::new();
         registry.add_method_def("A", test_method("value", Type::Integer));
@@ -13778,6 +14527,7 @@ mod tests {
                 Type::Proc {
                     return_type: Box::new(Type::MethodReturnRef("Box".into(), "value".into())),
                     param_count: 0,
+                    literal: None,
                 },
             ),
         );
@@ -13816,6 +14566,7 @@ mod tests {
             Type::Proc {
                 return_type: Box::new(Type::Integer),
                 param_count: 0,
+                literal: None,
             }
         );
         let hash = registry

@@ -915,10 +915,6 @@ end
 
 ## Hash#each return propagates key and value bindings
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -940,10 +936,6 @@ end
 ```
 
 ## Hash#each single block arg keeps pair tuple
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1006,10 +998,6 @@ end
 ```
 
 ## ObjectSpace.each_object keeps static module element type
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1218,10 +1206,6 @@ end
 ```
 
 ## User iterator enum follows named block
-
-```yaml
-known_issue: true
-```
 
 ### update
 

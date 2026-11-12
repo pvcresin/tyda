@@ -279,10 +279,6 @@ end
 
 ## Resolve RBS class alias declaration
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```rbs
@@ -316,10 +312,6 @@ end
 ```
 
 ## Resolve RBS module alias declaration
-
-```yaml
-known_issue: true
-```
 
 ### update
 

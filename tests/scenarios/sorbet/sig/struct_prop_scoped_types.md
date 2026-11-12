@@ -58,10 +58,6 @@ end
 
 ## Composite type arguments resolve forward references
 
-```yaml
-known_issue: true
-```
-
 ```ruby
 module NS
   class S < T::Struct

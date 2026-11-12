@@ -14,10 +14,86 @@ impl TypeRegistry {
         self.includer_bound_dsl_applied = false;
     }
 
+    /// Records a class-body call whose definition is not known yet, to resolve it later
+    /// against a class method written in a concern or parent class.
+    pub(crate) fn push_pending_class_macro(
+        &mut self,
+        class_name: &str,
+        macro_name: &str,
+        args: Vec<Sym>,
+    ) {
+        let entry = (Sym::new(macro_name), args);
+        let cold = self.class_data_mut(class_name).cold_mut();
+        if cold.pending_class_macros.contains(&entry) {
+            return;
+        }
+        cold.pending_class_macros.push(entry);
+        self.has_includer_bound_dsl = true;
+        self.includer_bound_dsl_applied = false;
+    }
+
+    /// A macro written in Ruby source (`mount_file_store_uploader Uploader` with
+    /// `file_field: :file`) can define methods named by its literal arguments and symbol
+    /// parameter defaults, and replaces the column accessors its body passes on.
+    fn apply_pending_class_macros(&mut self) {
+        let mut jobs: Vec<(String, Vec<Sym>, Vec<Sym>)> = Vec::new();
+        for (class_name, data) in &self.class_data {
+            let Some(cold) = data.cold_opt() else {
+                continue;
+            };
+            for (macro_name, args) in &cold.pending_class_macros {
+                let Some((owner, true)) =
+                    self.first_method_call_owner_cached(class_name, macro_name.as_str(), true)
+                else {
+                    continue;
+                };
+                if owner.as_ref() == class_name.as_ref() {
+                    continue;
+                }
+                let Some(method) = self
+                    .lookup_method_def(&owner, macro_name.as_str(), true)
+                    .filter(|method| !method.rbs_file_source && method.loc.is_some())
+                else {
+                    continue;
+                };
+                let replaced = self.names_replaced_by_source_macro(
+                    &owner,
+                    method,
+                    args.iter().map(Sym::as_str),
+                );
+                let mut names = args.clone();
+                names.extend(method.param_infos.iter().filter_map(
+                    |param| match &param.default_type {
+                        Some(Type::LiteralSymbol(name)) => Some(*name),
+                        _ => None,
+                    },
+                ));
+                jobs.push((class_name.to_string(), names, replaced));
+            }
+        }
+        for (class_name, names, replaced) in jobs {
+            if !self.class_inherits_from_active_record(&class_name) {
+                continue;
+            }
+            for name in names {
+                self.mark_runtime_attribute(&class_name, name.as_str());
+            }
+            for name in replaced {
+                if self
+                    .schema_column_accessor_type(&class_name, name.as_str())
+                    .is_some()
+                {
+                    self.mark_column_accessor_replaced(&class_name, name.as_str());
+                }
+            }
+        }
+    }
+
     pub fn apply_includer_bound_dsl(&mut self) {
         if self.includer_bound_dsl_applied || !self.has_includer_bound_dsl {
             return;
         }
+        self.apply_pending_class_macros();
         let mut jobs: Vec<(String, IncluderBoundDsl)> = Vec::new();
         for (class_name, data) in &self.class_data {
             for mixin in &data.mixins {

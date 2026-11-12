@@ -148,10 +148,6 @@ end
 
 ## defined? guard with same-name self method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

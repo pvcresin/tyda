@@ -398,10 +398,6 @@ end
 
 ## Prepend through a constant alias
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -441,10 +437,6 @@ end
 ```
 
 ## Extend through a constant alias
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -886,10 +878,6 @@ end
 ```
 
 ## extend reaches modules included by the extended module
-
-```yaml
-known_issue: true
-```
 
 ### update
 

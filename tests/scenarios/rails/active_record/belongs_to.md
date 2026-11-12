@@ -127,3 +127,39 @@ class B
   def self.foo: (untyped x) -> [B]
 end
 ```
+
+## Polymorphic belongs_to columns keep schema nullability
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: db/schema.rb
+
+```ruby
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "comments", force: :cascade do |t|
+    t.string "commentable_type"
+    t.bigint "commentable_id"
+  end
+end
+```
+
+```ruby
+class Comment < ApplicationRecord
+  belongs_to :commentable, polymorphic: true, optional: true
+end
+```
+
+### result
+
+```rbs
+class Comment < ApplicationRecord
+  def commentable: -> untyped
+  def commentable=: (untyped commentable) -> untyped
+  def commentable_type: -> String?
+  def commentable_id: -> Integer?
+end
+```

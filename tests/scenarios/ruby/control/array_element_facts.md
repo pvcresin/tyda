@@ -2,10 +2,6 @@
 
 ## Size guard removes nil from the first element
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -38,10 +34,6 @@ end
 ```
 
 ## Truthy index guard removes nil and false from the same index
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -77,10 +69,6 @@ end
 ```
 
 ## A size bound covers only the indexes inside it
-
-```yaml
-known_issue: true
-```
 
 ### update
 

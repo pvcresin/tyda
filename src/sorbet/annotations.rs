@@ -47,16 +47,19 @@ pub fn extract_sig_source(node: &Node<'_>) -> Option<String> {
     }
 }
 
-pub fn sig_sources_to_rbs_lines(sig_sources: &[String]) -> Vec<String> {
+pub fn sig_sources_to_rbs_lines(
+    sig_sources: &[String],
+    block_param_index: Option<usize>,
+) -> Vec<String> {
     sig_sources
         .iter()
-        .filter_map(|sig_source| super::sig::sig_source_to_rbs(sig_source))
+        .filter_map(|sig_source| super::sig::sig_source_to_rbs(sig_source, block_param_index))
         .map(|rbs| format!("#: {rbs}"))
         .collect()
 }
 
 pub fn sig_source_return_type(sig_source: &str) -> Option<Type> {
-    let rbs = super::sig::sig_source_to_rbs(sig_source)?;
+    let rbs = super::sig::sig_source_to_rbs(sig_source, None)?;
     let rbs_str = format!("#: () -> {rbs}");
     parse_rbs_shorthand(&rbs_str).map(|result| result.return_type)
 }
@@ -196,7 +199,7 @@ mod tests {
     #[test]
     fn converts_sig_sources_to_rbs_lines() {
         assert_eq!(
-            sig_sources_to_rbs_lines(&["sig { returns(String) }".to_string()]),
+            sig_sources_to_rbs_lines(&["sig { returns(String) }".to_string()], None),
             vec!["#: -> String".to_string()]
         );
     }

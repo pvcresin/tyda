@@ -248,7 +248,9 @@ impl TypeRegistry {
             .class_data
             .get(class_name)
             .is_some_and(|d| d.user_defined);
-        if !rbs_data.cold().includer_bound_dsl.is_empty() {
+        if !rbs_data.cold().includer_bound_dsl.is_empty()
+            || !rbs_data.cold().pending_class_macros.is_empty()
+        {
             self.has_includer_bound_dsl = true;
             self.includer_bound_dsl_applied = false;
         }
@@ -409,6 +411,26 @@ impl TypeRegistry {
                 data.cold_mut().includer_bound_dsl.push(dsl.clone());
             }
         }
+        if let Some(src_cold) = rbs_data.cold_opt() {
+            if src_cold.has_dynamic_mixin {
+                data.cold_mut().has_dynamic_mixin = true;
+            }
+            for entry in &src_cold.macro_forwarded_params {
+                if !data.cold().macro_forwarded_params.contains(entry) {
+                    data.cold_mut().macro_forwarded_params.push(entry.clone());
+                }
+            }
+            for entry in &src_cold.pending_class_macros {
+                if !data.cold().pending_class_macros.contains(entry) {
+                    data.cold_mut().pending_class_macros.push(entry.clone());
+                }
+            }
+            for name in &src_cold.runtime_attributes {
+                if !data.cold().runtime_attributes.contains(name) {
+                    data.cold_mut().runtime_attributes.push(*name);
+                }
+            }
+        }
         let target_has_pattern = data.cold().dirty_method_pattern.is_some();
         for (method_idx, method) in shared_methods.into_iter().enumerate() {
             let method_key = (method.name, method.is_singleton);
@@ -440,15 +462,17 @@ impl TypeRegistry {
                 .method_index
                 .get(method.name.as_str())
                 .is_some_and(|slots| slots.has(method.is_singleton));
-            // A source DSL reader (e.g. `enum :status`) replaces the schema column reader it
-            // redefines; every other existing slot keeps precedence.
+            // A method from source (`belongs_to :user`, `enum :status`, a `def`) replaces the
+            // schema column or foreign-key reader it redefines. A source method whose return is
+            // unknown (`def name = super || ""` before the column is visible) keeps the column
+            // reader, which describes the same attribute with a type.
             let generated_slot = data
                 .method_index
                 .get(method.name.as_str())
                 .and_then(|slots| slots.get(method.is_singleton))
                 .filter(|&idx| {
-                    method.synthetic_dsl_source
-                        && !method.rbs_file_source
+                    !method.rbs_file_source
+                        && !matches!(method.raw_return_type, Type::Untyped)
                         && data.methods.get(idx).is_some_and(|existing| {
                             existing.synthetic_dsl_source && existing.rbs_file_source
                         })

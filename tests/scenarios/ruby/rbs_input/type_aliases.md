@@ -326,10 +326,6 @@ end
 
 ## Resolve class-local alias
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```rbs

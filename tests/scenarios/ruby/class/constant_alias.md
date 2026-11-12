@@ -2,10 +2,6 @@
 
 ## `A::CONST` reads B constant after `A = B`
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -34,10 +30,6 @@ end
 
 ## `A.new` returns B instance after `A = B`
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -65,10 +57,6 @@ end
 ```
 
 ## Chained aliases read final namespace constants
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -99,10 +87,6 @@ end
 ```
 
 ## `A::CONST` reads nested class constants after alias
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -154,10 +138,6 @@ end
 
 ## Class defined under a constant alias uses the alias target
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -196,10 +176,6 @@ end
 
 ## Superclass through a constant alias
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -230,10 +206,6 @@ end
 ```
 
 ## Mixin through a constant alias
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -271,10 +243,6 @@ end
 
 ## Alias assigned before the target still resolves constants
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -302,10 +270,6 @@ end
 ```
 
 ## Self-referential namespace alias follows the module
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -338,10 +302,6 @@ end
 ```
 
 ## Ping-pong namespace aliases resolve each Deep::VALUE
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -392,10 +352,6 @@ end
 
 ## Inherited constant is visible through a subclass alias
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -427,10 +383,6 @@ end
 
 ## Singleton method defined on an alias belongs to the target
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -461,10 +413,6 @@ end
 ```
 
 ## Method call on a namespace alias uses the target singleton
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -514,6 +462,56 @@ class Object < BasicObject
   def f: -> 1
   def g: -> untyped
 end
+```
+
+## Aliases of core classes and modules use the target kind
+
+### update
+
+```ruby
+Str = String
+Kern = Kernel
+
+module Outer
+  Inner = ::Comparable
+end
+
+def f = Str.new
+```
+
+### result
+
+```rbs
+class Str = String
+module Kern = Kernel
+
+class Object < BasicObject
+  def f: -> String
+end
+
+module Outer
+  module Inner = Comparable
+end
+```
+
+## Singleton-typed value constant is not a namespace alias
+
+### update
+
+```ruby
+class Base
+end
+
+base = Base
+Anon = Class.new(base)
+AnonRef = Anon
+```
+
+### result
+
+```rbs
+Anon: singleton(Object)
+AnonRef: singleton(Object)
 ```
 
 ## `class Alias` reopens the aliased class
