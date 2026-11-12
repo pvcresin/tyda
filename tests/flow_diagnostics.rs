@@ -1547,3 +1547,24 @@ fn ivar_read_after_an_object_assignment_uses_the_written_value() {
         );
     }
 }
+
+#[test]
+fn typed_block_walk_does_not_add_missing_method_warnings() {
+    let source = concat!(
+        "class BlockParamCalls\n",
+        "  def accumulator = [1, 2].reduce(nil) { |found, x| found && found.id }\n",
+        "  def literal = lambda { |item| item.nil? ? nil : item.id }\n",
+        "  def element = [1].map { |n| n.succ }\n",
+        "end\n",
+    );
+
+    for compact in [false, true] {
+        let actual = diagnostics(source, compact);
+        let missing_methods: Vec<_> = actual
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| diagnostic.unresolved_method.as_str())
+            .collect();
+        assert!(missing_methods.is_empty(), "compact={compact}: {actual:?}");
+    }
+}

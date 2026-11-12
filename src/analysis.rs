@@ -5011,7 +5011,14 @@ end
     #[test]
     fn playground_method_hover_shows_only_the_concrete_signature() {
         let loader = playground_loader();
-        let source = "class User\n  def a = [1].sort()\n  def b = [1].map { |v| v.to_s }\nend\n";
+        let source = concat!(
+            "class User\n",
+            "  def a = [1].sort()\n",
+            "  def b = [1].map { |v| v.to_s }\n",
+            "  def c(flag) = (flag ? [1] : [2]).reverse\n",
+            "  def d = 1.clamp(0, 3)\n",
+            "end\n",
+        );
         let result = playground_analyze(source, "", &loader, "probe.rb");
         let display = |name: &str| {
             result
@@ -5027,6 +5034,8 @@ end
             display("map"),
             "[Tyda] () { (1 item) -> String } -> Array[String]"
         );
+        assert_eq!(display("reverse"), "[Tyda] () -> Array[1 | 2]");
+        assert_eq!(display("clamp"), "[Tyda] (0 min, 3 max) -> (0 | 1 | 3)");
     }
 
     #[test]
@@ -5036,6 +5045,8 @@ end
             "class User\n",
             "  def a = [1].map { |n| n.to_s }\n",
             "  def b = [1, 2].select { |n| n > 1 }\n",
+            "  def c = [1].map { |n| [n].first }\n",
+            "  def d = lambda { |item| item.id }\n",
             "end\n",
         );
         let result = playground_analyze(source, "", &loader, "probe.rb");
@@ -5050,6 +5061,12 @@ end
 
         assert_eq!(display("to_s"), "[Tyda] (?Integer base) -> String");
         assert_eq!(display(">"), "[Tyda] (Numeric arg0) -> bool");
+        assert_eq!(display("first"), "[Tyda] () -> 1");
+        assert!(
+            !display("id").contains("NilClass"),
+            "lambda params are not nil: {}",
+            display("id")
+        );
     }
 
     #[test]

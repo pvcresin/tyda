@@ -1084,6 +1084,9 @@ pub struct InferenceEngine<'a> {
     record_annotated_method_body_hover_snapshots: bool,
     analyzing_rbi_declaration: bool,
     var_snapshots: Vec<HoverSnapshot>,
+    /// First-walk call snapshots that hover replaced with typed block-walk ones.
+    /// `missing_method` still checks these, so the hover upgrade does not change diagnostics.
+    first_walk_call_snapshots: Vec<HoverSnapshot>,
     coverage_recorder: Option<crate::coverage::CoverageRecorder>,
     definition_snapshots: Vec<DefinitionSnapshot>,
     pending_constant_definition_snapshots: Vec<PendingConstantDefinitionSnapshot>,
@@ -1189,6 +1192,7 @@ impl FileFacts {
 #[derive(Clone, Default)]
 pub struct HoverIndex {
     pub(crate) snapshots: Vec<HoverSnapshot>,
+    pub(crate) first_walk_call_snapshots: Vec<HoverSnapshot>,
     pub(crate) definition_snapshots: Vec<DefinitionSnapshot>,
     pub(crate) arg_check_sites: Vec<ArgCheckSite>,
     pub(crate) method_return_sites: Vec<MethodReturnSite>,
@@ -2577,6 +2581,7 @@ impl<'a> InferenceEngine<'a> {
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
             var_snapshots: hover_index.snapshots,
+            first_walk_call_snapshots: hover_index.first_walk_call_snapshots,
             coverage_recorder: None,
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
@@ -2670,6 +2675,7 @@ impl<'a> InferenceEngine<'a> {
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
             var_snapshots: Vec::new(),
+            first_walk_call_snapshots: Vec::new(),
             coverage_recorder: None,
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
@@ -13181,30 +13187,39 @@ impl<'a> InferenceEngine<'a> {
         (self.registry, self.file_deps)
     }
 
-    fn dedup_hover_snapshots(snapshots: Vec<HoverSnapshot>) -> Vec<HoverSnapshot> {
+    fn dedup_hover_snapshots(
+        snapshots: Vec<HoverSnapshot>,
+    ) -> (Vec<HoverSnapshot>, Vec<HoverSnapshot>) {
         let mut seen: rustc_hash::FxHashMap<(usize, usize), usize> =
             rustc_hash::FxHashMap::with_capacity_and_hasher(snapshots.len(), Default::default());
         let mut out = Vec::with_capacity(snapshots.len());
+        let mut first_walk_call_snapshots = Vec::new();
         for snap in snapshots {
             let key = (snap.start, snap.end);
             if let Some(index) = seen.get(&key).copied() {
                 if Self::hover_snapshot_upgrades(&out[index], &snap) {
-                    out[index] = snap;
+                    let replaced = std::mem::replace(&mut out[index], snap);
+                    if matches!(replaced.target, HoverTarget::MethodCall { .. }) {
+                        first_walk_call_snapshots.push(replaced);
+                    }
                 }
             } else {
                 seen.insert(key, out.len());
                 out.push(snap);
             }
         }
-        out
+        (out, first_walk_call_snapshots)
     }
 
     /// Blocks are walked once without and once with declared param types, so the
-    /// same span can get an untyped snapshot first and a typed one later.
+    /// same span can get a snapshot with untyped parts first and a typed one later.
     fn hover_snapshot_upgrades(current: &HoverSnapshot, candidate: &HoverSnapshot) -> bool {
+        let upgrades = |current: &Type, candidate: &Type| {
+            Self::type_contains_untyped(current) && !Self::type_contains_untyped(candidate)
+        };
         match (&current.target, &candidate.target) {
             (HoverTarget::Value(current_ty), HoverTarget::Value(candidate_ty)) => {
-                *current_ty == Type::Untyped && *candidate_ty != Type::Untyped
+                upgrades(current_ty, candidate_ty)
             }
             (
                 HoverTarget::MethodCall {
@@ -13215,11 +13230,7 @@ impl<'a> InferenceEngine<'a> {
                     receiver_type: candidate_receiver,
                     ..
                 },
-            ) => {
-                current.name == candidate.name
-                    && *current_receiver == Type::Untyped
-                    && *candidate_receiver != Type::Untyped
-            }
+            ) => current.name == candidate.name && upgrades(current_receiver, candidate_receiver),
             _ => false,
         }
     }
@@ -13227,13 +13238,16 @@ impl<'a> InferenceEngine<'a> {
     pub fn into_file_analysis_snapshot(mut self) -> FileAnalysisSnapshot {
         self.ensure_implicit_object_superclass();
         self.resolve_pending_constant_definition_snapshots();
+        let (snapshots, first_walk_call_snapshots) =
+            Self::dedup_hover_snapshots(self.var_snapshots);
         FileAnalysisSnapshot {
             facts: FileFacts {
                 registry: self.registry,
             },
             method_body_summary: MethodBodySummary::default(),
             hover_index: HoverIndex {
-                snapshots: Self::dedup_hover_snapshots(self.var_snapshots),
+                snapshots,
+                first_walk_call_snapshots,
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
                 method_return_sites: self.method_return_sites,
@@ -13310,13 +13324,16 @@ impl<'a> InferenceEngine<'a> {
     ) -> (FileAnalysisSnapshot, crate::dep_graph::FileDeps) {
         self.ensure_implicit_object_superclass();
         self.resolve_pending_constant_definition_snapshots();
+        let (snapshots, first_walk_call_snapshots) =
+            Self::dedup_hover_snapshots(self.var_snapshots);
         let analysis = FileAnalysisSnapshot {
             facts: FileFacts {
                 registry: self.registry,
             },
             method_body_summary: MethodBodySummary::default(),
             hover_index: HoverIndex {
-                snapshots: Self::dedup_hover_snapshots(self.var_snapshots),
+                snapshots,
+                first_walk_call_snapshots,
                 definition_snapshots: self.definition_snapshots,
                 arg_check_sites: self.arg_check_sites,
                 method_return_sites: self.method_return_sites,
@@ -22946,9 +22963,7 @@ impl<'a> InferenceEngine<'a> {
                     0,
                 )
             };
-            if !matches!(method_name.as_ref(), "proc" | "lambda")
-                && let Some(params_node) = block.parameters()
-            {
+            if let Some(params_node) = block.parameters() {
                 self.bind_block_param_types(
                     class_name,
                     &params_node,

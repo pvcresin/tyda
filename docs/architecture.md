@@ -210,8 +210,11 @@ hover 専用の block shape 絞り込みと implicit-self の追加 generic bloc
 表示用の推論を広げても、CLI batch / coverage の facts-only profile の RBS 結果と基準値を変えない。
 RBS の block 付き呼び出しは、宣言の型なしと型ありの 2 回 block を走査する。ネストした呼び出しは外側の走査と
 同じ種類だけを行い、走査回数がネストの深さに対して指数的に増えないようにする。同じ範囲の hover snapshot は
-最初のものを使うが、値の型や method 呼び出しの receiver 型が `untyped` のものは、後の走査で型が付いた
-snapshot に置き換える（block 内の `n.to_s` や `n * 2` も型あり走査の結果を表示する）。
+最初のものを使うが、値の型や method 呼び出しの receiver 型に `untyped` を含むものは、後の走査で型が付いた
+snapshot に置き換える（block 内の `n.to_s` や `n * 2` も型あり走査の結果を表示する）。置き換える前の呼び出し
+snapshot は `first_walk_call_snapshots` に残し、`missing_method` 診断はそちらで判定する。block 内の推論には
+`reduce` の累積値などまだ粗い部分があり、hover の改善で診断を変えない（誤検出を増やさない）ためである。
+`proc` / `lambda` の block 引数は、型なし走査でも `untyped` として束縛する（未束縛のまま `nil` にしない）。
 引数なしの self 呼び出しへの nil ガードは、後続の文が self facts を無効化するまで同じ呼び出しに効く。定義が後方にある
 メソッドも遅延参照のまま絞り込む。
 引数型と block の戻り値は既存の scan site を共有して hover snapshot に複製せず、scan で得た戻り値を

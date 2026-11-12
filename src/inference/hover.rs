@@ -247,7 +247,15 @@ impl<'a> InferenceEngine<'a> {
             std::collections::HashMap::new();
         let mut method_exists_cache: std::collections::HashMap<(Type, String), bool> =
             std::collections::HashMap::new();
+        let mut first_walk_calls: rustc_hash::FxHashMap<(usize, usize), HoverSnapshot> =
+            std::mem::take(&mut self.first_walk_call_snapshots)
+                .into_iter()
+                .map(|snap| ((snap.start, snap.end), snap))
+                .collect();
         for snap in snapshots {
+            let snap = first_walk_calls
+                .remove(&(snap.start, snap.end))
+                .unwrap_or(snap);
             if snap.start >= snap.end {
                 continue;
             }
@@ -4521,6 +4529,7 @@ impl<'a> InferenceEngine<'a> {
         has_block: bool,
         call_arguments: Option<&HoverCallArguments>,
     ) -> Option<Vec<HoverOverloadSig>> {
+        let receiver_type = &Self::normalize_union_receiver(receiver_type);
         let receiver_class = TypeRegistry::type_to_class_name_pub(receiver_type)?;
         self.preload_hover_lookup_hierarchy(&receiver_class);
         let prefer_singleton = matches!(receiver_type, Type::Singleton(_));
@@ -4950,11 +4959,17 @@ impl<'a> InferenceEngine<'a> {
         if !Self::is_resolved_hover_type(result_type) {
             return;
         }
+        // Vars bound by the receiver or arguments stay as they are; the result only
+        // fills the rest (`1.clamp(0, 3)` keeps `A = 0` instead of the whole result).
+        let mut from_result = HashMap::new();
         self.resolve_type_variable(
             &method_type.function_type.return_type,
             result_type,
-            type_vars,
+            &mut from_result,
         );
+        for (name, ty) in from_result {
+            type_vars.entry(name).or_insert(ty);
+        }
         self.fill_unresolved_method_type_vars_from_upper_bounds(
             method_type,
             receiver_type,
