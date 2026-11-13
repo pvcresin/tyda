@@ -1586,11 +1586,15 @@ fn add_methods_to_registry(
         };
 
         // A parameter typed by the method's own type variable binds per call through the method
-        // type; an `untyped` annotation would hide the caller's type from a source body.
+        // type; an `untyped` annotation would hide the caller's type from a source body. A
+        // composite type such as `Array[T]` still constrains the argument, so it stays.
         let generic_params: Vec<bool> = first_overload
             .function_type
             .param_types()
-            .map(|ty| ty.mentions_variable(&first_overload.type_params))
+            .map(|ty| {
+                matches!(ty, rbs_ir::RbsType::Variable(name)
+                    if first_overload.type_params.contains(name))
+            })
             .collect();
         let mut param_infos = Vec::new();
         for (index, (name, kind, ty)) in params.into_iter().enumerate() {

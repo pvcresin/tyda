@@ -98,6 +98,23 @@ fn sorbet_type_parameter_binds_to_the_block_return() {
     }
 }
 
+// `Array#+` takes `[S] (Array[S])`: the type variable is inside `Array`, which still
+// constrains the argument for the `Array` member of the receiver.
+#[test]
+fn a_composite_generic_parameter_still_checks_its_outer_type() {
+    let source = concat!(
+        "class Joiner\n",
+        "  def pick(flag) = flag ? \"a\" : [\"b\"]\n",
+        "  def go = pick(true) + \"s\"\n",
+        "end\n",
+        "Joiner.new.pick(false)\n",
+    );
+    for compact in [false, true] {
+        let lines = argument_mismatch_lines(source, "", compact);
+        assert_eq!(lines, vec![3], "compact={compact}");
+    }
+}
+
 // Each call passes an argument outside an explicit type parameter bound. Passing a value
 // within the bound instead is not reported.
 #[test]

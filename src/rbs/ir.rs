@@ -93,26 +93,6 @@ impl FunctionType {
             .map(|param| &param.type_)
     }
 
-    fn mentions_variable(&self, names: &[Sym]) -> bool {
-        self.param_types().any(|ty| ty.mentions_variable(names))
-            || self.return_type.mentions_variable(names)
-    }
-}
-
-impl MethodType {
-    /// Reads the bare class names in `names` as type variables. A signature written outside
-    /// RBS (`#:` or a Sorbet `sig`) cannot tell `Elem` the class type parameter from a class.
-    pub fn with_type_variables(&self, names: &[Sym]) -> MethodType {
-        let mut method_type = self.clone();
-        method_type.function_type.bind_type_variables(names);
-        if let Some(block) = method_type.block.as_mut() {
-            block.function_type.bind_type_variables(names);
-        }
-        method_type
-    }
-}
-
-impl FunctionType {
     fn bind_type_variables(&mut self, names: &[Sym]) {
         let params = self
             .required_positionals
@@ -127,6 +107,19 @@ impl FunctionType {
             param.type_.bind_type_variables(names);
         }
         self.return_type.bind_type_variables(names);
+    }
+}
+
+impl MethodType {
+    /// Reads the bare class names in `names` as type variables. A signature written outside
+    /// RBS (`#:` or a Sorbet `sig`) cannot tell `Elem` the class type parameter from a class.
+    pub fn with_type_variables(&self, names: &[Sym]) -> MethodType {
+        let mut method_type = self.clone();
+        method_type.function_type.bind_type_variables(names);
+        if let Some(block) = method_type.block.as_mut() {
+            block.function_type.bind_type_variables(names);
+        }
+        method_type
     }
 }
 
@@ -155,29 +148,6 @@ impl RbsType {
                 **method_type = method_type.with_type_variables(names);
             }
             _ => {}
-        }
-    }
-
-    pub fn mentions_variable(&self, names: &[Sym]) -> bool {
-        match self {
-            RbsType::Variable(name) => names.contains(name),
-            RbsType::Class(_, args)
-            | RbsType::Alias(_, args)
-            | RbsType::Union(args)
-            | RbsType::Intersection(args)
-            | RbsType::Tuple(args) => args.iter().any(|arg| arg.mentions_variable(names)),
-            RbsType::Optional(inner) => inner.mentions_variable(names),
-            RbsType::Record(fields) => fields
-                .iter()
-                .any(|field| field.type_.mentions_variable(names)),
-            RbsType::Proc(method_type) => {
-                method_type.function_type.mentions_variable(names)
-                    || method_type
-                        .block
-                        .as_ref()
-                        .is_some_and(|block| block.function_type.mentions_variable(names))
-            }
-            _ => false,
         }
     }
 }
