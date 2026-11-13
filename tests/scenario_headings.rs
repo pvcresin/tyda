@@ -102,10 +102,12 @@ fn scenario_code_blocks_have_only_semantic_comments() {
     for path in files {
         let content = fs::read_to_string(&path).expect("scenario file should be readable");
         let mut in_fence = false;
+        let mut in_rbs_embed = false;
 
         for (idx, line) in content.lines().enumerate() {
             if line.starts_with("```") {
                 in_fence = !in_fence;
+                in_rbs_embed = false;
                 continue;
             }
             if !in_fence {
@@ -113,7 +115,13 @@ fn scenario_code_blocks_have_only_semantic_comments() {
             }
 
             let trimmed = line.trim_start();
-            if !trimmed.starts_with('#') || is_semantic_comment(trimmed) {
+            // An `# @rbs!` block embeds RBS declarations in the indented comment lines after it.
+            in_rbs_embed = if trimmed.starts_with("# @rbs!") {
+                true
+            } else {
+                in_rbs_embed && trimmed.starts_with("#  ")
+            };
+            if !trimmed.starts_with('#') || in_rbs_embed || is_semantic_comment(trimmed) {
                 continue;
             }
 
