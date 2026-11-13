@@ -46,7 +46,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] Concern の includer 依存 DSL を拡張する（schema fallback、Devise、AMS など）
 - [ ] 大規模 Rails での `--diagnostics` context scan を高速化する
 - [ ] block callback の副作用解析を一般化し、外側で nil check 済みのivarがcallback内で誤って `nil` と診断されるケースを見直す（Redmine `Attachment#files_to_final_location` の `sha.update(@temp_file)`）。実際のmutationは引き続きnarrowingを無効化し、クラス・メソッド固有の例外は追加しない
-- [ ] CLI のファイル単位推論で、後のファイルに依存する型を遅延参照として保ち、全体の集約後に解決する。別ファイルの model への `find(1)` が `untyped` になる、後のファイルで定義されるクラスの `when` が引数を `untyped` にする、の2件（`tests/cli.rs` の `when_with_class_from_later_file_does_not_leak_other_arguments`）。シナリオ runner は他ファイルを先に解析するため、CLI でのみ再現する
+- [ ] CLI のファイル単位推論で、後のファイルに依存する型を遅延参照として保ち、全体の集約後に解決する。別ファイルの model への `find(1)` が `untyped` になる、後のファイルで定義されるクラスの `when` が引数を `untyped` にする、concern の `included` で定義した scope を別ファイルの model から呼ぶと `ActiveRecord::Relation[self]` が残る、の3件（`tests/cli.rs` の `when_with_class_from_later_file_does_not_leak_other_arguments`）。シナリオ runner は他ファイルを先に解析するため、CLI でのみ再現する
 - [ ] CLI と scenario runner の結果をそろえる。単一ファイルでも、呼び出し側から型が決まる parameter への演算（`def foo(x) = x + 1` を `foo(1)` で呼ぶ）、`*args` の要素、class 内の再帰が CLI だけ `untyped` になり、別ファイルの定数参照もディレクトリ指定の CLI で `untyped` になる。scenario は CLI 経路を確かめないため、両経路を比べる仕組みも用意する
 - [ ] Ruby の意味論どおり、未初期化の ivar の値に `nil` を含める。`initialize` のすべての経路（class instance variable は class body）で代入される ivar だけを非 nil とし、それ以外の reader と参照は `T?` にする。この `nil` による `missing_method` は除外せずに報告する。意図して使う箇所は `# tyda: ignore[missing_method]` で抑制する。既存 scenario の期待値も合わせて直す（`known-issues/ruby_methods.md`、`ruby/variable/instance.md` の known issue）
 - [ ] TODO: 未初期化の ivar に由来する `nil` 診断の重さを検討する（他の `nil` と severity を分けて warning にするか、など）
