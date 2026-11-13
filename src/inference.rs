@@ -30847,6 +30847,11 @@ impl<'a> InferenceEngine<'a> {
                                     &arg_types,
                                     &kw_types,
                                 );
+                                let generic_new_args = (!self
+                                    .registry
+                                    .get_class_type_params(&target_class)
+                                    .is_empty())
+                                .then(|| (arg_types.to_vec(), kw_types.clone()));
                                 self.record_inferred_call_site(&target_class, {
                                     let caller_context = Self::call_site_caller_context(
                                         class_name, scope, &arg_types, &kw_types, None, &None,
@@ -30867,7 +30872,17 @@ impl<'a> InferenceEngine<'a> {
                                         self_call: false,
                                     }
                                 });
-                                Some(Type::Class(target_class))
+                                Some(
+                                    generic_new_args
+                                        .and_then(|(arg_types, kw_types)| {
+                                            self.generic_new_instance_type(
+                                                &target_class,
+                                                &arg_types,
+                                                &kw_types,
+                                            )
+                                        })
+                                        .unwrap_or(Type::Class(target_class)),
+                                )
                             } else {
                                 None
                             }
@@ -43643,6 +43658,63 @@ impl<'a> InferenceEngine<'a> {
             type_vars,
         );
         self.retain_method_type_vars_satisfying_bounds(rbs_mt, receiver_type, type_vars);
+    }
+
+    /// `Box.new(1)` for a declared `class Box[T]` whose `initialize` takes `(T)` is `Box[Integer]`.
+    /// A type parameter `initialize` does not bind falls back to its default or `untyped`.
+    fn generic_new_instance_type(
+        &mut self,
+        target_class: &str,
+        arg_types: &[Type],
+        kw_types: &HashMap<String, Type>,
+    ) -> Option<Type> {
+        let params = self.registry.get_class_type_params(target_class).to_vec();
+        if params.is_empty() {
+            return None;
+        }
+        let method_types = self
+            .registry
+            .lookup_rbs_method_types(target_class, "initialize")
+            .to_vec();
+        let mut vars = HashMap::new();
+        for method_type in &method_types {
+            let mut candidate = HashMap::new();
+            self.collect_method_type_params_from_arg_types(
+                method_type,
+                arg_types,
+                kw_types,
+                &mut candidate,
+            );
+            if params.iter().any(|param| candidate.contains_key(param)) {
+                vars = candidate;
+                break;
+            }
+        }
+        if !params.iter().any(|param| vars.contains_key(param)) {
+            return None;
+        }
+        let defaults = self
+            .registry
+            .get_class_type_param_defaults(target_class)
+            .to_vec();
+        let args: Box<[Type]> = params
+            .iter()
+            .map(|param| {
+                vars.get(param)
+                    .map(|ty| ty.clone().widen())
+                    .or_else(|| {
+                        defaults
+                            .iter()
+                            .find(|(name, _)| name == param)
+                            .map(|(_, ty)| ty.clone())
+                    })
+                    .unwrap_or(Type::Untyped)
+            })
+            .collect();
+        Some(Type::Generic {
+            base: Sym::new(target_class),
+            args,
+        })
     }
 
     fn collect_method_type_params_from_arg_types(

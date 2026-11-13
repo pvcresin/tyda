@@ -62,7 +62,6 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 推論したジェネリクスを RBS に出す。本体だけから決まる型のほうがコードとして正しいため、呼び出し元の型の union より型変数を優先する。出力を切り替えるオプションは作らない（推論が複雑になりバグの元になるため）。RBS 3.6 以降の構文（union の bound など）を前提にし、古い RBS や Steep の対応は各ツール側の課題とする。RBS 入力の読み込みを固めてから出力に進む。
 
 - [ ] 型の入力（`.rbs` / `sig/`、`.rbi`、インライン RBS、Sorbet の `sig` と RBS コメント）のジェネリクスを正確に読む
-  - RBS：`new` の引数からクラスの型引数を推論しない、同じファイルに source 定義があるとメソッドのジェネリクスが `untyped` になる（`known-issues/rbs_generics.md`）
   - インライン RBS：`# @rbs!` を読まない（`known-issues/rbs_comment_generics.md`）
   - Sorbet：RBI の `type_member` が型引数で束縛されない、`extend T::Helpers` 付きの RBI の型を呼ぶと `T::Helpers` の宣言が出力に漏れる（`known-issues/sorbet_generics.md`）
 - [ ] parameter レシーバの block 内の `yield` は、メソッド本体の replay で yield 型が決まる。トップレベルの呼び出し側の block は replay されないため、その block の戻り値が `untyped` のまま残る（`known-issues/ruby_methods.md`）

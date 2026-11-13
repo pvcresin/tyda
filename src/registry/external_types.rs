@@ -589,6 +589,17 @@ impl TypeRegistry {
         let Some(data) = self.class_data.get_mut(class_name) else {
             return;
         };
+        for method in &rbs_data.methods {
+            let key = (method.name, method.is_singleton);
+            if method
+                .rbs_method_types
+                .iter()
+                .any(|method_type| !method_type.type_params.is_empty())
+                && !data.cold().user_rbs_generic_methods.contains(&key)
+            {
+                data.cold_mut().user_rbs_generic_methods.push(key);
+            }
+        }
 
         for method in &rbs_data.methods {
             let Some(existing_idx) = data

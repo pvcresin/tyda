@@ -123,6 +123,20 @@ impl TypeRegistry {
                 let (before_method, method_and_after) = all_methods.split_at_mut(method_index);
                 (&mut method_and_after[0], &before_method[rbs_sig_index])
             };
+            // A generic declaration only reads correctly as a whole: `T` needs its `[T]`.
+            if !rbs_sig.type_params.is_empty() {
+                method_sig.type_params = rbs_sig.type_params.clone();
+                method_sig.return_type = rbs_sig.return_type.clone();
+                if method_sig.params.len() == rbs_sig.params.len() {
+                    for (param, rbs_param) in method_sig.params.iter_mut().zip(&rbs_sig.params) {
+                        param.param_type = rbs_param.param_type.clone();
+                    }
+                }
+                if rbs_sig.block.is_some() {
+                    method_sig.block = rbs_sig.block.clone();
+                }
+                continue;
+            }
             if method_sig.return_type != Type::Untyped {
                 method_sig.return_type = rbs_sig.return_type.clone();
             }

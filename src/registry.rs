@@ -1992,6 +1992,9 @@ pub struct ClassDataCold {
     pub class_type_params: Vec<String>,
     pub class_type_param_bounds: Vec<(String, rbs_ir::RbsType)>,
     pub class_type_param_modifiers: Vec<(String, rbs_sys::TypeParamModifiers)>,
+    /// Methods a preloaded user `.rbs` declares with method type parameters. A source `def`
+    /// added later keeps that signature, as it does when the RBS merges after the source.
+    pub user_rbs_generic_methods: Vec<(Sym, bool)>,
     pub class_type_param_defaults: Vec<(String, Type)>,
     // dirty-family skeleton pattern (`ClassDataCold`).
     pub dirty_method_pattern: Option<DirtyPattern>,
@@ -2214,6 +2217,7 @@ impl ClassData {
         cold.class_type_params.shrink_to_fit();
         cold.class_type_param_bounds.shrink_to_fit();
         cold.class_type_param_modifiers.shrink_to_fit();
+        cold.user_rbs_generic_methods.shrink_to_fit();
         cold.class_type_param_defaults.shrink_to_fit();
     }
 
@@ -2297,6 +2301,7 @@ impl ClassData {
         bytes +=
             cold.class_type_param_bounds.len() * std::mem::size_of::<(String, rbs_ir::RbsType)>();
         bytes += cold.class_type_param_defaults.len() * std::mem::size_of::<(String, Type)>();
+        bytes += cold.user_rbs_generic_methods.len() * std::mem::size_of::<(Sym, bool)>();
         bytes += cold.class_type_param_modifiers.len()
             * std::mem::size_of::<(String, rbs_sys::TypeParamModifiers)>();
         bytes
@@ -3795,6 +3800,16 @@ impl TypeRegistry {
         }) {
             let existing = &data.methods[existing_idx];
             if existing.rbs_file_source && !method.rbs_file_source {
+                if data
+                    .cold()
+                    .user_rbs_generic_methods
+                    .contains(&(method.name, method.is_singleton))
+                {
+                    method.raw_return_type = existing.raw_return_type.clone();
+                    method.rbs_annotated = true;
+                    method.rbs_method_types = existing.rbs_method_types.clone();
+                    method.extra_overloads = existing.extra_overloads.clone();
+                }
                 let next_idx = data.methods.len();
                 data.methods.push(Arc::new(method));
                 let method_name = data.methods[next_idx].name;

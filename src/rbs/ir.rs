@@ -79,6 +79,51 @@ pub struct MethodType {
     pub annotations: Box<[Sym]>,
 }
 
+impl FunctionType {
+    /// Parameter types in the order of required, optional, rest, trailing, then keywords.
+    pub fn param_types(&self) -> impl Iterator<Item = &RbsType> {
+        self.required_positionals
+            .iter()
+            .chain(self.optional_positionals.iter())
+            .chain(self.rest_positionals.as_deref())
+            .chain(self.trailing_positionals.iter())
+            .chain(self.required_keywords.iter().map(|(_, param)| param))
+            .chain(self.optional_keywords.iter().map(|(_, param)| param))
+            .chain(self.rest_keywords.as_deref())
+            .map(|param| &param.type_)
+    }
+
+    fn mentions_variable(&self, names: &[Sym]) -> bool {
+        self.param_types().any(|ty| ty.mentions_variable(names))
+            || self.return_type.mentions_variable(names)
+    }
+}
+
+impl RbsType {
+    pub fn mentions_variable(&self, names: &[Sym]) -> bool {
+        match self {
+            RbsType::Variable(name) => names.contains(name),
+            RbsType::Class(_, args)
+            | RbsType::Alias(_, args)
+            | RbsType::Union(args)
+            | RbsType::Intersection(args)
+            | RbsType::Tuple(args) => args.iter().any(|arg| arg.mentions_variable(names)),
+            RbsType::Optional(inner) => inner.mentions_variable(names),
+            RbsType::Record(fields) => fields
+                .iter()
+                .any(|field| field.type_.mentions_variable(names)),
+            RbsType::Proc(method_type) => {
+                method_type.function_type.mentions_variable(names)
+                    || method_type
+                        .block
+                        .as_ref()
+                        .is_some_and(|block| block.function_type.mentions_variable(names))
+            }
+            _ => false,
+        }
+    }
+}
+
 // ── Conversion from rbs_sys (runs once, at the parse boundary) ──────────────────
 
 impl From<&rbs_sys::RbsRecordKey> for RbsRecordKey {

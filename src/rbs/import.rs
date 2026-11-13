@@ -1585,11 +1585,21 @@ fn add_methods_to_registry(
             rbs_sys::MethodKind::SingletonInstance => &[false, true],
         };
 
+        // A parameter typed by the method's own type variable binds per call through the method
+        // type; an `untyped` annotation would hide the caller's type from a source body.
+        let generic_params: Vec<bool> = first_overload
+            .function_type
+            .param_types()
+            .map(|ty| ty.mentions_variable(&first_overload.type_params))
+            .collect();
         let mut param_infos = Vec::new();
         for (index, (name, kind, ty)) in params.into_iter().enumerate() {
             // annotated_params is keyed by (name, is_singleton), so write the same param type
             // to every side that method.kind covers.
             for &is_singleton in kinds {
+                if generic_params.get(index).copied().unwrap_or(false) {
+                    continue;
+                }
                 registry.set_annotated_param_type(
                     class_name,
                     &method.name,
