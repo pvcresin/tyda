@@ -511,6 +511,40 @@ fn coverage_includes_arguments_of_unresolved_receiver_calls() {
 }
 
 #[test]
+fn coverage_keeps_narrowed_receivers_in_yielding_blocks() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("narrowed_yield.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class Paths\n",
+            "  def each_path(paths)\n",
+            "    paths.transform_values do |value|\n",
+            "      if value.is_a?(Array)\n",
+            "        value.map { |path| yield path }\n",
+            "      else\n",
+            "        yield value\n",
+            "      end\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    // The yield pre-scan sees `value` without the `is_a?` narrowing; only the body walk counts.
+    assert_eq!(report["by_kind"]["value"]["typed"], 1);
+}
+
+#[test]
 fn coverage_keeps_call_sites_decided_by_local_hash_key_facts() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("hash_key_fact.rb");

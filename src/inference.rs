@@ -1056,6 +1056,11 @@ struct SourceCallContext {
 /// Method name -> (owner, singleton, feature) for methods a required stdlib feature adds.
 type StdlibFeatureExtensions = FxHashMap<String, Vec<(String, bool, String)>>;
 
+struct SuspendedObservations {
+    hover: bool,
+    coverage: Option<crate::coverage::CoverageRecorder>,
+}
+
 pub struct InferenceEngine<'a> {
     registry: TypeRegistry,
     constants: HashMap<String, Type>,
@@ -10224,6 +10229,20 @@ impl<'a> InferenceEngine<'a> {
                 qualified_name,
             ))),
         });
+    }
+
+    /// Stops recording hover and coverage for a pre-scan whose view of the source is
+    /// incomplete, such as one that does not apply branch narrowing.
+    fn suspend_source_observations(&mut self) -> SuspendedObservations {
+        SuspendedObservations {
+            hover: std::mem::replace(&mut self.record_hover_snapshots, false),
+            coverage: self.coverage_recorder.take(),
+        }
+    }
+
+    fn resume_source_observations(&mut self, saved: SuspendedObservations) {
+        self.record_hover_snapshots = saved.hover;
+        self.coverage_recorder = saved.coverage;
     }
 
     fn push_hover_snapshot(&mut self, snapshot: HoverSnapshot) {
@@ -19437,6 +19456,9 @@ impl<'a> InferenceEngine<'a> {
                             )
                             .0
                         {
+                            // This pre-scan does not apply the narrowing of enclosing branches, so
+                            // its view of the receiver must not reach hover or coverage.
+                            let observations = self.suspend_source_observations();
                             let receiver_type =
                                 self.infer_node_type(class_name, &receiver, parse_result, scope);
                             let method_name = String::from_utf8_lossy(call_node.name().as_slice());
@@ -19469,6 +19491,7 @@ impl<'a> InferenceEngine<'a> {
                                     &mut block_scope,
                                 );
                             }
+                            self.resume_source_observations(observations);
                         }
                     }
                     self.scan_method_body_summary_node(
@@ -63714,7 +63737,11 @@ impl<'a> InferenceEngine<'a> {
             return;
         }
         let mut meta = meta.clone();
+        // The method body walk already recorded hover and coverage; this scan sees the body again
+        // without branch narrowing.
+        let observations = self.suspend_source_observations();
         let summary = self.scan_method_body_summary(class_name, body, parse_result, scope);
+        self.resume_source_observations(observations);
         let mut changed = false;
         for (slot, types) in meta
             .yield_param_types
