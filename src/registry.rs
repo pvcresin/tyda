@@ -838,6 +838,9 @@ pub struct MethodBlockMeta {
     pub yields_at_least_once: bool,
     pub yield_requires_block: Option<bool>,
     pub block_flow: Option<BlockFlowSummary>,
+    /// What a call without a block returns, when a leading `return x unless block_given?`
+    /// decides it.
+    pub blockless_return: Option<Type>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -864,6 +867,9 @@ impl ClassMethodBlockMeta {
                     .map(Type::deep_extra_bytes)
                     .sum::<usize>();
                 if let Some(ty) = &meta.return_type {
+                    bytes += ty.deep_extra_bytes();
+                }
+                if let Some(ty) = &meta.blockless_return {
                     bytes += ty.deep_extra_bytes();
                 }
             }
@@ -14118,6 +14124,7 @@ mod tests {
                 yields_at_least_once: false,
                 yield_requires_block: None,
                 block_flow: None,
+                blockless_return: None,
             },
         );
         registry.set_method_block_meta(
@@ -14132,6 +14139,7 @@ mod tests {
                 yields_at_least_once: false,
                 yield_requires_block: None,
                 block_flow: None,
+                blockless_return: None,
             },
         );
         registry.set_method_block_meta(
@@ -14146,6 +14154,7 @@ mod tests {
                 yields_at_least_once: false,
                 yield_requires_block: None,
                 block_flow: None,
+                blockless_return: None,
             },
         );
 
@@ -14216,6 +14225,7 @@ mod tests {
                 yields_at_least_once: false,
                 yield_requires_block: None,
                 block_flow: None,
+                blockless_return: None,
             },
         );
 

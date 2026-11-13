@@ -4028,6 +4028,51 @@ fn diagnostics_suppresses_bare_call_in_module_without_static_mixin_edge() {
 /// variable (a phantom nominalized from Sorbet's unbound `T.type_parameter(:U)`).
 /// Confirms, as a control, that a concrete mismatch (Integer -> String) on the same
 /// method is still reported.
+// A call without a block takes the `return x unless block_given?` value, also when the
+// method is defined in another file.
+#[test]
+fn diagnostics_take_blockless_return_across_files() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("reader.rb"),
+        concat!(
+            "class Reader\n",
+            "  def self.open\n",
+            "    reader = new\n",
+            "    return reader unless block_given?\n",
+            "    begin\n",
+            "      yield reader\n",
+            "    ensure\n",
+            "      reader.close\n",
+            "    end\n",
+            "    nil\n",
+            "  end\n",
+            "\n",
+            "  def close = nil\n",
+            "  def each = nil\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+    fs::write(
+        dir.path().join("user.rb"),
+        "class User\n  def run\n    reader = Reader.open\n    reader.each\n  end\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("missing_method"),
+        "a blockless call does not return the block path's nil: {stdout}"
+    );
+}
+
 #[test]
 fn diagnostics_silences_argument_mismatch_for_unresolved_type_variable() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");

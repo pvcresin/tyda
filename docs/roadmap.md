@@ -55,7 +55,6 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] 制御フロー上の値を保つ。自己再帰する述語の戻り値が `bool` に `untyped` を含む（`known-issues/flow_values.md`）。また、単一ファイルの CLI では `File` を渡す呼び出しがあっても `break unless part` の後の `yield part` が `String` にならず、parameter 経由の `IO#read(len)` が `String?` でなく `String` になる。CLI は parameter レシーバへの `file.read(len)` を引数なしの呼び出しとして集約後に解決し、最初の overload（`-> String`）を選ぶ。全体を解析する scenario runner と LSP では正しく推論する（`tests/cli.rs` の `known_issue_io_read_through_parameters_in_a_single_file`）
 - [ ] nil の誤検出を減らす。メソッド内で代入した ivar が self 呼び出しの後に nil になる、ivar の truthy ガードが入れ子の修飾子 `if` に届かない、reader の nil ガードが同じメソッドの block に届かない、`*xs.partition` の多重代入が nil になる、ivar の nil ガードがそれを書かない self 呼び出しの後で消える、の5件（`tests/flow_diagnostics.rs` の `known_issue_nil_false_positives_still_reported`）
 - [ ] PR 154 の subject 差分で見つけたが、最小再現ができていない後退を調べる。Redmine `link_to_project` の引数が `(Project | untyped)?` から `untyped?` になる。`respond_to?` を確かめる述語メソッドや `before_action` など、別メソッドのガードを越えた nil・missing method の誤検出
-- [ ] `return x unless block_given?` の戻り値を、block なしの呼び出しの戻り値として使う。今は Enumerator だけを区別するため、`TarReader.new(io)` のような呼び出しが `T?` になり、`nil` の `missing_method` が誤って出る（`known-issues/ruby_methods.md`）
 - [ ] Ruby / Rails version、framework DSL、scenario coverage を継続する
 
 ### ジェネリクス

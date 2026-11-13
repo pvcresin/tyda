@@ -250,32 +250,3 @@ class Lookup
   def label: -> String
 end
 ```
-
-## A blockless call takes the return guarded by block_given
-
-```ruby
-class Reader
-  def self.open
-    reader = new
-    return reader unless block_given?
-    yield reader
-    nil
-  end
-end
-
-class ReaderUser
-  def reader = Reader.open
-end
-```
-
-### result
-
-```rbs
-class Reader
-  def self.open: ?{ (Reader) -> untyped } -> Reader?
-end
-
-class ReaderUser
-  def reader: -> Reader
-end
-```

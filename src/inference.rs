@@ -1094,6 +1094,9 @@ pub struct InferenceEngine<'a> {
     /// `missing_method` still checks these, so the hover upgrade does not change diagnostics.
     first_walk_call_snapshots: Vec<HoverSnapshot>,
     coverage_recorder: Option<crate::coverage::CoverageRecorder>,
+    /// Method body statements being walked, and the return of a blockless call once a
+    /// `return x unless block_given?` guard in them is reached.
+    blockless_return_capture: Option<(usize, Option<Type>)>,
     definition_snapshots: Vec<DefinitionSnapshot>,
     pending_constant_definition_snapshots: Vec<PendingConstantDefinitionSnapshot>,
     arg_check_sites: Vec<ArgCheckSite>,
@@ -1499,8 +1502,37 @@ impl FileAnalysisSnapshot {
         b
     }
 
+    /// Drops the method body facts, except what a blockless call returns: other files resolve
+    /// calls to these methods against the skeleton.
     pub fn strip_method_body_summary(&mut self) {
-        self.method_body_summary = MethodBodySummary::default();
+        let summary = std::mem::take(&mut self.method_body_summary);
+        self.method_body_summary.method_block_meta_by_class = summary
+            .method_block_meta_by_class
+            .into_iter()
+            .filter_map(|(class_name, class_meta)| {
+                let keep = |side: std::collections::HashMap<_, MethodBlockMeta>| {
+                    side.into_iter()
+                        .filter_map(|(name, meta)| {
+                            meta.blockless_return.map(|ty| {
+                                (
+                                    name,
+                                    MethodBlockMeta {
+                                        blockless_return: Some(ty),
+                                        ..MethodBlockMeta::default()
+                                    },
+                                )
+                            })
+                        })
+                        .collect::<std::collections::HashMap<_, _>>()
+                };
+                let class_meta = crate::registry::ClassMethodBlockMeta {
+                    instance: keep(class_meta.instance),
+                    singleton: keep(class_meta.singleton),
+                };
+                (!class_meta.instance.is_empty() || !class_meta.singleton.is_empty())
+                    .then_some((class_name, class_meta))
+            })
+            .collect();
     }
 
     pub fn strip_base_context(&mut self) {
@@ -2589,6 +2621,7 @@ impl<'a> InferenceEngine<'a> {
             var_snapshots: hover_index.snapshots,
             first_walk_call_snapshots: hover_index.first_walk_call_snapshots,
             coverage_recorder: None,
+            blockless_return_capture: None,
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: hover_index.arg_check_sites,
@@ -2683,6 +2716,7 @@ impl<'a> InferenceEngine<'a> {
             var_snapshots: Vec::new(),
             first_walk_call_snapshots: Vec::new(),
             coverage_recorder: None,
+            blockless_return_capture: None,
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: Vec::new(),
@@ -18053,6 +18087,7 @@ impl<'a> InferenceEngine<'a> {
                 yields_at_least_once: false,
                 yield_requires_block: None,
                 block_flow: None,
+                blockless_return: None,
             })
     }
 
@@ -18613,14 +18648,20 @@ impl<'a> InferenceEngine<'a> {
                 .then(ActiveMethodBody::default),
         );
         self.registry.begin_method_body(class_name, &method_name);
+        let mut blockless_return = None;
         let mut return_type = if method_name == "initialize" {
             if let Some(body) = def_node.body() {
                 self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
             }
             Type::Void
         } else if let Some(body) = def_node.body() {
+            let saved_capture = self
+                .blockless_return_capture
+                .replace((body.location().start_offset(), None));
             let implicit_return =
                 self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
+            blockless_return = std::mem::replace(&mut self.blockless_return_capture, saved_capture)
+                .and_then(|(_, ty)| ty);
             if scope.return_types.is_empty() {
                 implicit_return
             } else {
@@ -18959,6 +19000,8 @@ impl<'a> InferenceEngine<'a> {
                     &def_node,
                     scope.current_block_param_name.as_deref(),
                 ),
+                blockless_return: blockless_return
+                    .filter(|_| self.block_given_guard_is_trusted(class_name, is_singleton)),
             },
         );
         self.record_method_definition_hover_snapshot(
@@ -22233,6 +22276,87 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// At a method body's `return x unless block_given?`, a call without a block returns `x`
+    /// or a value returned before it.
+    fn capture_blockless_return(
+        &mut self,
+        class_name: &str,
+        statements_start: usize,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        if self.blockless_return_capture != Some((statements_start, None)) {
+            return;
+        }
+        let Some(value) = Self::blockless_guard_return_value(node) else {
+            return;
+        };
+        let value_type = match value {
+            Some(value) => {
+                let observations = self.suspend_source_observations();
+                let ty = self.infer_node_type(class_name, &value, parse_result, scope);
+                self.resume_source_observations(observations);
+                ty
+            }
+            None => Type::Nil,
+        };
+        let mut types = scope.return_types.clone();
+        types.push(value_type);
+        self.blockless_return_capture =
+            Some((statements_start, Some(Self::merge_reachable_types(types))));
+    }
+
+    /// The value of `return x unless block_given?` or `return x if !block_given?`: `Some(None)`
+    /// for a bare `return`. Only simple values qualify, so reading them has no side effects.
+    fn blockless_guard_return_value<'pr>(node: &Node<'pr>) -> Option<Option<Node<'pr>>> {
+        let is_block_given = |node: &Node<'_>| {
+            node.as_call_node().is_some_and(|call| {
+                call.name().as_slice() == b"block_given?"
+                    && call.receiver().is_none()
+                    && call.arguments().is_none()
+            })
+        };
+        let statements = if let Some(unless_node) = node.as_unless_node() {
+            if unless_node.else_clause().is_some() || !is_block_given(&unless_node.predicate()) {
+                return None;
+            }
+            unless_node.statements()?
+        } else {
+            let if_node = node.as_if_node()?;
+            let negated = if_node.predicate().as_call_node().is_some_and(|call| {
+                call.name().as_slice() == b"!"
+                    && call
+                        .receiver()
+                        .is_some_and(|receiver| is_block_given(&receiver))
+            });
+            if if_node.subsequent().is_some() || !negated {
+                return None;
+            }
+            if_node.statements()?
+        };
+        let mut body = statements.body().iter();
+        let (Some(statement), None) = (body.next(), body.next()) else {
+            return None;
+        };
+        let return_node = statement.as_return_node()?;
+        let Some(arguments) = return_node.arguments() else {
+            return Some(None);
+        };
+        let mut values = arguments.arguments().iter();
+        let (Some(value), None) = (values.next(), values.next()) else {
+            return None;
+        };
+        matches!(
+            value,
+            Node::LocalVariableReadNode { .. }
+                | Node::InstanceVariableReadNode { .. }
+                | Node::SelfNode { .. }
+                | Node::NilNode { .. }
+        )
+        .then_some(Some(value))
+    }
+
     fn infer_body_return_type(
         &mut self,
         class_name: &str,
@@ -22249,6 +22373,13 @@ impl<'a> InferenceEngine<'a> {
                 let mut body_nodes = statements.body().iter().peekable();
                 while let Some(node) = body_nodes.next() {
                     if body_nodes.peek().is_some() {
+                        self.capture_blockless_return(
+                            class_name,
+                            statements.location().start_offset(),
+                            &node,
+                            parse_result,
+                            scope,
+                        );
                         let statement_exits =
                             self.process_statement(class_name, &node, parse_result, scope);
                         if statement_exits
@@ -23762,6 +23893,38 @@ impl<'a> InferenceEngine<'a> {
             keyword_arg_types,
         )?;
         Self::refined_enumerator_return_from_type(&method.raw_return_type, &yield_type)
+    }
+
+    /// The return of a call without a block when a `block_given?` guard decides it.
+    fn resolve_user_defined_blockless_call(
+        &self,
+        owner_class: &str,
+        method_name: &str,
+        method_is_singleton: bool,
+        receiver_type: &Type,
+    ) -> Option<Type> {
+        // Another file's methods come from the workspace registry.
+        let ty = self
+            .registry
+            .lookup_method_block_meta(owner_class, method_name, method_is_singleton)
+            .or_else(|| {
+                self.external_rbs.and_then(|external| {
+                    external.lookup_method_block_meta(owner_class, method_name, method_is_singleton)
+                })
+            })?
+            .blockless_return
+            .clone()?;
+        if Self::type_contains_call_site_param_ref(&ty) {
+            return None;
+        }
+        let instance = match receiver_type {
+            Type::Singleton(name) => Type::Class(*name),
+            other => other.clone(),
+        };
+        Some(
+            ty.replace_self_type(receiver_type)
+                .replace_instance_type(&instance),
+        )
     }
 
     fn type_contains_block_return_ref(ty: &Type) -> bool {
@@ -30126,6 +30289,14 @@ impl<'a> InferenceEngine<'a> {
                                 &arg_types,
                                 &kw_types,
                             )
+                            .or_else(|| {
+                                self.resolve_user_defined_blockless_call(
+                                    class_name,
+                                    &method_name,
+                                    scope.singleton_dispatch,
+                                    &implicit_self_type,
+                                )
+                            })
                         } else {
                             None
                         };
@@ -31676,7 +31847,15 @@ impl<'a> InferenceEngine<'a> {
                                         method_is_singleton,
                                         &arg_types,
                                         &kw_types,
-                                    );
+                                    )
+                                    .or_else(|| {
+                                        self.resolve_user_defined_blockless_call(
+                                            &target_class,
+                                            &method_name,
+                                            method_is_singleton,
+                                            &safe_nav_receiver_type,
+                                        )
+                                    });
                             }
                             block_uses_rbs_signature = self.block_call_uses_rbs_signature(
                                 &target_class,
