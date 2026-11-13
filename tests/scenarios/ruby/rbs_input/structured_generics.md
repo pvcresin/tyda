@@ -74,3 +74,165 @@ class Object < BasicObject
   def use_self: (Item item) -> Enumerable[Item]
 end
 ```
+
+## A generic method with a block maps the type argument
+
+```rbs
+class Box[T]
+  def map: [R] () { (T) -> R } -> Box[R]
+  def get: -> T
+end
+
+class BoxSource
+  def box: -> Box[Integer]
+end
+```
+
+```ruby
+class BoxMapper
+  def mapped = BoxSource.new.box.map { |x| x.to_s }.get
+end
+```
+
+### result
+
+```rbs
+class BoxMapper
+  def mapped: -> String
+end
+```
+
+## A user-defined interface bound keeps the argument class
+
+```rbs
+interface _Named
+  def name: () -> String
+end
+
+class Dog
+  def name: () -> String
+end
+
+class Picker
+  def self.pick: [T < _Named] (T x) -> T
+end
+```
+
+```ruby
+class PickerUser
+  def dog = Picker.pick(Dog.new)
+  def dog_name = Picker.pick(Dog.new).name
+end
+```
+
+### result
+
+```rbs
+class PickerUser
+  def dog: -> Dog
+  def dog_name: -> String
+end
+```
+
+## A generic interface argument infers the type argument
+
+```rbs
+interface _Getter[T]
+  def get: () -> T
+end
+
+class IntGetter
+  def get: () -> Integer
+end
+
+class Opener
+  def self.open: [T] (_Getter[T] getter) -> T
+end
+```
+
+```ruby
+class OpenerUser
+  def value = Opener.open(IntGetter.new)
+end
+```
+
+### result
+
+```rbs
+class OpenerUser
+  def value: -> Integer
+end
+```
+
+## A generic module included with a type argument
+
+```rbs
+module Holder[T]
+  def held: -> T
+end
+
+class IntHolder
+  include Holder[Integer]
+end
+```
+
+```ruby
+class HolderUser
+  def value = IntHolder.new.held
+end
+```
+
+### result
+
+```rbs
+class HolderUser
+  def value: -> Integer
+end
+```
+
+## A subclass of a generic superclass fixes the type argument
+
+```rbs
+class Box[T]
+  def get: -> T
+end
+
+class IntBox < Box[Integer]
+end
+```
+
+```ruby
+class IntBoxUser
+  def value = IntBox.new.get
+end
+```
+
+### result
+
+```rbs
+class IntBoxUser
+  def value: -> Integer
+end
+```
+
+## A lower bound type parameter is read
+
+```rbs
+class Lower
+  def self.keep: [T > Integer] (T x) -> T
+end
+```
+
+```ruby
+class LowerUser
+  def value = Lower.keep(1)
+end
+```
+
+### result
+
+```rbs
+class LowerUser
+  def value: -> Integer
+end
+```
