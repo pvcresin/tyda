@@ -57,6 +57,19 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] PR 154 の subject 差分で見つけたが、最小再現ができていない後退を調べる。Redmine `link_to_project` の引数が `(Project | untyped)?` から `untyped?` になる。`respond_to?` を確かめる述語メソッドや `before_action` など、別メソッドのガードを越えた nil・missing method の誤検出
 - [ ] Ruby / Rails version、framework DSL、scenario coverage を継続する
 
+### ジェネリクス
+
+推論したジェネリクスを RBS に出す。本体だけから決まる型のほうがコードとして正しいため、呼び出し元の型の union より型変数を優先する。出力を切り替えるオプションは作らない（推論が複雑になりバグの元になるため）。RBS 3.6 以降の構文（union の bound など）を前提にし、古い RBS や Steep の対応は各ツール側の課題とする。RBS 入力の読み込みを固めてから出力に進む。
+
+- [ ] RBS 入力のジェネリクスを直す。`new` の引数からクラスの型引数を推論しない、同じファイルに source 定義があるとメソッドのジェネリクスが `untyped` になる、の2件（`known-issues/rbs_generics.md`）。インライン RBS の `@rbs!` と型パラメータの bound も読む
+- [ ] receiver 付き呼び出しの block 内の `yield` で、block 引数の型を yield 型に反映する。yield 型を集める走査が block 引数を一律 `untyped` にしている（`known-issues/ruby_methods.md`）
+- [ ] Proc / lambda に引数の型を持たせ、`Proc` ではなく `^(A) -> R` で出す。RBS では lambda と proc を区別できないため同じ表記にする
+- [ ] メソッドの型パラメータを出す。本体でメソッドを呼ばずに受け渡すだけの引数は `[T] (T x) -> T`。メソッドを呼び、戻り値にも出る引数は、呼び出し元から集めたクラスの union を bound にする（`[T < A | B] (T x) -> T`）。戻り値に出ない引数は型変数にしない。呼び出し元がなく本体でメソッドを呼ぶ引数は `untyped` のまま。型の分からない値へのメソッド呼び出し（`x.to_s` など）の戻り値は `untyped` とする
+- [ ] Proc / block のジェネリクスを出す（`[A, R] (^(A) -> R f, A x) -> R`、`[E, R] (Array[E] xs) { (E) -> R } -> Array[R]`）。`Array[E]` のように受け取る型を決めるのは、本体から断定できる場合だけにする
+- [ ] interface の bound は使わない。任意のメソッドの組み合わせを表せないため、union の bound を基本にする
+- [ ] ユーザー定義クラスのジェネリクス（`class Box[T]`）の推論は最後に検討する。ivar の数だけ型変数が増えないよう、ivar への書き込みがすべてコンストラクタ引数の受け渡しだけの場合などに限る
+- [ ] 呼び出し元が1種類だけのときに具体的な型で出すかは、使い勝手を見て決める
+
 ## 低
 
 - [ ] `.rbi` 宣言の visibility を取り込む

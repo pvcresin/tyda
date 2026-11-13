@@ -221,3 +221,21 @@ class Level
   def self.current=: (Integer current) -> Integer
 end
 ```
+
+## A yield inside a receiver block passes the block parameter type
+
+```ruby
+class Mapper
+  def map_all(xs) = xs.map { |e| yield e }
+end
+
+Mapper.new.map_all([1]) { |e| e.to_s }
+```
+
+### result
+
+```rbs
+class Mapper
+  def map_all: (Array[Integer] xs) { (Integer) -> String } -> Array[String]
+end
+```
