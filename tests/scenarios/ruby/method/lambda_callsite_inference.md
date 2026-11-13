@@ -219,7 +219,7 @@ end
 class Directory
   def list_directory: -> DirectoryBody
   def stat: (untyped path) -> File::Stat?
-  def filesize_format: [T] (T size) -> T
+  def filesize_format: [S] (S size) -> S
 end
 
 class DirectoryBody
@@ -273,7 +273,7 @@ end
 
 ```rbs
 class Headers
-  def []: [T] (T key) -> T
+  def []: [K] (K key) -> K
   def to_proc: -> Proc
   def to_block: -> Proc
 end

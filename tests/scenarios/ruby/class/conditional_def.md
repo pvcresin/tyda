@@ -202,7 +202,7 @@ end
 
 ```rbs
 module Rake::DSL
-  def task: [T] (T name) -> T
+  def task: [N] (N name) -> N
 end
 
 class Rake::PackageTask < TaskLib

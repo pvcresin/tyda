@@ -23895,6 +23895,72 @@ impl<'a> InferenceEngine<'a> {
         Self::refined_enumerator_return_from_type(&method.raw_return_type, &yield_type)
     }
 
+    /// A method rendered with type parameters returns, at each call, the argument types bound
+    /// to them, literals included, rather than the union over all callers.
+    fn resolve_user_defined_generic_call(
+        &mut self,
+        owner_class: &str,
+        method_name: &str,
+        method_is_singleton: bool,
+        positional_arg_types: &[Type],
+    ) -> Option<Type> {
+        let flows = self
+            .registry
+            .param_flows(owner_class, method_name, method_is_singleton)
+            .or_else(|| {
+                self.external_rbs.and_then(|external| {
+                    external.param_flows(owner_class, method_name, method_is_singleton)
+                })
+            })?;
+        let mut refs = Vec::new();
+        if !Self::collect_positional_param_refs(&flows.return_type, &mut refs) || refs.is_empty() {
+            return None;
+        }
+        let all_bound = refs.iter().all(|index| {
+            flows.params.iter().any(|(param, _)| param == index)
+                && positional_arg_types
+                    .get(*index)
+                    .is_some_and(|ty| !matches!(ty, Type::Untyped | Type::Bot))
+        });
+        if !all_bound {
+            return None;
+        }
+        let substituted = Self::substitute_param_refs(&flows.return_type, positional_arg_types);
+        Some(self.resolve_receiver_method_refs(&substituted))
+    }
+
+    /// Collects the positional parameter refs in `ty`; false when it also refers to other
+    /// per-call values (keywords or the block), which this substitution does not bind.
+    fn collect_positional_param_refs(ty: &Type, refs: &mut Vec<usize>) -> bool {
+        match ty {
+            Type::ParamRef(index) => {
+                if !refs.contains(index) {
+                    refs.push(*index);
+                }
+                true
+            }
+            Type::KeywordParamRef(_) | Type::BlockReturnRef => false,
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => parts
+                .iter()
+                .all(|part| Self::collect_positional_param_refs(part, refs)),
+            Type::Array(Some(inner)) => Self::collect_positional_param_refs(inner, refs),
+            Type::Hash(key, value) => [key, value]
+                .into_iter()
+                .flatten()
+                .all(|part| Self::collect_positional_param_refs(part, refs)),
+            Type::Record(fields) => fields
+                .iter()
+                .all(|field| Self::collect_positional_param_refs(&field.value, refs)),
+            Type::Generic { args, .. } => args
+                .iter()
+                .all(|arg| Self::collect_positional_param_refs(arg, refs)),
+            Type::Proc { return_type, .. } => {
+                Self::collect_positional_param_refs(return_type, refs)
+            }
+            other => !Self::type_contains_call_site_param_ref(other),
+        }
+    }
+
     /// The return of a call without a block when a `block_given?` guard decides it.
     fn resolve_user_defined_blockless_call(
         &self,
@@ -30297,6 +30363,14 @@ impl<'a> InferenceEngine<'a> {
                                     &implicit_self_type,
                                 )
                             })
+                            .or_else(|| {
+                                self.resolve_user_defined_generic_call(
+                                    class_name,
+                                    &method_name,
+                                    scope.singleton_dispatch,
+                                    &arg_types,
+                                )
+                            })
                         } else {
                             None
                         };
@@ -31854,6 +31928,14 @@ impl<'a> InferenceEngine<'a> {
                                             &method_name,
                                             method_is_singleton,
                                             &safe_nav_receiver_type,
+                                        )
+                                    })
+                                    .or_else(|| {
+                                        self.resolve_user_defined_generic_call(
+                                            &target_class,
+                                            &method_name,
+                                            method_is_singleton,
+                                            &arg_types,
                                         )
                                     });
                             }

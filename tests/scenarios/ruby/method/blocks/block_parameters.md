@@ -670,7 +670,7 @@ end
 
 ```rbs
 class Processor
-  def each_item: [T] { (String) -> T } -> T
+  def each_item: [R] { (String) -> R } -> R
   def collect: -> Array[String]
 end
 ```
@@ -826,7 +826,7 @@ end
 
 ```rbs
 class Runner
-  def pair: [T] { (Integer, Integer) -> T } -> T
+  def pair: [R] { (Integer, Integer) -> R } -> R
   def first: -> 1
 end
 ```
@@ -846,7 +846,7 @@ end
 
 ```rbs
 class Runner
-  def helper: [T] (T a, Integer b) -> T
+  def helper: [A] (A a, Integer b) -> A
   def run: -> [1]
 end
 ```
@@ -869,7 +869,7 @@ end
 
 ```rbs
 class Pairs
-  def each_pair: [T] { ([Integer, String]) -> T } -> T
+  def each_pair: [R] { ([Integer, String]) -> R } -> R
   def first_key: -> 1
 end
 ```

@@ -76,7 +76,7 @@ class ClassBodyYield
 end
 
 class Module
-  def install_generic: [T] (untyped method) { () -> T } -> T?
+  def install_generic: [R] (untyped method) { () -> R } -> R?
   def ignore_generic: -> nil
 end
 

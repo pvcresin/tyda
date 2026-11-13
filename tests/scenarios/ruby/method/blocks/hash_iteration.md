@@ -542,7 +542,7 @@ class Object < BasicObject
 end
 
 class OneYieldSource
-  def each: [T] { (Symbol) -> T } -> T
+  def each: [R] { (Symbol) -> R } -> R
 end
 ```
 

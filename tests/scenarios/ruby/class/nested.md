@@ -114,7 +114,7 @@ end
 
 ```rbs
 class Logger
-  def log: [T] (T msg) -> T
+  def log: [M] (M msg) -> M
 end
 
 class Services::Worker

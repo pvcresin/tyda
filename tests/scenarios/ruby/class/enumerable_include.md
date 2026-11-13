@@ -80,6 +80,6 @@ end
 class NumberBag
   include Enumerable
 
-  def each: [T] { (Integer) -> T } -> T
+  def each: [R] { (Integer) -> R } -> R
 end
 ```

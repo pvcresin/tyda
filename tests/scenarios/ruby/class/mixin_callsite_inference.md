@@ -26,7 +26,7 @@ class A
 end
 
 module Shared
-  def foo: [T] (T x) -> T
+  def foo: [X] (X x) -> X
 end
 ```
 
@@ -60,7 +60,7 @@ class A
 end
 
 module BaseShared
-  def foo: [T] (T x) -> T
+  def foo: [X] (X x) -> X
 end
 
 module Shared
@@ -136,7 +136,7 @@ end
 
 ```rbs
 module ClassHelpers
-  def build_name: [T] (T name) -> T
+  def build_name: [N] (N name) -> N
 end
 
 class Report

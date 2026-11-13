@@ -269,11 +269,11 @@ end
 
 ```rbs
 class Holder
-  def chain: [T] (T values) -> T
+  def chain: [V] (V values) -> V
 end
 
 class Object < BasicObject
-  def project_chain_method: -> Array[String]
+  def project_chain_method: -> ["local"]
 end
 ```
 
@@ -1069,7 +1069,7 @@ end
 
 ```rbs
 class Source
-  def each: [T] ?{ (String) -> T } -> (Enumerator["a" | "b", Source] | T)
+  def each: [R] ?{ (String) -> R } -> (Enumerator["a" | "b", Source] | R)
   def values: -> Array["A" | "B"]
   def direct_values: -> Array["A" | "B"]
 end
@@ -1135,7 +1135,7 @@ end
 
 ```rbs
 class PairSource
-  def each_value: [T < String, U] (T value) ?{ (T) -> U } -> (Enumerator[String, untyped] | U)
+  def each_value: [V < String, R] (V value) ?{ (V) -> R } -> (Enumerator[String, untyped] | R)
   def block_value: -> String
   def enum_value: -> Array["B"]
   def direct_enum_value: -> Array["C"]
@@ -1167,7 +1167,7 @@ end
 
 ```rbs
 class KeywordSource
-  def each_value: [T] (prefix: String) ?{ (String) -> T } -> (Enumerator[String, untyped] | T)
+  def each_value: [R] (prefix: String) ?{ (String) -> R } -> (Enumerator[String, untyped] | R)
   def values: -> Array[String]
   def direct_values: -> Array[String]
 end
@@ -1197,7 +1197,7 @@ end
 
 ```rbs
 class Source
-  def each: [T] ?{ (Integer) -> T } -> (Enumerator[1, Source] | T)
+  def each: [R] ?{ (Integer) -> R } -> (Enumerator[1, Source] | R)
 end
 
 class Store
@@ -1230,7 +1230,7 @@ end
 
 ```rbs
 class BlockSource
-  def each: [T] ?{ (String) -> T } -> (Enumerator["a", BlockSource] | T)
+  def each: [R] ?{ (String) -> R } -> (Enumerator["a", BlockSource] | R)
   def block_value: -> String
   def enum_value: -> Array["A"]
 end

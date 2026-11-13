@@ -103,7 +103,7 @@ class DefaultSuperChild < DefaultSuperParent
 end
 
 class DefaultSuperParent
-  def pair: [T] (T first, ?Symbol? second) -> [T, :parent?]
+  def pair: [F] (F first, ?Symbol? second) -> [F, :parent?]
   def keyword: (?optional: Symbol?) -> :parent?
 end
 ```
@@ -246,7 +246,7 @@ class RestChild < RestParent
 end
 
 class RestParent
-  def pair: [T, U] (T first, U second) -> [T, U]
+  def pair: [F, S] (F first, S second) -> [F, S]
 end
 ```
 
@@ -272,11 +272,11 @@ def call_render = BlockChild.new.render("value") { |item| item.to_sym }
 
 ```rbs
 class BlockChild < BlockParent
-  def render: [T] (*String args) { (String) -> T } -> T?
+  def render: [R] (*String args) { (String) -> R } -> R?
 end
 
 class BlockParent
-  def render: [T, U] (T item) ?{ (T) -> U } -> U?
+  def render: [I, R] (I item) ?{ (I) -> R } -> R?
 end
 
 class Object < BasicObject
@@ -361,11 +361,11 @@ class IncludedSuperOtherChild < IncludedSuperOtherParent
 end
 
 class IncludedSuperOtherParent
-  def label: [T] (T value) -> [:other, T]
+  def label: [V] (V value) -> [:other, V]
 end
 
 class IncludedSuperParent
-  def label: [T] (T value) -> [:parent, T]
+  def label: [V] (V value) -> [:parent, V]
 end
 
 class Object < BasicObject
@@ -400,11 +400,11 @@ class PostRequiredSuperCallSite
 end
 
 class PostRequiredSuperChild < PostRequiredSuperParent
-  def value: [T] (?Symbol value, T required) -> [Symbol, T]
+  def value: [R] (?Symbol value, R required) -> [Symbol, R]
 end
 
 class PostRequiredSuperParent
-  def value: [T] (?Symbol? value, T required) -> T
+  def value: [R] (?Symbol? value, R required) -> R
 end
 ```
 
@@ -439,12 +439,12 @@ end
 
 class RestDefaultChild < RestDefaultParent
   def rest: (?[nil, Array[untyped]] value, *untyped others) -> [:child, [nil, Array[untyped]], Array[untyped]]
-  def post_rest: [T] (?[nil, Array[untyped], Symbol] value, *untyped others, T required) -> [:child, [nil, Array[untyped], Symbol], Array[untyped], T]
+  def post_rest: [R] (?[nil, Array[untyped], Symbol] value, *untyped others, R required) -> [:child, [nil, Array[untyped], Symbol], Array[untyped], R]
 end
 
 class RestDefaultParent
   def rest: (?Symbol? value, *untyped others) -> [:parent?, Array[untyped]]
-  def post_rest: [T] (?Symbol? value, *untyped others, T required) -> [:parent?, Array[untyped], T]
+  def post_rest: [R] (?Symbol? value, *untyped others, R required) -> [:parent?, Array[untyped], R]
 end
 ```
 
@@ -526,7 +526,7 @@ module PrependedCallOuter
 end
 
 class PrependedCallParent
-  def value: [T] (T item) -> [:parent, T]
+  def value: [I] (I item) -> [:parent, I]
 end
 
 class PrependedCallSite
@@ -819,7 +819,7 @@ module KeywordSuperMethods
 end
 
 class KeywordSuperParent
-  def render: [T] (T item, label: Symbol, **Integer options) -> [T, Symbol, { extra: 1 }]
+  def render: [I] (I item, label: Symbol, **Integer options) -> [I, Symbol, { extra: 1 }]
 end
 
 class Object < BasicObject
@@ -861,7 +861,7 @@ module BlockSuperMethods
 end
 
 class BlockSuperParent
-  def render: [T, U] (T item) ?{ (T) -> U } -> U?
+  def render: [I, R] (I item) ?{ (I) -> R } -> R?
 end
 
 class Object < BasicObject
@@ -911,7 +911,7 @@ class MultiBlockStringChild < MultiBlockStringParent
 end
 
 class MultiBlockStringParent
-  def render: [T, U] (T item) ?{ (T) -> U } -> U?
+  def render: [I, R] (I item) ?{ (I) -> R } -> R?
 end
 
 module MultiBlockSuperMethods
@@ -924,7 +924,7 @@ class MultiBlockSymbolChild < MultiBlockSymbolParent
 end
 
 class MultiBlockSymbolParent
-  def render: [T] (String item) ?{ (Symbol) -> T } -> T?
+  def render: [R] (String item) ?{ (Symbol) -> R } -> R?
 end
 
 class Object < BasicObject
@@ -951,7 +951,7 @@ def call_direct_render = DirectBlockParent.new.render("value") { |item| item.to_
 
 ```rbs
 class DirectBlockParent
-  def render: [T, U] (T item) ?{ (T) -> U } -> U?
+  def render: [I, R] (I item) ?{ (I) -> R } -> R?
 end
 
 class Object < BasicObject
@@ -977,7 +977,7 @@ def call_keyword_render = KeywordBlock.new.render(item: "value", marker: :tag) {
 
 ```rbs
 class KeywordBlock
-  def render: [T] (item: String, ?marker: Symbol) { (String, Symbol) -> T } -> T
+  def render: [R] (item: String, ?marker: Symbol) { (String, Symbol) -> R } -> R
 end
 
 class Object < BasicObject

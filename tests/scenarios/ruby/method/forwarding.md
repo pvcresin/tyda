@@ -240,7 +240,7 @@ foo(42)
 
 ```rbs
 class Object < BasicObject
-  def bar: [T] (T x) -> T
+  def bar: [X] (X x) -> X
   def foo: (*Integer, **untyped) ?{ (?) -> untyped } -> Integer
 end
 ```
@@ -265,7 +265,7 @@ foo(1, "s")
 
 ```rbs
 class Object < BasicObject
-  def bar: [T, U] (T a, U b) -> [T, U]
+  def bar: [A, B] (A a, B b) -> [A, B]
   def foo: (*(Integer | String), **untyped) ?{ (?) -> untyped } -> [Integer | String, untyped]
 end
 ```
@@ -292,7 +292,7 @@ foo(2, x: 4, y: 5)
 ```rbs
 class Object < BasicObject
   def foo: (*Integer, **Integer) ?{ (?) -> untyped } -> [String, Array[Integer], { x: 4, y: 5 }]
-  def bar: [T] (T a, *Integer b, **Integer c) -> [T, Array[Integer], { x: 4, y: 5 }]
+  def bar: [A] (A a, *Integer b, **Integer c) -> [A, Array[Integer], { x: 4, y: 5 }]
 end
 ```
 

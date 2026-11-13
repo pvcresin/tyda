@@ -498,15 +498,9 @@ impl TypeRegistry {
             })
             .map(|(slot, _)| slot)
             .collect();
-        let reserved = self.get_class_type_params(owner_class);
-        let mut names = ["T", "U", "V", "W"]
-            .into_iter()
-            .map(str::to_string)
-            .chain((1..).map(|index| format!("T{index}")))
-            .filter(|name| !reserved.contains(name));
         let original_params = sig.params.clone();
-        let mut bindings: HashMap<usize, Sym> = HashMap::new();
-        let mut type_params = Vec::new();
+        // Parameters that can become type parameters: position, slot and upper bound.
+        let mut candidates: Vec<(usize, usize, Option<Type>)> = Vec::new();
         for &(position, flow) in flows.params.iter() {
             let Some(&slot) = positional_slots.get(position) else {
                 continue;
@@ -521,35 +515,23 @@ impl TypeRegistry {
                     Some(callers.clone())
                 }
             };
-            let Some(name) = names.next() else {
-                break;
-            };
-            let name = Sym::new(&name);
-            bindings.insert(position, name);
-            type_params.push((
-                slot,
-                TypeParamSig {
-                    name: name.to_string(),
-                    upper_bound,
-                    lower_bound: None,
-                },
-            ));
+            candidates.push((position, slot, upper_bound));
         }
         // A block whose value the method returns renders as one more type parameter.
-        let block_return = if sig.block.is_some() && mentions_block_return(&flows.return_type) {
-            names.next().map(|name| Sym::new(&name))
-        } else {
-            None
-        };
-        if bindings.is_empty() && block_return.is_none() {
+        let has_block_return = sig.block.is_some() && mentions_block_return(&flows.return_type);
+        if candidates.is_empty() && !has_block_return {
             return;
         }
+        let yield_types = self
+            .lookup_method_block_meta(owner_class, method.name.as_str(), method.is_singleton)
+            .map(|meta| meta.yield_param_types.clone())
+            .unwrap_or_default();
         // The resolved return keeps its precision; only the places where the body returns a bound
         // parameter itself become its type parameter.
-        let return_type = {
+        let render_return = |bindings: &HashMap<usize, Sym>, block_return: Option<Sym>| {
             let _hop_memo = super::DeferredHopMemoScope::enter();
             let resolve_part = |part: &Type| {
-                let raw = substitute_bare_param_refs(part, &bindings);
+                let raw = substitute_bare_param_refs(part, bindings);
                 let raw = self.resolve_block_return_refs(owner_class, method, &raw);
                 let raw = if Self::type_contains_param_ref(&raw) {
                     self.resolve_param_refs_from_resolved(&raw, &original_params)
@@ -570,45 +552,71 @@ impl TypeRegistry {
             graft_type_params(
                 &flows.return_type,
                 &sig.return_type,
-                &bindings,
+                bindings,
                 block_return,
                 &resolve_part,
             )
         };
-        let yield_types = self
-            .lookup_method_block_meta(owner_class, method.name.as_str(), method.is_singleton)
-            .map(|meta| meta.yield_param_types.clone())
-            .unwrap_or_default();
-        let yielded_params: Vec<Sym> = yield_types
+        // A type parameter that shows in neither the return nor the block relates nothing. Find
+        // them with placeholder names first, so only the kept ones compete for short names.
+        let placeholder = |index: usize| Sym::new(format!("__type_param_{index}"));
+        let placeholder_bindings: HashMap<usize, Sym> = candidates
             .iter()
-            .filter_map(|ty| match ty {
-                Type::ParamRef(index) => bindings.get(index).copied(),
-                _ => None,
-            })
+            .enumerate()
+            .map(|(index, (position, _, _))| (*position, placeholder(index)))
             .collect();
-        // A type parameter that shows in neither the return nor the block relates nothing.
-        type_params.retain(|(_, param)| {
-            type_mentions_class(&return_type, &param.name)
-                || yielded_params
-                    .iter()
-                    .any(|name| name.as_str() == param.name)
-        });
-        let block_return = block_return.filter(|name| type_mentions_class(&return_type, name));
-        if type_params.is_empty() && block_return.is_none() {
+        let block_placeholder = Sym::new("__type_param_return");
+        let probe = render_return(
+            &placeholder_bindings,
+            has_block_return.then_some(block_placeholder),
+        );
+        let yielded = |position: usize| {
+            yield_types
+                .iter()
+                .any(|ty| matches!(ty, Type::ParamRef(index) if *index == position))
+        };
+        let kept: Vec<&(usize, usize, Option<Type>)> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(index, (position, _, _))| {
+                type_mentions_class(&probe, placeholder(*index).as_str()) || yielded(*position)
+            })
+            .map(|(_, candidate)| candidate)
+            .collect();
+        let keep_block_return =
+            has_block_return && type_mentions_class(&probe, block_placeholder.as_str());
+        if kept.is_empty() && !keep_block_return {
             return;
         }
-        let kept: Vec<Sym> = type_params
+        let mut bases: Vec<&str> = kept
             .iter()
-            .map(|(_, param)| Sym::new(&param.name))
+            .map(|(_, slot, _)| original_params[*slot].name.as_str())
             .collect();
-        for (slot, param) in &type_params {
-            sig.params[*slot].param_type = Type::Class(Sym::new(&param.name));
+        if keep_block_return {
+            bases.push("return");
+        }
+        let names = type_param_names(&bases, self.get_class_type_params(owner_class));
+        let bindings: HashMap<usize, Sym> = kept
+            .iter()
+            .zip(&names)
+            .map(|((position, _, _), name)| (*position, Sym::new(name)))
+            .collect();
+        let block_return = keep_block_return.then(|| Sym::new(&names[kept.len()]));
+        let return_type = render_return(&bindings, block_return);
+        let mut type_params: Vec<TypeParamSig> = Vec::new();
+        for ((position, slot, upper_bound), name) in kept.iter().copied().zip(&names) {
+            debug_assert!(bindings.contains_key(position));
+            sig.params[*slot].param_type = Type::Class(Sym::new(name));
+            type_params.push(TypeParamSig {
+                name: name.clone(),
+                upper_bound: upper_bound.clone(),
+                lower_bound: None,
+            });
         }
         if let Some(block) = sig.block.as_mut() {
             for (param, yielded) in block.params.iter_mut().zip(&yield_types) {
                 if let Type::ParamRef(index) = yielded
                     && let Some(name) = bindings.get(index)
-                    && kept.contains(name)
                 {
                     param.param_type = Type::Class(*name);
                 }
@@ -617,8 +625,6 @@ impl TypeRegistry {
                 block.return_type = Type::Class(name);
             }
         }
-        let mut type_params: Vec<TypeParamSig> =
-            type_params.into_iter().map(|(_, param)| param).collect();
         if let Some(name) = block_return {
             type_params.push(TypeParamSig {
                 name: name.to_string(),
@@ -1355,6 +1361,96 @@ fn build_params_from_function_type(
 
 /// Replaces the bare uses of the bound parameters with their type parameters. A deferred
 /// reference such as `x.name` keeps its parameter, so the call still resolves with callers' types.
+/// Type parameter names that hint at their parameters: the capitalized initial, or for
+/// parameters sharing an initial, the shortest prefix (or the initials of snake_case parts) that
+/// tells them apart, and a number when nothing does. Names taken by the class's own type
+/// parameters get a number too.
+fn type_param_names(bases: &[&str], reserved: &[String]) -> Vec<String> {
+    let letters = |base: &str| -> Vec<char> {
+        base.chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .skip_while(|ch| !ch.is_ascii_alphabetic())
+            .collect()
+    };
+    let capitalize = |chars: &[char]| -> String {
+        chars
+            .iter()
+            .enumerate()
+            .map(|(index, ch)| {
+                if index == 0 {
+                    ch.to_ascii_uppercase()
+                } else {
+                    ch.to_ascii_lowercase()
+                }
+            })
+            .collect()
+    };
+    let words: Vec<Vec<char>> = bases.iter().map(|base| letters(base)).collect();
+    let initial = |index: usize| -> String {
+        words[index]
+            .first()
+            .map_or_else(|| "T".to_string(), |ch| ch.to_ascii_uppercase().to_string())
+    };
+    let mut names: Vec<String> = (0..bases.len()).map(initial).collect();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for index in 0..bases.len() {
+        match groups
+            .iter_mut()
+            .find(|group| names[group[0]] == names[index])
+        {
+            Some(group) => group.push(index),
+            None => groups.push(vec![index]),
+        }
+    }
+    let distinct = |candidates: &[String]| {
+        candidates
+            .iter()
+            .enumerate()
+            .all(|(index, name)| !candidates[..index].contains(name))
+    };
+    for group in groups.iter().filter(|group| group.len() > 1) {
+        let prefixes = (2..=3).find_map(|length| {
+            let candidates: Vec<String> = group
+                .iter()
+                .map(|&index| capitalize(&words[index][..length.min(words[index].len())]))
+                .collect();
+            distinct(&candidates).then_some(candidates)
+        });
+        let acronyms = || {
+            let candidates: Vec<String> = group
+                .iter()
+                .map(|&index| {
+                    bases[index]
+                        .split('_')
+                        .filter_map(|part| letters(part).first().map(char::to_ascii_uppercase))
+                        .collect()
+                })
+                .collect();
+            distinct(&candidates).then_some(candidates)
+        };
+        let chosen = prefixes.or_else(acronyms).unwrap_or_else(|| {
+            group
+                .iter()
+                .enumerate()
+                .map(|(number, &index)| format!("{}{}", names[index], number + 1))
+                .collect()
+        });
+        for (&index, name) in group.iter().zip(chosen) {
+            names[index] = name;
+        }
+    }
+    for index in 0..names.len() {
+        if reserved.contains(&names[index]) || names[..index].contains(&names[index]) {
+            let base = names[index].clone();
+            names[index] = (1..)
+                .map(|number| format!("{base}{number}"))
+                .find(|name| !reserved.contains(name) && !names.contains(name))
+                .expect("an unused numbered name exists");
+        }
+    }
+    names
+}
+
 fn substitute_bare_param_refs(ty: &Type, bindings: &HashMap<usize, Sym>) -> Type {
     let recurse = |ty: &Type| substitute_bare_param_refs(ty, bindings);
     match ty {
@@ -1553,6 +1649,22 @@ fn mentions_bound_param(ty: &Type, bindings: &HashMap<usize, Sym>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn type_param_names_follow_parameter_names() {
+        let names = |bases: &[&str], reserved: &[&str]| {
+            let reserved: Vec<String> = reserved.iter().map(|name| name.to_string()).collect();
+            type_param_names(bases, &reserved)
+        };
+        assert_eq!(names(&["details", "errors"], &[]), ["D", "E"]);
+        assert_eq!(names(&["details", "data"], &[]), ["De", "Da"]);
+        assert_eq!(names(&["user_id", "user_name"], &[]), ["UI", "UN"]);
+        assert_eq!(names(&["row", "return"], &[]), ["Ro", "Re"]);
+        assert_eq!(names(&["_x", "a", "aa_a"], &[]), ["X", "A", "Aa"]);
+        assert_eq!(names(&["item", "id"], &["I"]), ["It", "Id"]);
+        assert_eq!(names(&["elem"], &["E"]), ["E1"]);
+        assert_eq!(names(&["_"], &[]), ["T"]);
+    }
 
     fn method_def(
         name: &str,

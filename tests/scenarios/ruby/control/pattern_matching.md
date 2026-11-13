@@ -665,7 +665,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def cond?: [T] (T x) -> T
+  def cond?: [X] (X x) -> X
   def check: (untyped x) -> :ok
 end
 ```

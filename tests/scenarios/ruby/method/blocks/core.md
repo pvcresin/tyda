@@ -116,7 +116,7 @@ def with_yield = yield 1
 
 ```rbs
 class Object < BasicObject
-  def with_yield: [T] { (Integer) -> T } -> T
+  def with_yield: [R] { (Integer) -> R } -> R
 end
 ```
 
@@ -171,7 +171,7 @@ end
 
 ```rbs
 class A
-  def foo: [T] ?{ (A) -> T } -> T?
+  def foo: [R] ?{ (A) -> R } -> R?
   def bar: -> A?
 end
 ```
@@ -197,7 +197,7 @@ BlockGivenOverride.new.run
 ```rbs
 class BlockGivenOverride
   def block_given?: -> true
-  def run: [T] { (Symbol) -> T } -> T?
+  def run: [R] { (Symbol) -> R } -> R?
 end
 ```
 
@@ -221,7 +221,7 @@ end
 
 ```rbs
 class InheritedBlockGivenOverride
-  def run: [T] { (Symbol) -> T } -> T?
+  def run: [R] { (Symbol) -> R } -> R?
 end
 
 class Object < BasicObject
@@ -249,7 +249,7 @@ end
 
 ```rbs
 class GuardedYield
-  def run: [T] ?{ (Symbol) -> T } -> T?
+  def run: [R] ?{ (Symbol) -> R } -> R?
 end
 
 class UnrelatedBlockGivenOverride
@@ -303,7 +303,7 @@ end
 
 ```rbs
 class CaseGuardedYield
-  def run: [T] ?{ (Symbol) -> T } -> T?
+  def run: [R] ?{ (Symbol) -> R } -> R?
 end
 
 class ExplicitRequiredGuardedBlock
@@ -311,7 +311,7 @@ class ExplicitRequiredGuardedBlock
 end
 
 class LaterBlockGivenOverride
-  def run: [T] { (Symbol) -> T } -> T?
+  def run: [R] { (Symbol) -> R } -> R?
   def block_given?: -> true
 end
 
@@ -320,7 +320,7 @@ class NestedGuardedYield
 end
 
 class ShortCircuitGuardedYield
-  def run: [T] ?{ (Symbol) -> T } -> (false | T)
+  def run: [R] ?{ (Symbol) -> R } -> (false | R)
 end
 ```
 
@@ -351,11 +351,11 @@ end
 ```rbs
 class InstanceBlockGivenOverrideDoesNotAffectSingleton
   def block_given?: -> true
-  def self.run: [T] ?{ () -> T } -> T?
+  def self.run: [R] ?{ () -> R } -> R?
 end
 
 class SingletonBlockGivenOverride
-  def self.run: [T] { (Symbol) -> T } -> T?
+  def self.run: [R] { (Symbol) -> R } -> R?
   def self.block_given?: -> true
 end
 ```
@@ -453,11 +453,11 @@ class RescueAfterHashLiteral
 end
 
 class RescueAfterRaise
-  def run: [T] { () -> T } -> T
+  def run: [R] { () -> R } -> R
 end
 
 class RescueYield
-  def run: [T] ?{ (Symbol) -> T } -> T?
+  def run: [R] ?{ (Symbol) -> R } -> R?
 end
 ```
 
@@ -619,7 +619,7 @@ end
 
 ```rbs
 class Retrier
-  def attempt: [T] (?Integer limit) { (Integer) -> T } -> T
+  def attempt: [R] (?Integer limit) { (Integer) -> R } -> R
 end
 
 class RetrierUser

@@ -16,7 +16,7 @@ end
 
 ```rbs
 class Model
-  def self.has_many: [T] (T name) -> T
+  def self.has_many: [N] (N name) -> N
 end
 ```
 
@@ -37,7 +37,7 @@ end
 
 ```rbs
 class Config
-  def self.setting: [T] (T name) -> T
+  def self.setting: [N] (N name) -> N
 end
 ```
 

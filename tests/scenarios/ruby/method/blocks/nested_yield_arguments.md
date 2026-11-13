@@ -18,8 +18,8 @@ end
 
 ```rbs
 class NestedYieldProbe
-  def wrapper: [T] (T value) -> T
-  def call: { () -> untyped } -> untyped
+  def wrapper: [V] (V value) -> V
+  def call: [R] { () -> R } -> R
 end
 ```
 
@@ -81,7 +81,7 @@ end
 
 ```rbs
 class Mapper
-  def map_all: [T] (Array[Integer] xs) { (Integer) -> T } -> Array[T]
+  def map_all: [R] (Array[Integer] xs) { (Integer) -> R } -> Array[R]
 end
 
 class MapperUser
@@ -107,7 +107,7 @@ end
 
 ```rbs
 class Doubler
-  def each_one: [T] { (Integer) -> T } -> Array[T]
+  def each_one: [R] { (Integer) -> R } -> Array[R]
 end
 
 class DoublerUser
@@ -131,7 +131,7 @@ Mapper.new.map_all([1]) { |e| e.to_s }
 
 ```rbs
 class Mapper
-  def map_all: [T] (Array[Integer] xs) { (Integer) -> T } -> Array[T]
+  def map_all: [R] (Array[Integer] xs) { (Integer) -> R } -> Array[R]
 end
 ```
 

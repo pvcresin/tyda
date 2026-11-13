@@ -309,7 +309,7 @@ fn analyze_directory_keeps_type_params_and_embedded_rbs() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("  def keep: [T] (T x) -> T"),
+        stdout.contains("  def keep: [X] (X x) -> X"),
         "missing type param: {stdout}"
     );
     assert!(

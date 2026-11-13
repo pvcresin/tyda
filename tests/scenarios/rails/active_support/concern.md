@@ -18,7 +18,7 @@ end
 
 ```rbs
 module Searchable
-  def self.search: [T] (T query) -> T
+  def self.search: [Q] (Q query) -> Q
 end
 ```
 

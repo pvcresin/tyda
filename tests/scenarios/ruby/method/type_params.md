@@ -17,7 +17,7 @@ Ident.new.id("s")
 
 ```rbs
 class Ident
-  def id: [T] (T x) -> T
+  def id: [X] (X x) -> X
 end
 ```
 
@@ -35,7 +35,7 @@ end
 
 ```rbs
 class Keeper
-  def keep: [T] (T x) -> T
+  def keep: [X] (X x) -> X
 end
 ```
 
@@ -53,7 +53,7 @@ end
 
 ```rbs
 class Pairer
-  def pair: [T, U] (T a, U b) -> [T, U]
+  def pair: [A, B] (A a, B b) -> [A, B]
 end
 ```
 
@@ -93,7 +93,7 @@ class Dog
 end
 
 class Namer
-  def touch: [T < Cat | Dog] (T x) -> T
+  def touch: [X < Cat | Dog] (X x) -> X
 end
 ```
 
@@ -221,7 +221,7 @@ end
 
 ```rbs
 class Yielder
-  def with_value: [T, U] (T x) { (T) -> U } -> U
+  def with_value: [X, R] (X x) { (X) -> R } -> R
 end
 ```
 
@@ -244,11 +244,61 @@ end
 
 ```rbs
 class Locker
-  def lock: [T] { () -> T } -> T
-  def maybe: [T] (untyped flag) { () -> T } -> T?
+  def lock: [R] { () -> R } -> R
+  def maybe: [R] (untyped flag) { () -> R } -> R?
 end
 
 class LockerUser
   def value: -> 1
+end
+```
+
+## Each call returns the argument bound to the type parameter
+
+### update
+
+```ruby
+class Echo
+  def id(x) = x
+end
+
+class EchoUser
+  def text = Echo.new.id("x")
+  def number = Echo.new.id(1)
+end
+```
+
+### result
+
+```rbs
+class Echo
+  def id: [X] (X x) -> X
+end
+
+class EchoUser
+  def text: -> "x"
+  def number: -> 1
+end
+```
+
+## Type parameter names follow the parameter names
+
+### update
+
+```ruby
+class Names
+  def pick(details, data) = [details, data]
+  def ids(user_id, user_name) = [user_id, user_name]
+  def map_row(row) = yield(row)
+end
+```
+
+### result
+
+```rbs
+class Names
+  def pick: [De, Da] (De details, Da data) -> [De, Da]
+  def ids: [UI, UN] (UI user_id, UN user_name) -> [UI, UN]
+  def map_row: [Ro, Re] (Ro row) { (Ro) -> Re } -> Re
 end
 ```
