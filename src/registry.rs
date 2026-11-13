@@ -11912,12 +11912,14 @@ impl TypeRegistry {
             .class_data
             .get(class_name)
             .is_some_and(|data| data.cold().param_flows.iter().any(|(k, _)| *k == key));
-        if flows.is_empty() && !existing {
+        // A method that returns its block's value needs the body's return too.
+        let keep = !flows.is_empty() || output::mentions_block_return(return_type);
+        if !keep && !existing {
             return;
         }
         let cold = self.class_data_mut(class_name).cold_mut();
         cold.param_flows.retain(|(k, _)| *k != key);
-        if !flows.is_empty() {
+        if keep {
             cold.param_flows.push((
                 key,
                 ParamFlows {

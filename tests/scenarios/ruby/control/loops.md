@@ -1185,7 +1185,7 @@ end
 
 ```rbs
 class Array
-  def each: { (Symbol) -> untyped } -> untyped
+  def each: [T] { (Symbol) -> T } -> T
 end
 
 class ForEachOverride
@@ -1220,7 +1220,7 @@ class ForHashEachOverride
 end
 
 class Hash
-  def each: { (Symbol) -> untyped } -> untyped
+  def each: [T] { (Symbol) -> T } -> T
 end
 ```
 
@@ -1253,7 +1253,7 @@ class Array[unchecked out E]
 end
 
 module ForEachPrepend
-  def each: { (Symbol) -> untyped } -> untyped
+  def each: [T] { (Symbol) -> T } -> T
 end
 
 class ForEachPrepended
@@ -1286,7 +1286,7 @@ end
 
 ```rbs
 class Array
-  def each: { (Symbol) -> untyped } -> untyped
+  def each: [T] { (Symbol) -> T } -> T?
 end
 
 class ForEachConditional
@@ -1317,7 +1317,7 @@ end
 
 ```rbs
 class Array
-  def each: { (Symbol) -> untyped } -> untyped
+  def each: [T] { (Symbol) -> T } -> T
 end
 
 class ForEachBreakAfter

@@ -64,7 +64,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] インライン RBS / Sorbet `sig` の型名を、書いたクラスの中から内側の名前空間順に解決する（RBS と同じ規則）。今は `class Outer` の中の `#: -> Inner` が推論で `Outer::Inner` にならない（`known-issues/ruby_methods.md`）。出力は書いたとおりの名前を保つ
 - [ ] parameter レシーバの block 内の `yield` は、メソッド本体の replay で yield 型が決まる。トップレベルの呼び出し側の block は replay されないため、その block の戻り値が `untyped` のまま残る（`known-issues/ruby_methods.md`）
 - [ ] Proc / lambda の引数の型を推論して `^(A) -> R` で出す。今は戻り値の型だけを `(^(?) -> R)`（引数がなければ `(^() -> R)`）で出す。RBS では lambda と proc を区別できないため同じ表記にする（以下の出力の項目は `known-issues/generics_output.md`）
-- [ ] Proc / block のジェネリクスを出す（`[A, R] (^(A) -> R f, A x) -> R`、`[E, R] (Array[E] xs) { (E) -> R } -> Array[R]`）。`Array[E]` のように受け取る型を決めるのは、本体から断定できる場合だけにする
+- [ ] proc を受け取る引数のジェネリクスを出す（`def apply(f, x) = f.call(x)` → `[T, U] (^(T) -> U f, T x) -> U`、`known-issues/generics_output.md`）。`Type::Proc` が引数の型を持つ必要があり、`Type` の大きさを増やさない表現を先に決める。yield と block のジェネリクスは出力済み
 - [ ] interface の bound は使わない。任意のメソッドの組み合わせを表せないため、union の bound を基本にする
 - [ ] ユーザー定義クラスのジェネリクス（`class Box[T]`）の推論は最後に検討する。ivar の数だけ型変数が増えないよう、ivar への書き込みがすべてコンストラクタ引数の受け渡しだけの場合などに限る
 - [ ] 呼び出し元が1種類だけのときに具体的な型で出すかは、使い勝手を見て決める

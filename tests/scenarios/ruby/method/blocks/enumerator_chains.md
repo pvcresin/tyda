@@ -1069,7 +1069,7 @@ end
 
 ```rbs
 class Source
-  def each: ?{ (String) -> untyped } -> untyped
+  def each: [T] ?{ (String) -> T } -> (Enumerator["a" | "b", Source] | T)
   def values: -> Array["A" | "B"]
   def direct_values: -> Array["A" | "B"]
 end
@@ -1135,7 +1135,7 @@ end
 
 ```rbs
 class PairSource
-  def each_value: (String value) ?{ (String) -> String } -> (String | Enumerator[String, untyped])
+  def each_value: [T < String, U] (T value) ?{ (T) -> U } -> (Enumerator[String, untyped] | U)
   def block_value: -> String
   def enum_value: -> Array["B"]
   def direct_enum_value: -> Array["C"]
@@ -1167,7 +1167,7 @@ end
 
 ```rbs
 class KeywordSource
-  def each_value: (prefix: String) ?{ (String) -> untyped } -> untyped
+  def each_value: [T] (prefix: String) ?{ (String) -> T } -> (Enumerator[String, untyped] | T)
   def values: -> Array[String]
   def direct_values: -> Array[String]
 end
@@ -1197,7 +1197,7 @@ end
 
 ```rbs
 class Source
-  def each: ?{ (Integer) -> untyped } -> untyped
+  def each: [T] ?{ (Integer) -> T } -> (Enumerator[1, Source] | T)
 end
 
 class Store
@@ -1230,7 +1230,7 @@ end
 
 ```rbs
 class BlockSource
-  def each: ?{ (String) -> String } -> (String | Enumerator["a", BlockSource])
+  def each: [T] ?{ (String) -> T } -> (Enumerator["a", BlockSource] | T)
   def block_value: -> String
   def enum_value: -> Array["A"]
 end

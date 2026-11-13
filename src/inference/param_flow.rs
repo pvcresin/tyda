@@ -3,6 +3,7 @@
 //! (`[T] (T x) -> T`). One that also has other reads, such as a method call on it, is still
 //! returned but constrained by its callers (`[T < A | B] (T x) -> T`). A parameter the body
 //! narrows (a condition, `case`, pattern, or type test) keeps the narrowed return instead.
+//! Yielding a parameter as is passes it to the block parameter, which counts like returning it.
 
 use ruby_prism::{Node, Visit};
 
@@ -31,11 +32,15 @@ pub(super) fn param_flows(body: &Node<'_>, params: &[(usize, &str)]) -> Vec<(usi
             if narrowing.found {
                 return None;
             }
+            // A value yielded as is reaches the block parameter, which takes the same type.
+            let mut yielded = YieldedReads { name, reads: 0 };
+            yielded.visit(body);
             let returned = flow_reads(body, name)
                 + return_values
                     .iter()
                     .map(|value| flow_reads(value, name))
-                    .sum::<usize>();
+                    .sum::<usize>()
+                + yielded.reads;
             match returned {
                 0 => None,
                 returned if returned == uses.reads => Some((index, ParamFlow::PassThrough)),
@@ -277,6 +282,30 @@ impl<'pr> Visit<'pr> for Narrowing<'_> {
     fn visit_match_predicate_node(&mut self, node: &ruby_prism::MatchPredicateNode<'pr>) {
         self.found |= self.is_local(&node.value());
         ruby_prism::visit_match_predicate_node(self, node);
+    }
+    fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+}
+
+/// Reads of the local passed as is to `yield`.
+struct YieldedReads<'a> {
+    name: &'a [u8],
+    reads: usize,
+}
+
+impl<'pr> Visit<'pr> for YieldedReads<'_> {
+    fn visit_yield_node(&mut self, node: &ruby_prism::YieldNode<'pr>) {
+        if let Some(arguments) = node.arguments() {
+            self.reads += arguments
+                .arguments()
+                .iter()
+                .filter(|argument| {
+                    argument
+                        .as_local_variable_read_node()
+                        .is_some_and(|read| read.name().as_slice() == self.name)
+                })
+                .count();
+        }
+        ruby_prism::visit_yield_node(self, node);
     }
     fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
 }

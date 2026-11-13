@@ -79,7 +79,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: { (Integer) -> 42 } -> 42
+  def foo: [T] { (Integer) -> T } -> T
   def proxy: { (Integer) -> 42 } -> 42
   def bar: -> 42
 end
@@ -107,7 +107,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: (Integer x) { (Integer) -> 42 } -> 42
+  def foo: [T] (Integer x) { (Integer) -> T } -> T
   def proxy: { (Integer) -> 42 } -> 42
   def bar: -> 42
 end

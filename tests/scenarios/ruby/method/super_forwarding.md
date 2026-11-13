@@ -82,11 +82,11 @@ def call_block = BlockChild2.new.call("value") { |value| value.to_sym }
 
 ```rbs
 class BlockChild2 < BlockParent2
-  def call: (String required) { (String) -> :value } -> :value
+  def call: [T] (String required) { (String) -> T } -> T
 end
 
 class BlockParent2
-  def call: (String required) { (String) -> :value } -> :value
+  def call: [T, U] (T required) { (T) -> U } -> U
 end
 
 class Object < BasicObject
@@ -186,7 +186,7 @@ class ExplicitBlockChild < ExplicitBlockParent
 end
 
 class ExplicitBlockParent
-  def call: (String item) { (String) -> Symbol } -> Symbol
+  def call: [T, U] (T item) { (T) -> U } -> U
 end
 
 class Object < BasicObject
@@ -218,7 +218,7 @@ class ImplicitBlockChild < ImplicitBlockParent
 end
 
 class ImplicitBlockParent
-  def call: (String item) { (String) -> Symbol } -> Symbol
+  def call: [T, U] (T item) { (T) -> U } -> U
 end
 
 class Object < BasicObject
@@ -250,7 +250,7 @@ class EmptyBlockChild < EmptyBlockParent
 end
 
 class EmptyBlockParent
-  def call: (?Symbol item) { (String) -> Symbol } -> Symbol
+  def call: [T] (?Symbol item) { (String) -> T } -> T
 end
 
 class Object < BasicObject

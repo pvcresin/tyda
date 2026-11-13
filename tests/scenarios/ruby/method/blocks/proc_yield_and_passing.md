@@ -88,7 +88,7 @@ def test_yield_returns_untyped = yield 1
 
 ```rbs
 class Object < BasicObject
-  def test_yield_returns_untyped: { (Integer) -> untyped } -> untyped
+  def test_yield_returns_untyped: [T] { (Integer) -> T } -> T
 end
 ```
 
@@ -123,7 +123,7 @@ def test_block_param_call(&block) = block.call(42)
 
 ```rbs
 class Object < BasicObject
-  def test_block_param_call: { (Integer) -> untyped } -> untyped
+  def test_block_param_call: [T] { (Integer) -> T } -> T
 end
 ```
 
@@ -141,7 +141,7 @@ def use_apply_value = apply_value { |value| value.to_s }
 
 ```rbs
 class Object < BasicObject
-  def apply_value: { (Integer) -> String } -> String
+  def apply_value: [T] { (Integer) -> T } -> T
   def use_apply_value: -> String
 end
 ```
@@ -160,7 +160,7 @@ def use_build_pair = build_pair { |name, count| [name, count] }
 
 ```rbs
 class Object < BasicObject
-  def build_pair: { (String, Integer) -> ["a", 1] } -> ["a", 1]
+  def build_pair: [T] { (String, Integer) -> T } -> T
   def use_build_pair: -> ["a", 1]
 end
 ```
@@ -183,9 +183,9 @@ def use_apply_yield = apply_yield { |value| value.to_s }
 
 ```rbs
 class Object < BasicObject
-  def apply_index: { (Integer) -> String } -> String
+  def apply_index: [T] { (Integer) -> T } -> T
   def use_apply_index: -> String
-  def apply_yield: { (Symbol) -> String } -> String
+  def apply_yield: [T] { (Symbol) -> T } -> T
   def use_apply_yield: -> String
 end
 ```
@@ -210,7 +210,7 @@ def use_choose_value = choose_value(true) { |value| value.to_s }
 
 ```rbs
 class Object < BasicObject
-  def choose_value: (bool flag) { (Symbol) -> String } -> String
+  def choose_value: [T] (bool flag) { (Symbol) -> T } -> T
   def use_choose_value: -> String
 end
 ```
@@ -406,12 +406,12 @@ end
 
 ```rbs
 class ArityMismatchBlockRunner
-  def run: { (Integer) -> untyped } -> untyped
+  def run: [T] { (Integer) -> T } -> T
   def via_lambda: -> untyped
 end
 
 class BlockRunner
-  def run: { (Integer) -> untyped } -> (String | 1)
+  def run: [T] { (Integer) -> T } -> T
   def via_lambda: -> String
   def via_identity_lambda: -> 1
   def via_proc: -> String
@@ -419,7 +419,7 @@ class BlockRunner
 end
 
 class UntypedBlockRunner
-  def run: { (Integer) -> untyped } -> untyped
+  def run: [T] { (Integer) -> T } -> T
   def via_untyped_callback: (untyped callback) -> untyped
 end
 ```
@@ -518,8 +518,8 @@ end
 
 ```rbs
 class YieldGuard
-  def with_value: (bool condition) { (YieldGuardValue) -> "ok" } -> "ok"?
-  def with_optional_value: (untyped condition) { (YieldGuardValue?) -> untyped } -> untyped
+  def with_value: [T] (bool condition) { (YieldGuardValue) -> T } -> T?
+  def with_optional_value: [T] (untyped condition) { (YieldGuardValue?) -> T } -> T
 end
 
 class YieldGuardCaller
@@ -553,7 +553,7 @@ end
 
 ```rbs
 class BranchYield
-  def each_data: (untyped filename) { ((String | { name: untyped })) -> untyped } -> untyped
+  def each_data: [T] (untyped filename) { ((String | { name: untyped })) -> T } -> T?
 end
 ```
 
@@ -611,7 +611,7 @@ end
 
 ```rbs
 class PairSource
-  def each_pair: (String left, Integer right) { (String, Integer) -> ("name" | [String, String]) } -> ("name" | [String, String])
+  def each_pair: [T, U, V] (T left, U right) { (T, U) -> V } -> V
 end
 
 class PairSourceCaller

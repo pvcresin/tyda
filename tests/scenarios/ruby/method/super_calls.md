@@ -272,11 +272,11 @@ def call_render = BlockChild.new.render("value") { |item| item.to_sym }
 
 ```rbs
 class BlockChild < BlockParent
-  def render: (*String args) { (String) -> :value } -> :value?
+  def render: [T] (*String args) { (String) -> T } -> T?
 end
 
 class BlockParent
-  def render: (String item) ?{ (String) -> :value } -> :value?
+  def render: [T, U] (T item) ?{ (T) -> U } -> U?
 end
 
 class Object < BasicObject
@@ -861,7 +861,7 @@ module BlockSuperMethods
 end
 
 class BlockSuperParent
-  def render: (String item) ?{ (String) -> Symbol } -> Symbol?
+  def render: [T, U] (T item) ?{ (T) -> U } -> U?
 end
 
 class Object < BasicObject
@@ -911,7 +911,7 @@ class MultiBlockStringChild < MultiBlockStringParent
 end
 
 class MultiBlockStringParent
-  def render: (String item) ?{ (String) -> String } -> String?
+  def render: [T, U] (T item) ?{ (T) -> U } -> U?
 end
 
 module MultiBlockSuperMethods
@@ -924,7 +924,7 @@ class MultiBlockSymbolChild < MultiBlockSymbolParent
 end
 
 class MultiBlockSymbolParent
-  def render: (String item) ?{ (Symbol) -> String } -> String?
+  def render: [T] (String item) ?{ (Symbol) -> T } -> T?
 end
 
 class Object < BasicObject
@@ -951,7 +951,7 @@ def call_direct_render = DirectBlockParent.new.render("value") { |item| item.to_
 
 ```rbs
 class DirectBlockParent
-  def render: (String item) ?{ (String) -> :value } -> :value?
+  def render: [T, U] (T item) ?{ (T) -> U } -> U?
 end
 
 class Object < BasicObject
@@ -977,7 +977,7 @@ def call_keyword_render = KeywordBlock.new.render(item: "value", marker: :tag) {
 
 ```rbs
 class KeywordBlock
-  def render: (item: String, ?marker: Symbol) { (String, Symbol) -> :ok } -> :ok
+  def render: [T] (item: String, ?marker: Symbol) { (String, Symbol) -> T } -> T
 end
 
 class Object < BasicObject

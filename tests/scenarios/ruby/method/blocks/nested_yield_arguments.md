@@ -81,7 +81,7 @@ end
 
 ```rbs
 class Mapper
-  def map_all: (Array[Integer] xs) { (Integer) -> String } -> Array[String]
+  def map_all: [T] (Array[Integer] xs) { (Integer) -> T } -> Array[T]
 end
 
 class MapperUser
@@ -107,7 +107,7 @@ end
 
 ```rbs
 class Doubler
-  def each_one: { (Integer) -> String } -> Array[String]
+  def each_one: [T] { (Integer) -> T } -> Array[T]
 end
 
 class DoublerUser

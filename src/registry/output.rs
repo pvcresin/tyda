@@ -535,7 +535,13 @@ impl TypeRegistry {
                 },
             ));
         }
-        if bindings.is_empty() {
+        // A block whose value the method returns renders as one more type parameter.
+        let block_return = if sig.block.is_some() && mentions_block_return(&flows.return_type) {
+            names.next().map(|name| Sym::new(&name))
+        } else {
+            None
+        };
+        if bindings.is_empty() && block_return.is_none() {
             return;
         }
         // The resolved return keeps its precision; only the places where the body returns a bound
@@ -565,19 +571,63 @@ impl TypeRegistry {
                 &flows.return_type,
                 &sig.return_type,
                 &bindings,
+                block_return,
                 &resolve_part,
             )
         };
-        // A type parameter that no longer shows in the return relates nothing.
-        type_params.retain(|(_, param)| type_mentions_class(&return_type, &param.name));
-        if type_params.is_empty() {
+        let yield_types = self
+            .lookup_method_block_meta(owner_class, method.name.as_str(), method.is_singleton)
+            .map(|meta| meta.yield_param_types.clone())
+            .unwrap_or_default();
+        let yielded_params: Vec<Sym> = yield_types
+            .iter()
+            .filter_map(|ty| match ty {
+                Type::ParamRef(index) => bindings.get(index).copied(),
+                _ => None,
+            })
+            .collect();
+        // A type parameter that shows in neither the return nor the block relates nothing.
+        type_params.retain(|(_, param)| {
+            type_mentions_class(&return_type, &param.name)
+                || yielded_params
+                    .iter()
+                    .any(|name| name.as_str() == param.name)
+        });
+        let block_return = block_return.filter(|name| type_mentions_class(&return_type, name));
+        if type_params.is_empty() && block_return.is_none() {
             return;
         }
+        let kept: Vec<Sym> = type_params
+            .iter()
+            .map(|(_, param)| Sym::new(&param.name))
+            .collect();
         for (slot, param) in &type_params {
             sig.params[*slot].param_type = Type::Class(Sym::new(&param.name));
         }
+        if let Some(block) = sig.block.as_mut() {
+            for (param, yielded) in block.params.iter_mut().zip(&yield_types) {
+                if let Type::ParamRef(index) = yielded
+                    && let Some(name) = bindings.get(index)
+                    && kept.contains(name)
+                {
+                    param.param_type = Type::Class(*name);
+                }
+            }
+            if let Some(name) = block_return {
+                block.return_type = Type::Class(name);
+            }
+        }
+        let mut type_params: Vec<TypeParamSig> =
+            type_params.into_iter().map(|(_, param)| param).collect();
+        if let Some(name) = block_return {
+            type_params.push(TypeParamSig {
+                name: name.to_string(),
+                upper_bound: None,
+                lower_bound: None,
+            });
+        }
         sig.return_type = return_type;
-        sig.type_params = type_params.into_iter().map(|(_, param)| param).collect();
+        sig.type_params = type_params;
     }
 
     /// Inference reads a declared method type parameter as `untyped`; the rendered signature
@@ -1366,16 +1416,50 @@ fn graft_type_params(
     body_form: &Type,
     resolved: &Type,
     bindings: &HashMap<usize, Sym>,
+    block_return: Option<Sym>,
     resolve_part: &dyn Fn(&Type) -> Type,
 ) -> Type {
-    if !mentions_bound_param(body_form, bindings) {
+    let mentions_block = block_return.is_some() && mentions_block_return(body_form);
+    if !mentions_bound_param(body_form, bindings) && !mentions_block {
         return resolved.clone();
     }
     let graft = |body_form: &Type, resolved: &Type| {
-        graft_type_params(body_form, resolved, bindings, resolve_part)
+        graft_type_params(body_form, resolved, bindings, block_return, resolve_part)
     };
     match (body_form, resolved) {
         (Type::ParamRef(index), _) if bindings.contains_key(index) => Type::Class(bindings[index]),
+        (Type::BlockReturnRef, _) => match block_return {
+            Some(name) => Type::Class(name),
+            None => resolve_part(body_form),
+        },
+        // An arm that is the block value or a bound parameter takes its type parameter. Any
+        // other arm keeps its resolved counterpart, or resolves from the body's form.
+        (Type::Union(body_parts), _) => {
+            let resolved_parts: &[Type] = match resolved {
+                Type::Union(parts) => parts,
+                other => std::slice::from_ref(other),
+            };
+            Type::from_type_vec_preserve_untyped(
+                body_parts
+                    .iter()
+                    .map(|part| match part {
+                        Type::ParamRef(index) if bindings.contains_key(index) => {
+                            Type::Class(bindings[index])
+                        }
+                        Type::BlockReturnRef if block_return.is_some() => {
+                            Type::Class(block_return.expect("checked in the guard"))
+                        }
+                        part => resolved_parts
+                            .iter()
+                            .find(|resolved_part| same_shape(part, resolved_part))
+                            .map_or_else(
+                                || resolve_part(part),
+                                |resolved_part| graft(part, resolved_part),
+                            ),
+                    })
+                    .collect(),
+            )
+        }
         (Type::Tuple(body_parts), Type::Tuple(parts)) if body_parts.len() == parts.len() => {
             Type::Tuple(
                 body_parts
@@ -1413,6 +1497,39 @@ fn graft_type_params(
             )
         }
         _ => resolve_part(body_form),
+    }
+}
+
+/// Whether a body arm and a resolved arm are the same kind of type, so the resolved one can
+/// stand for it.
+fn same_shape(body_form: &Type, resolved: &Type) -> bool {
+    match (body_form, resolved) {
+        (Type::Generic { base, .. }, Type::Generic { base: other, .. }) => base == other,
+        (Type::Class(name), Type::Class(other)) => name == other,
+        (Type::Tuple(parts), Type::Tuple(others)) => parts.len() == others.len(),
+        (Type::Record(fields), Type::Record(others)) => {
+            fields.len() == others.len()
+                && fields
+                    .iter()
+                    .zip(others)
+                    .all(|(field, other)| field.key == other.key)
+        }
+        (Type::Array(_), Type::Array(_)) | (Type::Hash(..), Type::Hash(..)) => true,
+        (Type::Nil, Type::Nil) => true,
+        _ => false,
+    }
+}
+
+/// Whether the body's return includes its block's value in a place a type parameter can take.
+pub(super) fn mentions_block_return(ty: &Type) -> bool {
+    match ty {
+        Type::BlockReturnRef => true,
+        Type::Union(types) | Type::Tuple(types) => types.iter().any(mentions_block_return),
+        Type::Array(Some(inner)) => mentions_block_return(inner),
+        Type::Record(fields) => fields
+            .iter()
+            .any(|field| mentions_block_return(&field.value)),
+        _ => false,
     }
 }
 

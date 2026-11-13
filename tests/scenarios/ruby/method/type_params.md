@@ -206,3 +206,49 @@ class NilPasser
   def pass: (nil x) -> nil
 end
 ```
+
+## Yielding a parameter links the block types
+
+### update
+
+```ruby
+class Yielder
+  def with_value(x) = yield(x)
+end
+```
+
+### result
+
+```rbs
+class Yielder
+  def with_value: [T, U] (T x) { (T) -> U } -> U
+end
+```
+
+## A method returning its block value takes the block return as a type parameter
+
+### update
+
+```ruby
+class Locker
+  def lock = yield
+  def maybe(flag) = flag ? yield : nil
+end
+
+class LockerUser
+  def value = Locker.new.lock { 1 }
+end
+```
+
+### result
+
+```rbs
+class Locker
+  def lock: [T] { () -> T } -> T
+  def maybe: [T] (untyped flag) { () -> T } -> T?
+end
+
+class LockerUser
+  def value: -> 1
+end
+```

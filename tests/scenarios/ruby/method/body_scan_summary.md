@@ -121,7 +121,7 @@ end
 
 ```rbs
 class A
-  def foo: { (Integer) -> Integer } -> Integer
+  def foo: [T] { (Integer) -> T } -> T
   def bar: -> Integer
 end
 ```
@@ -145,7 +145,7 @@ end
 
 ```rbs
 class A
-  def foo: ?{ (A) -> A } -> A?
+  def foo: [T] ?{ (A) -> T } -> T?
   def bar: -> A?
 end
 ```

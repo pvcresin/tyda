@@ -383,7 +383,7 @@ class ExplicitBlockInvocation
   def mutation_in_repeated_block_widens: -> Array[1]
   def guarded_yield: () ?{ (?) -> untyped } -> :done
   def guarded_yield_updates_outer_local: -> :after
-  def early_return_before_yield: (untyped flag) { () -> :after } -> (:after | :early)
+  def early_return_before_yield: [T] (untyped flag) { () -> T } -> (:early | T)
   def early_return_joins_outer_local: (untyped flag) -> (:after | :before)
   def escaped_block: () ?{ (?) -> untyped } -> :stored
   def escaped_block_joins_outer_local: -> (:after | :before)
@@ -394,8 +394,8 @@ end
 
 class ExplicitBlockReceiver
   def ignore: () ?{ (?) -> untyped } -> :ignored
-  def run: { () -> :after } -> :after
-  def repeat: { () -> [1] } -> [1]
+  def run: [T] { () -> T } -> T
+  def repeat: [T] { () -> T } -> T
 end
 ```
 
@@ -636,7 +636,7 @@ class LiteralBlockEdges
   def trailing: (?Integer? first, Integer flag) { () -> :after } -> :done
   def retried: (bool flag) ?{ (?) -> untyped } -> :done
   def forwarded: (Integer? flag) { () -> untyped } -> untyped
-  def target: { () -> untyped } -> untyped
+  def target: [T] { () -> T } -> T
   def nil_skips: -> :before
   def symbol_runs: -> :after
   def negated_runs: -> :after

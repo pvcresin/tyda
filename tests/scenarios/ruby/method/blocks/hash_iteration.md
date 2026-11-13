@@ -542,7 +542,7 @@ class Object < BasicObject
 end
 
 class OneYieldSource
-  def each: { (Symbol) -> untyped } -> untyped
+  def each: [T] { (Symbol) -> T } -> T
 end
 ```
 
