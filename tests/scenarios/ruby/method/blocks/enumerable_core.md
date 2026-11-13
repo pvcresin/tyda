@@ -124,7 +124,7 @@ end
 
 ```rbs
 class DeferredMapResult
-  def self.load_raw: (untyped value) -> untyped
+  def self.load_raw: [T] (T value) -> T
   def self.map_after_guard: (untyped value) -> Array[untyped]
 end
 ```
@@ -1890,10 +1890,10 @@ end
 ```rbs
 class Object < BasicObject
   def inspect_reverse_each_value: (untyped value) -> Array["address"]
-  def observed_address: (String address) -> String
+  def observed_address: [T] (T address) -> T
   def inspect_split_header: (untyped value) -> :done
   def split_header: (untyped value) -> untyped
-  def observed_split_header: (untyped address) -> untyped
+  def observed_split_header: [T] (T address) -> T
 end
 ```
 
@@ -1922,7 +1922,7 @@ class NestedBlockCaller
 end
 
 class NestedBlockSink
-  def take: (String value) -> String
+  def take: [T] (T value) -> T
 end
 ```
 

@@ -18,7 +18,7 @@ end
 
 ```rbs
 class NestedYieldProbe
-  def wrapper: (untyped value) -> untyped
+  def wrapper: [T] (T value) -> T
   def call: { () -> untyped } -> untyped
 end
 ```

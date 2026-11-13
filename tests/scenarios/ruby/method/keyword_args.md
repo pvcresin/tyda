@@ -643,7 +643,7 @@ end
 
 ```rbs
 class KeywordRestFetchWithDeferredFallback
-  def fallback: (String value) -> String
+  def fallback: [T] (T value) -> T
   def target: (**Integer rest) -> (String | 1)
   def call: (untyped flag) -> (String | 1)
 end

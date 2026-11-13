@@ -126,12 +126,15 @@ pub fn format_hover_inferred_method_sig(name: &str, method: &MethodSig) -> Strin
 }
 
 pub fn format_hover_callable_type(method: &MethodSig) -> String {
-    format_signature_with_names(
-        &method.params,
-        method.block.as_ref(),
-        &method.return_type,
-        true,
-        !method.has_explicit_signature(),
+    with_type_params(
+        &method.type_params,
+        format_signature_with_names(
+            &method.params,
+            method.block.as_ref(),
+            &method.return_type,
+            true,
+            !method.has_explicit_signature(),
+        ),
     )
 }
 
@@ -297,6 +300,47 @@ fn format_return_type(ty: &Type, has_params: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signatures_lead_with_their_type_params() {
+        let type_param = Type::Class(crate::types::Sym::new("T"));
+        let method = MethodSig {
+            type_params: vec![TypeParamSig {
+                name: "T".to_string(),
+                upper_bound: Some(Type::Union(vec![Type::Integer, Type::String])),
+                lower_bound: None,
+            }],
+            name: "keep".to_string(),
+            params: vec![Param {
+                name: "x".to_string(),
+                param_type: type_param.clone(),
+                kind: ParamKind::Required,
+            }],
+            return_type: type_param,
+            block: None,
+            sorbet_modifier_comments: Vec::new(),
+            is_singleton: false,
+            rbs_annotated: false,
+            rbs_inline_annotated: false,
+            sig_annotated: false,
+            rbs_file_source: false,
+            synthetic_dsl_source: false,
+            overloads: Vec::new(),
+            loc: None,
+            is_private: false,
+        };
+
+        let expected = "[T < Integer | String] (T x) -> T";
+        assert_eq!(
+            format_method_sig_for_lens_with_names(&method, true),
+            expected
+        );
+        assert_eq!(format_hover_callable_type(&method), expected);
+        assert_eq!(
+            format_hover_inferred_method_sig("keep", &method),
+            format!("keep: {expected}")
+        );
+    }
 
     #[test]
     fn signature_preserves_explicit_literal_param_types() {

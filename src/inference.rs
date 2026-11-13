@@ -46,6 +46,7 @@ mod hash_key_flow;
 pub(crate) mod hover;
 mod macro_forwarding;
 mod method_tables;
+mod param_flow;
 mod passes;
 mod plugins;
 mod receiver_attr_flow;
@@ -18625,6 +18626,27 @@ impl<'a> InferenceEngine<'a> {
                 &body,
                 return_type.clone(),
                 None,
+            );
+            // `ParamRef` counts only positional parameters.
+            let required: Vec<(usize, &str)> = param_infos
+                .iter()
+                .filter(|param| {
+                    matches!(
+                        param.kind,
+                        ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                    )
+                })
+                .enumerate()
+                .filter(|(_, param)| param.kind == ParamKind::Required && !param.name.is_empty())
+                .map(|(index, param)| (index, param.name.as_str()))
+                .collect();
+            let flows = param_flow::param_flows(&body, &required);
+            self.registry.set_param_flows(
+                class_name,
+                &method_name,
+                is_singleton,
+                flows,
+                &return_type,
             );
         }
 

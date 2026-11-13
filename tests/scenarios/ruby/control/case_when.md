@@ -1203,7 +1203,7 @@ class ChainHolder
   include Singleton
 
   def self.instance: -> ChainHolder
-  def accept: (singleton(Alpha) value) -> singleton(Alpha)
+  def accept: [T] (T value) -> T
 end
 
 class Object < BasicObject
@@ -1316,7 +1316,7 @@ class DynamicWhenSubject
   ERRORS: { first: singleton(DynamicWhenFirst), second: singleton(DynamicWhenSecond) }
 
   def handle: ((DynamicWhenFirst | DynamicWhenSecond) error) -> DynamicWhenFirst?
-  def consume: (DynamicWhenFirst error) -> DynamicWhenFirst
+  def consume: [T] (T error) -> T
   def run: -> DynamicWhenFirst?
 end
 ```

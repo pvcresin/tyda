@@ -64,7 +64,6 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] インライン RBS / Sorbet `sig` の型名を、書いたクラスの中から内側の名前空間順に解決する（RBS と同じ規則）。今は `class Outer` の中の `#: -> Inner` が推論で `Outer::Inner` にならない（`known-issues/ruby_methods.md`）。出力は書いたとおりの名前を保つ
 - [ ] parameter レシーバの block 内の `yield` は、メソッド本体の replay で yield 型が決まる。トップレベルの呼び出し側の block は replay されないため、その block の戻り値が `untyped` のまま残る（`known-issues/ruby_methods.md`）
 - [ ] Proc / lambda の引数の型を推論して `^(A) -> R` で出す。今は戻り値の型だけを `(^(?) -> R)`（引数がなければ `(^() -> R)`）で出す。RBS では lambda と proc を区別できないため同じ表記にする（以下の出力の項目は `known-issues/generics_output.md`）
-- [ ] メソッドの型パラメータを出す。本体でメソッドを呼ばずに受け渡すだけの引数は `[T] (T x) -> T`。メソッドを呼び、戻り値にも出る引数は、呼び出し元から集めたクラスの union を bound にする（`[T < A | B] (T x) -> T`）。戻り値に出ない引数は型変数にしない。呼び出し元がなく本体でメソッドを呼ぶ引数は `untyped` のまま。型の分からない値へのメソッド呼び出し（`x.to_s` など）の戻り値は `untyped` とする
 - [ ] Proc / block のジェネリクスを出す（`[A, R] (^(A) -> R f, A x) -> R`、`[E, R] (Array[E] xs) { (E) -> R } -> Array[R]`）。`Array[E]` のように受け取る型を決めるのは、本体から断定できる場合だけにする
 - [ ] interface の bound は使わない。任意のメソッドの組み合わせを表せないため、union の bound を基本にする
 - [ ] ユーザー定義クラスのジェネリクス（`class Box[T]`）の推論は最後に検討する。ivar の数だけ型変数が増えないよう、ivar への書き込みがすべてコンストラクタ引数の受け渡しだけの場合などに限る

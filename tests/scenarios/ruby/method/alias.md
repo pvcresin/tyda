@@ -37,7 +37,7 @@ end
 
 ```rbs
 class A
-  def add: (untyped x, untyped y) -> untyped
+  def add: [T] (T x, untyped y) -> T
   alias plus add
 end
 ```
@@ -88,7 +88,7 @@ end
 
 ```rbs
 class Item
-  def pair: (String left, Integer right) -> [String, Integer]
+  def pair: [T, U] (T left, U right) -> [T, U]
   def call_tuple: -> [String, Integer]
   alias tuple pair
 end
@@ -114,7 +114,7 @@ end
 
 ```rbs
 class Table
-  def update: (Symbol key, value: String, **Integer options) -> [Symbol, String, { extra: 1 }]
+  def update: [T] (T key, value: String, **Integer options) -> [T, String, { extra: 1 }]
   def call_merge: -> [Symbol, String, { extra: 1 }]
   alias merge_row update
 end
@@ -140,7 +140,7 @@ end
 
 ```rbs
 class Store
-  def []=: (Symbol key, String value) -> String
+  def []=: [T] (Symbol key, T value) -> T
   def call_write: -> String
   alias write []=
 end
@@ -332,7 +332,7 @@ end
 
 ```rbs
 class Builder
-  def self.build: (String name) -> String
+  def self.build: [T] (T name) -> T
   def call: -> String
   alias self.create self.build
 end

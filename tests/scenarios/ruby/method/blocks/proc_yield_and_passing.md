@@ -285,7 +285,7 @@ end
 ```rbs
 class Worker
   def normalize: (untyped value) -> untyped
-  def identity: (untyped value) -> untyped
+  def identity: [T] (T value) -> T
   def direct: -> String
   def via_proc: -> String
   def passthrough: -> :ok
@@ -476,11 +476,11 @@ class Caller
 end
 
 class Converter
-  def self.wrap: (untyped value) -> [untyped, untyped]
+  def self.wrap: [T] (T value) -> [T, T]
 end
 
 class Worker
-  def identity: (untyped value) -> untyped
+  def identity: [T] (T value) -> T
   def via_symbol: -> [1, 2]
   def via_method: -> [1, 2]
   def via_local: -> { name: "item" }

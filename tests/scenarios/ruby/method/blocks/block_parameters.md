@@ -846,7 +846,7 @@ end
 
 ```rbs
 class Runner
-  def helper: (Integer a, Integer b) -> Integer
+  def helper: [T] (T a, Integer b) -> T
   def run: -> [1]
 end
 ```

@@ -15,7 +15,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: (untyped x, untyped y) -> untyped
+  def foo: [T] (T x, untyped y) -> T
 end
 ```
 

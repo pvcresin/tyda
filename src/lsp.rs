@@ -6588,7 +6588,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -6994,7 +6994,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x, y: 15.minutes, z: true)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -7076,7 +7076,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -7160,7 +7160,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x, y: 15.minutes, z: true)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -11564,7 +11564,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x, y: 15.minutes, z: true)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -11843,7 +11843,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x, y: 15.minutes, z: true)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -11973,7 +11973,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x, y: 15.minutes, z: true)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );

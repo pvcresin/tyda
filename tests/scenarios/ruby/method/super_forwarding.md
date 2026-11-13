@@ -22,7 +22,7 @@ class ExplicitSplatChild < ExplicitSplatParent
 end
 
 class ExplicitSplatParent
-  def pair: (Integer first, String second) -> [Integer, String]
+  def pair: [T, U] (T first, U second) -> [T, U]
 end
 
 class Object < BasicObject
@@ -54,7 +54,7 @@ class EllipsisChild < EllipsisParent
 end
 
 class EllipsisParent
-  def call: (String required, ?optional: Symbol) -> [String, Symbol]
+  def call: [T] (T required, ?optional: Symbol) -> [T, Symbol]
 end
 
 class Object < BasicObject
@@ -118,7 +118,7 @@ class KeywordNilChild < KeywordNilParent
 end
 
 class KeywordNilParent
-  def call: (String required, ?optional: Integer) -> [String, 1]
+  def call: [T] (T required, ?optional: Integer) -> [T, 1]
 end
 
 class Object < BasicObject
@@ -158,7 +158,7 @@ class ContextChild < ContextParent
 end
 
 class ContextParent
-  def identity: (String value) -> String
+  def identity: [T] (T value) -> T
 end
 ```
 

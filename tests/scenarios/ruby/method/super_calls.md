@@ -103,7 +103,7 @@ class DefaultSuperChild < DefaultSuperParent
 end
 
 class DefaultSuperParent
-  def pair: (String first, ?Symbol? second) -> [String, :parent?]
+  def pair: [T] (T first, ?Symbol? second) -> [T, :parent?]
   def keyword: (?optional: Symbol?) -> :parent?
 end
 ```
@@ -246,7 +246,7 @@ class RestChild < RestParent
 end
 
 class RestParent
-  def pair: (Integer first, String second) -> [Integer, String]
+  def pair: [T, U] (T first, U second) -> [T, U]
 end
 ```
 
@@ -361,11 +361,11 @@ class IncludedSuperOtherChild < IncludedSuperOtherParent
 end
 
 class IncludedSuperOtherParent
-  def label: (String value) -> [:other, String]
+  def label: [T] (T value) -> [:other, T]
 end
 
 class IncludedSuperParent
-  def label: (String value) -> [:parent, String]
+  def label: [T] (T value) -> [:parent, T]
 end
 
 class Object < BasicObject
@@ -400,11 +400,11 @@ class PostRequiredSuperCallSite
 end
 
 class PostRequiredSuperChild < PostRequiredSuperParent
-  def value: (?Symbol value, Symbol required) -> [Symbol, Symbol]
+  def value: [T] (?Symbol value, T required) -> [Symbol, T]
 end
 
 class PostRequiredSuperParent
-  def value: (?Symbol? value, Symbol required) -> Symbol
+  def value: [T] (?Symbol? value, T required) -> T
 end
 ```
 
@@ -439,12 +439,12 @@ end
 
 class RestDefaultChild < RestDefaultParent
   def rest: (?[nil, Array[untyped]] value, *untyped others) -> [:child, [nil, Array[untyped]], Array[untyped]]
-  def post_rest: (?[nil, Array[untyped], Symbol] value, *untyped others, Symbol required) -> [:child, [nil, Array[untyped], Symbol], Array[untyped], Symbol]
+  def post_rest: [T] (?[nil, Array[untyped], Symbol] value, *untyped others, T required) -> [:child, [nil, Array[untyped], Symbol], Array[untyped], T]
 end
 
 class RestDefaultParent
   def rest: (?Symbol? value, *untyped others) -> [:parent?, Array[untyped]]
-  def post_rest: (?Symbol? value, *untyped others, Symbol required) -> [:parent?, Array[untyped], Symbol]
+  def post_rest: [T] (?Symbol? value, *untyped others, T required) -> [:parent?, Array[untyped], T]
 end
 ```
 
@@ -526,7 +526,7 @@ module PrependedCallOuter
 end
 
 class PrependedCallParent
-  def value: (Integer item) -> [:parent, Integer]
+  def value: [T] (T item) -> [:parent, T]
 end
 
 class PrependedCallSite
@@ -819,7 +819,7 @@ module KeywordSuperMethods
 end
 
 class KeywordSuperParent
-  def render: (String item, label: Symbol, **Integer options) -> [String, Symbol, { extra: 1 }]
+  def render: [T] (T item, label: Symbol, **Integer options) -> [T, Symbol, { extra: 1 }]
 end
 
 class Object < BasicObject

@@ -919,6 +919,22 @@ pub struct OverloadDef {
     pub return_type: Type,
 }
 
+/// How a source method uses a required positional parameter, for rendering it as a type
+/// parameter: only passed to the return value, or also used otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamFlow {
+    PassThrough,
+    Constrained,
+}
+
+/// The parameter flows of a source method with its return as the body computes it, before
+/// a replay binds the parameters to callers' types.
+#[derive(Debug, Clone)]
+pub struct ParamFlows {
+    pub params: Box<[(usize, ParamFlow)]>,
+    pub return_type: Type,
+}
+
 #[derive(Debug, Clone)]
 pub struct MethodDef {
     pub name: Sym,
@@ -1997,6 +2013,8 @@ pub struct ClassDataCold {
     pub user_rbs_generic_methods: Vec<(Sym, bool)>,
     /// RBS declarations embedded with `# @rbs!`, rendered as written.
     pub embedded_rbs: Vec<String>,
+    /// How each source method's required positional parameters flow to its return.
+    pub param_flows: Vec<((Sym, bool), ParamFlows)>,
     pub class_type_param_defaults: Vec<(String, Type)>,
     // dirty-family skeleton pattern (`ClassDataCold`).
     pub dirty_method_pattern: Option<DirtyPattern>,
@@ -2221,6 +2239,7 @@ impl ClassData {
         cold.class_type_param_modifiers.shrink_to_fit();
         cold.user_rbs_generic_methods.shrink_to_fit();
         cold.embedded_rbs.shrink_to_fit();
+        cold.param_flows.shrink_to_fit();
         cold.class_type_param_defaults.shrink_to_fit();
     }
 
@@ -2306,6 +2325,15 @@ impl ClassData {
         bytes += cold.class_type_param_defaults.len() * std::mem::size_of::<(String, Type)>();
         bytes += cold.user_rbs_generic_methods.len() * std::mem::size_of::<(Sym, bool)>();
         bytes += string_vec_bytes(&cold.embedded_rbs);
+        bytes += cold
+            .param_flows
+            .iter()
+            .map(|(_, flows)| {
+                std::mem::size_of::<((Sym, bool), ParamFlows)>()
+                    + std::mem::size_of_val(flows.params.as_ref())
+                    + flows.return_type.deep_extra_bytes()
+            })
+            .sum::<usize>();
         bytes += cold.class_type_param_modifiers.len()
             * std::mem::size_of::<(String, rbs_sys::TypeParamModifiers)>();
         bytes
@@ -11869,6 +11897,54 @@ impl TypeRegistry {
             cold.class_type_param_bounds
                 .push((param_name.to_string(), bound));
         }
+    }
+
+    pub fn set_param_flows(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        flows: Vec<(usize, ParamFlow)>,
+        return_type: &Type,
+    ) {
+        let key = (Sym::new(method_name), is_singleton);
+        let existing = self
+            .class_data
+            .get(class_name)
+            .is_some_and(|data| data.cold().param_flows.iter().any(|(k, _)| *k == key));
+        if flows.is_empty() && !existing {
+            return;
+        }
+        let cold = self.class_data_mut(class_name).cold_mut();
+        cold.param_flows.retain(|(k, _)| *k != key);
+        if !flows.is_empty() {
+            cold.param_flows.push((
+                key,
+                ParamFlows {
+                    params: flows.into_boxed_slice(),
+                    return_type: return_type.clone(),
+                },
+            ));
+        }
+    }
+
+    pub fn param_flows(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<&ParamFlows> {
+        self.class_data
+            .get(class_name)
+            .and_then(|data| {
+                data.cold()
+                    .param_flows
+                    .iter()
+                    .find(|((name, singleton), _)| {
+                        name.as_str() == method_name && *singleton == is_singleton
+                    })
+            })
+            .map(|(_, flows)| flows)
     }
 
     pub fn add_embedded_rbs(&mut self, class_name: &str, text: String) {

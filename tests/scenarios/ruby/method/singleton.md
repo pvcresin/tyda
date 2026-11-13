@@ -197,7 +197,7 @@ end
 
 ```rbs
 class A
-  def self.foo: (String x) -> String
+  def self.foo: [T] (T x) -> T
   def self.bar: -> String
 end
 ```

@@ -78,6 +78,7 @@ impl TypeRegistry {
             .map(|method| {
                 let mut sig = self.build_method_sig(class_name, method);
                 self.apply_declared_type_params(&mut sig, class_name, method);
+                self.apply_inferred_type_params(&mut sig, class_name, method);
                 // look up the visibility override from the sparse map. Both `private` and `protected` are
                 // stored in the map (since RBS has no `protected`, the renderer collapses it to `private`).
                 sig.is_private = data
@@ -463,6 +464,120 @@ impl TypeRegistry {
                 decl
             })
             .collect()
+    }
+
+    /// A required parameter that is only passed to the return value renders as a type parameter,
+    /// `[T] (T x) -> T`, since the body accepts any value. One that the body also uses otherwise
+    /// takes its callers' types as the bound, `[T < A | B] (T x) -> T`.
+    fn apply_inferred_type_params(
+        &self,
+        sig: &mut MethodSig,
+        owner_class: &str,
+        method: &MethodDef,
+    ) {
+        if method.has_annotation()
+            || method.attr_ivar.is_some()
+            || method.rbs_file_source
+            || !sig.type_params.is_empty()
+        {
+            return;
+        }
+        let Some(flows) = self.param_flows(owner_class, method.name.as_str(), method.is_singleton)
+        else {
+            return;
+        };
+        let positional_slots: Vec<usize> = sig
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, param)| {
+                matches!(
+                    param.kind,
+                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                )
+            })
+            .map(|(slot, _)| slot)
+            .collect();
+        let reserved = self.get_class_type_params(owner_class);
+        let mut names = ["T", "U", "V", "W"]
+            .into_iter()
+            .map(str::to_string)
+            .chain((1..).map(|index| format!("T{index}")))
+            .filter(|name| !reserved.contains(name));
+        let original_params = sig.params.clone();
+        let mut bindings: HashMap<usize, Sym> = HashMap::new();
+        let mut type_params = Vec::new();
+        for &(position, flow) in flows.params.iter() {
+            let Some(&slot) = positional_slots.get(position) else {
+                continue;
+            };
+            let upper_bound = match flow {
+                ParamFlow::PassThrough => None,
+                ParamFlow::Constrained => {
+                    let callers = &original_params[slot].param_type;
+                    if callers.to_string() == "untyped" || matches!(callers, Type::Bot) {
+                        continue;
+                    }
+                    Some(callers.clone())
+                }
+            };
+            let Some(name) = names.next() else {
+                break;
+            };
+            let name = Sym::new(&name);
+            bindings.insert(position, name);
+            type_params.push((
+                slot,
+                TypeParamSig {
+                    name: name.to_string(),
+                    upper_bound,
+                    lower_bound: None,
+                },
+            ));
+        }
+        if bindings.is_empty() {
+            return;
+        }
+        // The resolved return keeps its precision; only the places where the body returns a bound
+        // parameter itself become its type parameter.
+        let return_type = {
+            let _hop_memo = super::DeferredHopMemoScope::enter();
+            let resolve_part = |part: &Type| {
+                let raw = substitute_bare_param_refs(part, &bindings);
+                let raw = self.resolve_block_return_refs(owner_class, method, &raw);
+                let raw = if Self::type_contains_param_ref(&raw) {
+                    self.resolve_param_refs_from_resolved(&raw, &original_params)
+                } else {
+                    raw
+                };
+                let resolved = self.resolve_deferred_refs_for_context_owned(
+                    owner_class,
+                    method.is_singleton,
+                    raw,
+                );
+                if Self::type_contains_param_ref(&resolved) {
+                    self.resolve_param_refs_from_resolved(&resolved, &original_params)
+                } else {
+                    resolved
+                }
+            };
+            graft_type_params(
+                &flows.return_type,
+                &sig.return_type,
+                &bindings,
+                &resolve_part,
+            )
+        };
+        // A type parameter that no longer shows in the return relates nothing.
+        type_params.retain(|(_, param)| type_mentions_class(&return_type, &param.name));
+        if type_params.is_empty() {
+            return;
+        }
+        for (slot, param) in &type_params {
+            sig.params[*slot].param_type = Type::Class(Sym::new(&param.name));
+        }
+        sig.return_type = return_type;
+        sig.type_params = type_params.into_iter().map(|(_, param)| param).collect();
     }
 
     /// Inference reads a declared method type parameter as `untyped`; the rendered signature
@@ -1186,6 +1301,131 @@ fn build_params_from_function_type(
         });
     }
     params
+}
+
+/// Replaces the bare uses of the bound parameters with their type parameters. A deferred
+/// reference such as `x.name` keeps its parameter, so the call still resolves with callers' types.
+fn substitute_bare_param_refs(ty: &Type, bindings: &HashMap<usize, Sym>) -> Type {
+    let recurse = |ty: &Type| substitute_bare_param_refs(ty, bindings);
+    match ty {
+        Type::ParamRef(index) => bindings
+            .get(index)
+            .map_or_else(|| ty.clone(), |name| Type::Class(*name)),
+        Type::Union(types) => Type::Union(types.iter().map(recurse).collect()),
+        Type::Intersection(types) => Type::Intersection(types.iter().map(recurse).collect()),
+        Type::Tuple(types) => Type::Tuple(types.iter().map(recurse).collect()),
+        Type::Array(Some(inner)) => Type::Array(Some(Box::new(recurse(inner)))),
+        Type::Hash(key, value) => Type::Hash(
+            key.as_deref().map(|key| Box::new(recurse(key))),
+            value.as_deref().map(|value| Box::new(recurse(value))),
+        ),
+        Type::Record(fields) => Type::Record(
+            fields
+                .iter()
+                .map(|field| RecordField {
+                    value: recurse(&field.value),
+                    ..field.clone()
+                })
+                .collect(),
+        ),
+        Type::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args.iter().map(recurse).collect(),
+        },
+        _ => ty.clone(),
+    }
+}
+
+fn type_mentions_class(ty: &Type, name: &str) -> bool {
+    let recurse = |ty: &Type| type_mentions_class(ty, name);
+    match ty {
+        Type::Class(class) => class.as_str() == name,
+        Type::Union(types) | Type::Intersection(types) | Type::Tuple(types) => {
+            types.iter().any(recurse)
+        }
+        Type::Array(Some(inner)) => recurse(inner),
+        Type::Hash(key, value) => {
+            key.as_deref().is_some_and(recurse) || value.as_deref().is_some_and(recurse)
+        }
+        Type::Record(fields) => fields.iter().any(|field| recurse(&field.value)),
+        Type::Generic { args, .. } => args.iter().any(recurse),
+        Type::Proc { return_type, .. } => recurse(return_type),
+        _ => false,
+    }
+}
+
+/// Builds the rendered return from the resolved one, putting a type parameter where the body
+/// returns a bound parameter. A part whose shape differs between the two is resolved from the
+/// body's form instead.
+fn graft_type_params(
+    body_form: &Type,
+    resolved: &Type,
+    bindings: &HashMap<usize, Sym>,
+    resolve_part: &dyn Fn(&Type) -> Type,
+) -> Type {
+    if !mentions_bound_param(body_form, bindings) {
+        return resolved.clone();
+    }
+    let graft = |body_form: &Type, resolved: &Type| {
+        graft_type_params(body_form, resolved, bindings, resolve_part)
+    };
+    match (body_form, resolved) {
+        (Type::ParamRef(index), _) if bindings.contains_key(index) => Type::Class(bindings[index]),
+        (Type::Tuple(body_parts), Type::Tuple(parts)) if body_parts.len() == parts.len() => {
+            Type::Tuple(
+                body_parts
+                    .iter()
+                    .zip(parts)
+                    .map(|(body_part, part)| graft(body_part, part))
+                    .collect(),
+            )
+        }
+        (Type::Array(Some(body_inner)), Type::Array(Some(inner))) => {
+            Type::Array(Some(Box::new(graft(body_inner, inner))))
+        }
+        (Type::Hash(Some(body_key), Some(body_value)), Type::Hash(Some(key), Some(value))) => {
+            Type::Hash(
+                Some(Box::new(graft(body_key, key))),
+                Some(Box::new(graft(body_value, value))),
+            )
+        }
+        (Type::Record(body_fields), Type::Record(fields))
+            if body_fields.len() == fields.len()
+                && body_fields
+                    .iter()
+                    .zip(fields)
+                    .all(|(body_field, field)| body_field.key == field.key) =>
+        {
+            Type::Record(
+                body_fields
+                    .iter()
+                    .zip(fields)
+                    .map(|(body_field, field)| RecordField {
+                        value: graft(&body_field.value, &field.value),
+                        ..field.clone()
+                    })
+                    .collect(),
+            )
+        }
+        _ => resolve_part(body_form),
+    }
+}
+
+fn mentions_bound_param(ty: &Type, bindings: &HashMap<usize, Sym>) -> bool {
+    let recurse = |ty: &Type| mentions_bound_param(ty, bindings);
+    match ty {
+        Type::ParamRef(index) => bindings.contains_key(index),
+        Type::Union(types) | Type::Intersection(types) | Type::Tuple(types) => {
+            types.iter().any(recurse)
+        }
+        Type::Array(Some(inner)) => recurse(inner),
+        Type::Hash(key, value) => {
+            key.as_deref().is_some_and(recurse) || value.as_deref().is_some_and(recurse)
+        }
+        Type::Record(fields) => fields.iter().any(|field| recurse(&field.value)),
+        Type::Generic { args, .. } => args.iter().any(recurse),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

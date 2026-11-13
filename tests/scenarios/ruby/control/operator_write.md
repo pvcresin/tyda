@@ -203,9 +203,9 @@ end
 ```rbs
 class Tally
   def count: -> 0
-  def count=: (Integer value) -> Integer
+  def count=: [T] (T value) -> T
   def label: -> :none
-  def label=: (Symbol value) -> Symbol
+  def label=: [T] (T value) -> T
   def bump: -> Integer
   def relabel: -> :done
 end

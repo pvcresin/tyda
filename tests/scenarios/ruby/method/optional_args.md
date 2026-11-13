@@ -13,7 +13,7 @@ foo("hello")
 
 ```rbs
 class Object < BasicObject
-  def foo: (String x, ?Integer y) -> String
+  def foo: [T] (T x, ?Integer y) -> T
 end
 ```
 

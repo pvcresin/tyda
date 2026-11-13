@@ -269,7 +269,7 @@ end
 
 ```rbs
 class Holder
-  def chain: (Array[String] values) -> Array[String]
+  def chain: [T] (T values) -> T
 end
 
 class Object < BasicObject
