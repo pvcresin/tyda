@@ -61,9 +61,12 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 
 推論したジェネリクスを RBS に出す。本体だけから決まる型のほうがコードとして正しいため、呼び出し元の型の union より型変数を優先する。出力を切り替えるオプションは作らない（推論が複雑になりバグの元になるため）。RBS 3.6 以降の構文（union の bound など）を前提にし、古い RBS や Steep の対応は各ツール側の課題とする。RBS 入力の読み込みを固めてから出力に進む。
 
-- [ ] RBS 入力のジェネリクスを直す。`new` の引数からクラスの型引数を推論しない、同じファイルに source 定義があるとメソッドのジェネリクスが `untyped` になる、の2件（`known-issues/rbs_generics.md`）。インライン RBS の `@rbs!` と型パラメータの bound も読む
+- [ ] 型の入力（`.rbs` / `sig/`、`.rbi`、インライン RBS、Sorbet の `sig` と RBS コメント）のジェネリクスを正確に読む
+  - RBS：`new` の引数からクラスの型引数を推論しない、同じファイルに source 定義があるとメソッドのジェネリクスが `untyped` になる（`known-issues/rbs_generics.md`）
+  - インライン RBS：`#:` の型パラメータと bound が出力から落ちる、`# @rbs generic` と `# @rbs!` を読まない（`known-issues/rbs_comment_generics.md`）
+  - Sorbet：`type_parameters` が出力で `[U]` を失い呼び出し側で束縛されない、RBI の `type_member` が型引数で束縛されない、`type_member` / `#: [out Elem]` の variance と bound が落ちる、`extend T::Generic` が出力に残る、`extend T::Helpers` 付きの RBI の型を呼ぶと `T::Helpers` の宣言が出力に漏れる（`known-issues/sorbet_generics.md`）。これを直すときは、今の出力を固定している `sorbet/` の通常シナリオも合わせて直す
 - [ ] receiver 付き呼び出しの block 内の `yield` で、block 引数の型を yield 型に反映する。yield 型を集める走査が block 引数を一律 `untyped` にしている（`known-issues/ruby_methods.md`）
-- [ ] Proc / lambda に引数の型を持たせ、`Proc` ではなく `^(A) -> R` で出す。RBS では lambda と proc を区別できないため同じ表記にする
+- [ ] Proc / lambda に引数の型を持たせ、`Proc` ではなく `^(A) -> R` で出す。RBS では lambda と proc を区別できないため同じ表記にする（以下の出力の項目は `known-issues/generics_output.md`）
 - [ ] メソッドの型パラメータを出す。本体でメソッドを呼ばずに受け渡すだけの引数は `[T] (T x) -> T`。メソッドを呼び、戻り値にも出る引数は、呼び出し元から集めたクラスの union を bound にする（`[T < A | B] (T x) -> T`）。戻り値に出ない引数は型変数にしない。呼び出し元がなく本体でメソッドを呼ぶ引数は `untyped` のまま。型の分からない値へのメソッド呼び出し（`x.to_s` など）の戻り値は `untyped` とする
 - [ ] Proc / block のジェネリクスを出す（`[A, R] (^(A) -> R f, A x) -> R`、`[E, R] (Array[E] xs) { (E) -> R } -> Array[R]`）。`Array[E]` のように受け取る型を決めるのは、本体から断定できる場合だけにする
 - [ ] interface の bound は使わない。任意のメソッドの組み合わせを表せないため、union の bound を基本にする
