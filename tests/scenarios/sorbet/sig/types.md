@@ -374,8 +374,4 @@ end
 class Parent
   def self.make: -> Parent
 end
-
-module T::Sig
-  def sig: -> untyped
-end
 ```

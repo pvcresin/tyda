@@ -685,3 +685,31 @@ class HolderUser
   def value: -> Integer
 end
 ```
+
+## An interface embedded with @rbs!
+
+### update
+
+```ruby
+class Greeter
+  # @rbs!
+  #   interface _Named
+  #     def name: () -> String
+  #   end
+
+  #: (_Named x) -> String
+  def greet(x) = x.name
+end
+```
+
+### result
+
+```rbs
+class Greeter
+  interface _Named
+    def name: () -> String
+  end
+
+  def greet: (_Named x) -> String
+end
+```

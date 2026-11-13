@@ -1730,6 +1730,7 @@ pub struct ClassInfo {
     pub aliases: Vec<MethodAliasSig>,
     pub constants: Vec<ConstantSig>,
     pub sorbet_modifier_comments: Vec<std::string::String>,
+    pub embedded_rbs: Vec<std::string::String>,
     pub superclass: Option<std::string::String>,
     pub mixins: Vec<(std::string::String, std::string::String)>,
     pub is_module: bool,

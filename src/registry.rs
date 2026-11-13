@@ -1995,6 +1995,8 @@ pub struct ClassDataCold {
     /// Methods a preloaded user `.rbs` declares with method type parameters. A source `def`
     /// added later keeps that signature, as it does when the RBS merges after the source.
     pub user_rbs_generic_methods: Vec<(Sym, bool)>,
+    /// RBS declarations embedded with `# @rbs!`, rendered as written.
+    pub embedded_rbs: Vec<String>,
     pub class_type_param_defaults: Vec<(String, Type)>,
     // dirty-family skeleton pattern (`ClassDataCold`).
     pub dirty_method_pattern: Option<DirtyPattern>,
@@ -2218,6 +2220,7 @@ impl ClassData {
         cold.class_type_param_bounds.shrink_to_fit();
         cold.class_type_param_modifiers.shrink_to_fit();
         cold.user_rbs_generic_methods.shrink_to_fit();
+        cold.embedded_rbs.shrink_to_fit();
         cold.class_type_param_defaults.shrink_to_fit();
     }
 
@@ -2302,6 +2305,7 @@ impl ClassData {
             cold.class_type_param_bounds.len() * std::mem::size_of::<(String, rbs_ir::RbsType)>();
         bytes += cold.class_type_param_defaults.len() * std::mem::size_of::<(String, Type)>();
         bytes += cold.user_rbs_generic_methods.len() * std::mem::size_of::<(Sym, bool)>();
+        bytes += string_vec_bytes(&cold.embedded_rbs);
         bytes += cold.class_type_param_modifiers.len()
             * std::mem::size_of::<(String, rbs_sys::TypeParamModifiers)>();
         bytes
@@ -11864,6 +11868,13 @@ impl TypeRegistry {
         {
             cold.class_type_param_bounds
                 .push((param_name.to_string(), bound));
+        }
+    }
+
+    pub fn add_embedded_rbs(&mut self, class_name: &str, text: String) {
+        let cold = self.class_data_mut(class_name).cold_mut();
+        if !cold.embedded_rbs.contains(&text) {
+            cold.embedded_rbs.push(text);
         }
     }
 

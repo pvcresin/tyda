@@ -333,6 +333,7 @@ impl TypeRegistry {
             aliases: alias_sigs,
             constants,
             sorbet_modifier_comments: data.cold().sorbet_modifier_comments.clone(),
+            embedded_rbs: data.cold().embedded_rbs.clone(),
             superclass: data.superclass.as_ref().map(ToString::to_string),
             mixins,
             is_module: data.is_module,

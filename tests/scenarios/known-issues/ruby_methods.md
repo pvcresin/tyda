@@ -239,3 +239,32 @@ class Mapper
   def map_all: (Array[Integer] xs) { (Integer) -> String } -> Array[String]
 end
 ```
+
+## A short type name in an inline RBS annotation resolves in the enclosing class
+
+```ruby
+class Lookup
+  # @rbs!
+  #   interface _Named
+  #     def name: () -> String
+  #   end
+
+  #: -> _Named
+  def named = raise
+
+  def label = named.name
+end
+```
+
+### result
+
+```rbs
+class Lookup
+  interface _Named
+    def name: () -> String
+  end
+
+  def named: -> _Named
+  def label: -> String
+end
+```

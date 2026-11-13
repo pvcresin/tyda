@@ -3125,6 +3125,7 @@ impl<'a> InferenceEngine<'a> {
         matches!(class_name, "T::Sig" | "T::Helpers" | "T::Generic")
     }
 
+    /// Sorbet's runtime modules are library declarations, not user code, so they are never rendered.
     fn synthesize_sorbet_runtime_module(&mut self, class_name: &str) {
         let methods: &[&str] = match class_name {
             "T::Sig" => &["sig"],
@@ -3153,8 +3154,8 @@ impl<'a> InferenceEngine<'a> {
                     sig_annotated: false,
                     attr_ivar: None,
                     is_singleton: false,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: true,
+                    rbs_file_source: true,
+                    synthetic_dsl_source: false,
                     rbs_method_types: Default::default(),
                     extra_overloads: Vec::new(),
                     loc: None,
@@ -62064,6 +62065,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         comments: &[RbsComment],
     ) {
+        self.collect_embedded_rbs(class_name, node, parse_result);
         let node_start = node.location().start_offset();
         let source = parse_result.source();
         let line_end = source[node_start..]
@@ -62107,6 +62109,112 @@ impl<'a> InferenceEngine<'a> {
                     self.add_class_type_param_decls(class_name, decl.trim());
                 }
             }
+        }
+    }
+
+    /// Reads `# @rbs!` blocks directly in this class body: the indented comment lines after the
+    /// marker are RBS declarations, loaded for inference and rendered as written.
+    fn collect_embedded_rbs(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+    ) {
+        let (keyword, body) = if let Some(class_node) = node.as_class_node() {
+            ("class", class_node.body())
+        } else if let Some(module_node) = node.as_module_node() {
+            ("module", module_node.body())
+        } else {
+            return;
+        };
+        let Some(statements) = body.and_then(|body| body.as_statements_node()) else {
+            return;
+        };
+        let (start, end) = (node.location().start_offset(), node.location().end_offset());
+        let nested: Vec<(usize, usize)> = statements
+            .body()
+            .iter()
+            .filter(|child| {
+                matches!(
+                    child,
+                    Node::ClassNode { .. }
+                        | Node::ModuleNode { .. }
+                        | Node::SingletonClassNode { .. }
+                )
+            })
+            .map(|child| {
+                (
+                    child.location().start_offset(),
+                    child.location().end_offset(),
+                )
+            })
+            .collect();
+        let source = parse_result.source();
+        let mut blocks: Vec<Vec<String>> = Vec::new();
+        let mut current: Option<(Vec<String>, usize)> = None;
+        for comment in parse_result.comments() {
+            let location = comment.location();
+            let (comment_start, comment_end) = (location.start_offset(), location.end_offset());
+            if comment_start < start
+                || comment_end > end
+                || nested
+                    .iter()
+                    .any(|(from, to)| comment_start >= *from && comment_end <= *to)
+            {
+                continue;
+            }
+            let text = String::from_utf8_lossy(location.as_slice()).to_string();
+            let follows = current.as_ref().is_some_and(|(_, previous_end)| {
+                source[*previous_end..comment_start]
+                    .iter()
+                    .filter(|byte| **byte == b'\n')
+                    .count()
+                    == 1
+                    && source[*previous_end..comment_start]
+                        .iter()
+                        .all(|byte| byte.is_ascii_whitespace())
+            });
+            if follows && text.starts_with("#  ") {
+                if let Some((lines, previous_end)) = current.as_mut() {
+                    lines.push(text[1..].to_string());
+                    *previous_end = comment_end;
+                }
+                continue;
+            }
+            if let Some((lines, _)) = current.take()
+                && !lines.is_empty()
+            {
+                blocks.push(lines);
+            }
+            if text.trim_end() == "# @rbs!" {
+                current = Some((Vec::new(), comment_end));
+            }
+        }
+        if let Some((lines, _)) = current
+            && !lines.is_empty()
+        {
+            blocks.push(lines);
+        }
+        for lines in blocks {
+            let indent = lines
+                .iter()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| line.len() - line.trim_start().len())
+                .min()
+                .unwrap_or(0);
+            let text = lines
+                .iter()
+                .map(|line| line.get(indent..).unwrap_or("").trim_end())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut embedded = TypeRegistry::new();
+            crate::rbs::import::load_rbs_string(
+                &format!("{keyword} {class_name}\n{text}\nend\n"),
+                &mut embedded,
+            );
+            embedded.mark_all_methods_as_external_source();
+            self.registry.merge_rbs_registry(&embedded);
+            self.registry.add_embedded_rbs(class_name, text);
         }
     }
 

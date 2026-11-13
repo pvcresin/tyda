@@ -172,7 +172,25 @@ fn write_class_body<W: Write>(
     }
     let renderable_constants = renderable_constants(class);
     let renderable_methods = renderable_methods(class, options);
+    for (index, text) in class.embedded_rbs.iter().enumerate() {
+        if index > 0 || !class.mixins.is_empty() {
+            writer.write_all(b"\n")?;
+        }
+        for line in text.lines() {
+            if line.is_empty() {
+                writeln!(writer)?;
+            } else {
+                writeln!(writer, "  {line}")?;
+            }
+        }
+    }
+    if !class.embedded_rbs.is_empty()
+        && (!renderable_constants.is_empty() || !renderable_methods.is_empty())
+    {
+        writer.write_all(b"\n")?;
+    }
     if !class.mixins.is_empty()
+        && class.embedded_rbs.is_empty()
         && (!renderable_constants.is_empty() || !renderable_methods.is_empty())
     {
         writer.write_all(b"\n")?;
@@ -248,6 +266,7 @@ fn write_class_header<W: Write>(
 
 fn class_has_renderable_body(class: &ClassInfo, options: RenderOptions) -> bool {
     !class.sorbet_modifier_comments.is_empty()
+        || !class.embedded_rbs.is_empty()
         || !class.mixins.is_empty()
         || !renderable_constants(class).is_empty()
         || class
