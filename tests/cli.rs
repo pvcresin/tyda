@@ -282,6 +282,42 @@ fn analyze_directory() {
     assert!(stdout.contains("class B"), "missing B: {stdout}");
 }
 
+// The CLI merges per-file results, which must carry the facts these declarations come from.
+#[test]
+fn analyze_directory_keeps_type_params_and_embedded_rbs() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        concat!(
+            "class Holder\n",
+            "  # @rbs!\n",
+            "  #   interface _Named\n",
+            "  #     def name: () -> String\n",
+            "  #   end\n",
+            "\n",
+            "  def keep(x) = x\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+    fs::write(dir.path().join("b.rb"), "Holder.new.keep(1)\n").expect("failed to write");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("  def keep: [T] (T x) -> T"),
+        "missing type param: {stdout}"
+    );
+    assert!(
+        stdout.contains("  interface _Named\n    def name: () -> String\n  end"),
+        "missing embedded RBS: {stdout}"
+    );
+}
+
 #[test]
 fn verbose_shows_file_names() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");

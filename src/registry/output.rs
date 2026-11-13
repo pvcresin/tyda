@@ -515,7 +515,7 @@ impl TypeRegistry {
                 ParamFlow::PassThrough => None,
                 ParamFlow::Constrained => {
                     let callers = &original_params[slot].param_type;
-                    if callers.to_string() == "untyped" || matches!(callers, Type::Bot) {
+                    if matches!(callers.to_string().as_str(), "untyped" | "bot" | "nil") {
                         continue;
                     }
                     Some(callers.clone())
@@ -1336,8 +1336,13 @@ fn substitute_bare_param_refs(ty: &Type, bindings: &HashMap<usize, Sym>) -> Type
     }
 }
 
+/// Whether `name` shows in the rendered type; a union with an `untyped` member renders as
+/// `untyped` and so shows nothing.
 fn type_mentions_class(ty: &Type, name: &str) -> bool {
     let recurse = |ty: &Type| type_mentions_class(ty, name);
+    if ty.to_string() == "untyped" {
+        return false;
+    }
     match ty {
         Type::Class(class) => class.as_str() == name,
         Type::Union(types) | Type::Intersection(types) | Type::Tuple(types) => {

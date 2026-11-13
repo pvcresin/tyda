@@ -163,3 +163,46 @@ class Matcher
   def only_integer: (Integer x) -> Integer
 end
 ```
+
+## A parameter returned beside an untyped value does not become a type parameter
+
+### update
+
+```ruby
+class Picker
+  def pick(x, flag) = flag ? x : unknown_value
+end
+
+Picker.new.pick(1, true)
+```
+
+### result
+
+```rbs
+class Picker
+  def pick: (Integer x, bool flag) -> untyped
+end
+```
+
+## A used parameter that callers only pass nil does not become a type parameter
+
+### update
+
+```ruby
+class NilPasser
+  def pass(x)
+    x.inspect
+    x
+  end
+end
+
+NilPasser.new.pass(nil)
+```
+
+### result
+
+```rbs
+class NilPasser
+  def pass: (nil x) -> nil
+end
+```
