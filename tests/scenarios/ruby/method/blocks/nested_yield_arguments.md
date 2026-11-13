@@ -62,3 +62,55 @@ class CoreService
   def update_file: -> nil
 end
 ```
+
+## A yield inside a block on a parameter receiver passes the element type
+
+### update
+
+```ruby
+class Mapper
+  def map_all(xs) = xs.map { |e| yield e }
+end
+
+class MapperUser
+  def labels = Mapper.new.map_all([1]) { |e| e.to_s }
+end
+```
+
+### result
+
+```rbs
+class Mapper
+  def map_all: (Array[Integer] xs) { (Integer) -> String } -> Array[String]
+end
+
+class MapperUser
+  def labels: -> Array[String]
+end
+```
+
+## A yield inside a block on a literal receiver passes the element type
+
+### update
+
+```ruby
+class Doubler
+  def each_one = [1].map { |e| yield e }
+end
+
+class DoublerUser
+  def labels = Doubler.new.each_one { |e| e.to_s }
+end
+```
+
+### result
+
+```rbs
+class Doubler
+  def each_one: { (Integer) -> String } -> Array[String]
+end
+
+class DoublerUser
+  def labels: -> Array[String]
+end
+```

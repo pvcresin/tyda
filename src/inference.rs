@@ -19379,6 +19379,47 @@ impl<'a> InferenceEngine<'a> {
                         for name in names {
                             block_scope.set(&name, Type::Untyped);
                         }
+                        // Only a yield reads these bindings, so skip the receiver lookup otherwise.
+                        if let Some(receiver) = call_node.receiver()
+                            && Self::method_body_scan_flags(
+                                &block_body,
+                                block_scope.current_block_param_name.as_deref(),
+                            )
+                            .0
+                        {
+                            let receiver_type =
+                                self.infer_node_type(class_name, &receiver, parse_result, scope);
+                            let method_name = String::from_utf8_lossy(call_node.name().as_slice());
+                            let param_count = Self::block_positional_param_count(&block);
+                            let rbs_block_seed = self.rbs_block_seed_for_side_effects(
+                                class_name,
+                                &receiver_type,
+                                method_name.as_ref(),
+                                &call_node,
+                                param_count,
+                                parse_result,
+                                scope,
+                            );
+                            if let Some(param_types) = self.receiver_call_block_param_types(
+                                class_name,
+                                &call_node,
+                                &receiver,
+                                &receiver_type,
+                                method_name.as_ref(),
+                                param_count,
+                                rbs_block_seed.as_ref(),
+                                parse_result,
+                                scope,
+                            ) {
+                                self.bind_call_block_param_types(
+                                    class_name,
+                                    &params,
+                                    &param_types,
+                                    parse_result,
+                                    &mut block_scope,
+                                );
+                            }
+                        }
                     }
                     self.scan_method_body_summary_node(
                         class_name,
@@ -22501,6 +22542,156 @@ impl<'a> InferenceEngine<'a> {
         true
     }
 
+    /// Block parameter types for a call with an explicit receiver, from the receiver type,
+    /// built-in iteration rules, the RBS block signature, or the source method's yields.
+    #[allow(clippy::too_many_arguments)]
+    fn receiver_call_block_param_types(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        receiver: &Node<'_>,
+        receiver_type: &Type,
+        method_name: &str,
+        param_count: usize,
+        rbs_block_seed: Option<&RbsBlockCallSeed>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<Vec<Type>> {
+        if method_name == "zip" {
+            self.array_zip_block_param_types(
+                class_name,
+                receiver_type,
+                call_node,
+                parse_result,
+                scope,
+                param_count,
+            )
+        } else if let Some(param_types) =
+            self.refine_hash_entry_block_param_types(receiver_type, method_name, param_count)
+        {
+            Some(param_types)
+        } else if let Some(param_types) = self.refine_fetch_block_param_types(
+            class_name,
+            receiver_type,
+            method_name,
+            call_node,
+            param_count,
+            parse_result,
+            scope,
+        ) {
+            Some(param_types)
+        } else if let Some(param_types) = self.enumerator_product_block_param_types(
+            class_name,
+            receiver_type,
+            call_node,
+            parse_result,
+            scope,
+            param_count,
+        ) {
+            Some(param_types)
+        } else if method_name == "each_entry" {
+            Some(Self::enumerable_yield_block_param_types(
+                &Self::enumerable_element_type(receiver_type),
+                param_count,
+            ))
+        } else if method_name == "scan" && Self::type_is_string_like(receiver_type) {
+            self.string_scan_side_effect_param_types(
+                call_node,
+                class_name,
+                parse_result,
+                scope,
+                param_count,
+            )
+        } else if matches!(method_name, "each_line" | "each_char" | "each_byte")
+            && let Some(param_type) = self.literal_string_each_yield_type_for_call(
+                class_name,
+                receiver_type,
+                call_node,
+                method_name,
+                parse_result,
+                scope,
+            )
+        {
+            Some(vec![param_type])
+        } else if method_name == "step"
+            && let Some(param_type) = self.numeric_step_element_type(
+                class_name,
+                receiver_type,
+                call_node,
+                parse_result,
+                scope,
+            )
+        {
+            Some(vec![param_type])
+        } else {
+            let elem_type = Self::extract_element_type(receiver_type);
+            match method_name {
+                "each" | "find_each" => rbs_block_seed
+                    .as_ref()
+                    .map(|seed| seed.param_types.clone())
+                    .or_else(|| Some(vec![elem_type])),
+                "each_with_index" => Some(vec![elem_type, Type::Integer]),
+                "each_slice" | "each_cons" => {
+                    let window_size =
+                        self.enumerable_window_size(call_node, class_name, parse_result, scope);
+                    Some(Self::enumerable_window_block_param_types(
+                        receiver_type,
+                        method_name,
+                        param_count,
+                        window_size,
+                    ))
+                }
+                "each_with_object" | "with_object" => self
+                    .get_mutable_init_arg_type(call_node, class_name, parse_result, scope)
+                    .map(|init_type| vec![elem_type, init_type]),
+                "reduce" | "inject" => {
+                    let acc_type = self
+                        .get_mutable_init_arg_type(call_node, class_name, parse_result, scope)
+                        .or_else(|| {
+                            self.get_init_arg_type(call_node, class_name, parse_result, scope)
+                        })
+                        .unwrap_or_else(|| elem_type.clone());
+                    Some(vec![acc_type, elem_type])
+                }
+                "slice_when" | "chunk_while" => Some(vec![elem_type.clone(), elem_type]),
+                "with_index" => {
+                    let mut params = vec![elem_type, Type::Integer];
+                    while params.len() < param_count {
+                        params.push(Type::Untyped);
+                    }
+                    Some(params)
+                }
+                "tap" => Some(vec![Self::mutable_accumulator_seed_type(
+                    receiver,
+                    receiver_type.clone(),
+                )]),
+                _ => None,
+            }
+        }
+        .or_else(|| rbs_block_seed.as_ref().map(|seed| seed.param_types.clone()))
+        .or_else(|| {
+            let resolved_receiver = self.try_resolve_receiver_inline(class_name, receiver_type);
+            let receiver_class = self.type_to_class_name(&resolved_receiver)?;
+            let receiver_class = self
+                .registry
+                .resolve_class_name_for_type_name(&receiver_class, class_name)
+                .unwrap_or(receiver_class);
+            let param_types = self.resolve_user_defined_block_param_types(
+                &receiver_class,
+                method_name,
+                Self::receiver_is_singleton_dispatch(receiver, scope.singleton_dispatch),
+                0,
+            )?;
+            let (positional_arg_types, keyword_arg_types) = self
+                .collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
+            Some(Self::substitute_user_defined_block_param_types(
+                param_types,
+                &positional_arg_types,
+                &keyword_arg_types,
+            ))
+        })
+    }
+
     fn process_call_block_side_effects(
         &mut self,
         class_name: &str,
@@ -22587,14 +22778,11 @@ impl<'a> InferenceEngine<'a> {
                 *scope = self.merge_block_scope_locals(scope, &block_scope, &block_local_names);
                 return;
             }
-            let mut tap_receiver_alias: Option<AliasTarget> = None;
-            let tap_receiver_type = if method_name == "tap" {
-                tap_receiver_alias = self
-                    .resolve_alias_assignment_source(class_name, &receiver, parse_result, scope)
-                    .map(|(target, _)| target);
-                Self::mutable_accumulator_seed_type(&receiver, receiver_type.clone())
+            let tap_receiver_alias = if method_name == "tap" {
+                self.resolve_alias_assignment_source(class_name, &receiver, parse_result, scope)
+                    .map(|(target, _)| target)
             } else {
-                receiver_type.clone()
+                None
             };
             if let Some(receiver_class) = self.type_to_class_name(&receiver_type) {
                 let method_is_singleton =
@@ -22639,146 +22827,17 @@ impl<'a> InferenceEngine<'a> {
                     method_name.as_ref(),
                 );
             }
-            let side_effect_param_types = if method_name == "zip" {
-                self.array_zip_block_param_types(
-                    class_name,
-                    &receiver_type,
-                    call_node,
-                    parse_result,
-                    scope,
-                    param_count,
-                )
-            } else if let Some(param_types) = self.refine_hash_entry_block_param_types(
+            let side_effect_param_types = self.receiver_call_block_param_types(
+                class_name,
+                call_node,
+                &receiver,
                 &receiver_type,
                 method_name.as_ref(),
                 param_count,
-            ) {
-                Some(param_types)
-            } else if let Some(param_types) = self.refine_fetch_block_param_types(
-                class_name,
-                &receiver_type,
-                method_name.as_ref(),
-                call_node,
-                param_count,
+                rbs_block_seed.as_ref(),
                 parse_result,
                 scope,
-            ) {
-                Some(param_types)
-            } else if let Some(param_types) = self.enumerator_product_block_param_types(
-                class_name,
-                &receiver_type,
-                call_node,
-                parse_result,
-                scope,
-                param_count,
-            ) {
-                Some(param_types)
-            } else if method_name == "each_entry" {
-                Some(Self::enumerable_yield_block_param_types(
-                    &Self::enumerable_element_type(&receiver_type),
-                    param_count,
-                ))
-            } else if method_name == "scan" && Self::type_is_string_like(&receiver_type) {
-                self.string_scan_side_effect_param_types(
-                    call_node,
-                    class_name,
-                    parse_result,
-                    scope,
-                    param_count,
-                )
-            } else if matches!(
-                method_name.as_ref(),
-                "each_line" | "each_char" | "each_byte"
-            ) && let Some(param_type) = self.literal_string_each_yield_type_for_call(
-                class_name,
-                &receiver_type,
-                call_node,
-                method_name.as_ref(),
-                parse_result,
-                scope,
-            ) {
-                Some(vec![param_type])
-            } else if method_name == "step"
-                && let Some(param_type) = self.numeric_step_element_type(
-                    class_name,
-                    &receiver_type,
-                    call_node,
-                    parse_result,
-                    scope,
-                )
-            {
-                Some(vec![param_type])
-            } else {
-                let elem_type = Self::extract_element_type(&receiver_type);
-                match method_name.as_ref() {
-                    "each" | "find_each" => rbs_block_seed
-                        .as_ref()
-                        .map(|seed| seed.param_types.clone())
-                        .or_else(|| Some(vec![elem_type])),
-                    "each_with_index" => Some(vec![elem_type, Type::Integer]),
-                    "each_slice" | "each_cons" => {
-                        let window_size =
-                            self.enumerable_window_size(call_node, class_name, parse_result, scope);
-                        Some(Self::enumerable_window_block_param_types(
-                            &receiver_type,
-                            method_name.as_ref(),
-                            param_count,
-                            window_size,
-                        ))
-                    }
-                    "each_with_object" | "with_object" => self
-                        .get_mutable_init_arg_type(call_node, class_name, parse_result, scope)
-                        .map(|init_type| vec![elem_type, init_type]),
-                    "reduce" | "inject" => {
-                        let acc_type = self
-                            .get_mutable_init_arg_type(call_node, class_name, parse_result, scope)
-                            .or_else(|| {
-                                self.get_init_arg_type(call_node, class_name, parse_result, scope)
-                            })
-                            .unwrap_or_else(|| elem_type.clone());
-                        Some(vec![acc_type, elem_type])
-                    }
-                    "slice_when" | "chunk_while" => Some(vec![elem_type.clone(), elem_type]),
-                    "with_index" => {
-                        let mut params = vec![elem_type, Type::Integer];
-                        while params.len() < param_count {
-                            params.push(Type::Untyped);
-                        }
-                        Some(params)
-                    }
-                    "tap" => Some(vec![tap_receiver_type]),
-                    _ => None,
-                }
-            }
-            .or_else(|| rbs_block_seed.as_ref().map(|seed| seed.param_types.clone()))
-            .or_else(|| {
-                let resolved_receiver =
-                    self.try_resolve_receiver_inline(class_name, &receiver_type);
-                let receiver_class = self.type_to_class_name(&resolved_receiver)?;
-                let receiver_class = self
-                    .registry
-                    .resolve_class_name_for_type_name(&receiver_class, class_name)
-                    .unwrap_or(receiver_class);
-                let param_types = self.resolve_user_defined_block_param_types(
-                    &receiver_class,
-                    method_name.as_ref(),
-                    Self::receiver_is_singleton_dispatch(&receiver, scope.singleton_dispatch),
-                    0,
-                )?;
-                let (positional_arg_types, keyword_arg_types) = self
-                    .collect_call_arg_types_with_kw_skip(
-                        call_node,
-                        parse_result,
-                        class_name,
-                        scope,
-                        0,
-                    );
-                Some(Self::substitute_user_defined_block_param_types(
-                    param_types,
-                    &positional_arg_types,
-                    &keyword_arg_types,
-                ))
-            });
+            );
 
             if has_only_plain_required_params && !named_requireds.is_empty() {
                 if let Some(param_types) = side_effect_param_types {
@@ -63274,6 +63333,14 @@ impl<'a> InferenceEngine<'a> {
 
         let implicit_return =
             self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
+        self.refresh_unresolved_yield_param_types(
+            class_name,
+            &method_name,
+            is_singleton,
+            &body,
+            parse_result,
+            &scope,
+        );
         if method_name == "initialize" {
             for (name, old) in initialize_ivar_snapshot {
                 if !Self::type_needs_backward_propagation(&old) {
@@ -63332,6 +63399,54 @@ impl<'a> InferenceEngine<'a> {
         );
         if let Some(saved) = saved_ctx {
             self.enter_method_body_context(saved);
+        }
+    }
+
+    /// A replay binds parameters to caller types, so a yield argument that came from a block on
+    /// a parameter receiver can now be typed.
+    fn refresh_unresolved_yield_param_types(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        body: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) {
+        let Some(meta) =
+            self.registry
+                .lookup_method_block_meta(class_name, method_name, is_singleton)
+        else {
+            return;
+        };
+        if !meta.yields
+            || !meta
+                .yield_param_types
+                .iter()
+                .any(|ty| matches!(ty, Type::Untyped))
+        {
+            return;
+        }
+        let mut meta = meta.clone();
+        let summary = self.scan_method_body_summary(class_name, body, parse_result, scope);
+        let mut changed = false;
+        for (slot, types) in meta
+            .yield_param_types
+            .iter_mut()
+            .zip(&summary.yield_param_types)
+        {
+            if !matches!(slot, Type::Untyped) || types.is_empty() {
+                continue;
+            }
+            let ty = Type::from_type_vec(types.clone());
+            if !matches!(ty, Type::Untyped) {
+                *slot = ty;
+                changed = true;
+            }
+        }
+        if changed {
+            self.registry
+                .set_method_block_meta(class_name, method_name, is_singleton, meta);
         }
     }
 

@@ -222,7 +222,7 @@ class Level
 end
 ```
 
-## A yield inside a receiver block passes the block parameter type
+## A top-level caller block sees the yield type from a parameter receiver block
 
 ```ruby
 class Mapper

@@ -32,7 +32,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - block / Proc / lambda / `yield` / Enumerable / Enumerator / Lazy（同じdispatchのsource overrideがない `block_given?` / 安定した `&block` のガードとcall block内のyieldからrequirednessを推論し、明示RBSのblock契約を優先。`Enumerator::Lazy.new` は既知 enumerable source の要素型を block に渡し、yielder への送信型から出力要素型を推論。遅延解決された source method return を
   block dispatch 前に反映し、source method の yield 型に呼び出し引数を代入し、block signature にも positional / keyword method parameter の型を反映し、`&` で渡された Proc / lambda の戻り型にも yield 引数型を反映し、tuple の要素 union とリテラル演算を block 内へ伝播。既知の空配列に対する
   `map` / `collect` / `map!` は空の結果を保ち、source-defined `map` / `collect` override の戻り型を優先し、遅延 block return でも標準 `map` / `collect` の Array shape を維持し、
-  単一要素配列リテラルを identity block で `map` / `collect` した場合も要素 shape を維持。source method の yield summary は early-exit guard と分岐内の local 代入を反映し、
+  単一要素配列リテラルを identity block で `map` / `collect` した場合も要素 shape を維持。source method の yield summary は early-exit guard と分岐内の local 代入を反映し、receiver 付き呼び出しの block 内の yield には block 引数の型を渡し（parameter レシーバはメソッド本体の replay で決める）、
   loop 内 yield は条件による local の絞り込みを反映し、statement 位置の pre-test `while` で条件全体が括弧付き単一 local 代入の場合に限り body を絞り込む。複合条件内の代入、式位置の loop、post-test loop は対象外。`for` は source-defined `each` の yield 型を
   index に反映し、単一 yield の複数 block 引数への destructuring も tuple / Array の形に沿って扱う。
   全経路で yield が保証される場合だけ本体が必ず実行されると扱い（source method が位置引数で分岐する場合は、その引数に渡されたリテラルの真偽と `when` の一致で経路を選ぶ）、そのblock末尾のnon-local `return` 後は呼び出し後の処理を到達不能とする。Array / Tuple の `sort_by(&:method)` は要素型を保つ。yield 型が不明な

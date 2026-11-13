@@ -716,7 +716,7 @@ end
 ```rbs
 class BlockOverloadReturn
   def unresolved_block: -> Array[untyped]
-  def yielded_block: { (untyped) -> untyped } -> Array[untyped]
+  def yielded_block: { (String) -> untyped } -> Array[untyped]
   def without_block: -> Enumerator["a", Array[untyped]]
 end
 ```
