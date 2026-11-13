@@ -46,7 +46,7 @@ end
 ### result
 
 ```rbs
-class Array[E]
+class Array[unchecked out E]
   def empty?: -> true
 end
 

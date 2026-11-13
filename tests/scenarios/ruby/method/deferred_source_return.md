@@ -195,7 +195,7 @@ end
 ### result
 
 ```rbs
-class Array[E]
+class Array[unchecked out E]
   def map: -> :source_map
   def collect: -> :source_collect
 end

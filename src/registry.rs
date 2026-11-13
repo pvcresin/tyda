@@ -1991,6 +1991,7 @@ pub struct ClassDataCold {
 
     pub class_type_params: Vec<String>,
     pub class_type_param_bounds: Vec<(String, rbs_ir::RbsType)>,
+    pub class_type_param_modifiers: Vec<(String, rbs_sys::TypeParamModifiers)>,
     pub class_type_param_defaults: Vec<(String, Type)>,
     // dirty-family skeleton pattern (`ClassDataCold`).
     pub dirty_method_pattern: Option<DirtyPattern>,
@@ -2212,6 +2213,7 @@ impl ClassData {
         }
         cold.class_type_params.shrink_to_fit();
         cold.class_type_param_bounds.shrink_to_fit();
+        cold.class_type_param_modifiers.shrink_to_fit();
         cold.class_type_param_defaults.shrink_to_fit();
     }
 
@@ -2295,6 +2297,8 @@ impl ClassData {
         bytes +=
             cold.class_type_param_bounds.len() * std::mem::size_of::<(String, rbs_ir::RbsType)>();
         bytes += cold.class_type_param_defaults.len() * std::mem::size_of::<(String, Type)>();
+        bytes += cold.class_type_param_modifiers.len()
+            * std::mem::size_of::<(String, rbs_sys::TypeParamModifiers)>();
         bytes
     }
 
@@ -11809,6 +11813,43 @@ impl TypeRegistry {
             .get(class_name)
             .map(|d| d.cold().class_type_param_bounds.as_slice())
             .unwrap_or(&[])
+    }
+
+    pub fn set_class_type_param_modifiers(
+        &mut self,
+        class_name: &str,
+        param_name: &str,
+        modifiers: rbs_sys::TypeParamModifiers,
+    ) {
+        let cold = self.class_data_mut(class_name).cold_mut();
+        match cold
+            .class_type_param_modifiers
+            .iter_mut()
+            .find(|(name, _)| name == param_name)
+        {
+            Some((_, existing)) => *existing = modifiers,
+            None => cold
+                .class_type_param_modifiers
+                .push((param_name.to_string(), modifiers)),
+        }
+    }
+
+    /// Adds an upper bound unless the parameter already has one.
+    pub fn add_class_type_param_bound(
+        &mut self,
+        class_name: &str,
+        param_name: &str,
+        bound: rbs_ir::RbsType,
+    ) {
+        let cold = self.class_data_mut(class_name).cold_mut();
+        if !cold
+            .class_type_param_bounds
+            .iter()
+            .any(|(name, _)| name == param_name)
+        {
+            cold.class_type_param_bounds
+                .push((param_name.to_string(), bound));
+        }
     }
 
     pub fn set_class_type_param_defaults(

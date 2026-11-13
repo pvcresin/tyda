@@ -276,6 +276,52 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// Modifiers and upper bound of `type_member(:out) { { upper: Numeric } }`.
+    pub(crate) fn type_member_decl(
+        node: &Node<'_>,
+    ) -> (rbs_sys::TypeParamModifiers, Option<crate::rbs::ir::RbsType>) {
+        let Some(call) = node.as_call_node() else {
+            return (rbs_sys::TypeParamModifiers::default(), None);
+        };
+        let variance = call
+            .arguments()
+            .and_then(|args| args.arguments().iter().next())
+            .and_then(|arg| arg.as_symbol_node())
+            .and_then(|symbol| match symbol.unescaped() {
+                b"out" => Some(rbs_sys::Variance::Covariant),
+                b"in" => Some(rbs_sys::Variance::Contravariant),
+                _ => None,
+            });
+        let upper_bound = call
+            .block()
+            .and_then(|block| block.as_block_node())
+            .and_then(|block| block.body())
+            .and_then(|body| body.as_statements_node())
+            .and_then(|statements| statements.body().iter().next())
+            .and_then(|hash| hash.as_hash_node())
+            .and_then(|hash| {
+                hash.elements().iter().find_map(|element| {
+                    let assoc = element.as_assoc_node()?;
+                    let key = assoc.key().as_symbol_node()?;
+                    if key.unescaped() != b"upper" {
+                        return None;
+                    }
+                    let value = String::from_utf8_lossy(assoc.value().location().as_slice());
+                    let rbs = crate::sorbet::sig::convert_sorbet_type_str(value.trim());
+                    rbs_sys::parse_type(&rbs)
+                        .ok()
+                        .map(|ty| crate::rbs::ir::RbsType::from(&ty))
+                })
+            });
+        (
+            rbs_sys::TypeParamModifiers {
+                variance,
+                unchecked: false,
+            },
+            upper_bound,
+        )
+    }
+
     /// Detect `T.type_alias { SomeType }` and extract the aliased type.
     pub(crate) fn try_extract_type_alias(
         &self,

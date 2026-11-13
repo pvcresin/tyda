@@ -16128,6 +16128,22 @@ impl<'a> InferenceEngine<'a> {
                         } else if self.is_type_member_call(&write_node.value(), parse_result) {
                             self.registry
                                 .add_class_type_param(class_name, const_name.clone());
+                            let (modifiers, upper_bound) =
+                                Self::type_member_decl(&write_node.value());
+                            if modifiers != rbs_sys::TypeParamModifiers::default() {
+                                self.registry.set_class_type_param_modifiers(
+                                    class_name,
+                                    &const_name,
+                                    modifiers,
+                                );
+                            }
+                            if let Some(bound) = upper_bound {
+                                self.registry.add_class_type_param_bound(
+                                    class_name,
+                                    &const_name,
+                                    bound,
+                                );
+                            }
                             self.insert_class_body_constant(class_name, &const_name, Type::Untyped);
                         } else if self.collect_dynamic_namespace_constant(
                             &const_owner,
@@ -62001,6 +62017,11 @@ impl<'a> InferenceEngine<'a> {
             for line in lines {
                 if let Some(body) = line.strip_prefix("#:") {
                     self.add_class_type_params_from_comment_body(class_name, body.trim());
+                } else if let Some(decl) = line
+                    .strip_prefix("# @rbs generic")
+                    .filter(|rest| rest.starts_with(char::is_whitespace))
+                {
+                    self.add_class_type_param_decls(class_name, decl.trim());
                 }
             }
         }
@@ -62010,6 +62031,9 @@ impl<'a> InferenceEngine<'a> {
         let Some(inner) = body.strip_prefix('[').and_then(|b| b.strip_suffix(']')) else {
             return;
         };
+        if self.add_class_type_param_decls(class_name, inner) {
+            return;
+        }
         for param in Self::split_type_args(inner) {
             let param = param.trim();
             if param.is_empty() {
@@ -62029,6 +62053,38 @@ impl<'a> InferenceEngine<'a> {
             self.registry
                 .add_class_type_param(class_name, name.to_string());
         }
+    }
+
+    /// Reads `out T < Bound, U` with the RBS parser; false when it is not valid RBS.
+    fn add_class_type_param_decls(&mut self, class_name: &str, params: &str) -> bool {
+        let Ok(signature) = rbs_sys::parse_signature(&format!("class TypeParams[{params}]\nend\n"))
+        else {
+            return false;
+        };
+        let Some(rbs_sys::Declaration::Class {
+            type_params,
+            type_param_bounds,
+            type_param_modifiers,
+            ..
+        }) = signature.declarations.into_iter().next()
+        else {
+            return false;
+        };
+        for name in type_params {
+            self.registry.add_class_type_param(class_name, name);
+        }
+        for (name, modifiers) in type_param_modifiers {
+            self.registry
+                .set_class_type_param_modifiers(class_name, &name, modifiers);
+        }
+        for (name, bound) in type_param_bounds {
+            self.registry.add_class_type_param_bound(
+                class_name,
+                &name,
+                crate::rbs::ir::RbsType::from(&bound),
+            );
+        }
+        true
     }
 
     fn inline_assertion_for_node<'b>(

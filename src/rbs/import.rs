@@ -155,9 +155,13 @@ fn merge_signature_into_registry(
                 type_params,
                 type_param_bounds,
                 type_param_defaults,
+                type_param_modifiers,
                 mixins,
                 variables,
             } => {
+                for (param, modifiers) in type_param_modifiers {
+                    registry.set_class_type_param_modifiers(name, param, *modifiers);
+                }
                 if let Some(sc) = superclass {
                     let superclass_name = resolve_classish_name_alias(sc, type_aliases);
                     registry.set_superclass(name, &superclass_name);
@@ -205,11 +209,15 @@ fn merge_signature_into_registry(
                 type_params,
                 type_param_bounds,
                 type_param_defaults,
+                type_param_modifiers,
                 self_types,
                 mixins,
                 variables,
             } => {
                 registry.set_is_module(name, true);
+                for (param, modifiers) in type_param_modifiers {
+                    registry.set_class_type_param_modifiers(name, param, *modifiers);
+                }
                 if !type_params.is_empty() {
                     registry.set_class_type_params(name, type_params.clone());
                 }

@@ -314,6 +314,12 @@ impl TypeRegistry {
             data.cold_mut().class_type_param_bounds =
                 rbs_data.cold().class_type_param_bounds.clone();
         }
+        if !rbs_data.cold().class_type_param_modifiers.is_empty()
+            && data.cold().class_type_param_modifiers.is_empty()
+        {
+            data.cold_mut().class_type_param_modifiers =
+                rbs_data.cold().class_type_param_modifiers.clone();
+        }
         if !rbs_data.cold().class_type_param_defaults.is_empty()
             && data.cold().class_type_param_defaults.is_empty()
         {

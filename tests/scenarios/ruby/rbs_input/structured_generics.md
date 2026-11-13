@@ -236,3 +236,25 @@ class LowerUser
   def value: -> Integer
 end
 ```
+
+## A source class keeps the variance and bound of its RBS declaration
+
+```rbs
+class Producer[out T < Numeric]
+  def get: -> T
+end
+```
+
+```ruby
+class Producer
+  def get = nil
+end
+```
+
+### result
+
+```rbs
+class Producer[out T < Numeric]
+  def get: -> untyped
+end
+```

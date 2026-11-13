@@ -604,3 +604,47 @@ class Bounded
   def keep: [T < Integer | String] (T x) -> T
 end
 ```
+
+## A class type parameter from @rbs generic
+
+### update
+
+```ruby
+# @rbs generic T
+class Box
+  #: (T) -> void
+  def initialize(value) = @value = value
+
+  #: -> T
+  def get = @value
+end
+```
+
+### result
+
+```rbs
+class Box[T]
+  def initialize: (T value) -> void
+  def get: -> T
+end
+```
+
+## A class type parameter bound from @rbs generic
+
+### update
+
+```ruby
+# @rbs generic T < Numeric
+class NumBox
+  #: -> T
+  def get = nil
+end
+```
+
+### result
+
+```rbs
+class NumBox[T < Numeric]
+  def get: -> T
+end
+```

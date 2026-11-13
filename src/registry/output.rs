@@ -281,7 +281,11 @@ impl TypeRegistry {
         let mixins: Vec<(String, String)> = data
             .mixins
             .iter()
-            .filter(|m| !m.external_source)
+            // The `[Elem]` header already declares the generic; Sorbet's runtime module adds nothing.
+            .filter(|m| {
+                !m.external_source
+                    && !(m.kind == MixinKind::Extend && m.module_name.as_ref() == "T::Generic")
+            })
             .map(|m| {
                 let kind_str = match m.kind {
                     MixinKind::Include => "include",
@@ -310,7 +314,7 @@ impl TypeRegistry {
 
         ClassInfo {
             name: name.to_string(),
-            type_params: data.cold().class_type_params.clone(),
+            type_params: self.class_type_param_decls(name, data),
             methods: all_methods,
             aliases: alias_sigs,
             constants,
@@ -397,6 +401,53 @@ impl TypeRegistry {
             rebuilt.append(&mut orphan);
         }
         *all_methods = rebuilt;
+    }
+
+    /// `[unchecked out T < Bound = Default]` entries for the class header. RBS rejects a class
+    /// redeclared with different type parameters, so these follow the declaration exactly.
+    fn class_type_param_decls(&self, class_name: &str, data: &ClassData) -> Vec<String> {
+        let cold = data.cold();
+        cold.class_type_params
+            .iter()
+            .map(|name| {
+                let mut decl = String::new();
+                if let Some((_, modifiers)) = cold
+                    .class_type_param_modifiers
+                    .iter()
+                    .find(|(param, _)| param == name)
+                {
+                    if modifiers.unchecked {
+                        decl.push_str("unchecked ");
+                    }
+                    match modifiers.variance {
+                        Some(rbs_sys::Variance::Covariant) => decl.push_str("out "),
+                        Some(rbs_sys::Variance::Contravariant) => decl.push_str("in "),
+                        None => {}
+                    }
+                }
+                decl.push_str(name);
+                if let Some((_, bound)) = cold
+                    .class_type_param_bounds
+                    .iter()
+                    .find(|(param, _)| param == name)
+                {
+                    let bound = crate::rbs::import::convert_imported_rbs_type(
+                        bound,
+                        self.type_aliases(),
+                        Some(class_name),
+                    );
+                    decl.push_str(&format!(" < {bound}"));
+                }
+                if let Some((_, default)) = cold
+                    .class_type_param_defaults
+                    .iter()
+                    .find(|(param, _)| param == name)
+                {
+                    decl.push_str(&format!(" = {default}"));
+                }
+                decl
+            })
+            .collect()
     }
 
     /// Inference reads a declared method type parameter as `untyped`; the rendered signature

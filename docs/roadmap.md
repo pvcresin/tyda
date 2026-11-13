@@ -63,8 +63,8 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 
 - [ ] 型の入力（`.rbs` / `sig/`、`.rbi`、インライン RBS、Sorbet の `sig` と RBS コメント）のジェネリクスを正確に読む
   - RBS：`new` の引数からクラスの型引数を推論しない、同じファイルに source 定義があるとメソッドのジェネリクスが `untyped` になる（`known-issues/rbs_generics.md`）
-  - インライン RBS：`# @rbs generic` と `# @rbs!` を読まない（`known-issues/rbs_comment_generics.md`）
-  - Sorbet：RBI の `type_member` が型引数で束縛されない、`type_member` / `#: [out Elem]` の variance と bound が落ちる、`extend T::Generic` が出力に残る、`extend T::Helpers` 付きの RBI の型を呼ぶと `T::Helpers` の宣言が出力に漏れる（`known-issues/sorbet_generics.md`）。これを直すときは、今の出力を固定している `sorbet/rbs_comment/` の通常シナリオも合わせて直す
+  - インライン RBS：`# @rbs!` を読まない（`known-issues/rbs_comment_generics.md`）
+  - Sorbet：RBI の `type_member` が型引数で束縛されない、`extend T::Helpers` 付きの RBI の型を呼ぶと `T::Helpers` の宣言が出力に漏れる（`known-issues/sorbet_generics.md`）
 - [ ] parameter レシーバの block 内の `yield` は、メソッド本体の replay で yield 型が決まる。トップレベルの呼び出し側の block は replay されないため、その block の戻り値が `untyped` のまま残る（`known-issues/ruby_methods.md`）
 - [ ] Proc / lambda に引数の型を持たせ、`Proc` ではなく `^(A) -> R` で出す。RBS では lambda と proc を区別できないため同じ表記にする（以下の出力の項目は `known-issues/generics_output.md`）
 - [ ] メソッドの型パラメータを出す。本体でメソッドを呼ばずに受け渡すだけの引数は `[T] (T x) -> T`。メソッドを呼び、戻り値にも出る引数は、呼び出し元から集めたクラスの union を bound にする（`[T < A | B] (T x) -> T`）。戻り値に出ない引数は型変数にしない。呼び出し元がなく本体でメソッドを呼ぶ引数は `untyped` のまま。型の分からない値へのメソッド呼び出し（`x.to_s` など）の戻り値は `untyped` とする

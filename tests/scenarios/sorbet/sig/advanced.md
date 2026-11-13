@@ -507,3 +507,70 @@ class ContainerUser
   def value: -> :s
 end
 ```
+
+## A covariant type_member keeps its variance
+
+### update
+
+```ruby
+class Producer
+  Elem = type_member(:out)
+
+  sig { returns(Elem) }
+  def get
+  end
+end
+```
+
+### result
+
+```rbs
+class Producer[out Elem]
+  def get: -> Elem
+end
+```
+
+## A type_member upper bound becomes a type parameter bound
+
+### update
+
+```ruby
+class NumBox
+  Elem = type_member { { upper: Numeric } }
+
+  sig { returns(Elem) }
+  def get
+  end
+end
+```
+
+### result
+
+```rbs
+class NumBox[Elem < Numeric]
+  def get: -> Elem
+end
+```
+
+## Extending T::Generic in Ruby keeps it out of the class declaration
+
+### update
+
+```ruby
+class Producer
+  extend T::Generic
+  Elem = type_member
+
+  sig { returns(Elem) }
+  def get
+  end
+end
+```
+
+### result
+
+```rbs
+class Producer[Elem]
+  def get: -> Elem
+end
+```
