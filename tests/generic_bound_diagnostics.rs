@@ -98,11 +98,10 @@ fn sorbet_type_parameter_binds_to_the_block_return() {
     }
 }
 
-// Known issues: each call passes an argument outside an explicit type
-// parameter bound, but no argument_type_mismatch is reported. When a case
-// reports it, move it to a regular test.
+// Each call passes an argument outside an explicit type parameter bound. Passing a value
+// within the bound instead is not reported.
 #[test]
-fn known_issue_explicit_bound_violations_not_reported() {
+fn explicit_bound_violations_are_reported() {
     let cases = [
         (
             "an RBS method bound",
@@ -119,8 +118,8 @@ fn known_issue_explicit_bound_violations_not_reported() {
         (
             "an RBS class bound",
             "class NumBox[T < Numeric]\n  def initialize: (T value) -> void\nend\n",
-            "NumBox.new(\"s\")\n",
-            1,
+            "class Maker\n  def make = NumBox.new(\"s\")\nend\n",
+            2,
         ),
         (
             "an inline RBS method bound",
@@ -143,9 +142,11 @@ fn known_issue_explicit_bound_violations_not_reported() {
                 "  #: (T) -> void\n",
                 "  def initialize(value) = @value = value\n",
                 "end\n",
-                "NumBox.new(\"s\")\n",
+                "class Maker\n",
+                "  def make = NumBox.new(\"s\")\n",
+                "end\n",
             ),
-            6,
+            7,
         ),
         (
             "a Sorbet type_member upper bound",
@@ -158,19 +159,24 @@ fn known_issue_explicit_bound_violations_not_reported() {
                 "  sig { params(value: Elem).void }\n",
                 "  def initialize(value) = @value = value\n",
                 "end\n",
-                "NumBox.new(\"s\")\n",
+                "class Maker\n",
+                "  def make = NumBox.new(\"s\")\n",
+                "end\n",
             ),
-            8,
+            9,
         ),
     ];
 
     for (name, rbs_source, source, line) in cases {
-        let reported = [false, true]
-            .into_iter()
-            .any(|compact| argument_mismatch_lines(source, rbs_source, compact).contains(&line));
-        assert!(
-            !reported,
-            "known issue fixed ({name}); move it to a regular test that asserts the mismatch"
-        );
+        for compact in [false, true] {
+            let lines = argument_mismatch_lines(source, rbs_source, compact);
+            assert_eq!(lines, vec![line], "{name}, compact={compact}");
+            let within_bound = source.replace(":s", "1").replace("\"s\"", "1");
+            let lines = argument_mismatch_lines(&within_bound, rbs_source, compact);
+            assert!(
+                lines.is_empty(),
+                "{name} within bound, compact={compact}: {lines:?}"
+            );
+        }
     }
 }

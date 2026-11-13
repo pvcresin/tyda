@@ -313,3 +313,27 @@ class IdentUser
   def symbol: -> :s
 end
 ```
+
+## An argument outside a class type parameter bound does not bind it
+
+```rbs
+class NumBox[T < Numeric]
+  def initialize: (T value) -> void
+end
+```
+
+```ruby
+class NumBoxMaker
+  def outside = NumBox.new("s")
+  def inside = NumBox.new(1)
+end
+```
+
+### result
+
+```rbs
+class NumBoxMaker
+  def outside: -> NumBox[untyped]
+  def inside: -> NumBox[Integer]
+end
+```

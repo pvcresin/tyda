@@ -43705,6 +43705,23 @@ impl<'a> InferenceEngine<'a> {
         if !params.iter().any(|param| vars.contains_key(param)) {
             return None;
         }
+        // An argument outside a declared bound does not bind the parameter.
+        for (param, bound) in self
+            .registry
+            .get_class_type_param_bounds(target_class)
+            .to_vec()
+        {
+            if let Some(actual) = vars.get(&param).cloned()
+                && !self.rbs_param_type_structurally_matches_with_registry_cached(
+                    &bound,
+                    &actual,
+                    &Type::Class(Sym::new(target_class)),
+                    &mut HashMap::new(),
+                )
+            {
+                vars.remove(&param);
+            }
+        }
         let defaults = self
             .registry
             .get_class_type_param_defaults(target_class)
