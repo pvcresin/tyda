@@ -3979,7 +3979,7 @@ class Consumer
   def self.take(s); end
 
   def self.go
-    v = Gen.run { Object.new }
+    v = Gen.run { unknown_value }
     take(v)
     take(123)
   end

@@ -61,7 +61,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 ### RBS
 
 - `.rbs` の自動発見、stdlib の lazy load、直接実行される文字列リテラル `require` のsource orderに応じた stdlib feature RBS の読み込み（`io/console` など slash 区切りfeature名も対応）、generic、overload、interface、alias。stdlib feature が core class に追加し core RBS にないメソッド（`pp` の `Kernel#pretty_inspect`、`abbrev` の `Array#abbrev`、`shellwords` の `String#shellescape` など）は、その `require` より後に実行される呼び出しだけで解決する。`shellwords` の `String#shellescape` / `String#shellsplit` は RBS stdlibを使えない場合も補う。メソッド本体内のリテラル `require` は同じメソッド内の後続呼び出しにだけ適用する。class / module / singleton class body内の `require` は、singleton `require` の再定義や動的な `send` / `eval` がある場合はロード済みと推定しない。メソッド内の条件分岐の本体・block / lambda・rescue 内の `require` と動的な `require` もロード済みと推定しない。トップレベルの `require` 再定義ではfeatureを読み込まず、`require` のsource定義やaliasがある場合はメソッド本体内のrequireも推定しない
-- inline RBS（`#:` / `# @rbs`）の単一・複数行宣言、block signature、type alias
+- inline RBS（`#:` / `# @rbs`）の単一・複数行宣言、block signature、type alias。明示したシグネチャのメソッド型パラメータ（`[T < Bound]`、Sorbet の `type_parameters`）は、推論では `untyped` として読み、出力では名前と bound を保つ
 - `self` / `instance` を call site の受け手へ解決する factory 型
 
 ### Sorbet（実験的）

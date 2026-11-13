@@ -196,7 +196,7 @@ end
 
 ```rbs
 class Container
-  def identity: (U x) -> U
+  def identity: [U] (U x) -> U
 end
 ```
 
@@ -213,7 +213,7 @@ end
 
 ```rbs
 class Transform
-  def swap: (A x, B y) -> B
+  def swap: [A, B] (A x, B y) -> B
 end
 ```
 
@@ -236,7 +236,7 @@ end
 
 ```rbs
 class Wrapper
-  def with_timer: { () -> U } -> U
+  def with_timer: [U] { () -> U } -> U
 end
 ```
 
@@ -478,5 +478,32 @@ end
 ```rbs
 class GenericBox[Elem]
   def get: -> Elem
+end
+```
+
+## A sig type parameter binds at the call site
+
+### update
+
+```ruby
+class Container
+  sig { type_parameters(:U).params(x: T.type_parameter(:U)).returns(T.type_parameter(:U)) }
+  def identity(x) = x
+end
+
+class ContainerUser
+  def value = Container.new.identity(:s)
+end
+```
+
+### result
+
+```rbs
+class Container
+  def identity: [U] (U x) -> U
+end
+
+class ContainerUser
+  def value: -> :s
 end
 ```

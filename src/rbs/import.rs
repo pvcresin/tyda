@@ -2045,6 +2045,24 @@ fn convert_imported_rbs_type_with_templates(
     )
 }
 
+/// Converts with the given type variables bound, such as a method's own type parameters kept
+/// by name for rendering.
+pub(crate) fn convert_imported_rbs_type_with_bindings(
+    rbs_ty: &rbs_ir::RbsType,
+    type_aliases: &HashMap<String, Type>,
+    current_scope: Option<&str>,
+    type_bindings: &HashMap<String, Type>,
+) -> Type {
+    convert_imported_rbs_type_inner(
+        rbs_ty,
+        type_aliases,
+        &HashMap::new(),
+        current_scope,
+        type_bindings,
+        &mut HashSet::new(),
+    )
+}
+
 pub(crate) fn convert_imported_rbs_type(
     rbs_ty: &rbs_ir::RbsType,
     type_aliases: &HashMap<String, Type>,

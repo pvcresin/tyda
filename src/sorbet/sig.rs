@@ -12,6 +12,7 @@ pub fn sig_source_to_rbs(sig_source: &str, block_param_index: Option<usize>) -> 
     let mut params_rbs: Option<String> = None;
     let mut block_rbs: Option<String> = None;
     let mut return_rbs = "void".to_string();
+    let mut type_params: Vec<String> = Vec::new();
 
     for (method_name, arg_str) in &chain {
         match method_name.as_str() {
@@ -30,8 +31,18 @@ pub fn sig_source_to_rbs(sig_source: &str, block_param_index: Option<usize>) -> 
             "void" => {
                 return_rbs = "void".to_string();
             }
+            "type_parameters" => {
+                if let Some(args) = arg_str {
+                    type_params.extend(
+                        split_top_level(args, ',')
+                            .iter()
+                            .filter_map(|arg| arg.trim().strip_prefix(':'))
+                            .map(str::to_string),
+                    );
+                }
+            }
             "override" | "overridable" | "abstract" | "final" | "generated" | "soft"
-            | "checked" | "on_failure" | "type_parameters" | "bind" => {}
+            | "checked" | "on_failure" | "bind" => {}
             _ => {}
         }
     }
@@ -39,6 +50,9 @@ pub fn sig_source_to_rbs(sig_source: &str, block_param_index: Option<usize>) -> 
     let return_rbs = wrap_complex_return_type(&return_rbs);
 
     let mut rbs = String::new();
+    if !type_params.is_empty() {
+        rbs.push_str(&format!("[{}] ", type_params.join(", ")));
+    }
     if let Some(params) = params_rbs.filter(|params| !params.is_empty() || block_rbs.is_none()) {
         rbs.push_str(&format!("({params}) "));
     }
@@ -727,7 +741,7 @@ mod tests {
             "sig { type_parameters(:U).params(x: T.type_parameter(:U)).returns(T.type_parameter(:U)) }",
         )
         .unwrap();
-        assert_eq!(rbs, "(U x) -> U");
+        assert_eq!(rbs, "[U] (U x) -> U");
     }
 
     #[test]
@@ -736,7 +750,7 @@ mod tests {
             "sig { type_parameters(:U, :V).params(x: T.type_parameter(:U), y: T.type_parameter(:V)).returns(T.type_parameter(:U)) }",
         )
         .unwrap();
-        assert_eq!(rbs, "(U x, V y) -> U");
+        assert_eq!(rbs, "[U, V] (U x, V y) -> U");
     }
 
     #[test]
@@ -745,7 +759,7 @@ mod tests {
             "sig do\n  type_parameters(:U)\n    .params(x: T.type_parameter(:U))\n    .returns(T.type_parameter(:U))\nend",
         )
         .unwrap();
-        assert_eq!(rbs, "(U x) -> U");
+        assert_eq!(rbs, "[U] (U x) -> U");
     }
 
     // ── Type conversions ──

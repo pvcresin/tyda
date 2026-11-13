@@ -1,47 +1,5 @@
 # Known Issues / Sorbet Generics
 
-## A sig type parameter renders as a method type parameter
-
-```ruby
-class Container
-  sig { type_parameters(:U).params(x: T.type_parameter(:U)).returns(T.type_parameter(:U)) }
-  def identity(x) = x
-end
-```
-
-### result
-
-```rbs
-class Container
-  def identity: [U] (U x) -> U
-end
-```
-
-## A sig type parameter binds at the call site
-
-```ruby
-class Container
-  sig { type_parameters(:U).params(x: T.type_parameter(:U)).returns(T.type_parameter(:U)) }
-  def identity(x) = x
-end
-
-class ContainerUser
-  def value = Container.new.identity(:s)
-end
-```
-
-### result
-
-```rbs
-class Container
-  def identity: [U] (U x) -> U
-end
-
-class ContainerUser
-  def value: -> :s
-end
-```
-
 ## A covariant type_member keeps its variance
 
 ```ruby
@@ -109,29 +67,6 @@ end
 ```rbs
 class BoxUser
   def value: -> Integer
-end
-```
-
-## An RBI type parameter binds at the call site
-
-```rbi
-class Ident
-  sig { type_parameters(:U).params(x: T.type_parameter(:U)).returns(T.type_parameter(:U)) }
-  def self.id(x); end
-end
-```
-
-```ruby
-class IdentUser
-  def value = Ident.id(:s)
-end
-```
-
-### result
-
-```rbs
-class IdentUser
-  def value: -> :s
 end
 ```
 

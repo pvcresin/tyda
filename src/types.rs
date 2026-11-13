@@ -1599,9 +1599,50 @@ pub struct HoverBlockSig {
     pub required: bool,
 }
 
+/// A declared type parameter of a method signature. Inference reads its uses as `untyped`;
+/// only rendering keeps the name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeParamSig {
+    pub name: std::string::String,
+    pub upper_bound: Option<Type>,
+    pub lower_bound: Option<Type>,
+}
+
+impl fmt::Display for TypeParamSig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name)?;
+        if let Some(bound) = &self.upper_bound {
+            write!(f, " < {bound}")?;
+        }
+        if let Some(bound) = &self.lower_bound {
+            write!(f, " > {bound}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Writes `[T, U < Bound] ` before a signature, or nothing.
+pub fn write_type_params<W: std::fmt::Write>(
+    writer: &mut W,
+    type_params: &[TypeParamSig],
+) -> fmt::Result {
+    if type_params.is_empty() {
+        return Ok(());
+    }
+    writer.write_char('[')?;
+    for (index, param) in type_params.iter().enumerate() {
+        if index > 0 {
+            writer.write_str(", ")?;
+        }
+        write!(writer, "{param}")?;
+    }
+    writer.write_str("] ")
+}
+
 #[derive(Debug, Clone)]
 pub struct MethodSig {
     pub name: std::string::String,
+    pub type_params: Vec<TypeParamSig>,
     pub params: Vec<Param>,
     pub return_type: Type,
     pub block: Option<HoverBlockSig>,
@@ -1632,6 +1673,7 @@ impl MethodSig {
 
 #[derive(Debug, Clone)]
 pub struct OverloadSig {
+    pub type_params: Vec<TypeParamSig>,
     pub params: Vec<Param>,
     pub return_type: Type,
     pub block: Option<HoverBlockSig>,

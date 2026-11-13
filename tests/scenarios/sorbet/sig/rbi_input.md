@@ -1150,3 +1150,26 @@ class App
   def lookup: -> (Readable & Writable)?
 end
 ```
+
+## An RBI type parameter binds at the call site
+
+```rbi
+class Ident
+  sig { type_parameters(:U).params(x: T.type_parameter(:U)).returns(T.type_parameter(:U)) }
+  def self.id(x); end
+end
+```
+
+```ruby
+class IdentUser
+  def value = Ident.id(:s)
+end
+```
+
+### result
+
+```rbs
+class IdentUser
+  def value: -> :s
+end
+```

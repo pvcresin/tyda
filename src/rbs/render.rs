@@ -307,6 +307,7 @@ fn write_method_sig<W: Write>(writer: &mut W, method: &MethodSig) -> io::Result<
         "def "
     };
     write!(writer, "  {visibility}{prefix}{}: ", method.name)?;
+    write_type_param_list(writer, &method.type_params)?;
     write_signature(
         writer,
         &method.params,
@@ -323,6 +324,7 @@ fn write_method_sig<W: Write>(writer: &mut W, method: &MethodSig) -> io::Result<
     for overload in &method.overloads {
         write_spaces(writer, header_len + 2)?;
         writer.write_all(b"| ")?;
+        write_type_param_list(writer, &overload.type_params)?;
         write_signature(
             writer,
             &overload.params,
@@ -333,6 +335,19 @@ fn write_method_sig<W: Write>(writer: &mut W, method: &MethodSig) -> io::Result<
         writeln!(writer)?;
     }
     Ok(())
+}
+
+fn write_type_param_list<W: Write>(
+    writer: &mut W,
+    type_params: &[crate::types::TypeParamSig],
+) -> io::Result<()> {
+    if type_params.is_empty() {
+        return Ok(());
+    }
+    let mut list = String::new();
+    // Writing into a String cannot fail.
+    let _ = crate::types::write_type_params(&mut list, type_params);
+    writer.write_all(list.as_bytes())
 }
 
 fn write_signature<W: Write>(

@@ -77,6 +77,27 @@ fn inferred_parameters_do_not_report_other_callers_classes() {
     }
 }
 
+#[test]
+fn sorbet_type_parameter_binds_to_the_block_return() {
+    let source = concat!(
+        "class Gen\n",
+        "  extend T::Sig\n",
+        "  sig { type_parameters(:U).params(blk: T.proc.returns(T.type_parameter(:U))).returns(T.type_parameter(:U)) }\n",
+        "  def self.run(&blk) = yield\n",
+        "end\n",
+        "class Consumer\n",
+        "  extend T::Sig\n",
+        "  sig { params(s: String).void }\n",
+        "  def self.take(s); end\n",
+        "  def self.go = take(Gen.run { Object.new })\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        let lines = argument_mismatch_lines(source, "", compact);
+        assert_eq!(lines, vec![10], "compact={compact}");
+    }
+}
+
 // Known issues: each call passes an argument outside an explicit type
 // parameter bound, but no argument_type_mismatch is reported. When a case
 // reports it, move it to a regular test.

@@ -2234,6 +2234,7 @@ impl<'a> InferenceEngine<'a> {
                 let array_return = Type::Array(Some(Box::new(elem_type.clone())));
                 overloads = vec![
                     crate::types::OverloadSig {
+                        type_params: Vec::new(),
                         params: vec![crate::types::Param {
                             name: "id_or_ids".to_string(),
                             param_type: Type::Array(Some(Box::new(id_type.clone()))),
@@ -2243,6 +2244,7 @@ impl<'a> InferenceEngine<'a> {
                         block: None,
                     },
                     crate::types::OverloadSig {
+                        type_params: Vec::new(),
                         params: vec![
                             crate::types::Param {
                                 name: "id_or_ids".to_string(),
@@ -2430,6 +2432,7 @@ impl<'a> InferenceEngine<'a> {
         };
 
         Some(crate::types::MethodSig {
+            type_params: Vec::new(),
             name: method_name.to_string(),
             params,
             return_type,

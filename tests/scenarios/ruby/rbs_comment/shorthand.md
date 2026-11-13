@@ -558,3 +558,49 @@ class ArrayOverloadChoice
                 | (Array[Integer] values) -> Integer
 end
 ```
+
+## A method type parameter in a #: comment
+
+### update
+
+```ruby
+class Ident
+  #: [T] (T x) -> T
+  def id(x) = x
+end
+
+class IdentUser
+  def symbol = Ident.new.id(:s)
+end
+```
+
+### result
+
+```rbs
+class Ident
+  def id: [T] (T x) -> T
+end
+
+class IdentUser
+  def symbol: -> :s
+end
+```
+
+## A union bound in a #: comment
+
+### update
+
+```ruby
+class Bounded
+  #: [T < Integer | String] (T x) -> T
+  def keep(x) = x
+end
+```
+
+### result
+
+```rbs
+class Bounded
+  def keep: [T < Integer | String] (T x) -> T
+end
+```

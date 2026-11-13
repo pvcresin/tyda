@@ -345,6 +345,6 @@ end
 
 ```rbs
 class Foo
-  def transform: (Array[T] items) { (T) -> String } -> Array[String]
+  def transform: [T] (Array[T] items) { (T) -> String } -> Array[String]
 end
 ```

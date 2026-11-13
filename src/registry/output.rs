@@ -1,5 +1,6 @@
 use super::*;
 use crate::rbs::ir as rbs_ir;
+use crate::types::TypeParamSig;
 
 impl TypeRegistry {
     fn attr_writer_call_site_value_type(
@@ -76,6 +77,7 @@ impl TypeRegistry {
             .iter()
             .map(|method| {
                 let mut sig = self.build_method_sig(class_name, method);
+                self.apply_declared_type_params(&mut sig, class_name, method);
                 // look up the visibility override from the sparse map. Both `private` and `protected` are
                 // stored in the map (since RBS has no `protected`, the renderer collapses it to `private`).
                 sig.is_private = data
@@ -397,6 +399,119 @@ impl TypeRegistry {
         *all_methods = rebuilt;
     }
 
+    /// Inference reads a declared method type parameter as `untyped`; the rendered signature
+    /// keeps it by name, with its bounds.
+    fn apply_declared_type_params(
+        &self,
+        sig: &mut MethodSig,
+        owner_class: &str,
+        method: &MethodDef,
+    ) {
+        let Some(primary) = method.rbs_method_types.first() else {
+            return;
+        };
+        self.apply_method_type_params(
+            primary,
+            owner_class,
+            &mut sig.type_params,
+            &mut sig.params,
+            &mut sig.return_type,
+            sig.block.as_mut(),
+        );
+        if !method.extra_overloads.is_empty() {
+            return;
+        }
+        for (overload, method_type) in sig
+            .overloads
+            .iter_mut()
+            .zip(method.rbs_method_types.iter().skip(1))
+        {
+            self.apply_method_type_params(
+                method_type,
+                owner_class,
+                &mut overload.type_params,
+                &mut overload.params,
+                &mut overload.return_type,
+                overload.block.as_mut(),
+            );
+        }
+    }
+
+    fn apply_method_type_params(
+        &self,
+        method_type: &rbs_ir::MethodType,
+        owner_class: &str,
+        type_params: &mut Vec<TypeParamSig>,
+        params: &mut [Param],
+        return_type: &mut Type,
+        block: Option<&mut HoverBlockSig>,
+    ) {
+        if method_type.type_params.is_empty() {
+            return;
+        }
+        let bindings: HashMap<String, Type> = method_type
+            .type_params
+            .iter()
+            .map(|name| (name.to_string(), Type::Class(*name)))
+            .collect();
+        let aliases = self.type_aliases();
+        let convert = |ty: &rbs_ir::RbsType| {
+            crate::rbs::import::convert_imported_rbs_type_with_bindings(
+                ty,
+                aliases,
+                Some(owner_class),
+                &bindings,
+            )
+        };
+        let bound_of = |bounds: &[(Sym, rbs_ir::RbsType)], name: &Sym| {
+            bounds
+                .iter()
+                .find(|(bound_name, _)| bound_name == name)
+                .map(|(_, bound)| convert(bound))
+        };
+        *type_params = method_type
+            .type_params
+            .iter()
+            .map(|name| TypeParamSig {
+                name: name.to_string(),
+                upper_bound: bound_of(&method_type.type_param_bounds, name),
+                lower_bound: bound_of(&method_type.type_param_lower_bounds, name),
+            })
+            .collect();
+        let declared = build_params_from_function_type(
+            &method_type.function_type,
+            &[],
+            aliases,
+            Some(owner_class),
+            &bindings,
+        );
+        let mut positional: Vec<&mut Param> = params
+            .iter_mut()
+            .filter(|param| param.kind != ParamKind::Block)
+            .collect();
+        if positional.len() == declared.len() {
+            for (param, declared) in positional.iter_mut().zip(declared) {
+                param.param_type = declared.param_type;
+            }
+        }
+        *return_type = convert(&method_type.function_type.return_type);
+        if let (Some(block), Some(declared_block)) = (block, method_type.block.as_ref()) {
+            let declared = build_params_from_function_type(
+                &declared_block.function_type,
+                &[],
+                aliases,
+                Some(owner_class),
+                &bindings,
+            );
+            if block.params.len() == declared.len() {
+                for (param, declared) in block.params.iter_mut().zip(declared) {
+                    param.param_type = declared.param_type;
+                }
+            }
+            block.return_type = convert(&declared_block.function_type.return_type);
+        }
+    }
+
     pub(super) fn build_method_sig(&self, class_name: &str, method: &MethodDef) -> MethodSig {
         self.build_method_sig_for_receiver(class_name, class_name, method)
     }
@@ -568,6 +683,7 @@ impl TypeRegistry {
                         })
                         .collect();
                     OverloadSig {
+                        type_params: Vec::new(),
                         params: ol_params,
                         return_type: o.return_type.clone(),
                         block: None,
@@ -585,8 +701,10 @@ impl TypeRegistry {
                         &param_names,
                         self.type_aliases(),
                         Some(owner_class),
+                        &HashMap::new(),
                     );
                     OverloadSig {
+                        type_params: Vec::new(),
                         params: ol_params,
                         return_type: crate::rbs::import::convert_imported_rbs_type(
                             &ft.return_type,
@@ -599,6 +717,7 @@ impl TypeRegistry {
                                 &[],
                                 self.type_aliases(),
                                 Some(owner_class),
+                                &HashMap::new(),
                             ),
                             return_type: crate::rbs::import::convert_imported_rbs_type(
                                 &block.function_type.return_type,
@@ -615,6 +734,7 @@ impl TypeRegistry {
         };
 
         let mut sig = MethodSig {
+            type_params: Vec::new(),
             name: method.name.to_string(),
             params,
             return_type,
@@ -765,6 +885,7 @@ impl TypeRegistry {
                     &[],
                     self.type_aliases(),
                     Some(owner_class),
+                    &HashMap::new(),
                 ),
                 return_type: crate::rbs::import::convert_imported_rbs_type(
                     &block.function_type.return_type,
@@ -908,8 +1029,16 @@ fn build_params_from_function_type(
     fallback_param_names: &[String],
     type_aliases: &HashMap<String, Type>,
     current_scope: Option<&str>,
+    type_bindings: &HashMap<String, Type>,
 ) -> Vec<Param> {
-    use crate::rbs::import::convert_imported_rbs_type;
+    let convert_imported_rbs_type = |ty: &rbs_ir::RbsType, aliases, scope| {
+        crate::rbs::import::convert_imported_rbs_type_with_bindings(
+            ty,
+            aliases,
+            scope,
+            type_bindings,
+        )
+    };
 
     let mut params = Vec::new();
     let mut idx = 0;
