@@ -18205,6 +18205,17 @@ impl<'a> InferenceEngine<'a> {
                 class_name,
             );
         }
+        let class_type_params: Vec<Sym> = self
+            .registry
+            .get_class_type_params(class_name)
+            .iter()
+            .map(Sym::new)
+            .collect();
+        if !class_type_params.is_empty() {
+            for method_type in &mut all_method_types {
+                *method_type = method_type.with_type_variables(&class_type_params);
+            }
+        }
         let rbs_param_annotations =
             Self::rbs_param_annotation_indices(&param_infos, &rbs_param_annotation_lines);
         let rbs_block_meta = Self::rbs_block_meta_from_param_annotations(&rbs_param_annotations);

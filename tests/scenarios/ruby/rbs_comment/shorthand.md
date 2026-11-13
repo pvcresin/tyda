@@ -648,3 +648,40 @@ class NumBox[T < Numeric]
   def get: -> T
 end
 ```
+
+## A class type parameter from @rbs generic binds through a typed receiver
+
+### update
+
+```ruby
+# @rbs generic T
+class Holder
+  #: -> T
+  def get = nil
+end
+
+class HolderSource
+  #: -> Holder[Integer]
+  def holder = Holder.new
+end
+
+class HolderUser
+  def value = HolderSource.new.holder.get
+end
+```
+
+### result
+
+```rbs
+class Holder[T]
+  def get: -> T
+end
+
+class HolderSource
+  def holder: -> Holder[Integer]
+end
+
+class HolderUser
+  def value: -> Integer
+end
+```
