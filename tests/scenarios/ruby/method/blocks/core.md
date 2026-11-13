@@ -589,7 +589,7 @@ def make_lambda = -> () { 1 }
 
 ```rbs
 class Object < BasicObject
-  def make_lambda: -> Proc
+  def make_lambda: -> (^() -> 1)
 end
 ```
 

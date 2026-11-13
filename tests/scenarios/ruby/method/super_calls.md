@@ -696,7 +696,7 @@ class ProcSuperChild < ProcSuperParent
 end
 
 module ProcSuperMethods
-  def value: (Integer item) -> Proc
+  def value: (Integer item) -> (^() -> String)
 end
 
 class ProcSuperParent

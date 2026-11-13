@@ -223,7 +223,7 @@ class Directory
 end
 
 class DirectoryBody
-  def initialize: (Proc files) -> void
+  def initialize: ((^(?) -> Integer?) files) -> void
   def each: -> untyped
 end
 

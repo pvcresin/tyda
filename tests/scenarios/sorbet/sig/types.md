@@ -295,7 +295,7 @@ end
 
 ```rbs
 class Foo
-  def on_error: (Proc handler) -> void
+  def on_error: ((^() -> bot) handler) -> void
 end
 ```
 

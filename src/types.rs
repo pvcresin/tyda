@@ -841,13 +841,44 @@ impl Type {
 
     fn dedup_rendered_preserve_order(types: &[Type]) -> Vec<String> {
         let mut unique = Vec::new();
+        let merged_proc = Self::merged_proc_member(types);
+        let mut proc_written = false;
         for ty in types {
-            let rendered = ty.to_string();
+            let rendered = match (ty, &merged_proc) {
+                (Type::Proc { .. }, Some(_)) if proc_written => continue,
+                (Type::Proc { .. }, Some(merged)) => {
+                    proc_written = true;
+                    merged.to_string()
+                }
+                _ => ty.to_string(),
+            };
             if !unique.contains(&rendered) {
                 unique.push(rendered);
             }
         }
         unique
+    }
+
+    /// Several procs in one union render as one proc returning the union of their returns.
+    fn merged_proc_member(types: &[Type]) -> Option<Type> {
+        let mut returns = Vec::new();
+        let mut takes_params = false;
+        for ty in types {
+            if let Type::Proc {
+                return_type,
+                param_count,
+                ..
+            } = ty
+            {
+                returns.push(return_type.as_ref().clone());
+                takes_params |= *param_count > 0;
+            }
+        }
+        (returns.len() > 1).then(|| Type::Proc {
+            return_type: Box::new(Type::from_type_vec(returns)),
+            param_count: usize::from(takes_params),
+            literal: None,
+        })
     }
 
     pub fn union_with(self, other: Type) -> Type {
@@ -1539,7 +1570,21 @@ impl fmt::Display for Type {
             }
             Type::SelfType => write!(f, "self"),
             Type::InstanceType => write!(f, "instance"),
-            Type::Proc { .. } => write!(f, "Proc"),
+            // Parenthesized so the proc type stays one type inside a union, `?` or parameter list.
+            Type::Proc {
+                return_type,
+                param_count,
+                ..
+            } => {
+                let return_type = format!("{return_type:#}");
+                if return_type == "untyped" {
+                    write!(f, "Proc")
+                } else if *param_count == 0 {
+                    write!(f, "(^() -> {return_type})")
+                } else {
+                    write!(f, "(^(?) -> {return_type})")
+                }
+            }
             Type::Tuple(types) => {
                 if types.is_empty() {
                     return write!(f, "[ ]");

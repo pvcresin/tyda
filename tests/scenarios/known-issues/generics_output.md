@@ -89,24 +89,6 @@ class Namer
 end
 ```
 
-## Lambda and proc literals render as proc types
-
-```ruby
-class Maker
-  def make_lambda = ->(n) { "s" }
-  def make_proc = proc { |n| "s" }
-end
-```
-
-### result
-
-```rbs
-class Maker
-  def make_lambda: -> ^(untyped) -> "s"
-  def make_proc: -> ^(untyped) -> "s"
-end
-```
-
 ## Calling a proc parameter links its argument and return types
 
 ```ruby

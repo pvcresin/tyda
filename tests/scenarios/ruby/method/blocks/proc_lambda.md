@@ -265,7 +265,7 @@ end
 
 ```rbs
 class Runner
-  def run: -> Proc
+  def run: -> (^() -> 1)
 end
 ```
 
@@ -392,5 +392,25 @@ end
 ```rbs
 class Runner
   def run: -> [1, { key: 2 }]
+end
+```
+
+## Lambda and proc literals render as proc types
+
+### update
+
+```ruby
+class Maker
+  def make_lambda = ->(n) { "s" }
+  def make_proc = proc { |n| "s" }
+end
+```
+
+### result
+
+```rbs
+class Maker
+  def make_lambda: -> (^(?) -> "s")
+  def make_proc: -> (^(?) -> "s")
 end
 ```
