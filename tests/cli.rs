@@ -4924,6 +4924,55 @@ fn singleton_method_in_another_file_does_not_resolve_to_private_kernel() {
     );
 }
 
+// Known issue: a scope defined in a concern's `included` block keeps `self` when a model in
+// another file calls it from the CLI. The scenario runner analyzes the other files first and
+// resolves `ActiveRecord::Relation[Pipeline]`. When the check fails, drop it.
+#[test]
+fn known_issue_concern_scope_keeps_self_across_files() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let models = dir.path().join("app/models");
+    fs::create_dir_all(models.join("concerns")).expect("failed to create dirs");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("failed to write");
+    fs::write(
+        models.join("application_record.rb"),
+        "class ApplicationRecord < ActiveRecord::Base\n  self.abstract_class = true\nend\n",
+    )
+    .expect("failed to write");
+    fs::write(
+        models.join("concerns/has_status.rb"),
+        concat!(
+            "module HasStatus\n",
+            "  extend ActiveSupport::Concern\n",
+            "  included do\n",
+            "    scope :failed, -> { where(status: 2) }\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+    fs::write(
+        models.join("pipeline.rb"),
+        "class Pipeline < ApplicationRecord\n  include HasStatus\nend\n",
+    )
+    .expect("failed to write");
+    fs::write(
+        models.join("report.rb"),
+        "class Report\n  def self.failed_pipelines = Pipeline.failed\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def self.failed_pipelines: -> ActiveRecord::Relation[self]"),
+        "known issue fixed (concern scope across files); drop this check: {rbs}"
+    );
+}
+
 // Known issue: the scenario runner and the LSP analyze the current file at full depth and infer
 // these (`ruby/control/loops.md`, `ruby/method/call_return.md`). The CLI keeps `file.read(len)`
 // as a call without arguments and resolves it after the merge, where the first `IO#read`
