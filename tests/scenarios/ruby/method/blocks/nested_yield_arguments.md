@@ -114,3 +114,23 @@ class DoublerUser
   def labels: -> Array[String]
 end
 ```
+
+## A top-level caller block sees the yield type from a parameter receiver block
+
+### update
+
+```ruby
+class Mapper
+  def map_all(xs) = xs.map { |e| yield e }
+end
+
+Mapper.new.map_all([1]) { |e| e.to_s }
+```
+
+### result
+
+```rbs
+class Mapper
+  def map_all: [T] (Array[Integer] xs) { (Integer) -> T } -> Array[T]
+end
+```

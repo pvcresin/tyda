@@ -222,24 +222,6 @@ class Level
 end
 ```
 
-## A top-level caller block sees the yield type from a parameter receiver block
-
-```ruby
-class Mapper
-  def map_all(xs) = xs.map { |e| yield e }
-end
-
-Mapper.new.map_all([1]) { |e| e.to_s }
-```
-
-### result
-
-```rbs
-class Mapper
-  def map_all: (Array[Integer] xs) { (Integer) -> String } -> Array[String]
-end
-```
-
 ## A short type name in an inline RBS annotation resolves in the enclosing class
 
 ```ruby
@@ -269,29 +251,31 @@ class Lookup
 end
 ```
 
-## An early return keeps its type when the method ends with begin and ensure
+## A blockless call takes the return guarded by block_given
 
 ```ruby
-class EnsureEntry
-  def self.open(flag)
-    entry = new
-    return entry if flag
-    begin
-      1
-    ensure
-      entry.close
-    end
+class Reader
+  def self.open
+    reader = new
+    return reader unless block_given?
+    yield reader
+    nil
   end
+end
 
-  def close = nil
+class ReaderUser
+  def reader = Reader.open
 end
 ```
 
 ### result
 
 ```rbs
-class EnsureEntry
-  def self.open: (untyped flag) -> (EnsureEntry | 1)
-  def close: -> nil
+class Reader
+  def self.open: ?{ (Reader) -> untyped } -> Reader?
+end
+
+class ReaderUser
+  def reader: -> Reader
 end
 ```

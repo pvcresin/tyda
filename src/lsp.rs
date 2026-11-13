@@ -11992,6 +11992,8 @@ end
         let shared_uri = Url::from_file_path(concerns_dir.join("shared.rb")).expect("shared uri");
         let (mut service, mut socket) = initialize_lsp(Some(root_uri)).await;
         let _ = open_document(&mut service, &mut socket, &shared_uri, shared_source).await;
+        // Before the scan, the lens shows the file alone; the caller in `a.rb` comes with it.
+        service.inner().ensure_workspace_scanned();
 
         let response = Service::call(
             &mut service,

@@ -33,10 +33,25 @@ pub enum RecordKey {
 impl fmt::Display for RecordKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RecordKey::Symbol(name) => write!(f, "{name}:"),
+            RecordKey::Symbol(name) if is_plain_record_key(name) => write!(f, "{name}:"),
+            RecordKey::Symbol(name) => write!(f, ":\"{}\" =>", escape_rbs_string_literal(name)),
             RecordKey::String(name) => write!(f, "\"{}\" =>", escape_rbs_string_literal(name)),
         }
     }
+}
+
+/// Whether RBS accepts the symbol as a bare `name:` record key. Other ASCII symbols take the
+/// `:"name" =>` form; RBS has no form for non-ASCII symbols, so they stay bare.
+fn is_plain_record_key(name: &str) -> bool {
+    if !name.is_ascii() {
+        return true;
+    }
+    let body = name.strip_suffix(['?', '!']).unwrap_or(name);
+    let mut bytes = body.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -48,22 +63,10 @@ pub struct RecordField {
 
 impl fmt::Display for RecordField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.key {
-            RecordKey::Symbol(name) => {
-                if self.optional {
-                    write!(f, "?{name}: {}", self.value)
-                } else {
-                    write!(f, "{name}: {}", self.value)
-                }
-            }
-            RecordKey::String(name) => {
-                if self.optional {
-                    write!(f, "?\"{}\" => {}", name.replace('"', "\\\""), self.value)
-                } else {
-                    write!(f, "\"{}\" => {}", name.replace('"', "\\\""), self.value)
-                }
-            }
+        if self.optional {
+            f.write_str("?")?;
         }
+        write!(f, "{} {}", self.key, self.value)
     }
 }
 

@@ -216,3 +216,32 @@ class SafeParse
   def parse: (untyped text) -> Integer
 end
 ```
+
+## An early return keeps its type when the method ends with begin and ensure
+
+### update
+
+```ruby
+class EnsureEntry
+  def self.open(flag)
+    entry = new
+    return entry if flag
+    begin
+      1
+    ensure
+      entry.close
+    end
+  end
+
+  def close = nil
+end
+```
+
+### result
+
+```rbs
+class EnsureEntry
+  def self.open: (untyped flag) -> (1 | EnsureEntry)
+  def close: -> nil
+end
+```

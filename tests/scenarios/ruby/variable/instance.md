@@ -639,3 +639,28 @@ class Child < Base
   def assign: -> :child
 end
 ```
+
+## A chained local and ivar write records the ivar type
+
+### update
+
+```ruby
+class Buffered
+  def body
+    return @buffered if defined?(@buffered)
+    buffer = @buffered = String.new
+    buffer
+  end
+
+  def peek = @buffered
+end
+```
+
+### result
+
+```rbs
+class Buffered
+  def body: -> String
+  def peek: -> String
+end
+```

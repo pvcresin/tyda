@@ -273,3 +273,21 @@ class Stats
   def min_and_max: -> [1 | 2 | 3, 1 | 2 | 3]
 end
 ```
+
+## A record key that is not a plain name is quoted
+
+### update
+
+```ruby
+class LinkedData
+  def to_ld = { "@context": "https://schema.org", "data-id": 1 }
+end
+```
+
+### result
+
+```rbs
+class LinkedData
+  def to_ld: -> { :"@context" => "https://schema.org", :"data-id" => 1 }
+end
+```

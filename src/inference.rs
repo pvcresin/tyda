@@ -25731,6 +25731,28 @@ impl<'a> InferenceEngine<'a> {
         statement_exits
     }
 
+    fn record_ivar_write(
+        &mut self,
+        class_name: &str,
+        write_node: &ruby_prism::InstanceVariableWriteNode<'_>,
+        value_type: Type,
+        scope: &mut Scope,
+    ) {
+        let ivar_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+        // Keep method-local writes separate from values inferred in other methods.
+        scope.invalidate_self_facts_for_ivar_write(&ivar_name);
+        if Self::can_track_ivar_write_locally(&write_node.value(), &value_type) {
+            scope.set_self_fact(&ivar_name, value_type.clone());
+        }
+        if scope.singleton_dispatch {
+            self.record_singleton_ivar(class_name, &ivar_name, value_type);
+        } else {
+            let value_type = Self::ivar_value_outside_initialize(scope, value_type);
+            self.registry
+                .add_ivar_type(class_name, &ivar_name, value_type);
+        }
+    }
+
     /// Also returns whether facts on self end after the statement. They still hold while its own
     /// value is inferred, because the statement reads its operands before its last call.
     fn process_statement_keeping_read_facts(
@@ -25811,6 +25833,10 @@ impl<'a> InferenceEngine<'a> {
                     self.runtime_fact_from_value(class_name, &value_node, parse_result, scope);
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
                 let value_type_for_facts = value_type.clone();
+                // `local = @ivar = value` writes the ivar too.
+                if let Some(ivar_write) = value_node.as_instance_variable_write_node() {
+                    self.record_ivar_write(class_name, &ivar_write, value_type.clone(), scope);
+                }
                 self.apply_condition_effects(
                     class_name,
                     &value_node,
@@ -25890,20 +25916,8 @@ impl<'a> InferenceEngine<'a> {
                 let write_node = node
                     .as_instance_variable_write_node()
                     .expect("must be InstanceVariableWriteNode");
-                let ivar_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
-                // Keep method-local writes separate from values inferred in other methods.
-                scope.invalidate_self_facts_for_ivar_write(&ivar_name);
-                if Self::can_track_ivar_write_locally(&write_node.value(), &value_type) {
-                    scope.set_self_fact(&ivar_name, value_type.clone());
-                }
-                if scope.singleton_dispatch {
-                    self.record_singleton_ivar(class_name, &ivar_name, value_type);
-                } else {
-                    let value_type = Self::ivar_value_outside_initialize(scope, value_type);
-                    self.registry
-                        .add_ivar_type(class_name, &ivar_name, value_type);
-                }
+                self.record_ivar_write(class_name, &write_node, value_type, scope);
             }
             Node::LocalVariableOrWriteNode { .. } => {
                 let write_node = node
@@ -28116,6 +28130,10 @@ impl<'a> InferenceEngine<'a> {
                                 self.merge_scope_locals(&entry_scope, &entry_scope, &rescue_scope);
                         }
                     }
+                }
+                // The rescue merge keeps the returns seen before `begin`; without one, keep them here.
+                if live_rescue.is_none() {
+                    Self::merge_prior_control_outputs(&mut merged_scope, scope);
                 }
 
                 if let Some(ensure_clause) = begin_node.ensure_clause()
