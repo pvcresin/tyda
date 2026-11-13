@@ -70,6 +70,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] メソッドの型パラメータを出す。本体でメソッドを呼ばずに受け渡すだけの引数は `[T] (T x) -> T`。メソッドを呼び、戻り値にも出る引数は、呼び出し元から集めたクラスの union を bound にする（`[T < A | B] (T x) -> T`）。戻り値に出ない引数は型変数にしない。呼び出し元がなく本体でメソッドを呼ぶ引数は `untyped` のまま。型の分からない値へのメソッド呼び出し（`x.to_s` など）の戻り値は `untyped` とする
 - [ ] Proc / block のジェネリクスを出す（`[A, R] (^(A) -> R f, A x) -> R`、`[E, R] (Array[E] xs) { (E) -> R } -> Array[R]`）。`Array[E]` のように受け取る型を決めるのは、本体から断定できる場合だけにする
 - [ ] interface の bound は使わない。任意のメソッドの組み合わせを表せないため、union の bound を基本にする
+- [ ] 明示された bound（`.rbs` / `sig/`、インライン RBS、Sorbet の `type_member`）に合わない引数を `argument_type_mismatch` で報告する。推論した bound は呼び出し元によって変わるため報告しない。今の診断と同じく、確実に不一致の場合だけにする。型の入力の読み込みを直してから行う（`tests/generic_bound_diagnostics.rs` の `known_issue_explicit_bound_violations_not_reported`）
 - [ ] ユーザー定義クラスのジェネリクス（`class Box[T]`）の推論は最後に検討する。ivar の数だけ型変数が増えないよう、ivar への書き込みがすべてコンストラクタ引数の受け渡しだけの場合などに限る
 - [ ] 呼び出し元が1種類だけのときに具体的な型で出すかは、使い勝手を見て決める
 
