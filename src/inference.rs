@@ -1709,6 +1709,13 @@ struct ExceptionEntry {
     has_unknown_exception: bool,
 }
 
+struct JumpTargets {
+    next_types: Vec<Type>,
+    break_types: Vec<Type>,
+    next_locals: Option<Arc<HashMap<String, Type>>>,
+    break_locals: Option<Arc<HashMap<String, Type>>>,
+}
+
 #[derive(Clone, Copy)]
 struct MethodParamHoverContext<'a> {
     class_name: &'a str,
@@ -1739,6 +1746,10 @@ pub(crate) struct Scope {
     forwarding_kw: Option<Type>,
     /// State at `raise`/`fail` points, used as the rescue entry scope.
     exception_entry: Option<Arc<ExceptionEntry>>,
+    /// Locals at `next` points of the innermost loop or block, joined into its back edge.
+    next_locals: Option<Arc<HashMap<String, Type>>>,
+    /// Locals at `break` points of the innermost loop or block, joined into its exit.
+    break_locals: Option<Arc<HashMap<String, Type>>>,
     enumerator_yielder_names: Arc<HashSet<String>>,
     enumerator_yielded_types: Vec<Type>,
     loop_depth: usize,
@@ -1948,6 +1959,34 @@ enum RecordKeyPresence {
 
 type RbsRelationCache = HashMap<(usize, Type), bool>;
 
+fn union_jump_locals(
+    left: Option<&Arc<HashMap<String, Type>>>,
+    right: Option<&Arc<HashMap<String, Type>>>,
+) -> Option<Arc<HashMap<String, Type>>> {
+    match (left, right) {
+        (Some(left), Some(right)) if !Arc::ptr_eq(left, right) => {
+            // A local missing at one jump is not yet assigned there, so it reads nil.
+            let mut merged = HashMap::with_capacity(left.len().max(right.len()));
+            for (name, ty) in left.iter() {
+                let joined = match right.get(name) {
+                    Some(other) if other == ty => ty.clone(),
+                    Some(other) => ty.clone().union_with(other.clone()),
+                    None => ty.clone().union_with(Type::Nil),
+                };
+                merged.insert(name.clone(), joined);
+            }
+            for (name, ty) in right.iter() {
+                if !left.contains_key(name) {
+                    merged.insert(name.clone(), ty.clone().union_with(Type::Nil));
+                }
+            }
+            Some(Arc::new(merged))
+        }
+        (Some(side), _) | (None, Some(side)) => Some(side.clone()),
+        (None, None) => None,
+    }
+}
+
 fn merge_identical_scope_maps<T: Clone + PartialEq>(
     left: &HashMap<String, T>,
     right: &HashMap<String, T>,
@@ -1979,6 +2018,8 @@ impl Scope {
             forwarding_rest: self.forwarding_rest.clone(),
             forwarding_kw: self.forwarding_kw.clone(),
             exception_entry: self.exception_entry.clone(),
+            next_locals: self.next_locals.clone(),
+            break_locals: self.break_locals.clone(),
             enumerator_yielder_names: self.enumerator_yielder_names.clone(),
             enumerator_yielded_types: self.enumerator_yielded_types.clone(),
             loop_depth: self.loop_depth,
@@ -2003,8 +2044,7 @@ impl Scope {
 
     fn fork_for_block(&self) -> Self {
         let mut scope = self.clone();
-        scope.next_types.clear();
-        scope.break_types.clear();
+        scope.enter_jump_target();
         scope.clear_array_first_facts();
         scope.hash_key_facts = Arc::default();
         scope.array_element_facts = Arc::default();
@@ -2332,12 +2372,63 @@ impl Scope {
         self.return_types.push(ty);
     }
 
-    fn add_next_type(&mut self, ty: Type) {
+    fn add_next_type(&mut self, ty: Type, locals: &Arc<HashMap<String, Type>>) {
         self.next_types.push(ty);
+        self.next_locals = union_jump_locals(self.next_locals.as_ref(), Some(locals));
     }
 
-    fn add_break_type(&mut self, ty: Type) {
+    fn add_break_type(&mut self, ty: Type, locals: &Arc<HashMap<String, Type>>) {
         self.break_types.push(ty);
+        self.break_locals = union_jump_locals(self.break_locals.as_ref(), Some(locals));
+    }
+
+    /// Starts a loop body: its `next`/`break` targets are this loop, not an outer one.
+    fn enter_jump_target(&mut self) {
+        self.next_types.clear();
+        self.break_types.clear();
+        self.next_locals = None;
+        self.break_locals = None;
+    }
+
+    fn take_jump_targets(&mut self) -> JumpTargets {
+        JumpTargets {
+            next_types: std::mem::take(&mut self.next_types),
+            break_types: std::mem::take(&mut self.break_types),
+            next_locals: self.next_locals.take(),
+            break_locals: self.break_locals.take(),
+        }
+    }
+
+    /// Ends a loop: its `break` points reach the code after it, and the outer targets return.
+    fn leave_jump_target(&mut self, outer: JumpTargets) {
+        self.join_break_locals();
+        self.next_types = outer.next_types;
+        self.break_types = outer.break_types;
+        self.next_locals = outer.next_locals;
+        self.break_locals = outer.break_locals;
+    }
+
+    fn join_next_locals(&mut self) {
+        if let Some(locals) = self.next_locals.take() {
+            self.join_jump_locals(&locals);
+        }
+    }
+
+    fn join_break_locals(&mut self) {
+        if let Some(locals) = self.break_locals.take() {
+            self.join_jump_locals(&locals);
+        }
+    }
+
+    fn join_jump_locals(&mut self, locals: &HashMap<String, Type>) {
+        for (name, ty) in locals {
+            let joined = match self.get(name) {
+                Some(current) if current == ty => continue,
+                Some(current) => current.clone().union_with(ty.clone()),
+                None => ty.clone().union_with(Type::Nil),
+            };
+            self.set(name, joined);
+        }
     }
 
     fn current_self_type(&self, class_name: &str) -> Type {
@@ -4706,6 +4797,14 @@ impl<'a> InferenceEngine<'a> {
         if let Some(entry) = branch.exception_entry.as_deref() {
             target.merge_exception_from_entry(entry);
         }
+        Self::merge_jump_locals(target, branch);
+    }
+
+    fn merge_jump_locals(target: &mut Scope, source: &Scope) {
+        target.next_locals =
+            union_jump_locals(target.next_locals.as_ref(), source.next_locals.as_ref());
+        target.break_locals =
+            union_jump_locals(target.break_locals.as_ref(), source.break_locals.as_ref());
     }
 
     fn merge_scope_locals(&self, base: &Scope, then_scope: &Scope, else_scope: &Scope) -> Scope {
@@ -4757,6 +4856,7 @@ impl<'a> InferenceEngine<'a> {
         target
             .break_types
             .splice(0..0, base.break_types.iter().cloned());
+        Self::merge_jump_locals(target, base);
     }
 
     fn merge_scope_locals_with_missing_local_nil(
@@ -4796,6 +4896,8 @@ impl<'a> InferenceEngine<'a> {
             break_types.extend(then_scope.break_types.clone());
             break_types.extend(else_scope.break_types.clone());
             merged.break_types = break_types;
+            Self::merge_jump_locals(&mut merged, then_scope);
+            Self::merge_jump_locals(&mut merged, else_scope);
             let mut yielded_types = Vec::with_capacity(
                 base.enumerator_yielded_types.len()
                     + then_scope.enumerator_yielded_types.len()
@@ -4867,6 +4969,16 @@ impl<'a> InferenceEngine<'a> {
                 base.exception_entry.as_deref(),
                 then_scope.exception_entry.as_deref(),
                 else_scope.exception_entry.as_deref(),
+            ),
+            next_locals: union_jump_locals(
+                union_jump_locals(base.next_locals.as_ref(), then_scope.next_locals.as_ref())
+                    .as_ref(),
+                else_scope.next_locals.as_ref(),
+            ),
+            break_locals: union_jump_locals(
+                union_jump_locals(base.break_locals.as_ref(), then_scope.break_locals.as_ref())
+                    .as_ref(),
+                else_scope.break_locals.as_ref(),
             ),
             enumerator_yielder_names: base.enumerator_yielder_names.clone(),
             enumerator_yielded_types: Vec::with_capacity(
@@ -5191,12 +5303,16 @@ impl<'a> InferenceEngine<'a> {
         local_names: &HashSet<String>,
     ) -> Scope {
         let mut masked = block_scope.clone();
+        masked.join_next_locals();
+        masked.join_break_locals();
         masked.remove_locals(local_names);
         let mut merged = self.merge_scope_locals(base, base, &masked);
         merged.return_types = masked.return_types.clone();
         merged.enumerator_yielded_types = masked.enumerator_yielded_types.clone();
         merged.next_types = base.next_types.clone();
         merged.break_types = base.break_types.clone();
+        merged.next_locals = base.next_locals.clone();
+        merged.break_locals = base.break_locals.clone();
         merged.self_override = base.self_override.clone();
         merged
     }
@@ -5211,6 +5327,17 @@ impl<'a> InferenceEngine<'a> {
         local_names: &HashSet<String>,
     ) -> Scope {
         let mut merged = self.merge_block_scope_locals(base, block_scope, local_names);
+        let joined;
+        let block_scope = if block_scope.next_locals.is_some() || block_scope.break_locals.is_some()
+        {
+            let mut scope = block_scope.clone();
+            scope.join_next_locals();
+            scope.join_break_locals();
+            joined = scope;
+            &joined
+        } else {
+            block_scope
+        };
         for name in block_flow::block_assigned_local_names(block) {
             if !local_names.contains(&name)
                 && let Some(ty) = block_scope.get(&name)
@@ -5244,6 +5371,14 @@ impl<'a> InferenceEngine<'a> {
                 base.exception_entry.as_deref(),
                 loop_scope.exception_entry.as_deref(),
                 None,
+            ),
+            next_locals: union_jump_locals(
+                base.next_locals.as_ref(),
+                loop_scope.next_locals.as_ref(),
+            ),
+            break_locals: union_jump_locals(
+                base.break_locals.as_ref(),
+                loop_scope.break_locals.as_ref(),
             ),
             enumerator_yielder_names: base.enumerator_yielder_names.clone(),
             enumerator_yielded_types: base.enumerator_yielded_types.clone(),
@@ -6768,7 +6903,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     right_scope,
                 );
-                scope.add_break_type(ty);
+                scope.add_break_type(ty, &right_scope.locals);
                 true
             }
             Node::NextNode { .. } => {
@@ -6779,7 +6914,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     right_scope,
                 );
-                scope.add_next_type(ty);
+                scope.add_next_type(ty, &right_scope.locals);
                 true
             }
             Node::AndNode { .. } => {
@@ -7889,8 +8024,7 @@ impl<'a> InferenceEngine<'a> {
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
-        loop_scope.break_types.clear();
-        loop_scope.next_types.clear();
+        loop_scope.enter_jump_target();
         let body_exits = statements.as_ref().is_some_and(|stmts| {
             self.process_statements_for_returns(class_name, stmts, parse_result, &mut loop_scope)
         });
@@ -8178,8 +8312,7 @@ impl<'a> InferenceEngine<'a> {
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
-        loop_scope.break_types.clear();
-        loop_scope.next_types.clear();
+        loop_scope.enter_jump_target();
         let index_type = source_each
             .map(|(_, target_type)| target_type)
             .unwrap_or_else(|| Self::for_iteration_target_type(&resolved_collection_type));
@@ -8298,8 +8431,7 @@ impl<'a> InferenceEngine<'a> {
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
-        loop_scope.break_types.clear();
-        loop_scope.next_types.clear();
+        loop_scope.enter_jump_target();
         // Local writes in a loop predicate keep their dedicated handling below.
         if !is_begin_modifier && Self::condition_has_pattern_capture(predicate) {
             let body_outcome = if is_until {
@@ -8376,6 +8508,7 @@ impl<'a> InferenceEngine<'a> {
                 parse_result,
                 &mut body_scope,
             );
+            body_scope.join_next_locals();
             let merged = self.merge_loop_scope_locals(&loop_scope, &body_scope);
             if Self::loop_locals_stable(&loop_scope, &merged) {
                 loop_scope = body_scope;
@@ -8407,18 +8540,15 @@ impl<'a> InferenceEngine<'a> {
         } else {
             matches!(Self::node_truthiness(&predicate_type), Some(false))
         };
-        let outer_breaks = std::mem::take(&mut scope.break_types);
-        let outer_nexts = std::mem::take(&mut scope.next_types);
+        let outer_jumps = scope.take_jump_targets();
         if is_begin_modifier && stops_after_first_body {
             *scope = loop_scope;
-            scope.break_types = outer_breaks;
-            scope.next_types = outer_nexts;
+            scope.leave_jump_target(outer_jumps);
             return (loop_value, never_completes);
         }
 
         *scope = self.merge_loop_scope_locals(scope, &loop_scope);
-        scope.break_types = outer_breaks;
-        scope.next_types = outer_nexts;
+        scope.leave_jump_target(outer_jumps);
         if loop_scope.break_types.is_empty() {
             self.apply_loop_predicate_residual(
                 class_name,
@@ -8489,8 +8619,7 @@ impl<'a> InferenceEngine<'a> {
         let mut loop_scope = scope.clone();
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
-        loop_scope.break_types.clear();
-        loop_scope.next_types.clear();
+        loop_scope.enter_jump_target();
         let index_type = source_each
             .map(|(_, target_type)| target_type)
             .unwrap_or_else(|| Self::for_iteration_target_type(&resolved_collection_type));
@@ -8509,6 +8638,7 @@ impl<'a> InferenceEngine<'a> {
                 &mut loop_scope,
             )
         });
+        loop_scope.join_next_locals();
         let finishes = self.for_loop_finishes_by_iteration(
             class_name,
             for_node,
@@ -8519,14 +8649,12 @@ impl<'a> InferenceEngine<'a> {
         );
         let for_value = Self::loop_result_type(&loop_scope, finishes.then_some(collection_type));
 
-        let outer_breaks = std::mem::take(&mut scope.break_types);
-        let outer_nexts = std::mem::take(&mut scope.next_types);
+        let outer_jumps = scope.take_jump_targets();
         *scope = self.merge_loop_scope_locals(scope, &loop_scope);
-        scope.break_types = outer_breaks;
-        scope.next_types = outer_nexts;
         if matches!(cardinality, IterationCardinality::AtLeastOnce) {
             self.overwrite_definite_target_locals(&for_node.index(), &loop_scope, scope);
         }
+        scope.leave_jump_target(outer_jumps);
         for_value
     }
 
@@ -27388,7 +27516,8 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
-                scope.add_break_type(ty);
+                let locals = scope.locals.clone();
+                scope.add_break_type(ty, &locals);
             }
             Node::NextNode { .. } => {
                 let next_node = node.as_next_node().expect("must be NextNode");
@@ -27398,7 +27527,8 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
-                scope.add_next_type(ty);
+                let locals = scope.locals.clone();
+                scope.add_next_type(ty, &locals);
             }
             Node::MultiWriteNode { .. } => {
                 self.process_multi_write(class_name, node, parse_result, scope);
@@ -27842,6 +27972,7 @@ impl<'a> InferenceEngine<'a> {
                     scope.return_types = rt;
                     scope.next_types = nt;
                     scope.break_types = bt;
+                    Self::merge_jump_locals(scope, &then_scope);
                     scope.merge_exception_from_map(&then_scope.locals);
                     if let Some(entry) = then_scope.exception_entry.as_deref() {
                         scope.merge_exception_from_entry(entry);
@@ -27860,6 +27991,7 @@ impl<'a> InferenceEngine<'a> {
                     scope.return_types = rt;
                     scope.next_types = nt;
                     scope.break_types = bt;
+                    Self::merge_jump_locals(scope, &else_scope);
                 } else {
                     *scope = self.merge_scope_locals(scope, &then_scope, &else_scope);
                 }
@@ -27979,6 +28111,7 @@ impl<'a> InferenceEngine<'a> {
                     scope.return_types = rt;
                     scope.next_types = nt;
                     scope.break_types = bt;
+                    Self::merge_jump_locals(scope, &body_scope);
                 } else if else_always_exits && !body_always_exits {
                     let mut rt = scope.return_types.clone();
                     rt.extend(body_scope.return_types.iter().cloned());
@@ -27993,6 +28126,7 @@ impl<'a> InferenceEngine<'a> {
                     scope.return_types = rt;
                     scope.next_types = nt;
                     scope.break_types = bt;
+                    Self::merge_jump_locals(scope, &else_scope);
                 } else {
                     *scope = self.merge_scope_locals(scope, &body_scope, &else_scope);
                 }
