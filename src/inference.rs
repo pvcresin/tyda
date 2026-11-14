@@ -4590,6 +4590,10 @@ impl<'a> InferenceEngine<'a> {
                     self.registry
                         .replace_ivar_type(class_name, name, ty.clone());
                 }
+                // A later read in the same method sees the value after the in-place change.
+                if scope.self_facts.contains_key(name) {
+                    scope.set_self_fact(name, ty.clone());
+                }
             }
             AliasTarget::Constant { owner, name } => {
                 self.set_constant_value(owner, name, ty.clone(), None, ConstantAlias::None);
