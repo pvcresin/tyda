@@ -9150,7 +9150,59 @@ impl<'a> InferenceEngine<'a> {
                 }
                 requires_block
             }
-            _ => false,
+            _ => {
+                let mut requires_block = false;
+                for child in Self::yield_scan_children(node) {
+                    requires_block |= Self::node_yield_requires_block(
+                        &child,
+                        block_param_name,
+                        guarded_by_block_given,
+                        trust_block_given_guard,
+                        trust_block_param_guard,
+                        found_yield,
+                    );
+                }
+                requires_block
+            }
+        }
+    }
+
+    /// Children evaluated in order with no branching, such as an assigned value or a returned value.
+    fn yield_scan_children<'pr>(node: &Node<'pr>) -> Vec<Node<'pr>> {
+        match node {
+            Node::LocalVariableWriteNode { .. } => {
+                vec![node.as_local_variable_write_node().unwrap().value()]
+            }
+            Node::LocalVariableOperatorWriteNode { .. } => {
+                vec![
+                    node.as_local_variable_operator_write_node()
+                        .unwrap()
+                        .value(),
+                ]
+            }
+            Node::InstanceVariableWriteNode { .. } => {
+                vec![node.as_instance_variable_write_node().unwrap().value()]
+            }
+            Node::InstanceVariableOperatorWriteNode { .. } => {
+                vec![
+                    node.as_instance_variable_operator_write_node()
+                        .unwrap()
+                        .value(),
+                ]
+            }
+            Node::ReturnNode { .. } => node
+                .as_return_node()
+                .unwrap()
+                .arguments()
+                .map(|args| args.arguments().iter().collect())
+                .unwrap_or_default(),
+            Node::ParenthesesNode { .. } => node
+                .as_parentheses_node()
+                .unwrap()
+                .body()
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -19806,7 +19858,17 @@ impl<'a> InferenceEngine<'a> {
                     );
                 }
             }
-            _ => {}
+            _ => {
+                for child in Self::yield_scan_children(body) {
+                    self.scan_method_body_summary_node(
+                        class_name,
+                        &child,
+                        parse_result,
+                        scope,
+                        summary,
+                    );
+                }
+            }
         }
     }
 

@@ -85,33 +85,6 @@ class DefaultDep
 end
 ```
 
-## A yield result stored in a local keeps the block signature
-
-```ruby
-class YieldResult
-  def run
-    result = yield
-    result
-  end
-end
-
-class YieldResultUser
-  def call = YieldResult.new.run { "done" }
-end
-```
-
-### result
-
-```rbs
-class YieldResult
-  def run: { () -> "done" } -> "done"
-end
-
-class YieldResultUser
-  def call: -> "done"
-end
-```
-
 ## A yield inside an each block passes the element type
 
 ```ruby
