@@ -64884,10 +64884,30 @@ impl<'a> InferenceEngine<'a> {
             };
         }
         let nesting = self.nesting_owner(class_name);
-        if nesting == "Object" {
+        let name = if nesting == "Object" {
             raw
         } else {
             crate::sym::join_scope(nesting, &raw)
+        };
+        self.reopened_alias_target(&name).unwrap_or(name)
+    }
+
+    /// `class Alias` after `Alias = Foo` reopens `Foo`.
+    fn reopened_alias_target(&self, name: &str) -> Option<String> {
+        if Self::is_real_class_data(&self.registry, name) {
+            return None;
+        }
+        let (owner, const_name) = Self::constant_owner_and_name(name);
+        if self
+            .registry
+            .constant_is_namespace_alias(&owner, &const_name)
+            != Some(true)
+        {
+            return None;
+        }
+        match self.constants.get(name)? {
+            Type::Singleton(target) if target.as_str() != name => Some(target.to_string()),
+            _ => None,
         }
     }
 

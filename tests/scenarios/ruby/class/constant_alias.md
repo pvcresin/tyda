@@ -516,10 +516,6 @@ AnonRef: singleton(Object)
 
 ## `class Alias` reopens the aliased class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
