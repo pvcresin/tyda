@@ -13271,6 +13271,12 @@ impl TypeRegistry {
                 }
             }
             Type::SplatRef(parts) => Type::SplatRef(Box::new(recur(parts))),
+            // `project_*` keeps the projection around a remaining marker.
+            Type::TruthyProjection(inner) => {
+                Type::project_truthy(&recur(inner)).unwrap_or(Type::Bot)
+            }
+            Type::FalsyProjection(inner) => Type::project_falsy(&recur(inner)).unwrap_or(Type::Bot),
+            Type::NonNilProjection(inner) => Type::project_non_nil(&recur(inner)),
             Type::PatternTrailingRef(subject, from_end) => {
                 let resolved_subject = recur(subject);
                 if Self::type_contains_param_ref_static(&resolved_subject) {

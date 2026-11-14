@@ -722,3 +722,29 @@ class CrossNilDefault
   def value: -> String?
 end
 ```
+
+## An ivar set from a parameter with an or fallback keeps the joined type
+
+### update
+
+```ruby
+class OrFallback
+  def initialize(label)
+    @label = label || "none"
+  end
+
+  def label = @label
+end
+
+OrFallback.new(nil)
+OrFallback.new("a")
+```
+
+### result
+
+```rbs
+class OrFallback
+  def initialize: (String? label) -> void
+  def label: -> String
+end
+```
