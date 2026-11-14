@@ -21664,6 +21664,14 @@ impl<'a> InferenceEngine<'a> {
                             let owner = self
                                 .initialize_owner_class(&target_class)
                                 .unwrap_or(target_class);
+                            let block = self.collect_call_site_block(
+                                &owner,
+                                "initialize",
+                                false,
+                                class_name,
+                                &call_node,
+                                parse_result,
+                            );
                             self.record_inferred_call_site(
                                 &owner,
                                 CallSite {
@@ -21675,7 +21683,7 @@ impl<'a> InferenceEngine<'a> {
                                         .map(|(name, ty)| (name.clone().into(), ty.clone()))
                                         .collect(),
                                     keyword_rest_shape: None,
-                                    block: None,
+                                    block: block.map(Box::new),
                                     caller_context: None,
                                     open_splat: None,
                                     self_call: false,
@@ -30687,9 +30695,16 @@ impl<'a> InferenceEngine<'a> {
                                 class_name,
                                 scope,
                             );
+                            let block = self.infer_initialize_call_block(
+                                class_name,
+                                class_name,
+                                &call_node,
+                                parse_result,
+                                scope,
+                            );
                             self.record_inferred_call_site(class_name, {
                                 let caller_context = Self::call_site_caller_context(
-                                    class_name, scope, &arg_types, &kw_types, None, &None,
+                                    class_name, scope, &arg_types, &kw_types, None, &block,
                                 );
                                 let keyword_arg_types = kw_types
                                     .into_iter()
@@ -30701,7 +30716,7 @@ impl<'a> InferenceEngine<'a> {
                                     arg_types,
                                     keyword_arg_types,
                                     keyword_rest_shape: None,
-                                    block: None,
+                                    block: block.map(Box::new),
                                     caller_context,
                                     open_splat: None,
                                     self_call: false,
@@ -31872,9 +31887,16 @@ impl<'a> InferenceEngine<'a> {
                                     .get_class_type_params(&target_class)
                                     .is_empty())
                                 .then(|| (arg_types.to_vec(), kw_types.clone()));
+                                let block = self.infer_initialize_call_block(
+                                    &target_class,
+                                    class_name,
+                                    &call_node,
+                                    parse_result,
+                                    scope,
+                                );
                                 self.record_inferred_call_site(&target_class, {
                                     let caller_context = Self::call_site_caller_context(
-                                        class_name, scope, &arg_types, &kw_types, None, &None,
+                                        class_name, scope, &arg_types, &kw_types, None, &block,
                                     );
                                     let keyword_arg_types = kw_types
                                         .into_iter()
@@ -31886,7 +31908,7 @@ impl<'a> InferenceEngine<'a> {
                                         arg_types,
                                         keyword_arg_types,
                                         keyword_rest_shape: None,
-                                        block: None,
+                                        block: block.map(Box::new),
                                         caller_context,
                                         open_splat: None,
                                         self_call: false,
@@ -58035,6 +58057,30 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// `Foo.new { ... }` passes the block on to `initialize`.
+    fn infer_initialize_call_block(
+        &mut self,
+        target_class: &str,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<HoverBlockSig> {
+        call_node.block()?;
+        let owner = self.initialize_owner_class(target_class)?;
+        let mut block_scope = scope.fork_for_block();
+        self.infer_user_defined_call_block(
+            &owner,
+            "initialize",
+            false,
+            None,
+            class_name,
+            call_node,
+            parse_result,
+            &mut block_scope,
+        )
     }
 
     fn initialize_owner_class(&mut self, class_name: &str) -> Option<String> {

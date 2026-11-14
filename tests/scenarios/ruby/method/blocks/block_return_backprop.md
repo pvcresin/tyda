@@ -135,10 +135,6 @@ end
 
 ## Block passed to new records its return in initialize
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -161,6 +157,6 @@ class Builder
 end
 
 class Foo
-  def initialize: (Integer n) { (String) -> Integer } -> void
+  def initialize: (Integer n) { (String) -> 1 } -> void
 end
 ```
