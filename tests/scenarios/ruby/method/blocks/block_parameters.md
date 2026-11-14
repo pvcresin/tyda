@@ -876,10 +876,6 @@ end
 
 ## Bare break in a block makes a source yield method call nilable
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

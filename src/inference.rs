@@ -25573,6 +25573,33 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) -> Option<HoverBlockSig> {
+        self.infer_user_defined_call_block_with_break(
+            owner_class,
+            method_name,
+            method_is_singleton,
+            receiver_type,
+            class_name,
+            call_node,
+            parse_result,
+            scope,
+        )
+        .map(|(block, _)| block)
+    }
+
+    /// Also returns the type a `break` in the block gives the call, when the source method
+    /// may run the block.
+    #[allow(clippy::too_many_arguments)]
+    fn infer_user_defined_call_block_with_break(
+        &mut self,
+        owner_class: &str,
+        method_name: &str,
+        method_is_singleton: bool,
+        receiver_type: Option<&Type>,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) -> Option<(HoverBlockSig, Option<Type>)> {
         let block_raw = call_node.block()?;
         if Self::call_is_sorbet_sig_dsl(call_node) {
             return None;
@@ -25633,19 +25660,22 @@ impl<'a> InferenceEngine<'a> {
                 return None;
             }
             let return_type = Self::substitute_param_refs(&return_type, &block_param_types);
-            return Some(HoverBlockSig {
-                params: block_param_types
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, ty)| Param {
-                        name: format!("arg{idx}"),
-                        param_type: ty,
-                        kind: ParamKind::Required,
-                    })
-                    .collect(),
-                return_type,
-                required: true,
-            });
+            return Some((
+                HoverBlockSig {
+                    params: block_param_types
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, ty)| Param {
+                            name: format!("arg{idx}"),
+                            param_type: ty,
+                            kind: ParamKind::Required,
+                        })
+                        .collect(),
+                    return_type,
+                    required: true,
+                },
+                None,
+            ));
         }
 
         let block = block_raw.as_block_node()?;
@@ -25736,13 +25766,22 @@ impl<'a> InferenceEngine<'a> {
         } else {
             Type::Nil
         };
-        match self.source_block_invocation(
+        let invocation = self.source_block_invocation(
             owner_class,
             method_name,
             method_is_singleton,
             Some(call_node),
             &mut Vec::new(),
-        ) {
+        );
+        let break_type = (invocation != IterationCardinality::Never
+            && !block_scope.break_types.is_empty()
+            && self.registry.method_call_has_user_source_definition(
+                owner_class,
+                method_name,
+                method_is_singleton,
+            ))
+        .then(|| Self::merge_reachable_types(block_scope.break_types.clone()));
+        match invocation {
             IterationCardinality::Never => {}
             IterationCardinality::Maybe => {
                 *scope = self.merge_block_scope_locals(scope, &block_scope, &block_local_names);
@@ -25757,19 +25796,22 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
-        Some(HoverBlockSig {
-            params: block_param_types
-                .into_iter()
-                .enumerate()
-                .map(|(idx, ty)| Param {
-                    name: format!("arg{idx}"),
-                    param_type: ty,
-                    kind: ParamKind::Required,
-                })
-                .collect(),
-            return_type,
-            required: true,
-        })
+        Some((
+            HoverBlockSig {
+                params: block_param_types
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, ty)| Param {
+                        name: format!("arg{idx}"),
+                        param_type: ty,
+                        kind: ParamKind::Required,
+                    })
+                    .collect(),
+                return_type,
+                required: true,
+            },
+            break_type,
+        ))
     }
 
     fn method_has_explicit_block_param(
@@ -30281,6 +30323,7 @@ impl<'a> InferenceEngine<'a> {
                     let self_overridden = scope.self_override.is_some();
                     self.ensure_class_available("Kernel");
                     self.ensure_class_available("Object");
+                    let mut block_break_type: Option<Type> = None;
                     let result = 'no_recv: {
                         if !self_overridden
                             && call_node.arguments().is_none()
@@ -30765,7 +30808,7 @@ impl<'a> InferenceEngine<'a> {
                             let mut block_scope = scope.fork_for_block();
                             let outer_discarded =
                                 std::mem::replace(&mut self.in_discarded_block_walk, true);
-                            let block = self.infer_user_defined_call_block(
+                            let block = self.infer_user_defined_call_block_with_break(
                                 class_name,
                                 &method_name,
                                 scope.singleton_dispatch,
@@ -30776,7 +30819,10 @@ impl<'a> InferenceEngine<'a> {
                                 &mut block_scope,
                             );
                             self.in_discarded_block_walk = outer_discarded;
-                            block
+                            block.map(|(block, break_type)| {
+                                block_break_type = break_type;
+                                block
+                            })
                         };
                         let arg_types_for_resolve = arg_types.clone();
                         let kw_types_for_resolve = kw_types.clone();
@@ -31012,6 +31058,7 @@ impl<'a> InferenceEngine<'a> {
 
                         Type::MethodReturnRef(class_name.into(), method_name.clone().into())
                     };
+                    let result = Self::include_optional_control_type(result, &block_break_type);
                     let result = Self::override_result_with_self_fact(
                         scope,
                         &call_node,
@@ -31214,6 +31261,7 @@ impl<'a> InferenceEngine<'a> {
                     if method_name == "select" && self.rails_feature_enabled() {
                         self.record_active_record_select_aliases(&receiver_type, &call_node);
                     }
+                    let mut block_break_type: Option<Type> = None;
                     let result = 'recv: {
                         if receiver_type == Type::Bot
                             && self.node_always_exits_in_method_scope(class_name, scope, &receiver)
@@ -32416,7 +32464,7 @@ impl<'a> InferenceEngine<'a> {
                                 let mut block_scope = scope.fork_for_block();
                                 let outer_discarded =
                                     std::mem::replace(&mut self.in_discarded_block_walk, true);
-                                let block = self.infer_user_defined_call_block(
+                                let block = self.infer_user_defined_call_block_with_break(
                                     &target_class,
                                     &method_name,
                                     method_is_singleton,
@@ -32428,7 +32476,10 @@ impl<'a> InferenceEngine<'a> {
                                 );
                                 self.in_discarded_block_walk = outer_discarded;
                                 self.block_pass_chain = outer_chain;
-                                block
+                                block.map(|(block, break_type)| {
+                                    block_break_type = break_type;
+                                    block
+                                })
                             };
                             first_pass_block_return =
                                 block.as_ref().map(|block| block.return_type.clone());
@@ -33478,6 +33529,7 @@ impl<'a> InferenceEngine<'a> {
                         };
                         wrap(result)
                     };
+                    let result = Self::include_optional_control_type(result, &block_break_type);
                     // The call is still walked so its arguments reach a definition in another file.
                     let result = match self.explicit_receiver_private_reach(
                         &receiver,
