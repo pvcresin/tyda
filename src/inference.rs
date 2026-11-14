@@ -61400,6 +61400,41 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// A truthy `=~` or `match` against a regexp literal leaves the match in `$~`.
+    fn truthy_predicate_matches_regexp(predicate: &Node<'_>) -> bool {
+        let is_regexp = |node: &Node<'_>| {
+            matches!(
+                node,
+                Node::RegularExpressionNode { .. } | Node::InterpolatedRegularExpressionNode { .. }
+            )
+        };
+        match predicate {
+            Node::CallNode { .. } => {
+                let call = predicate.as_call_node().expect("must be CallNode");
+                matches!(call.name().as_slice(), b"=~" | b"match")
+                    && (call.receiver().is_some_and(|receiver| is_regexp(&receiver))
+                        || call.arguments().is_some_and(|args| {
+                            args.arguments()
+                                .iter()
+                                .next()
+                                .is_some_and(|arg| is_regexp(&arg))
+                        }))
+            }
+            Node::AndNode { .. } => {
+                let and_node = predicate.as_and_node().expect("must be AndNode");
+                Self::truthy_predicate_matches_regexp(&and_node.left())
+                    || Self::truthy_predicate_matches_regexp(&and_node.right())
+            }
+            Node::ParenthesesNode { .. } => predicate
+                .as_parentheses_node()
+                .and_then(|parens| parens.body())
+                .and_then(|body| body.as_statements_node())
+                .and_then(|statements| statements.body().iter().last())
+                .is_some_and(|last| Self::truthy_predicate_matches_regexp(&last)),
+            _ => false,
+        }
+    }
+
     /// Loads the classes a nested capture compares, so binding can check their superclasses.
     fn load_nested_capture_classes(&mut self, pattern: &Node<'_>, subject_type: Option<&Type>) {
         struct CaptureClasses(Vec<String>);
@@ -61650,6 +61685,9 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
+        if outcome == ConditionOutcome::Truthy && Self::truthy_predicate_matches_regexp(node) {
+            scope.regexp_match_captures = true;
+        }
         if !Self::condition_has_flow_effects(node) {
             return;
         }

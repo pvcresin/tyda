@@ -186,3 +186,58 @@ class Object < BasicObject
   def probe: (untyped s) -> untyped
 end
 ```
+
+## A regexp match in an if condition sets numbered captures
+
+### update
+
+```rbs
+class CaptureInCondition
+  def line: -> String
+end
+```
+
+```ruby
+class CaptureInCondition
+  def key
+    if line =~ /\A(\w+)=/
+      $1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class CaptureInCondition
+  def key: -> String?
+end
+```
+
+## A regexp match in a guard clause sets numbered captures
+
+### update
+
+```rbs
+class CaptureInGuard
+  def line: -> String
+end
+```
+
+```ruby
+class CaptureInGuard
+  def key
+    return unless /\A(\w+)=/ =~ line
+    $1
+  end
+end
+```
+
+### result
+
+```rbs
+class CaptureInGuard
+  def key: -> String?
+end
+```
