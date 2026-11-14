@@ -19834,6 +19834,31 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn locals_written_in(body: &Node<'_>) -> HashSet<String> {
+        struct Writes(HashSet<String>);
+        impl<'pr> ruby_prism::Visit<'pr> for Writes {
+            fn visit_local_variable_write_node(
+                &mut self,
+                node: &ruby_prism::LocalVariableWriteNode<'pr>,
+            ) {
+                self.0
+                    .insert(String::from_utf8_lossy(node.name().as_slice()).to_string());
+                ruby_prism::visit_local_variable_write_node(self, node);
+            }
+            fn visit_local_variable_target_node(
+                &mut self,
+                node: &ruby_prism::LocalVariableTargetNode<'pr>,
+            ) {
+                self.0
+                    .insert(String::from_utf8_lossy(node.name().as_slice()).to_string());
+            }
+            fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+        }
+        let mut writes = Writes(HashSet::new());
+        ruby_prism::Visit::visit(&mut writes, body);
+        writes.0
+    }
+
     fn scan_method_body_summary_node(
         &mut self,
         class_name: &str,
@@ -19851,7 +19876,18 @@ impl<'a> InferenceEngine<'a> {
                     .map(|args| {
                         args.arguments()
                             .iter()
-                            .map(|arg| self.infer_node_type(class_name, &arg, parse_result, scope))
+                            .map(|arg| {
+                                // This scan skips earlier statements, so a local assigned before
+                                // the yield is unknown here rather than nil.
+                                if let Some(read) = arg.as_local_variable_read_node()
+                                    && scope
+                                        .get(&String::from_utf8_lossy(read.name().as_slice()))
+                                        .is_none()
+                                {
+                                    return Type::Untyped;
+                                }
+                                self.infer_node_type(class_name, &arg, parse_result, scope)
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -19918,6 +19954,11 @@ impl<'a> InferenceEngine<'a> {
                     && let Some(block_body) = block.body()
                 {
                     let mut block_scope = scope.fork_for_block();
+                    // Earlier statements in the block are not processed here, so a local the
+                    // block assigns is unknown rather than its outer value.
+                    for name in Self::locals_written_in(&block_body) {
+                        block_scope.set(&name, Type::Untyped);
+                    }
                     if let Some(params) = block.parameters() {
                         let mut names = HashSet::new();
                         Self::collect_block_param_names(&params, &mut names);

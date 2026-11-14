@@ -698,3 +698,27 @@ class YieldResultUser
   def call: -> "done"
 end
 ```
+
+## A yield in a block does not read a block-local value as nil
+
+### update
+
+```ruby
+class SocketProbe
+  def each_socket
+    [1].each do |address|
+      socket = "s"
+      value = yield socket, address
+      value
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class SocketProbe
+  def each_socket: { (untyped, Integer) -> untyped } -> [1]
+end
+```
