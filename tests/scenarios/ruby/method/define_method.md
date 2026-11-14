@@ -705,10 +705,6 @@ end
 
 ## define_method called on a class constant adds an instance method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

@@ -14034,6 +14034,11 @@ impl<'a> InferenceEngine<'a> {
                     &call_node,
                     parse_result,
                     comments,
+                ) || self.collect_static_class_define_method(
+                    "Object",
+                    &call_node,
+                    parse_result,
+                    comments,
                 ) || self.collect_static_define_singleton_method(
                     "Object",
                     &call_node,
@@ -14881,6 +14886,38 @@ impl<'a> InferenceEngine<'a> {
         let target =
             self.resolve_static_definition_target(class_name, Some(&receiver), parse_result)?;
         target.in_singleton_class.then_some(target)
+    }
+
+    /// `Foo.define_method(:name) { ... }` (public since Ruby 2.5) adds an instance method to `Foo`.
+    fn collect_static_class_define_method(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        comments: &[RbsComment],
+    ) -> bool {
+        if call_node.name().as_slice() != b"define_method" {
+            return false;
+        }
+        let Some(receiver) = call_node.receiver() else {
+            return false;
+        };
+        if !matches!(
+            receiver,
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+        ) {
+            return false;
+        }
+        let Some(target) =
+            self.resolve_static_definition_target(class_name, Some(&receiver), parse_result)
+        else {
+            return false;
+        };
+        if target.in_singleton_class {
+            return false;
+        }
+        self.collect_define_method(&target.owner, call_node, parse_result, comments, false);
+        true
     }
 
     fn collect_static_singleton_class_definition_call(
