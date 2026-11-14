@@ -218,6 +218,26 @@ pub(super) fn assigned_local_names(node: &Node<'_>) -> HashSet<String> {
     writes.0
 }
 
+/// Whether a `return` appears under `node`, outside nested definitions.
+pub(super) fn contains_return(node: &Node<'_>) -> bool {
+    let mut finder = ReturnFinder(false);
+    finder.visit(node);
+    finder.0
+}
+
+struct ReturnFinder(bool);
+
+impl<'pr> Visit<'pr> for ReturnFinder {
+    fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+    fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
+    fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
+    fn visit_singleton_class_node(&mut self, _node: &ruby_prism::SingletonClassNode<'pr>) {}
+
+    fn visit_return_node(&mut self, _node: &ruby_prism::ReturnNode<'pr>) {
+        self.0 = true;
+    }
+}
+
 #[derive(Default)]
 struct LocalWrites(HashSet<String>);
 

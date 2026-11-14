@@ -994,6 +994,11 @@ struct DeferredMethodBody {
     unresolved_block_receivers: Option<DeferredBlockReceiverCandidates>,
 }
 
+struct SourcePredicateEffect {
+    def_loc: SourceLocation,
+    truthy_params: Vec<usize>,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct DeferredMethodReplay {
     is_singleton: bool,
@@ -1044,6 +1049,7 @@ struct ActiveMethodBody {
     unresolved_block_receivers: DeferredBlockReceiverCandidates,
     has_case_class_dispatch: bool,
     has_super_call: bool,
+    has_source_predicate_call: bool,
     suppressed_call_sites: Vec<(String, CallSite)>,
 }
 
@@ -1138,6 +1144,12 @@ pub struct InferenceEngine<'a> {
     source_base_case_equality_override: bool,
     /// Source of each `===` defined in this file, reparsed when a call site asks how it narrows.
     source_case_equality_defs: HashMap<(String, bool), Arc<str>>,
+    /// Instance predicates defined in this file, keyed by owner and name: the def location and
+    /// the parameter indexes a truthy result proves truthy. `None` once redefined.
+    source_predicate_effects: HashMap<(String, String), Option<SourcePredicateEffect>>,
+    source_predicate_narrowing_enabled: bool,
+    /// Defs whose bodies call a source predicate, inferred again after collection.
+    source_predicate_callers: FxHashSet<usize>,
     literal_block_flows: LiteralBlockFlowMemo,
     // Lives as long as this per-file engine; re-inferring a literal replaces its entry.
     proc_literals: FxHashMap<ProcLiteralId, Arc<ProcSignature>>,
@@ -2755,6 +2767,9 @@ impl<'a> InferenceEngine<'a> {
             case_when_narrowing_enabled: false,
             source_base_case_equality_override: false,
             source_case_equality_defs: HashMap::new(),
+            source_predicate_effects: HashMap::new(),
+            source_predicate_narrowing_enabled: false,
+            source_predicate_callers: FxHashSet::default(),
             literal_block_flows: LiteralBlockFlowMemo::default(),
             proc_literals: FxHashMap::default(),
             proc_literal_nonce: next_proc_literal_nonce(),
@@ -2851,6 +2866,9 @@ impl<'a> InferenceEngine<'a> {
             case_when_narrowing_enabled: false,
             source_base_case_equality_override: false,
             source_case_equality_defs: HashMap::new(),
+            source_predicate_effects: HashMap::new(),
+            source_predicate_narrowing_enabled: false,
+            source_predicate_callers: FxHashSet::default(),
             literal_block_flows: LiteralBlockFlowMemo::default(),
             proc_literals: FxHashMap::default(),
             proc_literal_nonce: next_proc_literal_nonce(),
@@ -15508,6 +15526,14 @@ impl<'a> InferenceEngine<'a> {
                         if mirror_as_module_function {
                             self.mirror_instance_method_as_singleton(&method_owner, &method_name);
                         }
+                        if !in_singleton_class && def_node.receiver().is_none() {
+                            self.record_source_predicate_effect(
+                                &method_owner,
+                                &def_node,
+                                parse_result,
+                                in_conditional,
+                            );
+                        }
                         if !mirror_as_module_function
                             && def_node.receiver().is_none()
                             && let Some(visibility) = current_visibility
@@ -17883,18 +17909,28 @@ impl<'a> InferenceEngine<'a> {
         let Some(body) = def_node.body() else {
             return;
         };
-        if !Self::source_slice_may_contain_late_constant_reference(
-            parse_result.source(),
-            body.location().start_offset(),
-            body.location().end_offset(),
-            late_constant_names,
-            late_constant_unknown,
-        ) {
+        let calls_source_predicate = self
+            .source_predicate_callers
+            .contains(&def_node.location().start_offset());
+        if !calls_source_predicate
+            && !Self::source_slice_may_contain_late_constant_reference(
+                parse_result.source(),
+                body.location().start_offset(),
+                body.location().end_offset(),
+                late_constant_names,
+                late_constant_unknown,
+            )
+        {
             return;
         }
 
+        let previous_predicate_narrowing = std::mem::replace(
+            &mut self.source_predicate_narrowing_enabled,
+            calls_source_predicate,
+        );
         let implicit_return =
             self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
+        self.source_predicate_narrowing_enabled = previous_predicate_narrowing;
         let new_return_type = if scope.return_types.is_empty() {
             implicit_return
         } else {
@@ -19109,6 +19145,7 @@ impl<'a> InferenceEngine<'a> {
             unresolved_block_receivers,
             has_case_class_dispatch,
             has_super_call,
+            has_source_predicate_call,
             suppressed_call_sites,
         ) = self
             .active_method_body
@@ -19118,6 +19155,7 @@ impl<'a> InferenceEngine<'a> {
                     body.unresolved_block_receivers,
                     body.has_case_class_dispatch,
                     body.has_super_call,
+                    body.has_source_predicate_call,
                     body.suppressed_call_sites,
                 )
             })
@@ -19252,6 +19290,10 @@ impl<'a> InferenceEngine<'a> {
                 b"**",
             )
         });
+        if has_source_predicate_call {
+            self.source_predicate_callers
+                .insert(def_node.location().start_offset());
+        }
         let has_existing_defer_reason = has_positional_params
             || needs_late_constant_return
             || needs_late_ivar_return
@@ -59781,6 +59823,218 @@ impl<'a> InferenceEngine<'a> {
         })
     }
 
+    fn record_source_predicate_effect(
+        &mut self,
+        owner: &str,
+        def_node: &ruby_prism::DefNode<'_>,
+        parse_result: &ParseResult<'_>,
+        in_conditional: bool,
+    ) {
+        let truthy_params = if in_conditional {
+            Vec::new()
+        } else {
+            Self::source_predicate_truthy_params(def_node)
+        };
+        if truthy_params.is_empty() && self.source_predicate_effects.is_empty() {
+            return;
+        }
+        let key = (
+            owner.to_string(),
+            String::from_utf8_lossy(def_node.name().as_slice()).to_string(),
+        );
+        if let Some(effect) = self.source_predicate_effects.get_mut(&key) {
+            *effect = None;
+            return;
+        }
+        if truthy_params.is_empty() {
+            return;
+        }
+        let loc = offset_to_location(parse_result.source(), def_node.location().start_offset());
+        self.source_predicate_effects.insert(
+            key,
+            Some(SourcePredicateEffect {
+                def_loc: loc,
+                truthy_params,
+            }),
+        );
+    }
+
+    /// Required parameters a truthy result proves truthy: each has a `return` of `nil` or
+    /// `false` unless it is truthy, with no earlier `return`, and is never reassigned.
+    fn source_predicate_truthy_params(def_node: &ruby_prism::DefNode<'_>) -> Vec<usize> {
+        let Some(params) = def_node.parameters() else {
+            return Vec::new();
+        };
+        if params.optionals().iter().next().is_some()
+            || params.rest().is_some()
+            || params.posts().iter().next().is_some()
+            || params.keywords().iter().next().is_some()
+            || params.keyword_rest().is_some()
+        {
+            return Vec::new();
+        }
+        let Some(names) = params
+            .requireds()
+            .iter()
+            .map(|param| {
+                param
+                    .as_required_parameter_node()
+                    .map(|param| String::from_utf8_lossy(param.name().as_slice()).to_string())
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Vec::new();
+        };
+        let Some(body) = def_node.body() else {
+            return Vec::new();
+        };
+        let Some(statements) = body.as_statements_node() else {
+            return Vec::new();
+        };
+        let mut truthy_params = Vec::new();
+        for statement in statements.body().iter() {
+            if let Some(name) = Self::falsy_return_guard_local(&statement) {
+                if let Some(index) = names.iter().position(|param| *param == name) {
+                    truthy_params.push(index);
+                }
+                continue;
+            }
+            if block_flow::contains_return(&statement) {
+                break;
+            }
+        }
+        if truthy_params.is_empty() {
+            return truthy_params;
+        }
+        let written = block_flow::assigned_local_names(&body);
+        truthy_params.retain(|index| !written.contains(&names[*index]));
+        truthy_params
+    }
+
+    /// The local `x` of `return false unless x` (or `return` / `return nil`).
+    fn falsy_return_guard_local(statement: &Node<'_>) -> Option<String> {
+        let unless_node = statement.as_unless_node()?;
+        if unless_node.else_clause().is_some() {
+            return None;
+        }
+        let read = unless_node.predicate().as_local_variable_read_node()?;
+        if read.depth() != 0 {
+            return None;
+        }
+        let mut body = unless_node.statements()?.body().iter();
+        let return_node = body.next()?.as_return_node()?;
+        if body.next().is_some() {
+            return None;
+        }
+        if let Some(arguments) = return_node.arguments() {
+            let mut values = arguments.arguments().iter();
+            let value = values.next()?;
+            if values.next().is_some()
+                || !matches!(value, Node::NilNode { .. } | Node::FalseNode { .. })
+            {
+                return None;
+            }
+        }
+        Some(String::from_utf8_lossy(read.name().as_slice()).to_string())
+    }
+
+    /// Narrows local arguments of a truthy self call to a source predicate defined in this file
+    /// that no subclass, prepended module, or refinement replaces.
+    fn apply_source_predicate_effect(
+        &mut self,
+        class_name: &str,
+        predicate: &Node<'_>,
+        target_scope: &mut Scope,
+    ) {
+        let Some(call) = predicate.as_call_node() else {
+            return;
+        };
+        if call.receiver().is_some()
+            || call.block().is_some()
+            || target_scope.singleton_dispatch
+            || target_scope.self_override.is_some()
+        {
+            return;
+        }
+        let Some(arguments) = call.arguments() else {
+            return;
+        };
+        let method_name = String::from_utf8_lossy(call.name().as_slice()).to_string();
+        let Some(Some(effect)) = self
+            .source_predicate_effects
+            .get(&(class_name.to_string(), method_name.clone()))
+        else {
+            return;
+        };
+        let (loc, truthy_params) = (effect.def_loc, effect.truthy_params.clone());
+        // Subclasses and modules defined later in the file are known only after collection.
+        if !self.source_predicate_narrowing_enabled {
+            if let Some(body) = self.active_method_body.as_mut() {
+                body.has_source_predicate_call = true;
+            }
+            return;
+        }
+        let is_stable = self
+            .registry
+            .lookup_method_def(class_name, &method_name, false)
+            .is_some_and(|method| method.loc == Some(loc))
+            && self
+                .registry
+                .class_data_for(class_name)
+                .is_some_and(|class| !class.is_module)
+            && self
+                .registry
+                .resolve_method_call_owners(class_name, &method_name, false)
+                .first()
+                .is_some_and(|(owner, singleton)| owner == class_name && !singleton)
+            && !self
+                .registry
+                .method_is_aliased(class_name, &method_name, false)
+            && self
+                .registry
+                .subclasses_inherit_method_from(class_name, &method_name, class_name)
+            && !self.active_refinement_overrides_instance_method(
+                class_name,
+                &method_name,
+                target_scope,
+            );
+        if !is_stable {
+            return;
+        }
+        let arguments: Vec<Node<'_>> = arguments.arguments().iter().collect();
+        if arguments.iter().any(|argument| {
+            matches!(
+                argument,
+                Node::SplatNode { .. }
+                    | Node::KeywordHashNode { .. }
+                    | Node::BlockArgumentNode { .. }
+                    | Node::ForwardingArgumentsNode { .. }
+            )
+        }) {
+            return;
+        }
+        for index in truthy_params {
+            let Some(name) = arguments
+                .get(index)
+                .and_then(|argument| Self::extract_local_var_name_in_scope(argument, target_scope))
+            else {
+                continue;
+            };
+            let Some(current) = target_scope.get(&name) else {
+                continue;
+            };
+            let truthy = if Self::contains_unresolved_ref(current) {
+                Self::deferred_truthy_only(current)
+            } else {
+                let current = self.resolve_narrowing_input_type(class_name, target_scope, current);
+                Self::truthy_only(&current)
+            };
+            if let Some(truthy) = truthy {
+                target_scope.narrow_subject(&NarrowSubject::Local(name), truthy);
+            }
+        }
+    }
+
     fn single_required_param_name(def_node: &ruby_prism::DefNode<'_>) -> Option<String> {
         let params = def_node.parameters()?;
         let mut requireds = params.requireds().iter();
@@ -60828,6 +61082,13 @@ impl<'a> InferenceEngine<'a> {
             target_scope.set_array_first_fact(key, element_type);
         }
         match predicate {
+            Node::CallNode { .. } => {
+                if is_true_branch {
+                    self.apply_source_predicate_effect(class_name, predicate, target_scope);
+                } else if let Some(operand) = Self::negated_operand(predicate) {
+                    self.apply_source_predicate_effect(class_name, &operand, target_scope);
+                }
+            }
             Node::AndNode { .. } if is_true_branch => {
                 if let Some(and_node) = predicate.as_and_node() {
                     self.apply_compound_branch_leaf(
@@ -60961,6 +61222,9 @@ impl<'a> InferenceEngine<'a> {
                 return;
             }
             _ => {}
+        }
+        if is_true_branch {
+            self.apply_source_predicate_effect(class_name, predicate, target_scope);
         }
         let Some(narrowing) = self.extract_condition_narrowing(
             class_name,

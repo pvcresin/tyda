@@ -2976,6 +2976,20 @@ impl TypeRegistry {
         });
     }
 
+    pub(crate) fn method_is_aliased(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        self.class_data.get(class_name).is_some_and(|data| {
+            data.cold().method_aliases.iter().any(|alias| {
+                alias.is_singleton == is_singleton
+                    && (alias.old_name == method_name || alias.new_name == method_name)
+            })
+        })
+    }
+
     /// `alias_method` captures the definition visible when it runs. An alias whose target was not
     /// visible yet stays bound to `class#name` by name; once the class itself defines `name`
     /// afterwards, that binding would wrongly see the new body, so rebind it above the class.
@@ -3700,6 +3714,26 @@ impl TypeRegistry {
     /// A value of a class may be an instance of a subclass, so a method defined there is not
     /// provably missing on the class itself.
     pub(crate) fn subclass_defines_method(&self, class_name: &str, method_name: &str) -> bool {
+        self.any_subclass(class_name, |candidate| {
+            self.first_method_call_owner_cached(candidate, method_name, false)
+                .is_some()
+        })
+    }
+
+    /// Whether every known subclass dispatches the instance method to `owner`.
+    pub(crate) fn subclasses_inherit_method_from(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        owner: &str,
+    ) -> bool {
+        !self.any_subclass(class_name, |candidate| {
+            self.first_method_call_owner_cached(candidate, method_name, false)
+                .is_none_or(|(found, singleton)| singleton || found.as_ref() != owner)
+        })
+    }
+
+    fn any_subclass(&self, class_name: &str, matches: impl Fn(&str) -> bool) -> bool {
         let class_name = class_name.trim_scope_prefix();
         if let Some(index) = &self.tail().subclass_index {
             let mut pending: Vec<&SharedName> = index
@@ -3711,10 +3745,7 @@ impl TypeRegistry {
                 if !visited.insert(candidate.as_ref()) {
                     continue;
                 }
-                if self
-                    .first_method_call_owner_cached(candidate, method_name, false)
-                    .is_some()
-                {
+                if matches(candidate) {
                     return true;
                 }
                 if let Some(subclasses) = index.get(candidate.as_ref()) {
@@ -3727,9 +3758,7 @@ impl TypeRegistry {
             data.superclass.is_some()
                 && candidate.as_ref() != class_name
                 && self.class_is_descendant_of(candidate, class_name)
-                && self
-                    .first_method_call_owner_cached(candidate, method_name, false)
-                    .is_some()
+                && matches(candidate)
         })
     }
 
