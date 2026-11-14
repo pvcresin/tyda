@@ -36449,6 +36449,7 @@ impl<'a> InferenceEngine<'a> {
         match value {
             Node::ArrayNode { .. } => {
                 let array_node = value.as_array_node().expect("must be ArrayNode");
+                let element_count = array_node.elements().iter().count();
                 let mut elem_types = Vec::new();
                 for elem in array_node.elements().iter() {
                     let expanded = if let Node::SplatNode { .. } = &elem {
@@ -36456,9 +36457,23 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(expr) = splat.expression() {
                             let inner =
                                 self.infer_node_type(class_name, &expr, parse_result, scope);
+                            let unknown_length = matches!(inner, Type::Array(_))
+                                || Self::destructuring_base_shape_unknown(&inner);
+                            // `a, b = *xs` destructures `xs` itself.
+                            if element_count == 1 && unknown_length {
+                                return inner;
+                            }
+                            if unknown_length {
+                                return self.infer_node_type(
+                                    class_name,
+                                    value,
+                                    parse_result,
+                                    scope,
+                                );
+                            }
                             match inner {
                                 Type::Tuple(elems) => elems,
-                                Type::Array(Some(ref el)) => vec![*el.clone()],
+                                Type::Nil => Vec::new(),
                                 _ => vec![inner],
                             }
                         } else {

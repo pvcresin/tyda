@@ -547,3 +547,40 @@ class IndexTargets
   def run: -> Hash[:a | :b, 1 | 2]
 end
 ```
+
+## A splatted right side keeps an unknown length
+
+### update
+
+```ruby
+class SplatSource
+  #: -> Array[Integer]
+  def items = []
+
+  def from_splat
+    a, b = *items
+    [a, b]
+  end
+
+  def after_value
+    a, b, c = 1, *items
+    c
+  end
+
+  def after_nil
+    a, b = *nil, 2
+    [a, b]
+  end
+end
+```
+
+### result
+
+```rbs
+class SplatSource
+  def items: -> Array[Integer]
+  def from_splat: -> [Integer?, Integer?]
+  def after_value: -> Integer?
+  def after_nil: -> [2, nil]
+end
+```

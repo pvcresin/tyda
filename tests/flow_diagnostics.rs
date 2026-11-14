@@ -1442,19 +1442,6 @@ fn known_issue_nil_false_positives_still_reported() {
             ),
             "NilClass#close",
         ),
-        (
-            "a splatted partition assigns both arrays",
-            concat!(
-                "class SplatPartition\n",
-                "  def run(xs)\n",
-                "    ok, bad = *xs.partition(&:odd?)\n",
-                "    ok.empty? || bad.empty?\n",
-                "  end\n",
-                "  def go = run([1, 2])\n",
-                "end\n",
-            ),
-            "NilClass#empty?",
-        ),
     ];
 
     for (name, source, method) in cases {
@@ -1499,6 +1486,22 @@ fn class_new_block_runs_on_the_new_class() {
             [(10, "EventRegistry#attribute".to_string())],
             "compact={compact}"
         );
+    }
+}
+
+#[test]
+fn splatted_partition_assigns_both_arrays() {
+    let source = concat!(
+        "class SplatPartition\n",
+        "  def run(xs)\n",
+        "    ok, bad = *xs.partition(&:odd?)\n",
+        "    ok.empty? || bad.empty?\n",
+        "  end\n",
+        "  def go = run([1, 2])\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        assert_eq!(missing_methods_in(source, compact), [], "compact={compact}");
     }
 }
 
