@@ -35470,7 +35470,9 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) -> Type {
-        let body_type = if let Some(stmts) = rescue_node.statements() {
+        let body_type = if self.rescue_clause_never_matches(class_name, rescue_node) {
+            Type::Bot
+        } else if let Some(stmts) = rescue_node.statements() {
             let mut body_scope = scope.fork_for_branch();
             if let Some((name, ty)) =
                 self.extract_rescue_reference_binding(class_name, rescue_node, parse_result, scope)
@@ -35506,7 +35508,9 @@ impl<'a> InferenceEngine<'a> {
     ) -> Type {
         let base_scope = scope.clone();
         let mut branch_scope = base_scope.fork_for_branch();
-        let body_type = if let Some(statements) = rescue_node.statements() {
+        let body_type = if self.rescue_clause_never_matches(class_name, rescue_node) {
+            Type::Bot
+        } else if let Some(statements) = rescue_node.statements() {
             if let Some((name, ty)) = self.extract_rescue_reference_binding(
                 class_name,
                 rescue_node,
@@ -35550,6 +35554,39 @@ impl<'a> InferenceEngine<'a> {
             *scope = branch_scope;
             body_type
         }
+    }
+
+    /// Ruby checks rescue operands in order and raises `TypeError` at one that is not a class or
+    /// module, so a clause whose first operand is a plain value never runs its body.
+    fn rescue_clause_never_matches(
+        &mut self,
+        class_name: &str,
+        rescue_node: &ruby_prism::RescueNode<'_>,
+    ) -> bool {
+        let Some(first) = rescue_node.exceptions().iter().next() else {
+            return false;
+        };
+        if !matches!(
+            first,
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+        ) {
+            return false;
+        }
+        let path = String::from_utf8_lossy(first.location().as_slice()).to_string();
+        matches!(
+            self.resolve_constant_type_in_scope(&path, class_name),
+            Type::Integer
+                | Type::Float
+                | Type::String
+                | Type::Symbol
+                | Type::True
+                | Type::False
+                | Type::Nil
+                | Type::LiteralInteger(_)
+                | Type::LiteralFloat(_)
+                | Type::LiteralString(_)
+                | Type::LiteralSymbol(_)
+        )
     }
 
     fn collect_rescue_reference_bindings(
