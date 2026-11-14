@@ -1120,6 +1120,9 @@ pub struct InferenceEngine<'a> {
     inline_assertion_comments: Vec<InlineAssertionComment>,
     self_bind_comments: Vec<SorbetSelfBindComment>,
     deferred_method_bodies: Vec<DeferredMethodBody>,
+    /// Source ranges of blocks given to `gsub` / `scan` style calls with a regexp literal, and
+    /// the mask of capture groups that hold a String inside them.
+    regexp_block_captures: Vec<(usize, usize, u64)>,
     /// Call sites a deferred body held back for its replay, keyed by the def's start offset.
     suppressed_body_call_sites: BTreeMap<usize, Vec<(String, CallSite)>>,
     active_method_body: Option<ActiveMethodBody>,
@@ -2068,9 +2071,6 @@ impl Scope {
         scope.hash_key_facts = Arc::default();
         scope.array_element_facts = Arc::default();
         scope.exclusive_receiver_facts = Arc::default();
-        // `gsub` / `scan` style blocks replace `$~`, and other blocks may run after it changed.
-        scope.regexp_match_captures = false;
-        scope.regexp_required_captures = 0;
         scope
     }
 
@@ -2798,6 +2798,7 @@ impl<'a> InferenceEngine<'a> {
             cvar_owner_override: None,
             global_variable_aliases: HashMap::new(),
             method_body_contexts: HashMap::new(),
+            regexp_block_captures: Vec::new(),
             class_instance_ivar_writes: HashMap::new(),
             top_level_scope: Scope::default(),
         }
@@ -2897,6 +2898,7 @@ impl<'a> InferenceEngine<'a> {
             cvar_owner_override: None,
             global_variable_aliases: HashMap::new(),
             method_body_contexts: HashMap::new(),
+            regexp_block_captures: Vec::new(),
             class_instance_ivar_writes: HashMap::new(),
             top_level_scope: Scope::default(),
         }
@@ -29933,12 +29935,20 @@ impl<'a> InferenceEngine<'a> {
                 let number = node
                     .as_numbered_reference_read_node()
                     .map_or(0, |reference| reference.number());
-                if scope.regexp_match_captures
-                    && (1..=64).contains(&number)
-                    && scope.regexp_required_captures & (1 << (number - 1)) != 0
-                {
+                let offset = node.location().start_offset();
+                let block_captures = self
+                    .regexp_block_captures
+                    .iter()
+                    .filter(|(start, end, _)| *start <= offset && offset < *end)
+                    .min_by_key(|(start, end, _)| end - start)
+                    .map(|(_, _, mask)| *mask);
+                let (matched, required) = match block_captures {
+                    Some(mask) => (true, mask),
+                    None => (scope.regexp_match_captures, scope.regexp_required_captures),
+                };
+                if matched && (1..=64).contains(&number) && required & (1 << (number - 1)) != 0 {
                     Type::String
-                } else if scope.regexp_match_captures {
+                } else if matched {
                     Self::nilable_string_type()
                 } else {
                     Type::Untyped
@@ -30410,6 +30420,7 @@ impl<'a> InferenceEngine<'a> {
                 let call_node = node.as_call_node().expect("must be CallNode");
                 let mut method_name =
                     String::from_utf8_lossy(call_node.name().as_slice()).to_string();
+                self.record_regexp_block_captures(&call_node);
 
                 if let Some(sorbet_type) = self.try_resolve_sorbet_assertion(
                     class_name,
@@ -62334,6 +62345,39 @@ impl<'a> InferenceEngine<'a> {
                 .and_then(|statements| statements.body().iter().last())
                 .and_then(|last| Self::truthy_predicate_regexp_captures(&last)),
             _ => None,
+        }
+    }
+
+    /// Inside the block of `gsub` / `scan` style calls, `$~` is the match of their own pattern.
+    fn record_regexp_block_captures(&mut self, call: &ruby_prism::CallNode<'_>) {
+        if !matches!(
+            call.name().as_slice(),
+            b"gsub" | b"gsub!" | b"sub" | b"sub!" | b"scan"
+        ) {
+            return;
+        }
+        let Some(block) = call.block().and_then(|block| block.as_block_node()) else {
+            return;
+        };
+        let Some(regexp) = call
+            .arguments()
+            .and_then(|args| args.arguments().iter().next())
+            .and_then(|arg| arg.as_regular_expression_node())
+        else {
+            return;
+        };
+        let mask = if regexp.is_extended() {
+            0
+        } else {
+            Self::required_regexp_captures(regexp.unescaped())
+        };
+        let range = (
+            block.location().start_offset(),
+            block.location().end_offset(),
+            mask,
+        );
+        if !self.regexp_block_captures.contains(&range) {
+            self.regexp_block_captures.push(range);
         }
     }
 
