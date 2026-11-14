@@ -30064,7 +30064,8 @@ impl<'a> InferenceEngine<'a> {
 
             Node::CallNode { .. } => {
                 let call_node = node.as_call_node().expect("must be CallNode");
-                let method_name = String::from_utf8_lossy(call_node.name().as_slice()).to_string();
+                let mut method_name =
+                    String::from_utf8_lossy(call_node.name().as_slice()).to_string();
 
                 if let Some(sorbet_type) = self.try_resolve_sorbet_assertion(
                     class_name,
@@ -31286,6 +31287,14 @@ impl<'a> InferenceEngine<'a> {
                             break 'recv wrap(result);
                         }
 
+                        // `Struct.new` and `Data.define` classes alias `.[]` to `.new`.
+                        if let Type::Singleton(target) = &safe_nav_receiver_type
+                            && method_name == "[]"
+                            && self.registry.constructor_base_class(target).is_some()
+                            && !self.singleton_method_has_source_override(target, "[]")
+                        {
+                            method_name = "new".to_string();
+                        }
                         let new_result = if method_name == "new" {
                             let target_class_from_receiver = match &safe_nav_receiver_type {
                                 Type::Singleton(name) => *name,
