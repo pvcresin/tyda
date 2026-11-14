@@ -1733,6 +1733,7 @@ struct JumpTargets {
     break_types: Vec<Type>,
     next_locals: Option<Arc<HashMap<String, Type>>>,
     break_locals: Option<Arc<HashMap<String, Type>>>,
+    jump_entry_locals: Option<Arc<HashMap<String, Type>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1769,6 +1770,9 @@ pub(crate) struct Scope {
     next_locals: Option<Arc<HashMap<String, Type>>>,
     /// Locals at `break` points of the innermost loop or block, joined into its exit.
     break_locals: Option<Arc<HashMap<String, Type>>>,
+    /// Locals when the innermost loop or block was entered. A local still holding that value
+    /// at a jump adds nothing the usual loop join does not already have.
+    jump_entry_locals: Option<Arc<HashMap<String, Type>>>,
     enumerator_yielder_names: Arc<HashSet<String>>,
     enumerator_yielded_types: Vec<Type>,
     loop_depth: usize,
@@ -2041,6 +2045,7 @@ impl Scope {
             exception_entry: self.exception_entry.clone(),
             next_locals: self.next_locals.clone(),
             break_locals: self.break_locals.clone(),
+            jump_entry_locals: self.jump_entry_locals.clone(),
             enumerator_yielder_names: self.enumerator_yielder_names.clone(),
             enumerator_yielded_types: self.enumerator_yielded_types.clone(),
             loop_depth: self.loop_depth,
@@ -2396,12 +2401,35 @@ impl Scope {
 
     fn add_next_type(&mut self, ty: Type, locals: &Arc<HashMap<String, Type>>) {
         self.next_types.push(ty);
-        self.next_locals = union_jump_locals(self.next_locals.as_ref(), Some(locals));
+        if let Some(changed) = self.locals_changed_since_jump_entry(locals) {
+            self.next_locals = union_jump_locals(self.next_locals.as_ref(), Some(&changed));
+        }
     }
 
     fn add_break_type(&mut self, ty: Type, locals: &Arc<HashMap<String, Type>>) {
         self.break_types.push(ty);
-        self.break_locals = union_jump_locals(self.break_locals.as_ref(), Some(locals));
+        if let Some(changed) = self.locals_changed_since_jump_entry(locals) {
+            self.break_locals = union_jump_locals(self.break_locals.as_ref(), Some(&changed));
+        }
+    }
+
+    /// The locals at a jump that differ from the loop or block entry, or `None` if none do.
+    fn locals_changed_since_jump_entry(
+        &self,
+        locals: &Arc<HashMap<String, Type>>,
+    ) -> Option<Arc<HashMap<String, Type>>> {
+        let Some(entry) = &self.jump_entry_locals else {
+            return Some(locals.clone());
+        };
+        if Arc::ptr_eq(entry, locals) {
+            return None;
+        }
+        let changed: HashMap<String, Type> = locals
+            .iter()
+            .filter(|(name, ty)| entry.get(*name) != Some(*ty))
+            .map(|(name, ty)| (name.clone(), ty.clone()))
+            .collect();
+        (!changed.is_empty()).then(|| Arc::new(changed))
     }
 
     /// Starts a loop body: its `next`/`break` targets are this loop, not an outer one.
@@ -2410,6 +2438,7 @@ impl Scope {
         self.break_types.clear();
         self.next_locals = None;
         self.break_locals = None;
+        self.jump_entry_locals = Some(self.locals.clone());
     }
 
     fn take_jump_targets(&mut self) -> JumpTargets {
@@ -2418,6 +2447,7 @@ impl Scope {
             break_types: std::mem::take(&mut self.break_types),
             next_locals: self.next_locals.take(),
             break_locals: self.break_locals.take(),
+            jump_entry_locals: self.jump_entry_locals.take(),
         }
     }
 
@@ -2428,6 +2458,7 @@ impl Scope {
         self.break_types = outer.break_types;
         self.next_locals = outer.next_locals;
         self.break_locals = outer.break_locals;
+        self.jump_entry_locals = outer.jump_entry_locals;
     }
 
     fn join_next_locals(&mut self) {
@@ -5016,6 +5047,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_ref(),
                 else_scope.next_locals.as_ref(),
             ),
+            jump_entry_locals: base.jump_entry_locals.clone(),
             break_locals: union_jump_locals(
                 union_jump_locals(base.break_locals.as_ref(), then_scope.break_locals.as_ref())
                     .as_ref(),
@@ -5356,6 +5388,7 @@ impl<'a> InferenceEngine<'a> {
         merged.break_types = base.break_types.clone();
         merged.next_locals = base.next_locals.clone();
         merged.break_locals = base.break_locals.clone();
+        merged.jump_entry_locals = base.jump_entry_locals.clone();
         merged.self_override = base.self_override.clone();
         merged
     }
@@ -5423,6 +5456,7 @@ impl<'a> InferenceEngine<'a> {
                 base.break_locals.as_ref(),
                 loop_scope.break_locals.as_ref(),
             ),
+            jump_entry_locals: base.jump_entry_locals.clone(),
             enumerator_yielder_names: base.enumerator_yielder_names.clone(),
             enumerator_yielded_types: base.enumerator_yielded_types.clone(),
             loop_depth: base.loop_depth,
