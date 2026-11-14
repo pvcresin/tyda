@@ -83,3 +83,33 @@ class NumberBag
   def each: [R] { (Integer) -> R } -> R
 end
 ```
+
+## Enumerable select with a symbol proc returns an Array
+
+```ruby
+class Items
+  include Enumerable
+
+  def initialize = @items = [1, 2, 3]
+  def each(&block) = @items.each(&block)
+end
+
+class ItemsUser
+  def odd = Items.new.select(&:odd?)
+end
+```
+
+### result
+
+```rbs
+class Items
+  include Enumerable
+
+  def initialize: -> void
+  def each: () ?{ (?) -> untyped } -> untyped
+end
+
+class ItemsUser
+  def odd: -> Array[untyped]
+end
+```

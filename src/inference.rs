@@ -52056,7 +52056,11 @@ impl<'a> InferenceEngine<'a> {
             return Some(refined);
         }
 
-        if Self::array_filter_keeps_predicate_true(method_name).is_some() {
+        if Self::array_filter_keeps_predicate_true(method_name).is_some()
+            && (matches!(receiver_type, Type::Array(_) | Type::Tuple(_))
+                || Self::is_array_yielding_enumerable_class(receiver_type)
+                || !Self::is_concrete(&method_return))
+        {
             return Some(Self::array_filter_call_result(
                 method_name,
                 Self::rebuild_array_with_elem(receiver_type, &elem_type),
