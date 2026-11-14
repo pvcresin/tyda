@@ -125,6 +125,15 @@ const RAILS_NON_JOB_BASES: &[&str] = &[
     "ApplicationMailer",
 ];
 
+const MESSAGE_DELIVERY_METHODS: [&str; 6] = [
+    "message",
+    "deliver_now",
+    "deliver_now!",
+    "deliver_later",
+    "deliver_later!",
+    "processed?",
+];
+
 impl<'a> InferenceEngine<'a> {
     fn active_record_model_type(class_name: &str) -> Type {
         Type::Class(Sym::new(class_name))
@@ -587,21 +596,10 @@ impl<'a> InferenceEngine<'a> {
 
     fn ensure_message_delivery_methods(&mut self, loc: SourceLocation) {
         let class_name = "ActionMailer::MessageDelivery";
-        let mail_message = || Type::Class(Sym::new("Mail::Message"));
-        let enqueued =
-            self.active_job_enqueue_return(Type::Class(Sym::new(if self.rails_at_least(6, 1) {
-                "ActionMailer::MailDeliveryJob"
-            } else {
-                "ActionMailer::DeliveryJob"
-            })));
-        for (name, return_type) in [
-            ("message", mail_message()),
-            ("deliver_now", mail_message()),
-            ("deliver_now!", mail_message()),
-            ("deliver_later", enqueued.clone()),
-            ("deliver_later!", enqueued),
-            ("processed?", Type::Bool),
-        ] {
+        for name in MESSAGE_DELIVERY_METHODS {
+            let Some(return_type) = self.message_delivery_method_return(name) else {
+                continue;
+            };
             self.registry.add_method_def_if_missing(
                 class_name,
                 MethodDef {
@@ -621,6 +619,27 @@ impl<'a> InferenceEngine<'a> {
                     loc: Some(loc),
                 },
             );
+        }
+    }
+
+    pub(in crate::inference) fn message_delivery_method_return(
+        &self,
+        method_name: &str,
+    ) -> Option<Type> {
+        let enqueued = || {
+            self.active_job_enqueue_return(Type::Class(Sym::new(if self.rails_at_least(6, 1) {
+                "ActionMailer::MailDeliveryJob"
+            } else {
+                "ActionMailer::DeliveryJob"
+            })))
+        };
+        match method_name {
+            "message" | "deliver_now" | "deliver_now!" => {
+                Some(Type::Class(Sym::new("Mail::Message")))
+            }
+            "deliver_later" | "deliver_later!" => Some(enqueued()),
+            "processed?" => Some(Type::Bool),
+            _ => None,
         }
     }
 

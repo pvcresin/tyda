@@ -124,16 +124,6 @@ fn response_method_return(method_name: &str) -> Option<Type> {
     }
 }
 
-fn message_delivery_method_return(method_name: &str) -> Option<Type> {
-    match method_name {
-        "message" | "deliver_now" | "deliver_now!" | "deliver_later" | "deliver_later!" => {
-            Some(Type::Untyped)
-        }
-        "processed?" => Some(Type::Bool),
-        _ => None,
-    }
-}
-
 pub(in crate::inference) fn synthetic_method_return(
     engine: &mut PluginCx<'_, '_>,
     receiver_type: &Type,
@@ -175,7 +165,7 @@ pub(in crate::inference) fn synthetic_method_return(
         if !engine.dsl_enabled(DslLibrary::ActionControllerHelpers) {
             return None;
         }
-        return message_delivery_method_return(method_name);
+        return engine.engine.message_delivery_method_return(method_name);
     }
     if engine.rails_feature_enabled()
         && (engine.class_matches_or_inherits(class_name, MAILER_BASES)

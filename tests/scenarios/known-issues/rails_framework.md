@@ -36,36 +36,6 @@ class PostsController < ActionController::Base
 end
 ```
 
-## deliver_now on a mailer defined in another file returns Mail::Message
-
-```yaml
-rails_version: 7.1.0
-```
-
-### update
-
-### file: app/mailers/notice_mailer.rb
-
-```ruby
-class NoticeMailer < ApplicationMailer
-  def ping(user) = mail
-end
-```
-
-```ruby
-class ItemsController < ActionController::Base
-  def notice_now = NoticeMailer.ping(1).deliver_now
-end
-```
-
-### result
-
-```rbs
-class ItemsController < ActionController::Base
-  def notice_now: -> Mail::Message
-end
-```
-
 ## A parameterized mailer action returns a message delivery
 
 ```yaml
