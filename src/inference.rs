@@ -57934,7 +57934,11 @@ impl<'a> InferenceEngine<'a> {
             return match (class_targets, initial_subject_type.as_ref()) {
                 (Some(targets), Some(subject_type)) => self
                     .analyze_case_class_when(subject_type, &targets)
-                    .map(|(matched_type, _)| matched_type),
+                    .map(|(matched_type, remaining_type)| {
+                        // A closed subject type is already final, so later branches can see what is left.
+                        *remaining_subject_type = Some(remaining_type);
+                        matched_type
+                    }),
                 (Some(targets), None) if can_keep_initial_type => {
                     Some(Self::case_when_targets_type(&targets))
                 }

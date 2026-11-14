@@ -1358,3 +1358,33 @@ class WhenClassValue
   def classify: -> (:cat | :matched)
 end
 ```
+
+## A case when else branch excludes the matched class
+
+### update
+
+```rbs
+class KeyNormalizer
+  def key: -> (String | Symbol)
+end
+```
+
+```ruby
+class KeyNormalizer
+  def normalized_key
+    value = key
+    case value
+    when Symbol then value.to_s
+    else value
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class KeyNormalizer
+  def normalized_key: -> String
+end
+```

@@ -22,7 +22,8 @@
 | 深さ・union・shape の制限 | supported | 上限超過時は安全に `untyped` |
 
 `case/when` の到達不能枝除外は、Full inference の再解析で標準 `Class#===`、閉じた subject、
-完全な祖先情報を確認できた場合に限る。匿名の `Struct.new` / `Data.define` superclass は祖先情報を
+完全な祖先情報を確認できた場合に限る。初回解析でも、subject の型がすでに閉じていれば、
+class の `when` に一致した型を後続の `when` と `else` から除く。匿名の `Struct.new` / `Data.define` superclass は祖先情報を
 不完全として扱う。compact CLI は既存の初回解析を保ち、再解析対象外の
 method も初回解析時の推論を保つ。そのため、後置 `Module#===` override がある noarg method では
 既知の推論誤差が残る。
