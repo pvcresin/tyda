@@ -10997,7 +10997,9 @@ impl TypeRegistry {
                     ctx.method_is_singleton,
                     ty,
                 );
-                if Self::is_concrete_for_global_resolve(&resolved) {
+                // The caller's flow facts are gone here, so a nilable ivar would lose its guard.
+                if Self::is_concrete_for_global_resolve(&resolved) && !Type::contains_nil(&resolved)
+                {
                     resolved
                 } else {
                     ty.clone()
