@@ -287,10 +287,6 @@ end
 
 ## `singleton_class.include` adds class methods like extend
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

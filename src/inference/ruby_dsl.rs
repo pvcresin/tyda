@@ -693,9 +693,21 @@ impl<'a> InferenceEngine<'a> {
         skip_positionals: usize,
         scope: &Scope,
     ) -> bool {
-        let Some(target_class) = self.mixin_call_target_class(class_name, call_node, parse_result)
-        else {
-            return false;
+        let singleton_owner = call_node.receiver().and_then(|receiver| {
+            self.static_singleton_class_receiver_owner(class_name, &receiver, parse_result)
+        });
+        // `singleton_class.include(M)` adds M's methods as class methods, like `extend M`.
+        let (target_class, kind) = match singleton_owner {
+            Some(owner) if kind == MixinKind::Include => (owner, MixinKind::Extend),
+            Some(_) => return false,
+            None => {
+                let Some(target_class) =
+                    self.mixin_call_target_class(class_name, call_node, parse_result)
+                else {
+                    return false;
+                };
+                (target_class, kind)
+            }
         };
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
         let mut collected = false;
