@@ -13256,6 +13256,7 @@ impl<'a> InferenceEngine<'a> {
         super_node: Option<&Node<'_>>,
         parse_result: Option<&ParseResult<'_>>,
         block: Option<&HoverBlockSig>,
+        call_has_block: bool,
     ) -> Option<Type> {
         let method_name = scope.method_name.clone()?;
         if method_name == "initialize" {
@@ -13281,7 +13282,13 @@ impl<'a> InferenceEngine<'a> {
         let returns: Vec<Type> = targets
             .iter()
             .filter_map(|(owner, is_singleton)| {
-                self.super_target_return(owner, &method_name, *is_singleton, &arguments)
+                self.super_target_return(
+                    owner,
+                    &method_name,
+                    *is_singleton,
+                    &arguments,
+                    call_has_block,
+                )
             })
             .collect();
         if returns.is_empty() {
@@ -13321,8 +13328,41 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         is_singleton: bool,
         arguments: &SuperCallArguments,
+        call_has_block: bool,
     ) -> Option<Type> {
-        self.super_target_return_with_raw(owner, method_name, is_singleton, arguments, None)
+        let raw_return = call_has_block
+            .then(|| self.rbs_block_call_return(owner, method_name, is_singleton))
+            .flatten();
+        self.super_target_return_with_raw(owner, method_name, is_singleton, arguments, raw_return)
+    }
+
+    /// An RBS method that requires a block has no block-less return, so a call with a
+    /// block reads the first overload that takes one.
+    fn rbs_block_call_return(
+        &self,
+        owner: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<Type> {
+        let method = self
+            .registry
+            .lookup_method_def(owner, method_name, is_singleton)?;
+        if !method.rbs_file_source || method.raw_return_type != Type::Untyped {
+            return None;
+        }
+        let method_type = method
+            .rbs_method_types
+            .iter()
+            .find(|mt| mt.block.is_some())?;
+        if !method_type.type_params.is_empty() {
+            return None;
+        }
+        let ty = convert_imported_rbs_type(
+            &method_type.function_type.return_type,
+            self.registry.type_aliases(),
+            Some(owner),
+        );
+        Self::is_concrete(&ty).then_some(ty)
     }
 
     fn super_target_return_with_raw(
@@ -34836,6 +34876,7 @@ impl<'a> InferenceEngine<'a> {
                 if let Some(body) = self.active_method_body.as_mut() {
                     body.has_super_call = true;
                 }
+                let call_has_block = block_node.is_some();
                 let block = self.register_forwarding_super_call_site(
                     class_name,
                     scope,
@@ -34843,7 +34884,14 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                 );
                 let ty = self
-                    .resolve_super_call_return(class_name, scope, None, None, block.as_ref())
+                    .resolve_super_call_return(
+                        class_name,
+                        scope,
+                        None,
+                        None,
+                        block.as_ref(),
+                        call_has_block,
+                    )
                     .unwrap_or(Type::Untyped);
                 self.push_super_hover_snapshot(class_name, node, scope, &ty);
                 ty
@@ -34884,6 +34932,7 @@ impl<'a> InferenceEngine<'a> {
                         Some(node),
                         Some(parse_result),
                         block.as_ref(),
+                        super_node.block().is_some(),
                     )
                     .unwrap_or(Type::Untyped);
                 self.push_super_hover_snapshot(class_name, node, scope, &ty);

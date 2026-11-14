@@ -1167,10 +1167,6 @@ end
 
 ## Block literal on explicit super reaches an RBS parent method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```rbs
