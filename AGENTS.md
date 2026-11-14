@@ -19,6 +19,8 @@ parser FFI), `vscode/` (editor extension), `playground/` (wasm demo), `docs/` (l
   diagnostic for the affected part.
 - Scenarios define user-facing behavior; unit tests cover internal invariants.
   Reproduce regressions and flaky tests; never hide them with retries or skips.
+- When you find wrong inference that you do not fix now, record it as a known-issue
+  test (skill `record-known-issue`); do not leave it only in chat.
 - Keep each PR to one purpose and include related tests and docs. Preserve public
   output by default; intentional changes need a scenario and review agreement. Run
   `pr-self-review` before PR creation; review performance and resources every time.
@@ -35,7 +37,7 @@ parser FFI), `vscode/` (editor extension), `playground/` (wasm demo), `docs/` (l
 Reusable step-by-step recipes live in [`.agents/skills/`](.agents/skills/)
 (`.claude/skills` is a symlink to it): `env-setup`, `dep-pr`, `dev-loop`,
 `add-scenario-test`, `benchmark`, `render-compare`, `worktree-setup`,
-`pr-self-review`, `submit-pr`.
+`pr-self-review`, `submit-pr`, `record-known-issue`.
 If your agent does not load skills automatically, open the matching `SKILL.md`
 before doing that task.
 
