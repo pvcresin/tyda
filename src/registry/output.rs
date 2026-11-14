@@ -1104,10 +1104,17 @@ impl TypeRegistry {
                 .yield_param_types
                 .iter()
                 .enumerate()
-                .map(|(idx, ty)| Param {
-                    name: format!("arg{idx}"),
-                    param_type: self.resolve_param_refs_from_resolved(ty, method_params),
-                    kind: ParamKind::Required,
+                .map(|(idx, ty)| {
+                    let ty = self.resolve_deferred_refs_for_context_owned(
+                        owner_class,
+                        method.is_singleton,
+                        ty.clone(),
+                    );
+                    Param {
+                        name: format!("arg{idx}"),
+                        param_type: self.resolve_param_refs_from_resolved(&ty, method_params),
+                        kind: ParamKind::Required,
+                    }
                 })
                 .collect();
             let declared_required = method

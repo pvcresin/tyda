@@ -81,27 +81,6 @@ class NameList
 end
 ```
 
-## A yield of a singleton method defined later in the class keeps its type
-
-```ruby
-class LaterSetup
-  def self.setup
-    yield instance
-  end
-
-  def self.instance = new
-end
-```
-
-### result
-
-```rbs
-class LaterSetup
-  def self.setup: { (LaterSetup) -> untyped } -> untyped
-  def self.instance: -> LaterSetup
-end
-```
-
 ## A short type name in an inline RBS annotation resolves in the enclosing class
 
 ```ruby
@@ -128,5 +107,34 @@ class Lookup
 
   def named: -> _Named
   def label: -> String
+end
+```
+
+## A block param yielded from a later singleton method keeps the owner class
+
+```ruby
+class LaterSetup
+  def self.setup
+    yield instance
+  end
+
+  def self.instance = new
+end
+
+class SetupUser
+  def run = LaterSetup.setup { |setup| setup }
+end
+```
+
+### result
+
+```rbs
+class LaterSetup
+  def self.setup: [R] { (LaterSetup) -> R } -> R
+  def self.instance: -> LaterSetup
+end
+
+class SetupUser
+  def run: -> LaterSetup
 end
 ```

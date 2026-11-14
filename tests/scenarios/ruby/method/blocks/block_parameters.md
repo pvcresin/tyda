@@ -897,3 +897,24 @@ class Runner
   def stop: (untyped flag) -> "done"?
 end
 ```
+
+## A yield of a singleton method defined later in the class keeps its type
+
+```ruby
+class LaterSetup
+  def self.setup
+    yield instance
+  end
+
+  def self.instance = new
+end
+```
+
+### result
+
+```rbs
+class LaterSetup
+  def self.setup: [R] { (LaterSetup) -> R } -> R
+  def self.instance: -> LaterSetup
+end
+```
