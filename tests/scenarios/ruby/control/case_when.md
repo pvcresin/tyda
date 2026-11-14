@@ -1427,3 +1427,33 @@ class NilWhen
   def nil_branch: -> 1?
 end
 ```
+
+## A case when range keeps the matching branch for an Integer local
+
+### update
+
+```rbs
+class RangeWhen
+  def score: -> Integer
+end
+```
+
+```ruby
+class RangeWhen
+  def label
+    value = score
+    case value
+    when 1..5 then :low
+    else :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class RangeWhen
+  def label: -> (:low | :other)
+end
+```

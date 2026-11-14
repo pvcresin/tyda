@@ -7783,6 +7783,16 @@ impl<'a> InferenceEngine<'a> {
             {
                 safe_to_narrow = false;
                 Some(result)
+            } else if has_predicate
+                && condition.as_range_node().is_some()
+                && !self
+                    .registry
+                    .method_call_has_user_source_definition("Range", "===", false)
+            {
+                // `Range#===` tests cover, not equality with the range value.
+                all_false = false;
+                safe_to_narrow = false;
+                continue;
             } else if has_predicate {
                 let Some(target_type) =
                     self.static_case_expression_type(class_name, &condition, parse_result, scope)
