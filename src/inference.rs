@@ -15254,6 +15254,13 @@ impl<'a> InferenceEngine<'a> {
                                 cvar_owner,
                             },
                         );
+                        self.collect_nested_method_defs(
+                            class_name,
+                            &def_node,
+                            parse_result,
+                            comments,
+                            in_singleton_class,
+                        );
                         let method_name =
                             String::from_utf8_lossy(def_node.name().as_slice()).to_string();
                         let mirror_as_module_function = !in_singleton_class
@@ -18243,6 +18250,59 @@ impl<'a> InferenceEngine<'a> {
                 Some(class_name),
             )
         })
+    }
+
+    /// A `def` run inside a method body defines its method on the class that lexically
+    /// encloses the outer `def`.
+    fn collect_nested_method_defs(
+        &mut self,
+        class_name: &str,
+        def_node: &ruby_prism::DefNode<'_>,
+        parse_result: &ParseResult<'_>,
+        comments: &[RbsComment],
+        in_singleton_class: bool,
+    ) {
+        struct NestedDefs<'pr>(Vec<Node<'pr>>);
+        impl<'pr> ruby_prism::Visit<'pr> for NestedDefs<'pr> {
+            fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
+                if node.receiver().is_none() {
+                    self.0.push(node.as_node());
+                }
+            }
+            fn visit_block_node(&mut self, _node: &ruby_prism::BlockNode<'pr>) {}
+            fn visit_lambda_node(&mut self, _node: &ruby_prism::LambdaNode<'pr>) {}
+            fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
+            fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
+            fn visit_singleton_class_node(&mut self, _node: &ruby_prism::SingletonClassNode<'pr>) {}
+        }
+        let Some(body) = def_node.body() else {
+            return;
+        };
+        let mut nested = NestedDefs(Vec::new());
+        ruby_prism::Visit::visit(&mut nested, &body);
+        for node in nested.0 {
+            self.collect_method_def_with_singleton(
+                class_name,
+                &node,
+                parse_result,
+                comments,
+                MethodCollectionOptions {
+                    sig_sources: None,
+                    annotation_anchor_offset: None,
+                    force_singleton: in_singleton_class,
+                    singleton_class_constants: in_singleton_class,
+                    cvar_owner: None,
+                },
+            );
+            let nested_def = node.as_def_node().expect("must be DefNode");
+            self.collect_nested_method_defs(
+                class_name,
+                &nested_def,
+                parse_result,
+                comments,
+                in_singleton_class,
+            );
+        }
     }
 
     fn collect_method_def_with_singleton(
