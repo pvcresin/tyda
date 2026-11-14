@@ -818,44 +818,10 @@ impl<'a> InferenceEngine<'a> {
         receiver_type: &Type,
         method_name: &str,
     ) -> Option<Type> {
-        let Type::Class(class_name) = receiver_type else {
-            return None;
-        };
-        if class_name != "ActionController::Parameters" {
-            return None;
-        }
-        let ac_params = || Type::Class(Sym::new("ActionController::Parameters"));
-        match method_name {
-            "require"
-            | "permit"
-            | "expect"
-            | "merge"
-            | "merge!"
-            | "reverse_merge"
-            | "reverse_merge!"
-            | "with_defaults"
-            | "with_defaults!"
-            | "slice"
-            | "except"
-            | "transform_values"
-            | "transform_values!"
-            | "transform_keys"
-            | "transform_keys!"
-            | "select"
-            | "reject"
-            | "compact"
-            | "deep_transform_values"
-            | "deep_transform_values!"
-            | "permit!" => Some(ac_params()),
-            "to_h" | "to_unsafe_h" | "to_hash" => Some(Type::Hash(
-                Some(Box::new(Type::String)),
-                Some(Box::new(Type::Untyped)),
-            )),
-            "keys" => Some(Type::Array(Some(Box::new(Type::String)))),
-            "values" | "values_at" => Some(Type::Array(Some(Box::new(Type::Untyped)))),
-            "any?" | "all?" | "empty?" | "none?" | "has_key?" | "include?" | "key?" | "member?"
-            | "present?" | "blank?" | "permitted?" => Some(Type::Bool),
-            "[]" | "fetch" | "dig" | "delete" | "each_value" => Some(Type::Untyped),
+        match receiver_type {
+            Type::Class(class_name) if class_name == crate::rails::parameters::PARAMETERS_CLASS => {
+                crate::rails::parameters::method_return(method_name)
+            }
             _ => None,
         }
     }

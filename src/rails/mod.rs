@@ -1,5 +1,6 @@
 pub mod inflector;
 mod model_tables;
+pub mod parameters;
 pub mod project;
 pub mod relation_api;
 pub mod routes;

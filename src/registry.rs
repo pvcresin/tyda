@@ -10119,6 +10119,23 @@ impl TypeRegistry {
                         return resolved;
                     }
                 }
+                // A module's self call reaches the method through the classes that include it.
+                if !found_definition
+                    && let Some(ret) =
+                        self.lookup_method_return_type_via_including_classes(ref_class, method_name)
+                {
+                    let resolved = self.resolve_deferred_refs_depth(
+                        ref_class,
+                        false,
+                        &ret,
+                        depth + 1,
+                        memo,
+                        visiting,
+                    );
+                    if resolved != Type::Untyped {
+                        return resolved;
+                    }
+                }
                 if !found_definition
                     && subclass_return.is_none()
                     && self.is_inferring_method_body(*ref_class, *method_name)
@@ -10522,6 +10539,11 @@ impl TypeRegistry {
                 && let Some(own) = crate::rails::time_with_zone::own_method_return(method_name)
             {
                 return own;
+            }
+            if cls == crate::rails::parameters::PARAMETERS_CLASS
+                && let Some(ret) = crate::rails::parameters::method_return(method_name)
+            {
+                return ret;
             }
             if let Some(target) =
                 crate::rails::time_with_zone::method_missing_target(&cls, method_name)
