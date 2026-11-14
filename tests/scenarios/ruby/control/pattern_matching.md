@@ -1686,10 +1686,6 @@ end
 
 ## Array pattern element capture binds the matched class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1714,10 +1710,6 @@ end
 
 ## Find pattern capture binds the matched class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1741,10 +1733,6 @@ end
 ```
 
 ## Hash pattern value capture binds the matched class
-
-```yaml
-known_issue: true
-```
 
 ### update
 

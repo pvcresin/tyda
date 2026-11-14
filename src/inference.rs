@@ -61155,6 +61155,14 @@ impl<'a> InferenceEngine<'a> {
         subject_type: Option<&Type>,
         scope: &Scope,
     ) -> Option<Type> {
+        if matches!(
+            pattern,
+            Node::ArrayPatternNode { .. }
+                | Node::FindPatternNode { .. }
+                | Node::HashPatternNode { .. }
+        ) {
+            self.load_nested_capture_classes(pattern, subject_type);
+        }
         match pattern {
             Node::IfNode { .. } => {
                 let if_node = pattern.as_if_node()?;
@@ -61388,6 +61396,123 @@ impl<'a> InferenceEngine<'a> {
             scope.regexp_match_captures = true;
             for target in match_node.targets().iter() {
                 self.assign_multi_target(class_name, &target, Type::String, parse_result, scope);
+            }
+        }
+    }
+
+    /// Loads the classes a nested capture compares, so binding can check their superclasses.
+    fn load_nested_capture_classes(&mut self, pattern: &Node<'_>, subject_type: Option<&Type>) {
+        struct CaptureClasses(Vec<String>);
+        impl<'pr> ruby_prism::Visit<'pr> for CaptureClasses {
+            fn visit_capture_pattern_node(&mut self, node: &ruby_prism::CapturePatternNode<'pr>) {
+                let value = node.value();
+                if matches!(
+                    value,
+                    Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+                ) {
+                    let name = String::from_utf8_lossy(value.location().as_slice());
+                    self.0.push(name.trim_start_matches("::").to_string());
+                }
+                ruby_prism::visit_capture_pattern_node(self, node);
+            }
+        }
+        let mut targets = CaptureClasses(Vec::new());
+        ruby_prism::Visit::visit(&mut targets, pattern);
+        if targets.0.is_empty() {
+            return;
+        }
+        let mut names = targets.0;
+        if let Some(subject_type) = subject_type {
+            let mut pending = vec![subject_type];
+            while let Some(ty) = pending.pop() {
+                match ty {
+                    Type::Union(parts) | Type::Tuple(parts) => pending.extend(parts),
+                    Type::Array(Some(inner)) => pending.push(inner),
+                    Type::Hash(key, value) => pending.extend(key.iter().chain(value).map(|t| &**t)),
+                    other => names.extend(self.type_to_class_name(other)),
+                }
+            }
+        }
+        for name in names {
+            self.ensure_class_available(&name);
+        }
+    }
+
+    /// Drops the union members a class pattern cannot match. A member is dropped only when both
+    /// superclass chains are fully known, so this stays safe without loading more classes.
+    fn narrow_union_to_class_pattern(&self, value_pattern: &Node<'_>, ty: Type) -> Type {
+        let Type::Union(members) = &ty else {
+            return ty;
+        };
+        let target = match value_pattern {
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
+                String::from_utf8_lossy(value_pattern.location().as_slice()).to_string()
+            }
+            _ => return ty,
+        };
+        let target = target.trim_start_matches("::");
+        if self
+            .registry
+            .class_data_for(target)
+            .is_none_or(|data| data.is_module)
+        {
+            return ty;
+        }
+        let Some(target_chain) = self.complete_superclass_chain(target) else {
+            return ty;
+        };
+        let kept: Vec<Type> = members
+            .iter()
+            .filter(|member| {
+                let Some(member_class) = self.type_to_class_name(member) else {
+                    return true;
+                };
+                let Some(member_chain) = self.complete_superclass_chain(&member_class) else {
+                    return true;
+                };
+                member_chain.iter().any(|name| name == target)
+                    || target_chain.contains(&member_class)
+            })
+            .cloned()
+            .collect();
+        if kept.is_empty() || kept.len() == members.len() {
+            return ty;
+        }
+        Type::from_type_vec(kept)
+    }
+
+    /// The class and its superclasses up to `BasicObject`, or `None` when part of it is not loaded.
+    fn complete_superclass_chain(&self, class_name: &str) -> Option<Vec<String>> {
+        let mut chain = vec![class_name.to_string()];
+        let mut current = class_name.to_string();
+        loop {
+            if current == "BasicObject" {
+                return Some(chain);
+            }
+            if self
+                .registry
+                .class_data_for(&current)
+                .is_none_or(|data| data.is_module)
+            {
+                return None;
+            }
+            match self.registry.get_superclass(&current) {
+                Some(superclass) => {
+                    if chain.iter().any(|name| name == superclass) {
+                        return None;
+                    }
+                    current = superclass.to_string();
+                    chain.push(current.clone());
+                }
+                // A loaded class declared without a superclass inherits from `Object`.
+                None => {
+                    for implicit in ["Object", "BasicObject"] {
+                        if !chain.iter().any(|name| name == implicit) {
+                            chain.push(implicit.to_string());
+                        }
+                    }
+                    return Some(chain);
+                }
             }
         }
     }
@@ -61826,6 +61951,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_capture_pattern_node()
                     .expect("must be CapturePatternNode");
                 let bound_ty = Self::pattern_capture_bound_type(&capture.value(), matched_type);
+                let bound_ty = self.narrow_union_to_class_pattern(&capture.value(), bound_ty);
                 self.bind_pattern_locals(&capture.value(), &bound_ty, scope);
                 let target = capture.target();
                 let name = String::from_utf8_lossy(target.name().as_slice()).to_string();
