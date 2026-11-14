@@ -17943,6 +17943,16 @@ impl<'a> InferenceEngine<'a> {
         self.infer_node_type(class_name, value, parse_result, scope)
     }
 
+    fn optional_param_default_node<'b>(
+        def_node: &ruby_prism::DefNode<'b>,
+        name: &str,
+    ) -> Option<Node<'b>> {
+        def_node.parameters()?.optionals().iter().find_map(|param| {
+            let opt = param.as_optional_parameter_node()?;
+            (opt.name().as_slice() == name.as_bytes()).then(|| opt.value())
+        })
+    }
+
     fn def_has_bare_super_default(def_node: &ruby_prism::DefNode<'_>) -> bool {
         def_node.parameters().is_some_and(|params| {
             params.optionals().iter().any(|param| {
@@ -65181,7 +65191,7 @@ impl<'a> InferenceEngine<'a> {
             self.active_refinement_set_at(def_node.location().start_offset());
         let mut defer_body_for_unresolved_keyword_rest_shape = false;
         let mut pos_idx = 0;
-        for pi in &method_info.param_infos {
+        for (param_idx, pi) in method_info.param_infos.iter().enumerate() {
             match pi.kind {
                 ParamKind::Required => {
                     if !pi.name.is_empty() {
@@ -65199,7 +65209,23 @@ impl<'a> InferenceEngine<'a> {
                             .get(pos_idx)
                             .cloned()
                             .unwrap_or(Type::Untyped);
-                        if let Some(default_ty) = pi.default_type.clone() {
+                        if let Some(mut default_ty) = pi.default_type.clone() {
+                            if Self::type_contains_param_ref(&default_ty)
+                                && let Some(value) =
+                                    Self::optional_param_default_node(def_node, &pi.name)
+                            {
+                                default_ty =
+                                    self.infer_node_type(class_name, &value, parse_result, &scope);
+                                if !Self::type_needs_backward_propagation(&default_ty) {
+                                    self.registry.update_method_param_default_type_variant(
+                                        class_name,
+                                        &method_name,
+                                        is_singleton,
+                                        param_idx,
+                                        default_ty.clone(),
+                                    );
+                                }
+                            }
                             ty = if ty == Type::Untyped {
                                 default_ty
                             } else {

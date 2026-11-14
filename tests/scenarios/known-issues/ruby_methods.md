@@ -37,24 +37,6 @@ class PairUser
 end
 ```
 
-## A default built from an earlier parameter keeps its type
-
-```ruby
-class DefaultDep
-  def double(base, scaled = base * 2) = scaled
-end
-
-DefaultDep.new.double(3)
-```
-
-### result
-
-```rbs
-class DefaultDep
-  def double: (Integer base, ?Integer scaled) -> Integer
-end
-```
-
 ## An ivar set from a nil default parameter keeps nil
 
 ```ruby
