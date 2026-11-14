@@ -791,10 +791,6 @@ end
 
 ## Including a module already in the ancestors keeps its position
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

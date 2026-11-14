@@ -610,10 +610,12 @@ fn user_facing_type(ty: &Type) -> Type {
         Type::Proc {
             return_type,
             param_count,
+            exact_params,
             literal,
         } => Type::Proc {
             return_type: Box::new(user_facing_type(return_type)),
             param_count: *param_count,
+            exact_params: *exact_params,
             literal: *literal,
         },
         _ => ty.clone(),

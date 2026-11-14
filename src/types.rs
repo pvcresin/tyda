@@ -118,6 +118,8 @@ pub enum Type {
     Proc {
         return_type: Box<Type>,
         param_count: usize,
+        // True when the proc takes exactly `param_count` required positional params (a lambda literal).
+        exact_params: bool,
         // Source literals bind call arguments through a side table; ignored by equality.
         literal: Option<ProcLiteralId>,
     },
@@ -413,14 +415,16 @@ impl PartialEq for Type {
                 Type::Proc {
                     return_type: r1,
                     param_count: p1,
+                    exact_params: e1,
                     ..
                 },
                 Type::Proc {
                     return_type: r2,
                     param_count: p2,
+                    exact_params: e2,
                     ..
                 },
-            ) => p1 == p2 && r1 == r2,
+            ) => p1 == p2 && e1 == e2 && r1 == r2,
             (Type::Generic { base: b1, args: a1 }, Type::Generic { base: b2, args: a2 }) => {
                 b1 == b2 && a1 == a2
             }
@@ -488,10 +492,12 @@ impl std::hash::Hash for Type {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 ..
             } => {
                 return_type.hash(state);
                 param_count.hash(state);
+                exact_params.hash(state);
             }
             Type::Tuple(types) => types.hash(state),
             Type::Generic { base, args } => {
@@ -627,14 +633,16 @@ impl Type {
                 Type::Proc {
                     return_type: a,
                     param_count: pa,
+                    exact_params: ea,
                     ..
                 },
                 Type::Proc {
                     return_type: b,
                     param_count: pb,
+                    exact_params: eb,
                     ..
                 },
-            ) => a.cmp(b).then(pa.cmp(pb)),
+            ) => a.cmp(b).then(pa.cmp(pb)).then(ea.cmp(eb)),
             (Type::Tuple(a), Type::Tuple(b)) => a.cmp(b),
             (Type::Intersection(a), Type::Intersection(b)) => a.cmp(b),
             // Since it shares a discriminant, comparisons involving `Generic` fall back to Display strings (compatible with the old flat representation).
@@ -695,10 +703,12 @@ impl Type {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(return_type.replace_self_type(self_type)),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::TruthyProjection(inner) => {
@@ -799,10 +809,12 @@ impl Type {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(return_type.replace_instance_type(instance_type)),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::TruthyProjection(inner) => {
@@ -865,21 +877,33 @@ impl Type {
     /// Several procs in one union render as one proc returning the union of their returns.
     fn merged_proc_member(types: &[Type]) -> Option<Type> {
         let mut returns = Vec::new();
-        let mut takes_params = false;
+        let mut arities = Vec::new();
         for ty in types {
             if let Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 ..
             } = ty
             {
                 returns.push(return_type.as_ref().clone());
-                takes_params |= *param_count > 0;
+                arities.push((*param_count, *exact_params));
             }
         }
-        (returns.len() > 1).then(|| Type::Proc {
+        if returns.len() < 2 {
+            return None;
+        }
+        let (param_count, exact_params) = match arities[0] {
+            first @ (_, true) if arities.iter().all(|arity| *arity == first) => first,
+            _ => (
+                usize::from(arities.iter().any(|(count, _)| *count > 0)),
+                false,
+            ),
+        };
+        Some(Type::Proc {
             return_type: Box::new(Type::from_type_vec(returns)),
-            param_count: usize::from(takes_params),
+            param_count,
+            exact_params,
             literal: None,
         })
     }
@@ -1577,6 +1601,7 @@ impl fmt::Display for Type {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 ..
             } => {
                 let return_type = format!("{return_type:#}");
@@ -1584,6 +1609,9 @@ impl fmt::Display for Type {
                     write!(f, "Proc")
                 } else if *param_count == 0 {
                     write!(f, "(^() -> {return_type})")
+                } else if *exact_params {
+                    let params = vec!["untyped"; *param_count].join(", ");
+                    write!(f, "(^({params}) -> {return_type})")
                 } else {
                     write!(f, "(^(?) -> {return_type})")
                 }

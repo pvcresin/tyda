@@ -1358,3 +1358,102 @@ class WhenClassValue
   def classify: -> (:cat | :matched)
 end
 ```
+
+## A case when else branch excludes the matched class
+
+### update
+
+```rbs
+class KeyNormalizer
+  def key: -> (String | Symbol)
+end
+```
+
+```ruby
+class KeyNormalizer
+  def normalized_key
+    value = key
+    case value
+    when Symbol then value.to_s
+    else value
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class KeyNormalizer
+  def normalized_key: -> String
+end
+```
+
+## A case when nil else branch excludes nil
+
+### update
+
+```rbs
+class NilWhen
+  def count: -> Integer?
+end
+```
+
+```ruby
+class NilWhen
+  def count_or_zero
+    value = count
+    case value
+    when nil then 0
+    else value
+    end
+  end
+
+  def nil_branch
+    value = count
+    case value
+    when nil then value
+    else 1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class NilWhen
+  def count_or_zero: -> Integer
+  def nil_branch: -> 1?
+end
+```
+
+## A case when range keeps the matching branch for an Integer local
+
+### update
+
+```rbs
+class RangeWhen
+  def score: -> Integer
+end
+```
+
+```ruby
+class RangeWhen
+  def label
+    value = score
+    case value
+    when 1..5 then :low
+    else :other
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class RangeWhen
+  def label: -> (:low | :other)
+end
+```

@@ -248,10 +248,6 @@ end
 
 ## Struct bracket constructor returns the struct and types its members
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

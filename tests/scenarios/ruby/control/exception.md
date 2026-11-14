@@ -984,10 +984,6 @@ end
 
 ## Rescue with a non-class constant does not become a type
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

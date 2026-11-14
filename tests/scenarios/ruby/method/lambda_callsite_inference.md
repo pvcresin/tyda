@@ -223,7 +223,7 @@ class Directory
 end
 
 class DirectoryBody
-  def initialize: ((^(?) -> Integer?) files) -> void
+  def initialize: ((^(untyped) -> Integer?) files) -> void
   def each: -> untyped
 end
 

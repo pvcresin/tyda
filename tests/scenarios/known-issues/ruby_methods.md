@@ -109,57 +109,6 @@ class NilDefault
 end
 ```
 
-## An ivar set from a parameter with an or fallback keeps the joined type
-
-```ruby
-class OrFallback
-  def initialize(label)
-    @label = label || "none"
-  end
-
-  def label = @label
-end
-
-OrFallback.new(nil)
-OrFallback.new("a")
-```
-
-### result
-
-```rbs
-class OrFallback
-  def initialize: (String? label) -> void
-  def label: -> String
-end
-```
-
-## A yield result stored in a local keeps the block signature
-
-```ruby
-class YieldResult
-  def run
-    result = yield
-    result
-  end
-end
-
-class YieldResultUser
-  def call = YieldResult.new.run { "done" }
-end
-```
-
-### result
-
-```rbs
-class YieldResult
-  def run: { () -> "done" } -> "done"
-end
-
-class YieldResultUser
-  def call: -> "done"
-end
-```
-
 ## A yield inside an each block passes the element type
 
 ```ruby
@@ -198,27 +147,6 @@ end
 class LaterSetup
   def self.setup: { (LaterSetup) -> untyped } -> untyped
   def self.instance: -> LaterSetup
-end
-```
-
-## A singleton attr_accessor reader set outside the class body is nilable
-
-```ruby
-class Level
-  class << self
-    attr_accessor :current
-  end
-end
-
-Level.current = 3
-```
-
-### result
-
-```rbs
-class Level
-  def self.current: -> Integer?
-  def self.current=: (Integer current) -> Integer
 end
 ```
 

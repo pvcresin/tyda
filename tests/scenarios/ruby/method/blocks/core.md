@@ -658,3 +658,67 @@ class SettingsUser
   def run: -> Settings
 end
 ```
+
+## A yield result stored in a local keeps the block signature
+
+### update
+
+```ruby
+class YieldResult
+  def run
+    result = yield
+    result
+  end
+
+  def run_with
+    result = yield 1
+    result
+  end
+
+  def store
+    @result = yield
+  end
+end
+
+class YieldResultUser
+  def call = YieldResult.new.run { "done" }
+end
+```
+
+### result
+
+```rbs
+class YieldResult
+  def run: [R] { () -> R } -> R
+  def run_with: [R] { (Integer) -> R } -> R
+  def store: [R] { () -> R } -> R
+end
+
+class YieldResultUser
+  def call: -> "done"
+end
+```
+
+## A yield in a block does not read a block-local value as nil
+
+### update
+
+```ruby
+class SocketProbe
+  def each_socket
+    [1].each do |address|
+      socket = "s"
+      value = yield socket, address
+      value
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class SocketProbe
+  def each_socket: { (String, Integer) -> untyped } -> [1]
+end
+```

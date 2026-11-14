@@ -1568,3 +1568,90 @@ fn typed_block_walk_does_not_add_missing_method_warnings() {
         assert!(missing_methods.is_empty(), "compact={compact}: {actual:?}");
     }
 }
+
+#[test]
+fn regexp_captures_do_not_report_nil_for_required_groups_or_gsub_blocks() {
+    let source = concat!(
+        "class CaptureUse\n",
+        "  def required(text)\n",
+        "    return unless text =~ /^(\\^+)/\n",
+        "    $1.size\n",
+        "  end\n",
+        "  def in_gsub_block(body)\n",
+        "    body = \"if \" + $1 if body =~ /\\Areturn unless (.*)/\n",
+        "    body.gsub!(/^( *)x/) { $1.size.to_s }\n",
+        "  end\n",
+        "  def after_sub(text)\n",
+        "    text = \"if \" + $1 if text =~ /\\A(x)?y/\n",
+        "    text.size.to_s + $1.size.to_s if text.sub!(/([(]+)/, \"\")\n",
+        "  end\n",
+        "end\n",
+        "CaptureUse.new.required(\"^\")\n",
+        "CaptureUse.new.in_gsub_block(\"x\")\n",
+        "CaptureUse.new.after_sub(\"x\")\n",
+    );
+    for compact in [false, true] {
+        let found = diagnostics(source, compact);
+        let missing: Vec<_> = found
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| diagnostic.unresolved_method.as_str())
+            .collect();
+        assert!(missing.is_empty(), "compact={compact}: {found:?}");
+    }
+}
+
+#[test]
+fn ivar_hash_key_written_by_or_assign_is_present() {
+    let source = concat!(
+        "class Breadcrumbs\n",
+        "  def add(link, location: :before)\n",
+        "    @links ||= {}\n",
+        "    @links[location] ||= []\n",
+        "    @links[location] << link\n",
+        "  end\n",
+        "end\n",
+        "Breadcrumbs.new.add(\"x\")\n",
+    );
+    for compact in [false, true] {
+        let found = diagnostics(source, compact);
+        let missing: Vec<_> = found
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| diagnostic.unresolved_method.as_str())
+            .collect();
+        assert!(missing.is_empty(), "compact={compact}: {found:?}");
+    }
+}
+
+#[test]
+fn nil_subject_never_matches_a_class_when() {
+    let source = concat!(
+        "class Proj\n",
+        "  include UnknownConcern\n",
+        "  def namespace_id = 1\n",
+        "end\n",
+        "class ProjNs\n",
+        "  include UnknownConcern\n",
+        "  def parent_id = 1\n",
+        "end\n",
+        "class Ns\n",
+        "  def ref(from = nil) = cross(from)\n",
+        "  private def cross(from)\n",
+        "    case from\n",
+        "    when Proj then from.namespace_id\n",
+        "    when ProjNs then from.parent_id\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        let found = diagnostics(source, compact);
+        let missing: Vec<_> = found
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| diagnostic.unresolved_method.as_str())
+            .collect();
+        assert!(missing.is_empty(), "compact={compact}: {found:?}");
+    }
+}

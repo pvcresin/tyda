@@ -17,7 +17,7 @@ end
 
 ```rbs
 module Utils
-  def self.default_parser: -> untyped
+  def self.default_parser: -> Integer?
   def self.default_parser=: (Integer default_parser) -> Integer
 end
 ```
@@ -43,7 +43,7 @@ end
 
 ```rbs
 module Utils
-  def self.default_parser: -> untyped
+  def self.default_parser: -> Integer?
   def self.default_parser=: (Integer default_parser) -> Integer
   def self.param_depth_limit=: (untyped v) -> untyped
 end
@@ -75,5 +75,28 @@ end
 class Store
   def self.registry: -> untyped
   def self.registry=: (Hash[untyped, untyped] registry) -> untyped
+end
+```
+
+## A singleton attr_accessor reader set outside the class body is nilable
+
+### update
+
+```ruby
+class Level
+  class << self
+    attr_accessor :current
+  end
+end
+
+Level.current = 3
+```
+
+### result
+
+```rbs
+class Level
+  def self.current: -> Integer?
+  def self.current=: (Integer current) -> Integer
 end
 ```

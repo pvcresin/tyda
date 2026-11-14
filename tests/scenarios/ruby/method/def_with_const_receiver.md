@@ -136,10 +136,6 @@ end
 
 ## `def (Outer::Foo).name` registers a singleton method
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

@@ -186,3 +186,90 @@ class Object < BasicObject
   def probe: (untyped s) -> untyped
 end
 ```
+
+## A regexp match in an if condition sets numbered captures
+
+### update
+
+```rbs
+class CaptureInCondition
+  def line: -> String
+end
+```
+
+```ruby
+class CaptureInCondition
+  def key
+    if line =~ /\A(\w+)=/
+      $1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class CaptureInCondition
+  def key: -> String?
+end
+```
+
+## A regexp match in a guard clause sets numbered captures
+
+### update
+
+```rbs
+class CaptureInGuard
+  def line: -> String
+end
+```
+
+```ruby
+class CaptureInGuard
+  def key
+    return unless /\A(\w+)=/ =~ line
+    $1
+  end
+end
+```
+
+### result
+
+```rbs
+class CaptureInGuard
+  def key: -> String?
+end
+```
+
+## A required capture group is a String after a truthy match
+
+### update
+
+```ruby
+class CaptureGroups
+  def required(text) = text =~ /bytes=([^;]+)/ ? $1 : "none"
+  def optional(text) = text =~ /a(b)?/ ? $1 : "none"
+  def alternative(text) = text =~ /(a)|(b)/ ? $1 : "none"
+  def outer(text) = text =~ /((a)|b)/ ? $1 : "none"
+  def named(text) = text =~ /(?<word>a)/ ? $1 : "none"
+end
+
+CaptureGroups.new.required("x")
+CaptureGroups.new.optional("x")
+CaptureGroups.new.alternative("x")
+CaptureGroups.new.outer("x")
+CaptureGroups.new.named("x")
+```
+
+### result
+
+```rbs
+class CaptureGroups
+  def required: (String text) -> String
+  def optional: (String text) -> String?
+  def alternative: (String text) -> String?
+  def outer: (String text) -> String
+  def named: (String text) -> String?
+end
+```

@@ -2976,6 +2976,20 @@ impl TypeRegistry {
         });
     }
 
+    pub(crate) fn method_is_aliased(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        self.class_data.get(class_name).is_some_and(|data| {
+            data.cold().method_aliases.iter().any(|alias| {
+                alias.is_singleton == is_singleton
+                    && (alias.old_name == method_name || alias.new_name == method_name)
+            })
+        })
+    }
+
     /// `alias_method` captures the definition visible when it runs. An alias whose target was not
     /// visible yet stays bound to `class#name` by name; once the class itself defines `name`
     /// afterwards, that binding would wrongly see the new body, so rebind it above the class.
@@ -3700,6 +3714,26 @@ impl TypeRegistry {
     /// A value of a class may be an instance of a subclass, so a method defined there is not
     /// provably missing on the class itself.
     pub(crate) fn subclass_defines_method(&self, class_name: &str, method_name: &str) -> bool {
+        self.any_subclass(class_name, |candidate| {
+            self.first_method_call_owner_cached(candidate, method_name, false)
+                .is_some()
+        })
+    }
+
+    /// Whether every known subclass dispatches the instance method to `owner`.
+    pub(crate) fn subclasses_inherit_method_from(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        owner: &str,
+    ) -> bool {
+        !self.any_subclass(class_name, |candidate| {
+            self.first_method_call_owner_cached(candidate, method_name, false)
+                .is_none_or(|(found, singleton)| singleton || found.as_ref() != owner)
+        })
+    }
+
+    fn any_subclass(&self, class_name: &str, matches: impl Fn(&str) -> bool) -> bool {
         let class_name = class_name.trim_scope_prefix();
         if let Some(index) = &self.tail().subclass_index {
             let mut pending: Vec<&SharedName> = index
@@ -3711,10 +3745,7 @@ impl TypeRegistry {
                 if !visited.insert(candidate.as_ref()) {
                     continue;
                 }
-                if self
-                    .first_method_call_owner_cached(candidate, method_name, false)
-                    .is_some()
-                {
+                if matches(candidate) {
                     return true;
                 }
                 if let Some(subclasses) = index.get(candidate.as_ref()) {
@@ -3727,9 +3758,7 @@ impl TypeRegistry {
             data.superclass.is_some()
                 && candidate.as_ref() != class_name
                 && self.class_is_descendant_of(candidate, class_name)
-                && self
-                    .first_method_call_owner_cached(candidate, method_name, false)
-                    .is_some()
+                && matches(candidate)
         })
     }
 
@@ -7645,11 +7674,38 @@ impl TypeRegistry {
             return None;
         }
         if prefer_singleton
+            && let Some(ret) = self.class_new_instance_return(class_name, method_name)
+        {
+            return Some(ret);
+        }
+        if prefer_singleton
             && let Some(ret) = self.inherited_model_singleton_return(class_name, method_name)
         {
             return Some(ret);
         }
         self.lookup_method_return_type_with_hint(class_name, method_name, prefer_singleton)
+    }
+
+    /// `X.new` builds an `X` when no singleton `new` overrides `Class#new`, whose RBS return is untyped.
+    pub(crate) fn class_new_instance_return(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<Type> {
+        if method_name != "new"
+            || !self
+                .class_data
+                .get(class_name)
+                .is_some_and(|data| !data.is_module)
+        {
+            return None;
+        }
+        match self.first_method_call_owner_cached(class_name, method_name, true) {
+            Some((owner, false)) if Self::is_class_object_instance_owner(&owner) => {}
+            None => {}
+            _ => return None,
+        }
+        Some(Type::Class(Sym::new(class_name)))
     }
 
     /// A query method or scope generated on a parent model returns records of the class it
@@ -8351,6 +8407,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => {
                 let (ret, resolved, unresolved) =
@@ -8360,6 +8417,7 @@ impl TypeRegistry {
                 Type::Proc {
                     return_type: Box::new(ret),
                     param_count: *param_count,
+                    exact_params: *exact_params,
                     literal: *literal,
                 }
             }
@@ -8600,10 +8658,12 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_subclass_refs_in_type(return_type)),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
@@ -9425,6 +9485,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_global_refs(
@@ -9436,6 +9497,7 @@ impl TypeRegistry {
                     budget,
                 )),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
@@ -9690,10 +9752,12 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_param_refs_from_resolved(return_type, params)),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
@@ -10321,6 +10385,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_deferred_refs_depth(
@@ -10332,6 +10397,7 @@ impl TypeRegistry {
                     visiting,
                 )),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::Tuple(elems) => Type::Tuple(
@@ -11066,6 +11132,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_call_site_type_from_caller_context(
@@ -11074,6 +11141,7 @@ impl TypeRegistry {
                     visiting,
                 )),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::TruthyProjection(inner)
@@ -12499,6 +12567,43 @@ impl TypeRegistry {
 
     /// At most one owner: every arm either propagates a nested result or
     /// returns the class it matched in, so the walk never accumulates.
+    fn included_by_earlier_mixin(&self, class_name: &str, earlier: &[Mixin], target: &str) -> bool {
+        let mut visited = Vec::new();
+        earlier.iter().any(|mixin| {
+            mixin.kind == MixinKind::Include
+                && self.module_includes(
+                    self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref()),
+                    target,
+                    &mut visited,
+                )
+        })
+    }
+
+    fn module_includes<'a>(
+        &'a self,
+        module: &'a str,
+        target: &str,
+        visited: &mut Vec<&'a str>,
+    ) -> bool {
+        if module == target {
+            return true;
+        }
+        if visited.contains(&module) {
+            return false;
+        }
+        visited.push(module);
+        self.class_data.get(module).is_some_and(|data| {
+            data.mixins.iter().any(|mixin| {
+                mixin.kind == MixinKind::Include
+                    && self.module_includes(
+                        self.resolve_scoped_class_ref_borrow(module, mixin.module_name.as_ref()),
+                        target,
+                        visited,
+                    )
+            })
+        })
+    }
+
     fn resolve_method_call_owners_inner_refs<'a>(
         &'a self,
         class_name: &'a str,
@@ -12597,7 +12702,7 @@ impl TypeRegistry {
                 }
             }
         } else {
-            for mixin in data.mixins.iter().rev() {
+            for (index, mixin) in data.mixins.iter().enumerate().rev() {
                 // Prepend was already walked before checking the class
                 // itself; Extend lives on the singleton side.
                 if mixin.kind != MixinKind::Include {
@@ -12605,9 +12710,17 @@ impl TypeRegistry {
                 }
                 let mixin_ref =
                     self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
+                let seen_mark = seen.len();
                 if let Some(owners) =
                     self.resolve_method_call_owners_inner_refs(mixin_ref, method_name, false, seen)
                 {
+                    // Including a module that an earlier include already brought in keeps it at
+                    // the earlier position.
+                    if self.included_by_earlier_mixin(class_name, &data.mixins[..index], mixin_ref)
+                    {
+                        seen.truncate(seen_mark);
+                        continue;
+                    }
                     return Some(owners);
                 }
             }
@@ -13219,10 +13332,12 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(recur(return_type)),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             // don't eagerly resolve while a param marker remains (`_ => Untyped` would destroy the marker -> leave it for call-site substitution).
@@ -13243,6 +13358,25 @@ impl TypeRegistry {
                 }
             }
             Type::SplatRef(parts) => Type::SplatRef(Box::new(recur(parts))),
+            // Only a fully known argument type resolves the projection. Otherwise it stays, so a
+            // later pass can resolve it.
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => {
+                let resolved = recur(inner);
+                if Self::type_contains_untyped_member(&resolved)
+                    || !Self::is_concrete_for_global_resolve(&resolved)
+                {
+                    return ty.clone();
+                }
+                match ty {
+                    Type::TruthyProjection(_) => {
+                        Type::project_truthy(&resolved).unwrap_or(Type::Bot)
+                    }
+                    Type::FalsyProjection(_) => Type::project_falsy(&resolved).unwrap_or(Type::Bot),
+                    _ => Type::project_non_nil(&resolved),
+                }
+            }
             Type::PatternTrailingRef(subject, from_end) => {
                 let resolved_subject = recur(subject);
                 if Self::type_contains_param_ref_static(&resolved_subject) {
@@ -14718,6 +14852,7 @@ mod tests {
                 Type::Proc {
                     return_type: Box::new(Type::MethodReturnRef("Box".into(), "value".into())),
                     param_count: 0,
+                    exact_params: false,
                     literal: None,
                 },
             ),
@@ -14757,6 +14892,7 @@ mod tests {
             Type::Proc {
                 return_type: Box::new(Type::Integer),
                 param_count: 0,
+                exact_params: false,
                 literal: None,
             }
         );

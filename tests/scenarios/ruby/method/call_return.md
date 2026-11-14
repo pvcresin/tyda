@@ -776,10 +776,6 @@ end
 
 ## new on a union of class parameters returns the union of instances
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

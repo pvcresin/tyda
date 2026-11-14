@@ -325,6 +325,7 @@ pub fn parse_rbs_param_annotation_with_aliases(
         let ty = Type::Proc {
             return_type: Box::new(return_type.clone()),
             param_count: rbs_function_type_param_count(function_type),
+            exact_params: false,
             literal: None,
         };
         return Some(RbsParamAnnotation {
@@ -380,6 +381,7 @@ pub fn parse_rbs_shorthand_with_aliases(
         Type::Proc {
             return_type: Box::new(ret),
             param_count,
+            exact_params: false,
             literal: None,
         }
     });

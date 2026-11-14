@@ -2126,11 +2126,11 @@ end
 class MemoizedTargetReader
   def initialize: (untyped project) -> void
   def target: -> (GroupNode | ProjectNode)
-  def read: -> (1 | "group")?
+  def read: -> (1 | "group")
 end
 
 class Object < BasicObject
-  def read_memoized_target: (untyped project) -> (1 | "group")?
+  def read_memoized_target: (untyped project) -> (1 | "group")
 end
 
 class ProjectNode

@@ -1662,10 +1662,6 @@ end
 
 ## Alternative pattern narrows the subject
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1689,10 +1685,6 @@ end
 ```
 
 ## Array pattern element capture binds the matched class
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1718,10 +1710,6 @@ end
 
 ## Find pattern capture binds the matched class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1745,10 +1733,6 @@ end
 ```
 
 ## Hash pattern value capture binds the matched class
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -1796,5 +1780,34 @@ Classifier.new.classify(0)
 ```rbs
 class Classifier
   def classify: (Integer value) -> (:number | :zero)
+end
+```
+
+## An alternative class pattern narrows its binding
+
+### update
+
+```rbs
+class NumberPattern
+  def value: -> (Integer | Float | String)
+end
+```
+
+```ruby
+class NumberPattern
+  def number
+    case value
+    in Integer | Float => n then n
+    else 0
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class NumberPattern
+  def number: -> (Integer | Float)
 end
 ```

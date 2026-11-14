@@ -20,8 +20,8 @@ end
 
 ```rbs
 class Counter
-  def increment: -> 1
-  def current: -> (0 | 1)
+  def increment: -> Integer
+  def current: -> Integer
 end
 ```
 
@@ -260,10 +260,6 @@ end
 ```
 
 ## Class variable compound write widens across calls
-
-```yaml
-known_issue: true
-```
 
 ### update
 

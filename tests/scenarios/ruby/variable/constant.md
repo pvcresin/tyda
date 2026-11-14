@@ -342,10 +342,6 @@ end
 
 ## Constant write under a dynamic module keeps only the static constant
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -357,4 +353,21 @@ VALUE = holder::Item = 42
 
 ```rbs
 VALUE: 42
+```
+
+## Conditional constant write under a dynamic module is not recorded
+
+### update
+
+```ruby
+holder = Module.new
+holder::Item ||= 1
+holder::Count += 1
+COUNT = 2
+```
+
+### result
+
+```rbs
+COUNT: 2
 ```

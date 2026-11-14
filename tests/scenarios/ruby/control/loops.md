@@ -1465,10 +1465,6 @@ end
 
 ## While body assignment before next reaches the loop exit
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1499,10 +1495,6 @@ end
 
 ## For body assignment before next reaches the loop exit
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1530,10 +1522,6 @@ end
 
 ## Block assignment before next reaches code after each
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1559,11 +1547,63 @@ class Scanner
 end
 ```
 
-## While loop that walks into a tuple exits with nil
+## While body assignment before break reaches the loop exit
 
-```yaml
-known_issue: true
+### update
+
+```ruby
+class Scanner
+  def run
+    found = nil
+    i = 0
+    while i < 3
+      i += 1
+      if i == 2
+        found = "a"
+        break
+      end
+    end
+    found
+  end
+end
 ```
+
+### result
+
+```rbs
+class Scanner
+  def run: -> "a"?
+end
+```
+
+## Block assignment before break reaches code after each
+
+### update
+
+```ruby
+class Scanner
+  def run(items)
+    found = nil
+    items.each do |item|
+      if item
+        found = :hit
+        break
+      end
+    end
+    found
+  end
+end
+```
+
+### result
+
+```rbs
+class Scanner
+  def run: (untyped items) -> :hit?
+end
+```
+
+## While loop that walks into a tuple exits with nil
 
 ### update
 

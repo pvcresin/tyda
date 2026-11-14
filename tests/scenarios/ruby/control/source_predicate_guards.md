@@ -2,10 +2,6 @@
 
 ## Source predicate with nil exits narrows its local arguments
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -223,10 +219,6 @@ end
 ```
 
 ## Unrelated mixins and singleton methods keep the source predicate effect
-
-```yaml
-known_issue: true
-```
 
 ### update
 
