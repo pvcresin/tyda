@@ -1600,3 +1600,26 @@ fn regexp_captures_do_not_report_nil_for_required_groups_or_gsub_blocks() {
         assert!(missing.is_empty(), "compact={compact}: {found:?}");
     }
 }
+
+#[test]
+fn ivar_hash_key_written_by_or_assign_is_present() {
+    let source = concat!(
+        "class Breadcrumbs\n",
+        "  def add(link, location: :before)\n",
+        "    @links ||= {}\n",
+        "    @links[location] ||= []\n",
+        "    @links[location] << link\n",
+        "  end\n",
+        "end\n",
+        "Breadcrumbs.new.add(\"x\")\n",
+    );
+    for compact in [false, true] {
+        let found = diagnostics(source, compact);
+        let missing: Vec<_> = found
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| diagnostic.unresolved_method.as_str())
+            .collect();
+        assert!(missing.is_empty(), "compact={compact}: {found:?}");
+    }
+}

@@ -1,4 +1,4 @@
-//! Flow facts about keys written to a hash held in a local.
+//! Flow facts about keys written to a hash held in a local or an instance variable.
 //!
 //! A key written through `recv[key] = v`, `recv[key] ||= v`, or `recv[key] += v` is present until
 //! `recv` or a non-static `key` is used in any other way. `Hash#[]` then yields the declared value
@@ -45,6 +45,14 @@ fn local_name(node: &Node<'_>) -> Option<String> {
         .map(|read| String::from_utf8_lossy(read.name().as_slice()).to_string())
 }
 
+/// The local or `@ivar` that holds the hash.
+fn receiver_name(node: &Node<'_>) -> Option<String> {
+    local_name(node).or_else(|| {
+        node.as_instance_variable_read_node()
+            .map(|read| String::from_utf8_lossy(read.name().as_slice()).to_string())
+    })
+}
+
 fn key_identity(key_node: &Node<'_>, key_type: &Type) -> Option<HashKeyIdentity> {
     if is_static_key_type(key_type) {
         return Some(HashKeyIdentity::Value(key_type.clone()));
@@ -82,7 +90,7 @@ pub(super) fn invalidate_hash_key_facts(node: &Node<'_>, facts: &mut HashKeyFact
     if let Some(call) = node.as_call_node()
         && call.name().as_slice() == b"[]="
         && call.block().is_none()
-        && call.receiver().as_ref().is_some_and(is_local_read)
+        && call.receiver().as_ref().is_some_and(is_receiver_read)
     {
         if let Some(arguments) = call.arguments() {
             walker.visit_index_arguments(arguments.arguments().iter());
@@ -90,7 +98,7 @@ pub(super) fn invalidate_hash_key_facts(node: &Node<'_>, facts: &mut HashKeyFact
         return;
     }
     if let Some(write) = node.as_index_or_write_node()
-        && write.receiver().as_ref().is_some_and(is_local_read)
+        && write.receiver().as_ref().is_some_and(is_receiver_read)
     {
         if let Some(arguments) = write.arguments() {
             walker.visit_index_arguments(arguments.arguments().iter());
@@ -99,7 +107,7 @@ pub(super) fn invalidate_hash_key_facts(node: &Node<'_>, facts: &mut HashKeyFact
         return;
     }
     if let Some(write) = node.as_index_operator_write_node()
-        && write.receiver().as_ref().is_some_and(is_local_read)
+        && write.receiver().as_ref().is_some_and(is_receiver_read)
     {
         if let Some(arguments) = write.arguments() {
             walker.visit_index_arguments(arguments.arguments().iter());
@@ -112,6 +120,13 @@ pub(super) fn invalidate_hash_key_facts(node: &Node<'_>, facts: &mut HashKeyFact
 
 fn is_local_read(node: &Node<'_>) -> bool {
     matches!(node, Node::LocalVariableReadNode { .. })
+}
+
+fn is_receiver_read(node: &Node<'_>) -> bool {
+    matches!(
+        node,
+        Node::LocalVariableReadNode { .. } | Node::InstanceVariableReadNode { .. }
+    )
 }
 
 struct FactInvalidator<'a> {
@@ -149,6 +164,37 @@ impl<'pr> Visit<'pr> for FactInvalidator<'_> {
 
     fn visit_local_variable_read_node(&mut self, node: &ruby_prism::LocalVariableReadNode<'pr>) {
         self.drop_name(node.name().as_slice());
+    }
+
+    fn visit_instance_variable_read_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableReadNode<'pr>,
+    ) {
+        self.drop_name(node.name().as_slice());
+    }
+
+    fn visit_instance_variable_write_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableWriteNode<'pr>,
+    ) {
+        self.drop_name(node.name().as_slice());
+        self.visit(&node.value());
+    }
+
+    fn visit_instance_variable_or_write_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableOrWriteNode<'pr>,
+    ) {
+        self.drop_name(node.name().as_slice());
+        self.visit(&node.value());
+    }
+
+    fn visit_instance_variable_operator_write_node(
+        &mut self,
+        node: &ruby_prism::InstanceVariableOperatorWriteNode<'pr>,
+    ) {
+        self.drop_name(node.name().as_slice());
+        self.visit(&node.value());
     }
 
     fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
@@ -190,12 +236,19 @@ impl<'pr> Visit<'pr> for FactInvalidator<'_> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         if node.name().as_slice() == b"[]"
             && node.block().is_none()
-            && node.receiver().as_ref().is_some_and(is_local_read)
+            && node.receiver().as_ref().is_some_and(is_receiver_read)
         {
             if let Some(arguments) = node.arguments() {
                 self.visit_index_arguments(arguments.arguments().iter());
             }
             return;
+        }
+        // A method on self may change any instance variable.
+        if node
+            .receiver()
+            .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }))
+        {
+            self.facts.retain(|name, _| !name.starts_with('@'));
         }
         ruby_prism::visit_call_node(self, node);
     }
@@ -210,7 +263,7 @@ impl InferenceEngine<'_> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
-        let Some(receiver_name) = local_name(receiver) else {
+        let Some(receiver_name) = receiver_name(receiver) else {
             return;
         };
         let key_type = self.infer_node_type(class_name, key_node, parse_result, scope);
@@ -275,14 +328,19 @@ impl InferenceEngine<'_> {
             return None;
         }
         let receiver = call.receiver()?;
-        let fact = scope.hash_key_facts.get(&local_name(&receiver)?)?.clone();
+        let name = receiver_name(&receiver)?;
+        let fact = scope.hash_key_facts.get(&name)?.clone();
         let arguments = call.arguments()?;
         let mut arguments = arguments.arguments().iter();
         let key_node = arguments.next()?;
         if arguments.next().is_some() {
             return None;
         }
-        let receiver_type = scope.get(&local_name(&receiver)?)?.clone();
+        let receiver_type = if name.starts_with('@') {
+            scope.self_facts.get(&name)?.clone()
+        } else {
+            scope.get(&name)?.clone()
+        };
         let value_type = match &receiver_type {
             Type::Hash(_, value) => value.as_deref().cloned(),
             // `opts = given || {}`: the given value is not known yet, so the hash decides.
