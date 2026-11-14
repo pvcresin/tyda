@@ -1984,25 +1984,31 @@ enum RecordKeyPresence {
 
 type RbsRelationCache = HashMap<(usize, Type), bool>;
 
+/// `entry` holds the locals when the loop or block started. A local it has but a jump omits
+/// still holds that value there; any other omitted local is not assigned yet and reads nil.
 fn union_jump_locals(
     left: Option<&Arc<HashMap<String, Type>>>,
     right: Option<&Arc<HashMap<String, Type>>>,
+    entry: Option<&Arc<HashMap<String, Type>>>,
 ) -> Option<Arc<HashMap<String, Type>>> {
+    let omitted = |name: &str, ty: &Type| match entry.and_then(|entry| entry.get(name)) {
+        Some(before) => ty.clone().union_with(before.clone()),
+        None => ty.clone().union_with(Type::Nil),
+    };
     match (left, right) {
         (Some(left), Some(right)) if !Arc::ptr_eq(left, right) => {
-            // A local missing at one jump is not yet assigned there, so it reads nil.
             let mut merged = HashMap::with_capacity(left.len().max(right.len()));
             for (name, ty) in left.iter() {
                 let joined = match right.get(name) {
                     Some(other) if other == ty => ty.clone(),
                     Some(other) => ty.clone().union_with(other.clone()),
-                    None => ty.clone().union_with(Type::Nil),
+                    None => omitted(name, ty),
                 };
                 merged.insert(name.clone(), joined);
             }
             for (name, ty) in right.iter() {
                 if !left.contains_key(name) {
-                    merged.insert(name.clone(), ty.clone().union_with(Type::Nil));
+                    merged.insert(name.clone(), omitted(name, ty));
                 }
             }
             Some(Arc::new(merged))
@@ -2402,14 +2408,22 @@ impl Scope {
     fn add_next_type(&mut self, ty: Type, locals: &Arc<HashMap<String, Type>>) {
         self.next_types.push(ty);
         if let Some(changed) = self.locals_changed_since_jump_entry(locals) {
-            self.next_locals = union_jump_locals(self.next_locals.as_ref(), Some(&changed));
+            self.next_locals = union_jump_locals(
+                self.next_locals.as_ref(),
+                Some(&changed),
+                self.jump_entry_locals.as_ref(),
+            );
         }
     }
 
     fn add_break_type(&mut self, ty: Type, locals: &Arc<HashMap<String, Type>>) {
         self.break_types.push(ty);
         if let Some(changed) = self.locals_changed_since_jump_entry(locals) {
-            self.break_locals = union_jump_locals(self.break_locals.as_ref(), Some(&changed));
+            self.break_locals = union_jump_locals(
+                self.break_locals.as_ref(),
+                Some(&changed),
+                self.jump_entry_locals.as_ref(),
+            );
         }
     }
 
@@ -4873,10 +4887,16 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn merge_jump_locals(target: &mut Scope, source: &Scope) {
-        target.next_locals =
-            union_jump_locals(target.next_locals.as_ref(), source.next_locals.as_ref());
-        target.break_locals =
-            union_jump_locals(target.break_locals.as_ref(), source.break_locals.as_ref());
+        target.next_locals = union_jump_locals(
+            target.next_locals.as_ref(),
+            source.next_locals.as_ref(),
+            target.jump_entry_locals.as_ref(),
+        );
+        target.break_locals = union_jump_locals(
+            target.break_locals.as_ref(),
+            source.break_locals.as_ref(),
+            target.jump_entry_locals.as_ref(),
+        );
     }
 
     fn merge_scope_locals(&self, base: &Scope, then_scope: &Scope, else_scope: &Scope) -> Scope {
@@ -5043,15 +5063,25 @@ impl<'a> InferenceEngine<'a> {
                 else_scope.exception_entry.as_deref(),
             ),
             next_locals: union_jump_locals(
-                union_jump_locals(base.next_locals.as_ref(), then_scope.next_locals.as_ref())
-                    .as_ref(),
+                union_jump_locals(
+                    base.next_locals.as_ref(),
+                    then_scope.next_locals.as_ref(),
+                    base.jump_entry_locals.as_ref(),
+                )
+                .as_ref(),
                 else_scope.next_locals.as_ref(),
+                base.jump_entry_locals.as_ref(),
             ),
             jump_entry_locals: base.jump_entry_locals.clone(),
             break_locals: union_jump_locals(
-                union_jump_locals(base.break_locals.as_ref(), then_scope.break_locals.as_ref())
-                    .as_ref(),
+                union_jump_locals(
+                    base.break_locals.as_ref(),
+                    then_scope.break_locals.as_ref(),
+                    base.jump_entry_locals.as_ref(),
+                )
+                .as_ref(),
                 else_scope.break_locals.as_ref(),
+                base.jump_entry_locals.as_ref(),
             ),
             enumerator_yielder_names: base.enumerator_yielder_names.clone(),
             enumerator_yielded_types: Vec::with_capacity(
@@ -5451,10 +5481,12 @@ impl<'a> InferenceEngine<'a> {
             next_locals: union_jump_locals(
                 base.next_locals.as_ref(),
                 loop_scope.next_locals.as_ref(),
+                base.jump_entry_locals.as_ref(),
             ),
             break_locals: union_jump_locals(
                 base.break_locals.as_ref(),
                 loop_scope.break_locals.as_ref(),
+                base.jump_entry_locals.as_ref(),
             ),
             jump_entry_locals: base.jump_entry_locals.clone(),
             enumerator_yielder_names: base.enumerator_yielder_names.clone(),
