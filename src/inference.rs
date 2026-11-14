@@ -34555,8 +34555,18 @@ impl<'a> InferenceEngine<'a> {
                 let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
                 let value_ty =
                     self.infer_node_type(class_name, &write.value(), parse_result, scope);
-                self.record_class_variable(class_name, &name, value_ty.clone());
-                value_ty
+                let operator_name = self.operator_name_from_range(
+                    parse_result,
+                    write.binary_operator_loc().start_offset(),
+                    write.binary_operator_loc().end_offset(),
+                );
+                let current_ty = self
+                    .current_class_variable_type(class_name, &name)
+                    .unwrap_or(Type::Untyped);
+                let result_ty =
+                    self.infer_operator_write_result(&current_ty, &operator_name, &value_ty);
+                self.record_class_variable(class_name, &name, result_ty.clone());
+                result_ty
             }
 
             Node::GlobalVariableWriteNode { .. } => {

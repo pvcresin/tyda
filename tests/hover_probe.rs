@@ -406,7 +406,7 @@ fn class_variable_hover_reports_union_of_writes() {
     let source =
         "class A\n  @@count = 0\n  def self.inc\n    @@count += 1\n    @@count\n  end\nend\n";
     // hover on `@@count` read on line 5
-    assert_hover(source, 5, 4, "@@count", "0 | 1");
+    assert_hover(source, 5, 4, "@@count", "Integer");
 }
 
 #[test]
