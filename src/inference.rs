@@ -6795,6 +6795,39 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// `x = a || return` leaves the method through the right side when `a` is falsy. The assigned
+    /// value is typed without a mutable scope, so record that exit here.
+    fn record_assigned_short_circuit_control(
+        &mut self,
+        class_name: &str,
+        value: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        if let Some(inner) = Self::single_parenthesized_expression(value) {
+            return self.record_assigned_short_circuit_control(
+                class_name,
+                &inner,
+                parse_result,
+                scope,
+            );
+        }
+        let (left, right, outcome) = match value {
+            Node::OrNode { .. } => {
+                let or_node = value.as_or_node().expect("must be OrNode");
+                (or_node.left(), or_node.right(), ConditionOutcome::Falsy)
+            }
+            Node::AndNode { .. } => {
+                let and_node = value.as_and_node().expect("must be AndNode");
+                (and_node.left(), and_node.right(), ConditionOutcome::Truthy)
+            }
+            _ => return,
+        };
+        let mut right_scope = scope.fork_for_branch();
+        self.apply_condition_effects(class_name, &left, outcome, parse_result, &mut right_scope);
+        self.record_short_circuit_control(class_name, &right, parse_result, &right_scope, scope);
+    }
+
     fn return_node_has_non_raising_arguments(node: &Node<'_>) -> bool {
         let Some(return_node) = node.as_return_node() else {
             return false;
@@ -26136,6 +26169,12 @@ impl<'a> InferenceEngine<'a> {
                 let runtime_fact =
                     self.runtime_fact_from_value(class_name, &value_node, parse_result, scope);
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
+                self.record_assigned_short_circuit_control(
+                    class_name,
+                    &value_node,
+                    parse_result,
+                    scope,
+                );
                 let value_type_for_facts = value_type.clone();
                 // `local = @ivar = value` writes the ivar too.
                 if let Some(ivar_write) = value_node.as_instance_variable_write_node() {
@@ -26221,6 +26260,12 @@ impl<'a> InferenceEngine<'a> {
                     .as_instance_variable_write_node()
                     .expect("must be InstanceVariableWriteNode");
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
+                self.record_assigned_short_circuit_control(
+                    class_name,
+                    &write_node.value(),
+                    parse_result,
+                    scope,
+                );
                 self.record_ivar_write(class_name, &write_node, value_type, scope);
             }
             Node::LocalVariableOrWriteNode { .. } => {

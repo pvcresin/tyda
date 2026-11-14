@@ -206,3 +206,36 @@ class Object < BasicObject
   def b: -> ([1, "x"] | [2, "y"])
 end
 ```
+
+## A return on the right of or in an assignment adds nil to the method
+
+### update
+
+```rbs
+class OrReturnAssign
+  def name: -> String?
+end
+```
+
+```ruby
+class OrReturnAssign
+  def required_name
+    value = name || return
+    value.length
+  end
+
+  def stored_name
+    @name = name || return
+    1
+  end
+end
+```
+
+### result
+
+```rbs
+class OrReturnAssign
+  def required_name: -> Integer?
+  def stored_name: -> 1?
+end
+```

@@ -1,32 +1,5 @@
 # Known Issues / Ruby Syntax
 
-## A return on the right of or in an assignment adds nil to the method
-
-### update
-
-```rbs
-class OrReturnAssign
-  def name: -> String?
-end
-```
-
-```ruby
-class OrReturnAssign
-  def required_name
-    value = name || return
-    value.length
-  end
-end
-```
-
-### result
-
-```rbs
-class OrReturnAssign
-  def required_name: -> Integer?
-end
-```
-
 ## An instance variable read after an append keeps the element
 
 ### update
