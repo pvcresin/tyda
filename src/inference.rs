@@ -21190,6 +21190,29 @@ impl<'a> InferenceEngine<'a> {
         self.push_source_definition_snapshot(span.start, span.end, definition_loc);
     }
 
+    fn push_variable_write_hover(
+        &mut self,
+        class_name: &str,
+        scope: &Scope,
+        node: &Node<'_>,
+        name: &str,
+        ty: &Type,
+    ) {
+        if !self.record_hover_snapshots && self.coverage_recorder.is_none() {
+            return;
+        }
+        let start = node.location().start_offset();
+        self.push_hover_snapshot(HoverSnapshot {
+            start,
+            end: start + name.len(),
+            name: name.to_string(),
+            target: HoverTarget::Value(ty.clone()),
+            class_context: class_name.to_string(),
+            method_context: scope.method_name.clone(),
+            method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
+        });
+    }
+
     fn push_value_hover_snapshot<F>(
         &mut self,
         class_name: &str,
@@ -26780,6 +26803,7 @@ impl<'a> InferenceEngine<'a> {
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let existing = scope.get(&var_name).cloned().unwrap_or(Type::Nil);
                 let result_type = Self::infer_or_write_result(&existing, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result_type);
                 scope.set(&var_name, result_type);
             }
             Node::LocalVariableAndWriteNode { .. } => {
@@ -26791,6 +26815,7 @@ impl<'a> InferenceEngine<'a> {
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_and_write_result(&current_type, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result_type);
                 scope.set(&var_name, result_type);
             }
             Node::LocalVariableOperatorWriteNode { .. } => {
@@ -26808,6 +26833,7 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let result_type =
                     self.infer_operator_write_result(&current_type, &operator_name, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result_type);
                 scope.set(&var_name, result_type);
             }
             Node::InstanceVariableOperatorWriteNode { .. } => {
@@ -26827,6 +26853,7 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let result_type =
                     self.infer_operator_write_result(&current_type, &operator_name, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &result_type);
                 scope.invalidate_self_facts_for_ivar_write(&ivar_name);
                 if Self::can_track_ivar_write_locally(&write_node.value(), &result_type) {
                     scope.set_self_fact(&ivar_name, result_type.clone());
@@ -27006,6 +27033,7 @@ impl<'a> InferenceEngine<'a> {
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_or_write_result(&current_type, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &result_type);
                 scope.invalidate_self_facts_for_ivar_write(&ivar_name);
                 if Self::can_track_ivar_write_locally(&write_node.value(), &result_type) {
                     scope.set_self_fact(&ivar_name, result_type.clone());
@@ -27029,6 +27057,7 @@ impl<'a> InferenceEngine<'a> {
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_and_write_result(&current_type, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &result_type);
                 scope.invalidate_self_facts_for_ivar_write(&ivar_name);
                 if Self::can_track_ivar_write_locally(&write_node.value(), &result_type) {
                     scope.set_self_fact(&ivar_name, result_type.clone());
@@ -27046,7 +27075,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_global_variable_write_node()
                     .expect("must be GlobalVariableWriteNode");
                 let name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write_node.value(),
@@ -27055,13 +27084,14 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
             }
             Node::GlobalVariableOrWriteNode { .. } => {
                 let write_node = node
                     .as_global_variable_or_write_node()
                     .expect("must be GlobalVariableOrWriteNode");
                 let name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write_node.value(),
@@ -27070,13 +27100,14 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
             }
             Node::GlobalVariableAndWriteNode { .. } => {
                 let write_node = node
                     .as_global_variable_and_write_node()
                     .expect("must be GlobalVariableAndWriteNode");
                 let name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write_node.value(),
@@ -27085,6 +27116,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
             }
             Node::GlobalVariableOperatorWriteNode { .. } => {
                 let write_node = node
@@ -27096,7 +27128,7 @@ impl<'a> InferenceEngine<'a> {
                     write_node.binary_operator_loc().start_offset(),
                     write_node.binary_operator_loc().end_offset(),
                 );
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write_node.value(),
@@ -27105,6 +27137,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
             }
             Node::ConstantWriteNode { .. } => {
                 let write_node = node
@@ -30155,17 +30188,7 @@ impl<'a> InferenceEngine<'a> {
                 let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
-                let start = node.location().start_offset();
-                let end = start.saturating_add(var_name.len());
-                self.push_hover_snapshot(HoverSnapshot {
-                    start,
-                    end,
-                    name: var_name,
-                    target: HoverTarget::Value(value_type.clone()),
-                    class_context: class_name.to_string(),
-                    method_context: scope.method_name.clone(),
-                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
-                });
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &value_type);
                 value_type
             }
 
@@ -30215,17 +30238,7 @@ impl<'a> InferenceEngine<'a> {
                 let ivar_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
-                let start = node.location().start_offset();
-                let end = start.saturating_add(ivar_name.len());
-                self.push_hover_snapshot(HoverSnapshot {
-                    start,
-                    end,
-                    name: ivar_name,
-                    target: HoverTarget::Value(value_type.clone()),
-                    class_context: class_name.to_string(),
-                    method_context: scope.method_name.clone(),
-                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
-                });
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &value_type);
                 value_type
             }
 
@@ -30237,7 +30250,9 @@ impl<'a> InferenceEngine<'a> {
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let existing = scope.get(&var_name).cloned().unwrap_or(Type::Nil);
-                Self::infer_or_write_result(&existing, &value_type)
+                let result = Self::infer_or_write_result(&existing, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result);
+                result
             }
 
             Node::LocalVariableAndWriteNode { .. } => {
@@ -30248,7 +30263,9 @@ impl<'a> InferenceEngine<'a> {
                 let current_type = scope.get(&var_name).cloned().unwrap_or(Type::Nil);
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
-                Self::infer_and_write_result(&current_type, &value_type)
+                let result = Self::infer_and_write_result(&current_type, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result);
+                result
             }
 
             Node::LocalVariableOperatorWriteNode { .. } => {
@@ -30264,7 +30281,10 @@ impl<'a> InferenceEngine<'a> {
                     write_node.binary_operator_loc().start_offset(),
                     write_node.binary_operator_loc().end_offset(),
                 );
-                self.infer_operator_write_result(&current_type, &operator_name, &value_type)
+                let result =
+                    self.infer_operator_write_result(&current_type, &operator_name, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result);
+                result
             }
             Node::InstanceVariableOperatorWriteNode { .. } => {
                 let write_node = node
@@ -30281,7 +30301,10 @@ impl<'a> InferenceEngine<'a> {
                     write_node.binary_operator_loc().start_offset(),
                     write_node.binary_operator_loc().end_offset(),
                 );
-                self.infer_operator_write_result(&current_type, &operator_name, &value_type)
+                let result =
+                    self.infer_operator_write_result(&current_type, &operator_name, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &result);
+                result
             }
             Node::ConstantOperatorWriteNode { .. } => {
                 let write_node = node
@@ -30331,17 +30354,7 @@ impl<'a> InferenceEngine<'a> {
                     .current_ivar_type(class_name, scope, &ivar_name)
                     .unwrap_or(Type::Nil);
                 let resolved = Self::infer_or_write_result(&resolved, &value_type);
-                let start = node.location().start_offset();
-                let end = start + ivar_name.len();
-                self.push_hover_snapshot(HoverSnapshot {
-                    start,
-                    end,
-                    name: ivar_name,
-                    target: HoverTarget::Value(resolved.clone()),
-                    class_context: class_name.to_string(),
-                    method_context: scope.method_name.clone(),
-                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
-                });
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &resolved);
                 resolved
             }
 
@@ -30356,17 +30369,7 @@ impl<'a> InferenceEngine<'a> {
                     .current_ivar_type(class_name, scope, &ivar_name)
                     .unwrap_or(Type::Nil);
                 let resolved = Self::infer_and_write_result(&resolved, &value_type);
-                let start = node.location().start_offset();
-                let end = start + ivar_name.len();
-                self.push_hover_snapshot(HoverSnapshot {
-                    start,
-                    end,
-                    name: ivar_name,
-                    target: HoverTarget::Value(resolved.clone()),
-                    class_context: class_name.to_string(),
-                    method_context: scope.method_name.clone(),
-                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
-                });
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &resolved);
                 resolved
             }
 
@@ -34946,6 +34949,7 @@ impl<'a> InferenceEngine<'a> {
                 let value_ty =
                     self.infer_node_type(class_name, &write.value(), parse_result, scope);
                 self.record_class_variable(class_name, &name, value_ty.clone());
+                self.push_variable_write_hover(class_name, scope, node, &name, &value_ty);
                 value_ty
             }
 
@@ -34960,7 +34964,9 @@ impl<'a> InferenceEngine<'a> {
                 let existing = self
                     .current_class_variable_type(class_name, &name)
                     .unwrap_or(Type::Nil);
-                Self::infer_or_write_result(&existing, &value_ty)
+                let result = Self::infer_or_write_result(&existing, &value_ty);
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::ClassVariableAndWriteNode { .. } => {
@@ -34974,7 +34980,9 @@ impl<'a> InferenceEngine<'a> {
                 let existing = self
                     .current_class_variable_type(class_name, &name)
                     .unwrap_or(Type::Nil);
-                Self::infer_and_write_result(&existing, &value_ty)
+                let result = Self::infer_and_write_result(&existing, &value_ty);
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::ClassVariableOperatorWriteNode { .. } => {
@@ -34995,6 +35003,7 @@ impl<'a> InferenceEngine<'a> {
                 let result_ty =
                     self.infer_operator_write_result(&current_ty, &operator_name, &value_ty);
                 self.record_class_variable(class_name, &name, result_ty.clone());
+                self.push_variable_write_hover(class_name, scope, node, &name, &result_ty);
                 result_ty
             }
 
@@ -35003,7 +35012,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_global_variable_write_node()
                     .expect("must be GlobalVariableWriteNode");
                 let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write.value(),
@@ -35011,7 +35020,9 @@ impl<'a> InferenceEngine<'a> {
                     None,
                     parse_result,
                     scope,
-                )
+                );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::GlobalVariableOrWriteNode { .. } => {
@@ -35019,7 +35030,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_global_variable_or_write_node()
                     .expect("must be GlobalVariableOrWriteNode");
                 let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write.value(),
@@ -35027,7 +35038,9 @@ impl<'a> InferenceEngine<'a> {
                     None,
                     parse_result,
                     scope,
-                )
+                );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::GlobalVariableAndWriteNode { .. } => {
@@ -35035,7 +35048,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_global_variable_and_write_node()
                     .expect("must be GlobalVariableAndWriteNode");
                 let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write.value(),
@@ -35043,7 +35056,9 @@ impl<'a> InferenceEngine<'a> {
                     None,
                     parse_result,
                     scope,
-                )
+                );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::GlobalVariableOperatorWriteNode { .. } => {
@@ -35056,7 +35071,7 @@ impl<'a> InferenceEngine<'a> {
                     write.binary_operator_loc().start_offset(),
                     write.binary_operator_loc().end_offset(),
                 );
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write.value(),
@@ -35064,7 +35079,9 @@ impl<'a> InferenceEngine<'a> {
                     Some(&operator_name),
                     parse_result,
                     scope,
-                )
+                );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::BreakNode { .. } => {

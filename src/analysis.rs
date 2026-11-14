@@ -4476,6 +4476,53 @@ end
     }
 
     #[test]
+    fn playground_hover_covers_variable_write_targets() {
+        let loader = playground_loader();
+        let source = concat!(
+            "class Counter\n",
+            "  @@count = 0\n",
+            "  def run(items)\n",
+            "    total = 0\n",
+            "    items.each do |i|\n",
+            "      total += i.size\n",
+            "    end\n",
+            "    total ||= 1\n",
+            "    total &&= total + 1\n",
+            "    @sum = 0\n",
+            "    @sum += 1\n",
+            "    @sum ||= 2\n",
+            "    $last = 0\n",
+            "    $last += 1\n",
+            "    @@count += 1\n",
+            "    [(total += 1), (@sum &&= 3), ($last ||= 4)]\n",
+            "  end\n",
+            "end\n",
+            "Counter.new.run([\"a\"])\n",
+        );
+        let res = playground_analyze(source, "", &loader, "probe.rb");
+        let hover = |name: &str, line: u32, column: u32| {
+            res.hovers
+                .iter()
+                .find(|h| h.name == name && h.line == line && h.column == column)
+                .map(|h| h.display.as_str())
+                .unwrap_or_else(|| panic!("no hover for {name} at {line}:{column}"))
+        };
+
+        assert_eq!(hover("total", 6, 6), "[Tyda] Integer");
+        assert_eq!(hover("total", 8, 4), "[Tyda] Integer");
+        assert_eq!(hover("total", 9, 4), "[Tyda] Integer");
+        assert_eq!(hover("@sum", 11, 4), "[Tyda] Integer");
+        assert_eq!(hover("@sum", 12, 4), "[Tyda] Integer");
+        assert_eq!(hover("$last", 13, 4), "[Tyda] 0");
+        assert_eq!(hover("$last", 14, 4), "[Tyda] Integer");
+        hover("@@count", 2, 2);
+        hover("@@count", 15, 4);
+        assert_eq!(hover("total", 16, 6), "[Tyda] Integer");
+        assert_eq!(hover("@sum", 16, 20), "[Tyda] 3");
+        assert_eq!(hover("$last", 16, 34), "[Tyda] Integer");
+    }
+
+    #[test]
     fn rails_tag_hover_snapshot_uses_call_arguments() {
         let loader = playground_loader();
         let source = concat!(

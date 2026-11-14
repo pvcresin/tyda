@@ -5243,3 +5243,32 @@ fn diagnostics_keyword_hash_read_interpolating_a_constant_is_not_nil() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.contains("NilClass"), "got: {stdout}");
 }
+
+// Known issue: the scenario runner and the LSP keep the element type of `Range#each` with a block
+// (`ruby/method/blocks/enumerable_core.md`), but the single-file CLI drops the type argument.
+// When the check fails, drop it.
+#[test]
+fn known_issue_range_each_drops_element_type_in_a_single_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("source.rb"),
+        concat!(
+            "class RangeEachReturn\n",
+            "  def run(limit) = (1..limit).each { |i| i }\n",
+            "end\n",
+            "\n",
+            "RangeEachReturn.new.run(3)\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def run: (Integer limit) -> Range\n"),
+        "known issue fixed (Range#each element type); drop this check: {rbs}"
+    );
+}
