@@ -3732,6 +3732,10 @@ impl<'a> InferenceEngine<'a> {
     ) {
         let absolute = path.starts_with("::");
         let normalized = path.trim_scope_prefix();
+        // A dynamic owner (`holder::Item = 1`) has no static namespace to record into.
+        if !absolute && (normalized == "Unknown" || normalized.starts_with("Unknown::")) {
+            return;
+        }
         let (owner, const_name) = normalized
             .rsplit_once("::")
             .map(|(owner, const_name)| {
