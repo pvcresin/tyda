@@ -5017,6 +5017,38 @@ fn concern_scope_resolves_to_includer_across_files() {
     );
 }
 
+// `normalize_value_for` types its `name` parameter, but `value` must stay bound to the callers
+// in other files. The scenario runner still shows `untyped` (known issue in
+// `tests/scenarios/known-issues/rails_models.md`).
+#[test]
+fn normalize_value_for_binds_value_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let models = dir.path().join("app/models");
+    fs::create_dir_all(&models).expect("failed to create dirs");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("failed to write");
+    fs::write(
+        models.join("post.rb"),
+        "class Post < ApplicationRecord\n  normalizes :title, with: ->(title) { title.strip }\nend\n",
+    )
+    .expect("failed to write");
+    fs::write(
+        models.join("post_titles.rb"),
+        "class PostTitles\n  def normalized = Post.normalize_value_for(:title, \" a \")\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def normalized: -> String"),
+        "normalize_value_for must return the normalizer result for the caller's value: {rbs}"
+    );
+}
+
 // Known issue: the scenario runner and the LSP analyze the current file at full depth and infer
 // these (`ruby/control/loops.md`, `ruby/method/call_return.md`). The CLI keeps `file.read(len)`
 // as a call without arguments and resolves it after the merge, where the first `IO#read`
