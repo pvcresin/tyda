@@ -19957,10 +19957,15 @@ impl<'a> InferenceEngine<'a> {
                     && let Some(block_body) = block.body()
                 {
                     let mut block_scope = scope.fork_for_block();
-                    // Earlier statements in the block are not processed here, so a local the
-                    // block assigns is unknown rather than its outer value.
+                    // Earlier statements in the block are not processed here. A local the block
+                    // assigns holds that value inside it, so the outer view loses the `nil` it
+                    // gets from runs that skip the block.
                     for name in Self::locals_written_in(&block_body) {
-                        block_scope.set(&name, Type::Untyped);
+                        let inside = match scope.get(&name).map(Type::project_non_nil) {
+                            None | Some(Type::Bot) => Type::Untyped,
+                            Some(ty) => ty,
+                        };
+                        block_scope.set(&name, inside);
                     }
                     if let Some(params) = block.parameters() {
                         let mut names = HashSet::new();

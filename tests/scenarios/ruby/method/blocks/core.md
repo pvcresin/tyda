@@ -719,6 +719,6 @@ end
 
 ```rbs
 class SocketProbe
-  def each_socket: { (untyped, Integer) -> untyped } -> [1]
+  def each_socket: { (String, Integer) -> untyped } -> [1]
 end
 ```
