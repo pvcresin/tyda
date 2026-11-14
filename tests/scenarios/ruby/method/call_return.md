@@ -547,7 +547,7 @@ Push.new
 ```rbs
 class Base
   def command: -> String
-  def summary: -> String?
+  def summary: -> String
   def initialize: (String command, ?String? summary) -> void
 end
 

@@ -85,6 +85,30 @@ class DefaultDep
 end
 ```
 
+## An ivar set from a nil default parameter keeps nil
+
+```ruby
+class NilDefault
+  def initialize(value = nil)
+    @value = value
+  end
+
+  def value = @value
+end
+
+NilDefault.new
+NilDefault.new("a")
+```
+
+### result
+
+```rbs
+class NilDefault
+  def initialize: (?String? value) -> void
+  def value: -> String?
+end
+```
+
 ## A yield inside an each block passes the element type
 
 ```ruby

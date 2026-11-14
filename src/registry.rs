@@ -8127,20 +8127,6 @@ impl TypeRegistry {
                     );
                 }
             }
-            // A call may leave an optional param out, so its default joins the call site types.
-            let positional_infos = init_method
-                .param_infos
-                .iter()
-                .filter(|pi| argument_binding::is_positional(pi.kind));
-            for (slot, info) in param_types.iter_mut().zip(positional_infos) {
-                if info.kind == ParamKind::Optional
-                    && !slot.is_empty()
-                    && let Some(default_type) = &info.default_type
-                {
-                    let default_type = self.resolve_deferred_refs(class_name, default_type);
-                    Type::append_argument_parts(slot, default_type);
-                }
-            }
             let resolved_params: Vec<Type> = param_types
                 .into_iter()
                 .map(|types| {

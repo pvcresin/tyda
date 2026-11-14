@@ -267,14 +267,12 @@ impl<'a> InferenceEngine<'a> {
                 .iter()
                 .position(|method| method.name == "initialize" && !method.is_singleton)
                 .and_then(|init_idx| {
-                    let init_param_types: Vec<Type> = Self::join_positional_param_defaults(
-                        &data.methods[init_idx].param_infos,
-                        all_param_types.get(init_idx)?,
-                        false,
-                    )
-                    .into_iter()
-                    .map(Type::widen_arg_for_param)
-                    .collect();
+                    let init_param_types: Vec<Type> = all_param_types
+                        .get(init_idx)?
+                        .iter()
+                        .cloned()
+                        .map(Type::widen_arg_for_param)
+                        .collect();
                     init_param_types
                         .iter()
                         .any(|ty| !matches!(ty, Type::Untyped))
@@ -294,11 +292,32 @@ impl<'a> InferenceEngine<'a> {
                     if !Self::method_needs_parameter_reference_resolution(method) {
                         return None;
                     }
-                    let param_types_with_defaults = Self::join_positional_param_defaults(
-                        &method.param_infos,
-                        &all_param_types[idx],
-                        true,
-                    );
+                    let mut param_types_with_defaults = all_param_types[idx].clone();
+                    let mut positional_index = 0;
+                    for param in &method.param_infos {
+                        if matches!(
+                            param.kind,
+                            ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                        ) {
+                            if positional_index < param_types_with_defaults.len()
+                                && let Some(ref default_ty) = param.default_type
+                            {
+                                let current = std::mem::replace(
+                                    &mut param_types_with_defaults[positional_index],
+                                    Type::Untyped,
+                                );
+                                param_types_with_defaults[positional_index] =
+                                    if current == Type::Untyped {
+                                        default_ty.clone()
+                                    } else if matches!(param.kind, ParamKind::Optional) {
+                                        current.union_with(default_ty.clone())
+                                    } else {
+                                        current
+                                    };
+                            }
+                            positional_index += 1;
+                        }
+                    }
                     let param_types_with_defaults: Vec<Type> = param_types_with_defaults
                         .into_iter()
                         .map(Type::widen_arg_for_param)
@@ -352,33 +371,6 @@ impl<'a> InferenceEngine<'a> {
                 );
             }
         }
-    }
-
-    /// An optional param joins its default because a call may leave it out. With
-    /// `fill_unknown`, a param no call site types takes its default.
-    fn join_positional_param_defaults(
-        param_infos: &[ParamInfo],
-        param_types: &[Type],
-        fill_unknown: bool,
-    ) -> Vec<Type> {
-        let mut param_types = param_types.to_vec();
-        let positional = param_infos
-            .iter()
-            .filter(|param| argument_binding::is_positional(param.kind));
-        for (slot, param) in param_types.iter_mut().zip(positional) {
-            let Some(default_ty) = &param.default_type else {
-                continue;
-            };
-            if *slot == Type::Untyped {
-                if fill_unknown {
-                    *slot = default_ty.clone();
-                }
-            } else if param.kind == ParamKind::Optional {
-                let current = std::mem::replace(slot, Type::Untyped);
-                *slot = current.union_with(default_ty.clone());
-            }
-        }
-        param_types
     }
 
     pub fn resolve_method_return_refs(&mut self) {

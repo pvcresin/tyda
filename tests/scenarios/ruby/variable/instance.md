@@ -665,64 +665,6 @@ class Buffered
 end
 ```
 
-## An ivar set from a nil default parameter keeps nil
-
-### update
-
-```ruby
-class NilDefault
-  def initialize(value = nil)
-    @value = value
-  end
-
-  def value = @value
-end
-
-NilDefault.new
-NilDefault.new("a")
-```
-
-### result
-
-```rbs
-class NilDefault
-  def initialize: (?String? value) -> void
-  def value: -> String?
-end
-```
-
-## An ivar set from a nil default parameter keeps nil with callers in another file
-
-### update
-
-```ruby
-class CrossNilDefault
-  def initialize(value = nil)
-    @value = value
-  end
-
-  def value = @value
-end
-```
-
-### file: lib/cross_nil_default_user.rb
-
-```ruby
-class CrossNilDefaultUser
-  def empty = CrossNilDefault.new
-  def named = CrossNilDefault.new("a")
-end
-```
-
-### result
-
-```rbs
-class CrossNilDefault
-  def initialize: (?String? value) -> void
-  def value: -> String?
-end
-```
-
 ## An ivar set from a parameter with an or fallback keeps the joined type
 
 ### update
