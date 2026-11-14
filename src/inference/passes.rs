@@ -955,7 +955,7 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn call_site_contains_method_ref(call_site: &CallSite) -> bool {
+    pub(super) fn call_site_contains_method_ref(call_site: &CallSite) -> bool {
         call_site
             .arg_types
             .iter()
@@ -970,7 +970,11 @@ impl<'a> InferenceEngine<'a> {
                 .is_some_and(Self::type_contains_method_ref)
     }
 
-    fn resolve_call_site_method_refs(&self, class_name: &str, call_site: &CallSite) -> CallSite {
+    pub(super) fn resolve_call_site_method_refs(
+        &self,
+        class_name: &str,
+        call_site: &CallSite,
+    ) -> CallSite {
         let context_class = call_site
             .caller_context
             .as_deref()

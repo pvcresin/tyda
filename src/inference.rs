@@ -2629,12 +2629,12 @@ impl<'a> InferenceEngine<'a> {
         {
             return None;
         }
-        let needs_context = arg_types
-            .iter()
+        // An ivar argument is read in the caller's class, which may differ from the target's.
+        let needs_context = arg_types.iter().any(|ty| {
+            Self::type_contains_call_site_param_ref(ty) || matches!(ty, Type::IvarRef(_))
+        }) || keyword_arg_types
+            .values()
             .any(Self::type_contains_call_site_param_ref)
-            || keyword_arg_types
-                .values()
-                .any(Self::type_contains_call_site_param_ref)
             || keyword_rest_shape.is_some_and(Self::type_contains_call_site_param_ref)
             || block.as_ref().is_some_and(|block| {
                 block
@@ -65243,6 +65243,22 @@ impl<'a> InferenceEngine<'a> {
             let has_keyword_sites = method_call_sites.iter().any(|site| {
                 !site.keyword_arg_types.is_empty() || site.keyword_rest_shape.is_some()
             });
+            let resolved_sites: Vec<CallSite> = method_call_sites
+                .iter()
+                .filter(|site| Self::call_site_contains_method_ref(site))
+                .map(|site| self.resolve_call_site_method_refs(class_name, site))
+                .collect();
+            let mut resolved_iter = resolved_sites.iter();
+            let method_call_sites: Vec<&CallSite> = method_call_sites
+                .into_iter()
+                .map(|site| {
+                    if Self::call_site_contains_method_ref(site) {
+                        resolved_iter.next().unwrap_or(site)
+                    } else {
+                        site
+                    }
+                })
+                .collect();
             (
                 Self::resolve_param_types_from_grouped_call_sites(
                     &method_info.param_infos,

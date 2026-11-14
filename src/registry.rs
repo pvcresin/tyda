@@ -10836,6 +10836,7 @@ impl TypeRegistry {
         match ty {
             Type::ParamRef(_)
             | Type::KeywordParamRef(_)
+            | Type::IvarRef(_)
             | Type::Union(_)
             | Type::TruthyProjection(..)
             | Type::FalsyProjection(..)
@@ -10987,6 +10988,21 @@ impl TypeRegistry {
             Type::ParamRef(idx) => self
                 .resolve_caller_positional_param_type(call_site, *idx, visiting)
                 .unwrap_or(Type::Untyped),
+            Type::IvarRef(_) => {
+                let Some(ctx) = call_site.caller_context.as_deref() else {
+                    return ty.clone();
+                };
+                let resolved = self.resolve_deferred_refs_for_context(
+                    &ctx.class_name,
+                    ctx.method_is_singleton,
+                    ty,
+                );
+                if Self::is_concrete_for_global_resolve(&resolved) {
+                    resolved
+                } else {
+                    ty.clone()
+                }
+            }
             Type::KeywordParamRef(name) => self
                 .resolve_caller_keyword_param_type(call_site, name, visiting)
                 .unwrap_or(Type::Untyped),

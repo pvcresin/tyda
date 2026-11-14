@@ -579,10 +579,6 @@ end
 
 ## Ivar from initialize passed to a helper types the helper parameter
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -592,7 +588,7 @@ class Holder
   end
 
   def run = take(@value)
-  def take(v) = v
+  def take(v) = v + 1
 end
 
 Holder.new(1)
