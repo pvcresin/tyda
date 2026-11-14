@@ -185,10 +185,6 @@ end
 
 ## Return on a nil safe-nav chain narrows the receiver after it
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -210,10 +206,6 @@ end
 ```
 
 ## Return on safe-nav not equal to a literal narrows the receiver
-
-```yaml
-known_issue: true
-```
 
 ### update
 

@@ -59185,13 +59185,28 @@ impl<'a> InferenceEngine<'a> {
 
                 match method.as_str() {
                     "==" | "!=" => {
-                        let (var, ty) = self.extract_equality_condition_narrowing(
+                        let Some((var, ty)) = self.extract_equality_condition_narrowing(
                             class_name,
                             &call,
                             method.as_str(),
                             parse_result,
                             scope,
-                        )?;
+                        ) else {
+                            let first_arg = call.arguments()?.arguments().iter().next()?;
+                            if matches!(
+                                Self::literal_singleton_type_from_node(&first_arg)?,
+                                Type::Nil
+                            ) {
+                                return None;
+                            }
+                            // `nil == literal` is false, so a true `==` proves a non-nil result.
+                            return self.safe_navigation_receiver_narrowing(
+                                class_name,
+                                &receiver,
+                                scope,
+                                method == "==",
+                            );
+                        };
                         Some(self.narrowing_with_default_negation(
                             class_name,
                             scope,
@@ -59327,7 +59342,12 @@ impl<'a> InferenceEngine<'a> {
                         ))
                     }
                     "nil?" => {
-                        let subject = Self::extract_narrow_subject_in_scope(&receiver, scope)?;
+                        let Some(subject) = Self::extract_narrow_subject_in_scope(&receiver, scope)
+                        else {
+                            return self.safe_navigation_receiver_narrowing(
+                                class_name, &receiver, scope, false,
+                            );
+                        };
                         Some(self.narrowing_with_default_negation(
                             class_name,
                             scope,
@@ -59972,6 +59992,34 @@ impl<'a> InferenceEngine<'a> {
             | Type::SplatRef(_) => true,
             _ => false,
         }
+    }
+
+    /// `subject&.m` is nil when `subject` is nil, so a non-nil result proves `subject` is
+    /// non-nil. `non_nil_on_then` picks the branch where the call result is non-nil.
+    fn safe_navigation_receiver_narrowing(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        scope: &Scope,
+        non_nil_on_then: bool,
+    ) -> Option<CondNarrowing> {
+        let call = node.as_call_node()?;
+        if !call.is_safe_navigation() {
+            return None;
+        }
+        let subject = Self::extract_narrow_subject_in_scope(&call.receiver()?, scope)?;
+        let current = self.resolve_subject_input_type(class_name, scope, &subject)?;
+        let non_nil = Self::without_nil(&current);
+        let (then_ty, else_ty) = if non_nil_on_then {
+            (non_nil, Some(current))
+        } else {
+            (Some(current), non_nil)
+        };
+        Some(CondNarrowing {
+            subject,
+            then_ty,
+            else_ty,
+        })
     }
 
     fn narrowing_with_default_negation(
