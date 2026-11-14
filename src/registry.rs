@@ -12525,6 +12525,43 @@ impl TypeRegistry {
 
     /// At most one owner: every arm either propagates a nested result or
     /// returns the class it matched in, so the walk never accumulates.
+    fn included_by_earlier_mixin(&self, class_name: &str, earlier: &[Mixin], target: &str) -> bool {
+        let mut visited = Vec::new();
+        earlier.iter().any(|mixin| {
+            mixin.kind == MixinKind::Include
+                && self.module_includes(
+                    self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref()),
+                    target,
+                    &mut visited,
+                )
+        })
+    }
+
+    fn module_includes<'a>(
+        &'a self,
+        module: &'a str,
+        target: &str,
+        visited: &mut Vec<&'a str>,
+    ) -> bool {
+        if module == target {
+            return true;
+        }
+        if visited.contains(&module) {
+            return false;
+        }
+        visited.push(module);
+        self.class_data.get(module).is_some_and(|data| {
+            data.mixins.iter().any(|mixin| {
+                mixin.kind == MixinKind::Include
+                    && self.module_includes(
+                        self.resolve_scoped_class_ref_borrow(module, mixin.module_name.as_ref()),
+                        target,
+                        visited,
+                    )
+            })
+        })
+    }
+
     fn resolve_method_call_owners_inner_refs<'a>(
         &'a self,
         class_name: &'a str,
@@ -12623,7 +12660,7 @@ impl TypeRegistry {
                 }
             }
         } else {
-            for mixin in data.mixins.iter().rev() {
+            for (index, mixin) in data.mixins.iter().enumerate().rev() {
                 // Prepend was already walked before checking the class
                 // itself; Extend lives on the singleton side.
                 if mixin.kind != MixinKind::Include {
@@ -12631,9 +12668,17 @@ impl TypeRegistry {
                 }
                 let mixin_ref =
                     self.resolve_scoped_class_ref_borrow(class_name, mixin.module_name.as_ref());
+                let seen_mark = seen.len();
                 if let Some(owners) =
                     self.resolve_method_call_owners_inner_refs(mixin_ref, method_name, false, seen)
                 {
+                    // Including a module that an earlier include already brought in keeps it at
+                    // the earlier position.
+                    if self.included_by_earlier_mixin(class_name, &data.mixins[..index], mixin_ref)
+                    {
+                        seen.truncate(seen_mark);
+                        continue;
+                    }
                     return Some(owners);
                 }
             }
