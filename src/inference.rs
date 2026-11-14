@@ -49502,16 +49502,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<Type> {
-        let Some(receiver_class) = self.type_to_class_name(receiver_type) else {
-            return self.resolve_overloaded_call_per_arm(
-                call_node,
-                receiver_type,
-                method_name,
-                class_name,
-                parse_result,
-                scope,
-            );
-        };
+        let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
 
         let mut overloads = self.collect_owned_rbs_overloads(
@@ -49628,39 +49619,6 @@ impl<'a> InferenceEngine<'a> {
         } else {
             unknown_arg_return.map(|(_, ret)| ret)
         }
-    }
-
-    /// A union of classes picks an overload per arm. A `nil` arm without the method has no
-    /// overload to pick; every other arm must resolve.
-    fn resolve_overloaded_call_per_arm(
-        &mut self,
-        call_node: &ruby_prism::CallNode<'_>,
-        receiver_type: &Type,
-        method_name: &str,
-        class_name: &str,
-        parse_result: &ParseResult<'_>,
-        scope: &Scope,
-    ) -> Option<Type> {
-        let Type::Union(parts) = receiver_type else {
-            return None;
-        };
-        let mut results = Vec::with_capacity(parts.len());
-        for part in parts.iter() {
-            if *part == Type::Nil && self.type_responds_to_method(part, method_name) == Some(false)
-            {
-                continue;
-            }
-            self.type_to_class_name(part)?;
-            results.push(self.resolve_overloaded_call(
-                call_node,
-                part,
-                method_name,
-                class_name,
-                parse_result,
-                scope,
-            )?);
-        }
-        (!results.is_empty()).then(|| Type::from_type_vec_preserve_untyped(results))
     }
 
     fn rbs_return_allows_refined_result(
