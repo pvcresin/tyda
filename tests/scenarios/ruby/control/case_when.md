@@ -1388,3 +1388,42 @@ class KeyNormalizer
   def normalized_key: -> String
 end
 ```
+
+## A case when nil else branch excludes nil
+
+### update
+
+```rbs
+class NilWhen
+  def count: -> Integer?
+end
+```
+
+```ruby
+class NilWhen
+  def count_or_zero
+    value = count
+    case value
+    when nil then 0
+    else value
+    end
+  end
+
+  def nil_branch
+    value = count
+    case value
+    when nil then value
+    else 1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class NilWhen
+  def count_or_zero: -> Integer
+  def nil_branch: -> 1?
+end
+```

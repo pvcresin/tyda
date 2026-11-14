@@ -85,36 +85,6 @@ class RangeWhen
 end
 ```
 
-## A case when nil else branch excludes nil
-
-### update
-
-```rbs
-class NilWhen
-  def count: -> Integer?
-end
-```
-
-```ruby
-class NilWhen
-  def count_or_zero
-    value = count
-    case value
-    when nil then 0
-    else value
-    end
-  end
-end
-```
-
-### result
-
-```rbs
-class NilWhen
-  def count_or_zero: -> Integer
-end
-```
-
 ## An alternative class pattern narrows its binding
 
 ### update

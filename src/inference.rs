@@ -57919,6 +57919,17 @@ impl<'a> InferenceEngine<'a> {
             *remaining_subject_type = None;
             return None;
         }
+        if Self::when_matches_only_nil(when_node) {
+            // `nil === value` holds only for `nil`.
+            let subject_type = remaining_subject_type.take()?;
+            let matched_type = if Self::type_contains_nil(&subject_type) {
+                Type::Nil
+            } else {
+                Type::Bot
+            };
+            *remaining_subject_type = Some(Type::project_non_nil(&subject_type));
+            return Some(matched_type);
+        }
         if !self.case_when_narrowing_enabled {
             let has_active_method = self.active_method_body.is_some();
             let class_targets =
@@ -57967,6 +57978,14 @@ impl<'a> InferenceEngine<'a> {
                 Some(Self::case_when_targets_type(&targets))
             }
         }
+    }
+
+    fn when_matches_only_nil(when_node: &ruby_prism::WhenNode<'_>) -> bool {
+        let conditions = when_node.conditions();
+        !conditions.is_empty()
+            && conditions
+                .iter()
+                .all(|condition| matches!(condition, Node::NilNode { .. }))
     }
 
     fn extract_when_literal_type(when_node: &ruby_prism::WhenNode<'_>) -> Option<Type> {
