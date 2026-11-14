@@ -752,10 +752,6 @@ end
 
 ## Class body locals stay visible to lambdas passed to writers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -779,9 +775,36 @@ TOP_LEVEL_SOURCES = [1].map { |_| top_level_pattern.source }
 TOP_LEVEL_SOURCES: Array[String]
 
 class ClassBodyLambdaCapture
-  FILTER: Proc
+  FILTER: (^(untyped) -> bool)
 
-  def self.filter: -> Proc
+  def self.filter: -> (^(untyped) -> bool)?
+  def self.filter=: ((^(untyped) -> bool) filter) -> (^(untyped) -> bool)
+end
+```
+
+## Proc writer on a class-level attr keeps the Proc type
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class ProcFilterHolder
+  class << self
+    attr_accessor :filter
+  end
+
+  self.filter = lambda { |value| value.to_s }
+end
+```
+
+### result
+
+```rbs
+class ProcFilterHolder
+  def self.filter: -> Proc?
   def self.filter=: (Proc filter) -> Proc
 end
 ```
