@@ -62279,6 +62279,13 @@ impl<'a> InferenceEngine<'a> {
         match predicate {
             Node::CallNode { .. } => {
                 let call = predicate.as_call_node().expect("must be CallNode");
+                // A truthy `sub!` / `gsub!` means its pattern matched.
+                if matches!(call.name().as_slice(), b"sub!" | b"gsub!") {
+                    return call
+                        .arguments()
+                        .and_then(|args| args.arguments().iter().next())
+                        .and_then(|arg| regexp_captures(&arg));
+                }
                 if !matches!(call.name().as_slice(), b"=~" | b"match") {
                     return None;
                 }

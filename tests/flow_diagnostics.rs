@@ -1581,9 +1581,14 @@ fn regexp_captures_do_not_report_nil_for_required_groups_or_gsub_blocks() {
         "    body = \"if \" + $1 if body =~ /\\Areturn unless (.*)/\n",
         "    body.gsub!(/^( *)x/) { $1.size.to_s }\n",
         "  end\n",
+        "  def after_sub(text)\n",
+        "    text = \"if \" + $1 if text =~ /\\A(x)?y/\n",
+        "    text.size.to_s + $1.size.to_s if text.sub!(/([(]+)/, \"\")\n",
+        "  end\n",
         "end\n",
         "CaptureUse.new.required(\"^\")\n",
         "CaptureUse.new.in_gsub_block(\"x\")\n",
+        "CaptureUse.new.after_sub(\"x\")\n",
     );
     for compact in [false, true] {
         let found = diagnostics(source, compact);
