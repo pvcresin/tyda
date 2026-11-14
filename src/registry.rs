@@ -13358,13 +13358,15 @@ impl TypeRegistry {
                 }
             }
             Type::SplatRef(parts) => Type::SplatRef(Box::new(recur(parts))),
-            // `project_*` keeps the projection around a remaining marker. An argument not known
-            // yet keeps the whole projection, so a later pass can resolve it.
+            // Only a fully known argument type resolves the projection. Otherwise it stays, so a
+            // later pass can resolve it.
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner) => {
                 let resolved = recur(inner);
-                if Self::type_contains_untyped_member(&resolved) {
+                if Self::type_contains_untyped_member(&resolved)
+                    || !Self::is_concrete_for_global_resolve(&resolved)
+                {
                     return ty.clone();
                 }
                 match ty {
