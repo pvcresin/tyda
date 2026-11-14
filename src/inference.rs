@@ -3869,6 +3869,9 @@ impl<'a> InferenceEngine<'a> {
                     if Self::is_real_class_data(&self.registry, &nested) {
                         return Type::Singleton(Sym::new(nested));
                     }
+                    if let Some(found) = self.resolve_nested_namespace_ancestors_any(&ns, last) {
+                        return Type::Singleton(Sym::new(found));
+                    }
                     return Type::Untyped;
                 }
                 Ok(None) => return Type::Untyped,

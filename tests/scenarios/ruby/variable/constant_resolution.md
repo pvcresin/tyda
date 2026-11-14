@@ -1751,10 +1751,6 @@ end
 
 ## Scoped constant found through include names the defining class
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
