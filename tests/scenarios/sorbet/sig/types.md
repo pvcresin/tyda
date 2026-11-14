@@ -295,7 +295,7 @@ end
 
 ```rbs
 class Foo
-  def on_error: (Proc handler) -> void
+  def on_error: ((^() -> bot) handler) -> void
 end
 ```
 
@@ -373,9 +373,5 @@ end
 
 class Parent
   def self.make: -> Parent
-end
-
-module T::Sig
-  def sig: -> untyped
 end
 ```

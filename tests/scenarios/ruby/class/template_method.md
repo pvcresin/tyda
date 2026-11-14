@@ -252,6 +252,6 @@ class Base
 end
 
 class Child < Base
-  def hook: (Integer value) -> Integer
+  def hook: [V] (V value) -> V
 end
 ```

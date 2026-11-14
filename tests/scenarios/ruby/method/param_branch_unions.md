@@ -60,7 +60,7 @@ end
 class OptionalUntypedArgument
   def positional: (untyped x) -> untyped
   def keyword: (untyped x) -> untyped
-  def take: (untyped project) -> untyped
+  def take: [P] (P project) -> P
   def take_keyword: (project: untyped) -> untyped
 end
 ```
@@ -93,7 +93,7 @@ end
 class UnreachableArgument
   def run: -> nil
   def mixed: -> String
-  def take: (untyped value) -> untyped
-  def take_mixed: (String value) -> String
+  def take: [V] (V value) -> V
+  def take_mixed: [V] (V value) -> V
 end
 ```

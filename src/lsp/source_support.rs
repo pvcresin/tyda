@@ -157,6 +157,7 @@ pub(super) fn fallback_code_lens_methods_from_source(
             Some((
                 String::new(),
                 MethodSig {
+                    type_params: Vec::new(),
                     name: method_name,
                     params: Vec::new(),
                     return_type: Type::Untyped,

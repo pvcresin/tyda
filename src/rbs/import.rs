@@ -155,9 +155,13 @@ fn merge_signature_into_registry(
                 type_params,
                 type_param_bounds,
                 type_param_defaults,
+                type_param_modifiers,
                 mixins,
                 variables,
             } => {
+                for (param, modifiers) in type_param_modifiers {
+                    registry.set_class_type_param_modifiers(name, param, *modifiers);
+                }
                 if let Some(sc) = superclass {
                     let superclass_name = resolve_classish_name_alias(sc, type_aliases);
                     registry.set_superclass(name, &superclass_name);
@@ -205,11 +209,15 @@ fn merge_signature_into_registry(
                 type_params,
                 type_param_bounds,
                 type_param_defaults,
+                type_param_modifiers,
                 self_types,
                 mixins,
                 variables,
             } => {
                 registry.set_is_module(name, true);
+                for (param, modifiers) in type_param_modifiers {
+                    registry.set_class_type_param_modifiers(name, param, *modifiers);
+                }
                 if !type_params.is_empty() {
                     registry.set_class_type_params(name, type_params.clone());
                 }
@@ -1577,11 +1585,25 @@ fn add_methods_to_registry(
             rbs_sys::MethodKind::SingletonInstance => &[false, true],
         };
 
+        // A parameter typed by the method's own type variable binds per call through the method
+        // type; an `untyped` annotation would hide the caller's type from a source body. A
+        // composite type such as `Array[T]` still constrains the argument, so it stays.
+        let generic_params: Vec<bool> = first_overload
+            .function_type
+            .param_types()
+            .map(|ty| {
+                matches!(ty, rbs_ir::RbsType::Variable(name)
+                    if first_overload.type_params.contains(name))
+            })
+            .collect();
         let mut param_infos = Vec::new();
         for (index, (name, kind, ty)) in params.into_iter().enumerate() {
             // annotated_params is keyed by (name, is_singleton), so write the same param type
             // to every side that method.kind covers.
             for &is_singleton in kinds {
+                if generic_params.get(index).copied().unwrap_or(false) {
+                    continue;
+                }
                 registry.set_annotated_param_type(
                     class_name,
                     &method.name,
@@ -2042,6 +2064,24 @@ fn convert_imported_rbs_type_with_templates(
         current_scope,
         &HashMap::new(),
         &mut visiting,
+    )
+}
+
+/// Converts with the given type variables bound, such as a method's own type parameters kept
+/// by name for rendering.
+pub(crate) fn convert_imported_rbs_type_with_bindings(
+    rbs_ty: &rbs_ir::RbsType,
+    type_aliases: &HashMap<String, Type>,
+    current_scope: Option<&str>,
+    type_bindings: &HashMap<String, Type>,
+) -> Type {
+    convert_imported_rbs_type_inner(
+        rbs_ty,
+        type_aliases,
+        &HashMap::new(),
+        current_scope,
+        type_bindings,
+        &mut HashSet::new(),
     )
 }
 

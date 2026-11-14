@@ -46,8 +46,8 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] Concern の includer 依存 DSL を拡張する（schema fallback、Devise、AMS など）
 - [ ] 大規模 Rails での `--diagnostics` context scan を高速化する
 - [ ] block callback の副作用解析を一般化し、外側で nil check 済みのivarがcallback内で誤って `nil` と診断されるケースを見直す（Redmine `Attachment#files_to_final_location` の `sha.update(@temp_file)`）。実際のmutationは引き続きnarrowingを無効化し、クラス・メソッド固有の例外は追加しない
-- [ ] CLI のファイル単位推論で、後のファイルに依存する型を遅延参照として保ち、全体の集約後に解決する。別ファイルの model への `find(1)` が `untyped` になる、後のファイルで定義されるクラスの `when` が引数を `untyped` にする、の2件（`tests/cli.rs` の `when_with_class_from_later_file_does_not_leak_other_arguments`）。シナリオ runner は他ファイルを先に解析するため、CLI でのみ再現する
-- [ ] CLI と scenario runner の結果をそろえる。単一ファイルでも、呼び出し側から型が決まる parameter への演算（`def foo(x) = x + 1` を `foo(1)` で呼ぶ）、`*args` の要素、class 内の再帰が CLI だけ `untyped` になり、別ファイルの定数参照もディレクトリ指定の CLI で `untyped` になる。scenario は CLI 経路を確かめないため、両経路を比べる仕組みも用意する
+- [ ] CLI のファイル単位推論で、後のファイルに依存する型を遅延参照として保ち、全体の集約後に解決する。別ファイルの model への `find(1)` が `untyped` になる、後のファイルで定義されるクラスの `when` が引数を `untyped` にする、concern の `included` で定義した scope を別ファイルの model から呼ぶと `ActiveRecord::Relation[self]` が残る、の3件（`known_issue_concern_scope_keeps_self_across_files`）（`tests/cli.rs` の `when_with_class_from_later_file_does_not_leak_other_arguments`）。シナリオ runner は他ファイルを先に解析するため、CLI でのみ再現する
+- [ ] CLI と scenario runner の結果をそろえる。単一ファイルでも、呼び出し側から型が決まる parameter への演算（`def foo(x) = x + 1` を `foo(1)` で呼ぶ）、parameter をレシーバにした block 内の `yield` の型（`def map_all(xs) = xs.map { |e| yield e }`）、`*args` の要素、class 内の再帰が CLI だけ `untyped` になり、別ファイルの定数参照もディレクトリ指定の CLI で `untyped` になる。scenario は CLI 経路を確かめないため、両経路を比べる仕組みも用意する
 - [ ] Ruby の意味論どおり、未初期化の ivar の値に `nil` を含める。`initialize` のすべての経路（class instance variable は class body）で代入される ivar だけを非 nil とし、それ以外の reader と参照は `T?` にする。この `nil` による `missing_method` は除外せずに報告する。意図して使う箇所は `# tyda: ignore[missing_method]` で抑制する。既存 scenario の期待値も合わせて直す（`known-issues/ruby_methods.md`、`ruby/variable/instance.md` の known issue）
 - [ ] TODO: 未初期化の ivar に由来する `nil` 診断の重さを検討する（他の `nil` と severity を分けて warning にするか、など）
 - [ ] 保存前の ActiveRecord model を推論で区別する。既定は tapioca・rbs_rails と同じく保存済みで valid な model の契約とし、`null: false` のカラムと必須の `belongs_to` は非 nil にする。そのうえで `find` / `where` / association から来た値は非 nil のまま、`new` / `build` から来てまだ保存していない値だけカラムと association を `nil` を含む型にする。値の出どころを追えない RBI 生成ツールは全体を nilable にする設定（tapioca の `ActiveRecordColumnTypes`）しか持てないが、Tyda は推論で実際に危ない箇所だけを捉える。全体を切り替える設定は、要望が出るまで追加しない
@@ -61,16 +61,10 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 
 推論したジェネリクスを RBS に出す。本体だけから決まる型のほうがコードとして正しいため、呼び出し元の型の union より型変数を優先する。出力を切り替えるオプションは作らない（推論が複雑になりバグの元になるため）。RBS 3.6 以降の構文（union の bound など）を前提にし、古い RBS や Steep の対応は各ツール側の課題とする。RBS 入力の読み込みを固めてから出力に進む。
 
-- [ ] 型の入力（`.rbs` / `sig/`、`.rbi`、インライン RBS、Sorbet の `sig` と RBS コメント）のジェネリクスを正確に読む
-  - RBS：`new` の引数からクラスの型引数を推論しない、同じファイルに source 定義があるとメソッドのジェネリクスが `untyped` になる（`known-issues/rbs_generics.md`）
-  - インライン RBS：`#:` の型パラメータと bound が出力から落ちる、`# @rbs generic` と `# @rbs!` を読まない（`known-issues/rbs_comment_generics.md`）
-  - Sorbet：`type_parameters` が出力で `[U]` を失い呼び出し側で束縛されない、RBI の `type_member` が型引数で束縛されない、`type_member` / `#: [out Elem]` の variance と bound が落ちる、`extend T::Generic` が出力に残る、`extend T::Helpers` 付きの RBI の型を呼ぶと `T::Helpers` の宣言が出力に漏れる（`known-issues/sorbet_generics.md`）。これを直すときは、今の出力を固定している `sorbet/` の通常シナリオも合わせて直す
-- [ ] receiver 付き呼び出しの block 内の `yield` で、block 引数の型を yield 型に反映する。yield 型を集める走査が block 引数を一律 `untyped` にしている（`known-issues/ruby_methods.md`）
-- [ ] Proc / lambda に引数の型を持たせ、`Proc` ではなく `^(A) -> R` で出す。RBS では lambda と proc を区別できないため同じ表記にする（以下の出力の項目は `known-issues/generics_output.md`）
-- [ ] メソッドの型パラメータを出す。本体でメソッドを呼ばずに受け渡すだけの引数は `[T] (T x) -> T`。メソッドを呼び、戻り値にも出る引数は、呼び出し元から集めたクラスの union を bound にする（`[T < A | B] (T x) -> T`）。戻り値に出ない引数は型変数にしない。呼び出し元がなく本体でメソッドを呼ぶ引数は `untyped` のまま。型の分からない値へのメソッド呼び出し（`x.to_s` など）の戻り値は `untyped` とする
-- [ ] Proc / block のジェネリクスを出す（`[A, R] (^(A) -> R f, A x) -> R`、`[E, R] (Array[E] xs) { (E) -> R } -> Array[R]`）。`Array[E]` のように受け取る型を決めるのは、本体から断定できる場合だけにする
+- [ ] インライン RBS / Sorbet `sig` の型名を、書いたクラスの中から内側の名前空間順に解決する（RBS と同じ規則）。今は `class Outer` の中の `#: -> Inner` が推論で `Outer::Inner` にならない（`known-issues/ruby_methods.md`）。`.rbs` の `class Outer` の中の `-> Inner` も同じで、RBS 入力全体の名前解決として直す。出力は書いたとおりの名前を保つ
+- [ ] Proc / lambda の引数の型を推論して `^(A) -> R` で出す。今は戻り値の型だけを `(^(?) -> R)`（引数がなければ `(^() -> R)`）で出し、引数の数も失う。RBS では lambda と proc を区別できないため同じ表記にする（以下の出力の項目は `known-issues/generics_output.md`）
+- [ ] proc を受け取る引数のジェネリクスを出す（`def apply(f, x) = f.call(x)` → `[T, U] (^(T) -> U f, T x) -> U`、`known-issues/generics_output.md`）。`Type::Proc` が引数の型を持つ必要があり、`Type` の大きさを増やさない表現を先に決める。yield と block のジェネリクスは出力済み
 - [ ] interface の bound は使わない。任意のメソッドの組み合わせを表せないため、union の bound を基本にする
-- [ ] 明示された bound（`.rbs` / `sig/`、インライン RBS、Sorbet の `type_member`）に合わない引数を `argument_type_mismatch` で報告する。推論した bound は呼び出し元によって変わるため報告しない。今の診断と同じく、確実に不一致の場合だけにする。型の入力の読み込みを直してから行う（`tests/generic_bound_diagnostics.rs` の `known_issue_explicit_bound_violations_not_reported`）
 - [ ] ユーザー定義クラスのジェネリクス（`class Box[T]`）の推論は最後に検討する。ivar の数だけ型変数が増えないよう、ivar への書き込みがすべてコンストラクタ引数の受け渡しだけの場合などに限る
 - [ ] 呼び出し元が1種類だけのときに具体的な型で出すかは、使い勝手を見て決める
 

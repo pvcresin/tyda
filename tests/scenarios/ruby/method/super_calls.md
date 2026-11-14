@@ -103,7 +103,7 @@ class DefaultSuperChild < DefaultSuperParent
 end
 
 class DefaultSuperParent
-  def pair: (String first, ?Symbol? second) -> [String, :parent?]
+  def pair: [F] (F first, ?Symbol? second) -> [F, :parent?]
   def keyword: (?optional: Symbol?) -> :parent?
 end
 ```
@@ -246,7 +246,7 @@ class RestChild < RestParent
 end
 
 class RestParent
-  def pair: (Integer first, String second) -> [Integer, String]
+  def pair: [F, S] (F first, S second) -> [F, S]
 end
 ```
 
@@ -272,11 +272,11 @@ def call_render = BlockChild.new.render("value") { |item| item.to_sym }
 
 ```rbs
 class BlockChild < BlockParent
-  def render: (*String args) { (String) -> :value } -> :value?
+  def render: [R] (*String args) { (String) -> R } -> R?
 end
 
 class BlockParent
-  def render: (String item) ?{ (String) -> :value } -> :value?
+  def render: [I, R] (I item) ?{ (I) -> R } -> R?
 end
 
 class Object < BasicObject
@@ -361,11 +361,11 @@ class IncludedSuperOtherChild < IncludedSuperOtherParent
 end
 
 class IncludedSuperOtherParent
-  def label: (String value) -> [:other, String]
+  def label: [V] (V value) -> [:other, V]
 end
 
 class IncludedSuperParent
-  def label: (String value) -> [:parent, String]
+  def label: [V] (V value) -> [:parent, V]
 end
 
 class Object < BasicObject
@@ -400,11 +400,11 @@ class PostRequiredSuperCallSite
 end
 
 class PostRequiredSuperChild < PostRequiredSuperParent
-  def value: (?Symbol value, Symbol required) -> [Symbol, Symbol]
+  def value: [R] (?Symbol value, R required) -> [Symbol, R]
 end
 
 class PostRequiredSuperParent
-  def value: (?Symbol? value, Symbol required) -> Symbol
+  def value: [R] (?Symbol? value, R required) -> R
 end
 ```
 
@@ -439,12 +439,12 @@ end
 
 class RestDefaultChild < RestDefaultParent
   def rest: (?[nil, Array[untyped]] value, *untyped others) -> [:child, [nil, Array[untyped]], Array[untyped]]
-  def post_rest: (?[nil, Array[untyped], Symbol] value, *untyped others, Symbol required) -> [:child, [nil, Array[untyped], Symbol], Array[untyped], Symbol]
+  def post_rest: [R] (?[nil, Array[untyped], Symbol] value, *untyped others, R required) -> [:child, [nil, Array[untyped], Symbol], Array[untyped], R]
 end
 
 class RestDefaultParent
   def rest: (?Symbol? value, *untyped others) -> [:parent?, Array[untyped]]
-  def post_rest: (?Symbol? value, *untyped others, Symbol required) -> [:parent?, Array[untyped], Symbol]
+  def post_rest: [R] (?Symbol? value, *untyped others, R required) -> [:parent?, Array[untyped], R]
 end
 ```
 
@@ -526,7 +526,7 @@ module PrependedCallOuter
 end
 
 class PrependedCallParent
-  def value: (Integer item) -> [:parent, Integer]
+  def value: [I] (I item) -> [:parent, I]
 end
 
 class PrependedCallSite
@@ -696,7 +696,7 @@ class ProcSuperChild < ProcSuperParent
 end
 
 module ProcSuperMethods
-  def value: (Integer item) -> Proc
+  def value: (Integer item) -> (^() -> String)
 end
 
 class ProcSuperParent
@@ -819,7 +819,7 @@ module KeywordSuperMethods
 end
 
 class KeywordSuperParent
-  def render: (String item, label: Symbol, **Integer options) -> [String, Symbol, { extra: 1 }]
+  def render: [I] (I item, label: Symbol, **Integer options) -> [I, Symbol, { extra: 1 }]
 end
 
 class Object < BasicObject
@@ -861,7 +861,7 @@ module BlockSuperMethods
 end
 
 class BlockSuperParent
-  def render: (String item) ?{ (String) -> Symbol } -> Symbol?
+  def render: [I, R] (I item) ?{ (I) -> R } -> R?
 end
 
 class Object < BasicObject
@@ -911,7 +911,7 @@ class MultiBlockStringChild < MultiBlockStringParent
 end
 
 class MultiBlockStringParent
-  def render: (String item) ?{ (String) -> String } -> String?
+  def render: [I, R] (I item) ?{ (I) -> R } -> R?
 end
 
 module MultiBlockSuperMethods
@@ -924,7 +924,7 @@ class MultiBlockSymbolChild < MultiBlockSymbolParent
 end
 
 class MultiBlockSymbolParent
-  def render: (String item) ?{ (Symbol) -> String } -> String?
+  def render: [R] (String item) ?{ (Symbol) -> R } -> R?
 end
 
 class Object < BasicObject
@@ -951,7 +951,7 @@ def call_direct_render = DirectBlockParent.new.render("value") { |item| item.to_
 
 ```rbs
 class DirectBlockParent
-  def render: (String item) ?{ (String) -> :value } -> :value?
+  def render: [I, R] (I item) ?{ (I) -> R } -> R?
 end
 
 class Object < BasicObject
@@ -977,7 +977,7 @@ def call_keyword_render = KeywordBlock.new.render(item: "value", marker: :tag) {
 
 ```rbs
 class KeywordBlock
-  def render: (item: String, ?marker: Symbol) { (String, Symbol) -> :ok } -> :ok
+  def render: [R] (item: String, ?marker: Symbol) { (String, Symbol) -> R } -> R
 end
 
 class Object < BasicObject

@@ -33,10 +33,25 @@ pub enum RecordKey {
 impl fmt::Display for RecordKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RecordKey::Symbol(name) => write!(f, "{name}:"),
+            RecordKey::Symbol(name) if is_plain_record_key(name) => write!(f, "{name}:"),
+            RecordKey::Symbol(name) => write!(f, ":\"{}\" =>", escape_rbs_string_literal(name)),
             RecordKey::String(name) => write!(f, "\"{}\" =>", escape_rbs_string_literal(name)),
         }
     }
+}
+
+/// Whether RBS accepts the symbol as a bare `name:` record key. Other ASCII symbols take the
+/// `:"name" =>` form; RBS has no form for non-ASCII symbols, so they stay bare.
+fn is_plain_record_key(name: &str) -> bool {
+    if !name.is_ascii() {
+        return true;
+    }
+    let body = name.strip_suffix(['?', '!']).unwrap_or(name);
+    let mut bytes = body.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -48,22 +63,10 @@ pub struct RecordField {
 
 impl fmt::Display for RecordField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.key {
-            RecordKey::Symbol(name) => {
-                if self.optional {
-                    write!(f, "?{name}: {}", self.value)
-                } else {
-                    write!(f, "{name}: {}", self.value)
-                }
-            }
-            RecordKey::String(name) => {
-                if self.optional {
-                    write!(f, "?\"{}\" => {}", name.replace('"', "\\\""), self.value)
-                } else {
-                    write!(f, "\"{}\" => {}", name.replace('"', "\\\""), self.value)
-                }
-            }
+        if self.optional {
+            f.write_str("?")?;
         }
+        write!(f, "{} {}", self.key, self.value)
     }
 }
 
@@ -841,13 +844,44 @@ impl Type {
 
     fn dedup_rendered_preserve_order(types: &[Type]) -> Vec<String> {
         let mut unique = Vec::new();
+        let merged_proc = Self::merged_proc_member(types);
+        let mut proc_written = false;
         for ty in types {
-            let rendered = ty.to_string();
+            let rendered = match (ty, &merged_proc) {
+                (Type::Proc { .. }, Some(_)) if proc_written => continue,
+                (Type::Proc { .. }, Some(merged)) => {
+                    proc_written = true;
+                    merged.to_string()
+                }
+                _ => ty.to_string(),
+            };
             if !unique.contains(&rendered) {
                 unique.push(rendered);
             }
         }
         unique
+    }
+
+    /// Several procs in one union render as one proc returning the union of their returns.
+    fn merged_proc_member(types: &[Type]) -> Option<Type> {
+        let mut returns = Vec::new();
+        let mut takes_params = false;
+        for ty in types {
+            if let Type::Proc {
+                return_type,
+                param_count,
+                ..
+            } = ty
+            {
+                returns.push(return_type.as_ref().clone());
+                takes_params |= *param_count > 0;
+            }
+        }
+        (returns.len() > 1).then(|| Type::Proc {
+            return_type: Box::new(Type::from_type_vec(returns)),
+            param_count: usize::from(takes_params),
+            literal: None,
+        })
     }
 
     pub fn union_with(self, other: Type) -> Type {
@@ -1539,7 +1573,21 @@ impl fmt::Display for Type {
             }
             Type::SelfType => write!(f, "self"),
             Type::InstanceType => write!(f, "instance"),
-            Type::Proc { .. } => write!(f, "Proc"),
+            // Parenthesized so the proc type stays one type inside a union, `?` or parameter list.
+            Type::Proc {
+                return_type,
+                param_count,
+                ..
+            } => {
+                let return_type = format!("{return_type:#}");
+                if return_type == "untyped" {
+                    write!(f, "Proc")
+                } else if *param_count == 0 {
+                    write!(f, "(^() -> {return_type})")
+                } else {
+                    write!(f, "(^(?) -> {return_type})")
+                }
+            }
             Type::Tuple(types) => {
                 if types.is_empty() {
                     return write!(f, "[ ]");
@@ -1599,9 +1647,50 @@ pub struct HoverBlockSig {
     pub required: bool,
 }
 
+/// A declared type parameter of a method signature. Inference reads its uses as `untyped`;
+/// only rendering keeps the name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeParamSig {
+    pub name: std::string::String,
+    pub upper_bound: Option<Type>,
+    pub lower_bound: Option<Type>,
+}
+
+impl fmt::Display for TypeParamSig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name)?;
+        if let Some(bound) = &self.upper_bound {
+            write!(f, " < {bound}")?;
+        }
+        if let Some(bound) = &self.lower_bound {
+            write!(f, " > {bound}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Writes `[T, U < Bound] ` before a signature, or nothing.
+pub fn write_type_params<W: std::fmt::Write>(
+    writer: &mut W,
+    type_params: &[TypeParamSig],
+) -> fmt::Result {
+    if type_params.is_empty() {
+        return Ok(());
+    }
+    writer.write_char('[')?;
+    for (index, param) in type_params.iter().enumerate() {
+        if index > 0 {
+            writer.write_str(", ")?;
+        }
+        write!(writer, "{param}")?;
+    }
+    writer.write_str("] ")
+}
+
 #[derive(Debug, Clone)]
 pub struct MethodSig {
     pub name: std::string::String,
+    pub type_params: Vec<TypeParamSig>,
     pub params: Vec<Param>,
     pub return_type: Type,
     pub block: Option<HoverBlockSig>,
@@ -1632,6 +1721,7 @@ impl MethodSig {
 
 #[derive(Debug, Clone)]
 pub struct OverloadSig {
+    pub type_params: Vec<TypeParamSig>,
     pub params: Vec<Param>,
     pub return_type: Type,
     pub block: Option<HoverBlockSig>,
@@ -1688,6 +1778,7 @@ pub struct ClassInfo {
     pub aliases: Vec<MethodAliasSig>,
     pub constants: Vec<ConstantSig>,
     pub sorbet_modifier_comments: Vec<std::string::String>,
+    pub embedded_rbs: Vec<std::string::String>,
     pub superclass: Option<std::string::String>,
     pub mixins: Vec<(std::string::String, std::string::String)>,
     pub is_module: bool,

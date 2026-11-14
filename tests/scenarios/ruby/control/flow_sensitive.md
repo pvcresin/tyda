@@ -2358,7 +2358,7 @@ end
 ### result
 
 ```rbs
-class Hash[K, V]
+class Hash[unchecked out K, unchecked out V]
   def key?: (Symbol _key) -> bool
 end
 

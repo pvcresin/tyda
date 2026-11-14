@@ -349,7 +349,7 @@ end
 
 ```rbs
 class App
-  def make: -> Proc
+  def make: -> (^(?) -> Integer)
 end
 ```
 

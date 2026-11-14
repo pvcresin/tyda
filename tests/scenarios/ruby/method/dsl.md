@@ -16,7 +16,7 @@ end
 
 ```rbs
 class Model
-  def self.has_many: (Symbol name) -> Symbol
+  def self.has_many: [N] (N name) -> N
 end
 ```
 
@@ -37,7 +37,7 @@ end
 
 ```rbs
 class Config
-  def self.setting: (Symbol name) -> Symbol
+  def self.setting: [N] (N name) -> N
 end
 ```
 

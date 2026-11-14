@@ -18,8 +18,8 @@ end
 
 ```rbs
 class NestedYieldProbe
-  def wrapper: (untyped value) -> untyped
-  def call: { () -> untyped } -> untyped
+  def wrapper: [V] (V value) -> V
+  def call: [R] { () -> R } -> R
 end
 ```
 
@@ -60,5 +60,108 @@ end
 
 class CoreService
   def update_file: -> nil
+end
+```
+
+## A yield inside a block on a parameter receiver passes the element type
+
+### update
+
+```ruby
+class Mapper
+  def map_all(xs) = xs.map { |e| yield e }
+end
+
+class MapperUser
+  def labels = Mapper.new.map_all([1]) { |e| e.to_s }
+end
+```
+
+### result
+
+```rbs
+class Mapper
+  def map_all: [R] (Array[Integer] xs) { (Integer) -> R } -> Array[R]
+end
+
+class MapperUser
+  def labels: -> Array[String]
+end
+```
+
+## A yield inside a block on a literal receiver passes the element type
+
+### update
+
+```ruby
+class Doubler
+  def each_one = [1].map { |e| yield e }
+end
+
+class DoublerUser
+  def labels = Doubler.new.each_one { |e| e.to_s }
+end
+```
+
+### result
+
+```rbs
+class Doubler
+  def each_one: [R] { (Integer) -> R } -> Array[R]
+end
+
+class DoublerUser
+  def labels: -> Array[String]
+end
+```
+
+## A top-level caller block sees the yield type from a parameter receiver block
+
+### update
+
+```ruby
+class Mapper
+  def map_all(xs) = xs.map { |e| yield e }
+end
+
+Mapper.new.map_all([1]) { |e| e.to_s }
+```
+
+### result
+
+```rbs
+class Mapper
+  def map_all: [R] (Array[Integer] xs) { (Integer) -> R } -> Array[R]
+end
+```
+
+## A blockless call takes the return guarded by block_given
+
+### update
+
+```ruby
+class Reader
+  def self.open
+    reader = new
+    return reader unless block_given?
+    yield reader
+    nil
+  end
+end
+
+class ReaderUser
+  def reader = Reader.open
+end
+```
+
+### result
+
+```rbs
+class Reader
+  def self.open: ?{ (Reader) -> untyped } -> Reader?
+end
+
+class ReaderUser
+  def reader: -> Reader
 end
 ```

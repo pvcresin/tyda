@@ -49,11 +49,11 @@ def underscore_nested = ___ _(__)
 
 ```rbs
 class Object < BasicObject
-  def _: (Symbol x) -> Symbol
+  def _: [X] (X x) -> X
   def __: -> :arg
-  def ___: (Symbol x) -> Symbol
-  def underscore_arg: -> Symbol
-  def underscore_nested: -> Symbol
+  def ___: [X] (X x) -> X
+  def underscore_arg: -> :arg
+  def underscore_nested: -> :arg
 end
 ```
 
@@ -70,7 +70,7 @@ foo(1)
 
 ```rbs
 class Object < BasicObject
-  def foo: (Integer x) -> Integer
+  def foo: [X] (X x) -> X
 end
 ```
 
@@ -88,7 +88,7 @@ foo("hello")
 
 ```rbs
 class Object < BasicObject
-  def foo: ((Integer | String) x) -> (Integer | String)
+  def foo: [X] (X x) -> X
 end
 ```
 
@@ -105,7 +105,7 @@ add(1, "hello")
 
 ```rbs
 class Object < BasicObject
-  def add: (Integer a, String b) -> Integer
+  def add: [A] (A a, String b) -> A
 end
 ```
 
@@ -121,7 +121,7 @@ def foo(x) = x
 
 ```rbs
 class Object < BasicObject
-  def foo: (untyped x) -> untyped
+  def foo: [X] (X x) -> X
 end
 ```
 
@@ -147,7 +147,7 @@ class Foo
 end
 
 class Object < BasicObject
-  def foo: (Integer n) -> Integer
+  def foo: [N] (N n) -> N
 end
 ```
 
@@ -187,8 +187,8 @@ sub("x", "y")
 
 ```rbs
 class Object < BasicObject
-  def add: (Integer a, Integer b) -> Integer
-  def sub: (String a, String b) -> String
+  def add: [A] (A a, Integer b) -> A
+  def sub: [B] (String a, B b) -> B
 end
 ```
 
@@ -206,7 +206,7 @@ foo(a: 1)
 
 ```rbs
 class Object < BasicObject
-  def foo: ({ a: Integer } x) -> { a: Integer }
+  def foo: [X] (X x) -> X
 end
 ```
 
@@ -283,7 +283,7 @@ check(1, [1, "str"])
 
 ```rbs
 class Object < BasicObject
-  def check: (Integer z, [Integer, String]) -> [Integer, "str", 1]
+  def check: [Z] (Z z, [Integer, String]) -> [Z, "str", 1]
 end
 ```
 
@@ -323,7 +323,7 @@ take(*[1, "s"], :x)
 
 ```rbs
 class Object < BasicObject
-  def take: (Integer a, String b, Symbol c) -> [Integer, String, Symbol]
+  def take: [A, B, C] (A a, B b, C c) -> [A, B, C]
 end
 ```
 
@@ -341,7 +341,7 @@ pair([1, "str"])
 
 ```rbs
 class Object < BasicObject
-  def pair: ([Integer, String] a) -> [Integer, String]
+  def pair: [A] (A a) -> A
 end
 ```
 
@@ -360,7 +360,7 @@ pick([2, :y])
 
 ```rbs
 class Object < BasicObject
-  def pick: ([Integer, String | Symbol] a) -> [Integer, String | Symbol]
+  def pick: [A] (A a) -> A
 end
 ```
 
@@ -378,7 +378,7 @@ nums([1, 2, 3])
 
 ```rbs
 class Object < BasicObject
-  def nums: (Array[Integer] a) -> Array[Integer]
+  def nums: [A] (A a) -> A
 end
 ```
 
@@ -397,7 +397,7 @@ vals([1, 2, 3])
 
 ```rbs
 class Object < BasicObject
-  def vals: (Array[Integer | String] a) -> Array[Integer | String]
+  def vals: [A] (A a) -> A
 end
 ```
 
@@ -482,11 +482,11 @@ end
 
 ```rbs
 module Pair
-  def self.second: (untyped _first, Integer second) -> Integer
+  def self.second: [S] (untyped _first, S second) -> S
 end
 
 class PairCaller
-  def run: (untyped value) -> Integer
+  def run: (untyped value) -> 1
 end
 ```
 

@@ -18,7 +18,7 @@ C.new.run(12) { |x| "ok" }
 
 ```rbs
 class C
-  def run: (Integer n) { (Float) -> "ok" } -> "ok"
+  def run: [R] (Integer n) { (Float) -> R } -> R
 end
 ```
 
@@ -40,7 +40,7 @@ C.new.run(12) { |x| "ok" }
 
 ```rbs
 class C
-  def run: (Integer n) { (Float) -> "ok" } -> "ok"
+  def run: [R] (Integer n) { (Float) -> R } -> R
 end
 ```
 
@@ -62,7 +62,7 @@ C.new.run { it }
 
 ```rbs
 class C
-  def run: { (Integer) -> 1 } -> 1
+  def run: [R] { (Integer) -> R } -> R
 end
 ```
 
@@ -84,7 +84,7 @@ C.new.run { [_1, _2] }
 
 ```rbs
 class C
-  def run: { (Integer, String) -> [1, ""] } -> [1, ""]
+  def run: [R] { (Integer, String) -> R } -> R
 end
 ```
 
@@ -104,7 +104,7 @@ run(12) { |x| "ok" }
 
 ```rbs
 class Object < BasicObject
-  def run: (Integer n) { (Float) -> "ok" } -> "ok"
+  def run: [R] (Integer n) { (Float) -> R } -> R
 end
 ```
 

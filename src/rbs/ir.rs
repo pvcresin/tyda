@@ -79,6 +79,79 @@ pub struct MethodType {
     pub annotations: Box<[Sym]>,
 }
 
+impl FunctionType {
+    /// Parameter types in the order of required, optional, rest, trailing, then keywords.
+    pub fn param_types(&self) -> impl Iterator<Item = &RbsType> {
+        self.required_positionals
+            .iter()
+            .chain(self.optional_positionals.iter())
+            .chain(self.rest_positionals.as_deref())
+            .chain(self.trailing_positionals.iter())
+            .chain(self.required_keywords.iter().map(|(_, param)| param))
+            .chain(self.optional_keywords.iter().map(|(_, param)| param))
+            .chain(self.rest_keywords.as_deref())
+            .map(|param| &param.type_)
+    }
+
+    fn bind_type_variables(&mut self, names: &[Sym]) {
+        let params = self
+            .required_positionals
+            .iter_mut()
+            .chain(self.optional_positionals.iter_mut())
+            .chain(self.rest_positionals.as_deref_mut())
+            .chain(self.trailing_positionals.iter_mut())
+            .chain(self.required_keywords.iter_mut().map(|(_, param)| param))
+            .chain(self.optional_keywords.iter_mut().map(|(_, param)| param))
+            .chain(self.rest_keywords.as_deref_mut());
+        for param in params {
+            param.type_.bind_type_variables(names);
+        }
+        self.return_type.bind_type_variables(names);
+    }
+}
+
+impl MethodType {
+    /// Reads the bare class names in `names` as type variables. A signature written outside
+    /// RBS (`#:` or a Sorbet `sig`) cannot tell `Elem` the class type parameter from a class.
+    pub fn with_type_variables(&self, names: &[Sym]) -> MethodType {
+        let mut method_type = self.clone();
+        method_type.function_type.bind_type_variables(names);
+        if let Some(block) = method_type.block.as_mut() {
+            block.function_type.bind_type_variables(names);
+        }
+        method_type
+    }
+}
+
+impl RbsType {
+    fn bind_type_variables(&mut self, names: &[Sym]) {
+        match self {
+            RbsType::Class(name, args) if args.is_empty() && names.contains(name) => {
+                *self = RbsType::Variable(*name);
+            }
+            RbsType::Class(_, args)
+            | RbsType::Alias(_, args)
+            | RbsType::Union(args)
+            | RbsType::Intersection(args)
+            | RbsType::Tuple(args) => {
+                for arg in args.iter_mut() {
+                    arg.bind_type_variables(names);
+                }
+            }
+            RbsType::Optional(inner) => inner.bind_type_variables(names),
+            RbsType::Record(fields) => {
+                for field in fields.iter_mut() {
+                    field.type_.bind_type_variables(names);
+                }
+            }
+            RbsType::Proc(method_type) => {
+                **method_type = method_type.with_type_variables(names);
+            }
+            _ => {}
+        }
+    }
+}
+
 // ── Conversion from rbs_sys (runs once, at the parse boundary) ──────────────────
 
 impl From<&rbs_sys::RbsRecordKey> for RbsRecordKey {

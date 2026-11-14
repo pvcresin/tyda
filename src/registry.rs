@@ -838,6 +838,9 @@ pub struct MethodBlockMeta {
     pub yields_at_least_once: bool,
     pub yield_requires_block: Option<bool>,
     pub block_flow: Option<BlockFlowSummary>,
+    /// What a call without a block returns, when a leading `return x unless block_given?`
+    /// decides it.
+    pub blockless_return: Option<Type>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -864,6 +867,9 @@ impl ClassMethodBlockMeta {
                     .map(Type::deep_extra_bytes)
                     .sum::<usize>();
                 if let Some(ty) = &meta.return_type {
+                    bytes += ty.deep_extra_bytes();
+                }
+                if let Some(ty) = &meta.blockless_return {
                     bytes += ty.deep_extra_bytes();
                 }
             }
@@ -916,6 +922,22 @@ impl ClassMethodBlockMeta {
 #[derive(Debug, Clone)]
 pub struct OverloadDef {
     pub param_types: Vec<(Type, ParamKind)>,
+    pub return_type: Type,
+}
+
+/// How a source method uses a required positional parameter, for rendering it as a type
+/// parameter: only passed to the return value, or also used otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamFlow {
+    PassThrough,
+    Constrained,
+}
+
+/// The parameter flows of a source method with its return as the body computes it, before
+/// a replay binds the parameters to callers' types.
+#[derive(Debug, Clone)]
+pub struct ParamFlows {
+    pub params: Box<[(usize, ParamFlow)]>,
     pub return_type: Type,
 }
 
@@ -1991,6 +2013,14 @@ pub struct ClassDataCold {
 
     pub class_type_params: Vec<String>,
     pub class_type_param_bounds: Vec<(String, rbs_ir::RbsType)>,
+    pub class_type_param_modifiers: Vec<(String, rbs_sys::TypeParamModifiers)>,
+    /// Methods a preloaded user `.rbs` declares with method type parameters. A source `def`
+    /// added later keeps that signature, as it does when the RBS merges after the source.
+    pub user_rbs_generic_methods: Vec<(Sym, bool)>,
+    /// RBS declarations embedded with `# @rbs!`, rendered as written.
+    pub embedded_rbs: Vec<String>,
+    /// How each source method's required positional parameters flow to its return.
+    pub param_flows: Vec<((Sym, bool), ParamFlows)>,
     pub class_type_param_defaults: Vec<(String, Type)>,
     // dirty-family skeleton pattern (`ClassDataCold`).
     pub dirty_method_pattern: Option<DirtyPattern>,
@@ -2212,6 +2242,10 @@ impl ClassData {
         }
         cold.class_type_params.shrink_to_fit();
         cold.class_type_param_bounds.shrink_to_fit();
+        cold.class_type_param_modifiers.shrink_to_fit();
+        cold.user_rbs_generic_methods.shrink_to_fit();
+        cold.embedded_rbs.shrink_to_fit();
+        cold.param_flows.shrink_to_fit();
         cold.class_type_param_defaults.shrink_to_fit();
     }
 
@@ -2295,6 +2329,19 @@ impl ClassData {
         bytes +=
             cold.class_type_param_bounds.len() * std::mem::size_of::<(String, rbs_ir::RbsType)>();
         bytes += cold.class_type_param_defaults.len() * std::mem::size_of::<(String, Type)>();
+        bytes += cold.user_rbs_generic_methods.len() * std::mem::size_of::<(Sym, bool)>();
+        bytes += string_vec_bytes(&cold.embedded_rbs);
+        bytes += cold
+            .param_flows
+            .iter()
+            .map(|(_, flows)| {
+                std::mem::size_of::<((Sym, bool), ParamFlows)>()
+                    + std::mem::size_of_val(flows.params.as_ref())
+                    + flows.return_type.deep_extra_bytes()
+            })
+            .sum::<usize>();
+        bytes += cold.class_type_param_modifiers.len()
+            * std::mem::size_of::<(String, rbs_sys::TypeParamModifiers)>();
         bytes
     }
 
@@ -3791,6 +3838,16 @@ impl TypeRegistry {
         }) {
             let existing = &data.methods[existing_idx];
             if existing.rbs_file_source && !method.rbs_file_source {
+                if data
+                    .cold()
+                    .user_rbs_generic_methods
+                    .contains(&(method.name, method.is_singleton))
+                {
+                    method.raw_return_type = existing.raw_return_type.clone();
+                    method.rbs_annotated = true;
+                    method.rbs_method_types = existing.rbs_method_types.clone();
+                    method.extra_overloads = existing.extra_overloads.clone();
+                }
                 let next_idx = data.methods.len();
                 data.methods.push(Arc::new(method));
                 let method_name = data.methods[next_idx].name;
@@ -11811,6 +11868,100 @@ impl TypeRegistry {
             .unwrap_or(&[])
     }
 
+    pub fn set_class_type_param_modifiers(
+        &mut self,
+        class_name: &str,
+        param_name: &str,
+        modifiers: rbs_sys::TypeParamModifiers,
+    ) {
+        let cold = self.class_data_mut(class_name).cold_mut();
+        match cold
+            .class_type_param_modifiers
+            .iter_mut()
+            .find(|(name, _)| name == param_name)
+        {
+            Some((_, existing)) => *existing = modifiers,
+            None => cold
+                .class_type_param_modifiers
+                .push((param_name.to_string(), modifiers)),
+        }
+    }
+
+    /// Adds an upper bound unless the parameter already has one.
+    pub fn add_class_type_param_bound(
+        &mut self,
+        class_name: &str,
+        param_name: &str,
+        bound: rbs_ir::RbsType,
+    ) {
+        let cold = self.class_data_mut(class_name).cold_mut();
+        if !cold
+            .class_type_param_bounds
+            .iter()
+            .any(|(name, _)| name == param_name)
+        {
+            cold.class_type_param_bounds
+                .push((param_name.to_string(), bound));
+        }
+    }
+
+    pub fn set_param_flows(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        flows: Vec<(usize, ParamFlow)>,
+        return_type: &Type,
+    ) {
+        let key = (Sym::new(method_name), is_singleton);
+        let existing = self
+            .class_data
+            .get(class_name)
+            .is_some_and(|data| data.cold().param_flows.iter().any(|(k, _)| *k == key));
+        // A method that returns its block's value needs the body's return too.
+        let keep = !flows.is_empty() || output::mentions_block_return(return_type);
+        if !keep && !existing {
+            return;
+        }
+        let cold = self.class_data_mut(class_name).cold_mut();
+        cold.param_flows.retain(|(k, _)| *k != key);
+        if keep {
+            cold.param_flows.push((
+                key,
+                ParamFlows {
+                    params: flows.into_boxed_slice(),
+                    return_type: return_type.clone(),
+                },
+            ));
+        }
+    }
+
+    pub fn param_flows(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<&ParamFlows> {
+        self.class_data
+            .get(class_name)
+            .and_then(|data| {
+                data.cold()
+                    .param_flows
+                    .iter()
+                    .find(|((name, singleton), _)| {
+                        name.as_str() == method_name && *singleton == is_singleton
+                    })
+            })
+            .map(|(_, flows)| flows)
+    }
+
+    pub fn add_embedded_rbs(&mut self, class_name: &str, text: String) {
+        let cold = self.class_data_mut(class_name).cold_mut();
+        if !cold.embedded_rbs.contains(&text) {
+            cold.embedded_rbs.push(text);
+        }
+    }
+
     pub fn set_class_type_param_defaults(
         &mut self,
         class_name: &str,
@@ -13973,6 +14124,7 @@ mod tests {
                 yields_at_least_once: false,
                 yield_requires_block: None,
                 block_flow: None,
+                blockless_return: None,
             },
         );
         registry.set_method_block_meta(
@@ -13987,6 +14139,7 @@ mod tests {
                 yields_at_least_once: false,
                 yield_requires_block: None,
                 block_flow: None,
+                blockless_return: None,
             },
         );
         registry.set_method_block_meta(
@@ -14001,6 +14154,7 @@ mod tests {
                 yields_at_least_once: false,
                 yield_requires_block: None,
                 block_flow: None,
+                blockless_return: None,
             },
         );
 
@@ -14071,6 +14225,7 @@ mod tests {
                 yields_at_least_once: false,
                 yield_requires_block: None,
                 block_flow: None,
+                blockless_return: None,
             },
         );
 

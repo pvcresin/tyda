@@ -1,5 +1,6 @@
 use crate::types::{
     HoverBlockSig, HoverOverloadSig, MethodSig, OverloadSig, Param, ParamKind, RecordField, Type,
+    TypeParamSig, write_type_params,
 };
 
 pub fn user_facing_type(ty: &Type) -> Type {
@@ -53,13 +54,25 @@ pub fn format_method_sig_for_lens_with_names(
     method: &MethodSig,
     output_parameter_names: bool,
 ) -> String {
-    format_signature_with_names(
+    let signature = format_signature_with_names(
         &method.params,
         method.block.as_ref(),
         &method.return_type,
         output_parameter_names,
         !method.has_explicit_signature(),
-    )
+    );
+    with_type_params(&method.type_params, signature)
+}
+
+fn with_type_params(type_params: &[TypeParamSig], signature: String) -> String {
+    if type_params.is_empty() {
+        return signature;
+    }
+    let mut out = String::new();
+    // Writing into a String cannot fail.
+    let _ = write_type_params(&mut out, type_params);
+    out.push_str(&signature);
+    out
 }
 
 pub fn format_hover_method_sig(name: &str, overloads: &[HoverOverloadSig]) -> String {
@@ -79,12 +92,15 @@ pub fn format_hover_method_sig(name: &str, overloads: &[HoverOverloadSig]) -> St
 }
 
 pub fn format_hover_inferred_method_sig(name: &str, method: &MethodSig) -> String {
-    let primary = format_signature_with_names(
-        &method.params,
-        method.block.as_ref(),
-        &method.return_type,
-        true,
-        !method.has_explicit_signature(),
+    let primary = with_type_params(
+        &method.type_params,
+        format_signature_with_names(
+            &method.params,
+            method.block.as_ref(),
+            &method.return_type,
+            true,
+            !method.has_explicit_signature(),
+        ),
     );
     if method.overloads.is_empty() {
         return format!("{name}: {primary}");
@@ -98,18 +114,27 @@ pub fn format_hover_inferred_method_sig(name: &str, method: &MethodSig) -> Strin
             return_type: overload.return_type.clone(),
             block: overload.block.clone(),
         };
-        format!("    | {}", format_hover_overload(&hover_overload))
+        format!(
+            "    | {}",
+            with_type_params(
+                &overload.type_params,
+                format_hover_overload(&hover_overload)
+            )
+        )
     }));
     lines.join("\n")
 }
 
 pub fn format_hover_callable_type(method: &MethodSig) -> String {
-    format_signature_with_names(
-        &method.params,
-        method.block.as_ref(),
-        &method.return_type,
-        true,
-        !method.has_explicit_signature(),
+    with_type_params(
+        &method.type_params,
+        format_signature_with_names(
+            &method.params,
+            method.block.as_ref(),
+            &method.return_type,
+            true,
+            !method.has_explicit_signature(),
+        ),
     )
 }
 
@@ -277,8 +302,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn signatures_lead_with_their_type_params() {
+        let type_param = Type::Class(crate::types::Sym::new("T"));
+        let method = MethodSig {
+            type_params: vec![TypeParamSig {
+                name: "T".to_string(),
+                upper_bound: Some(Type::Union(vec![Type::Integer, Type::String])),
+                lower_bound: None,
+            }],
+            name: "keep".to_string(),
+            params: vec![Param {
+                name: "x".to_string(),
+                param_type: type_param.clone(),
+                kind: ParamKind::Required,
+            }],
+            return_type: type_param,
+            block: None,
+            sorbet_modifier_comments: Vec::new(),
+            is_singleton: false,
+            rbs_annotated: false,
+            rbs_inline_annotated: false,
+            sig_annotated: false,
+            rbs_file_source: false,
+            synthetic_dsl_source: false,
+            overloads: Vec::new(),
+            loc: None,
+            is_private: false,
+        };
+
+        let expected = "[T < Integer | String] (T x) -> T";
+        assert_eq!(
+            format_method_sig_for_lens_with_names(&method, true),
+            expected
+        );
+        assert_eq!(format_hover_callable_type(&method), expected);
+        assert_eq!(
+            format_hover_inferred_method_sig("keep", &method),
+            format!("keep: {expected}")
+        );
+    }
+
+    #[test]
     fn signature_preserves_explicit_literal_param_types() {
         let method = MethodSig {
+            type_params: Vec::new(),
             name: "initialize".to_string(),
             params: vec![Param {
                 name: "name".to_string(),
@@ -312,6 +379,7 @@ mod tests {
     #[test]
     fn signature_widens_inferred_literal_param_types() {
         let method = MethodSig {
+            type_params: Vec::new(),
             name: "initialize".to_string(),
             params: vec![Param {
                 name: "name".to_string(),
@@ -341,6 +409,7 @@ mod tests {
     #[test]
     fn lens_signature_renders_nested_todo_as_untyped() {
         let method = MethodSig {
+            type_params: Vec::new(),
             name: "items".to_string(),
             params: vec![Param {
                 name: "values".to_string(),
@@ -370,6 +439,7 @@ mod tests {
     #[test]
     fn lens_signature_hides_positional_names_by_default() {
         let method = MethodSig {
+            type_params: Vec::new(),
             name: "greet".to_string(),
             params: vec![
                 Param {
@@ -411,6 +481,7 @@ mod tests {
     #[test]
     fn lens_signature_can_hide_positional_names() {
         let method = MethodSig {
+            type_params: Vec::new(),
             name: "greet".to_string(),
             params: vec![
                 Param {
@@ -491,6 +562,7 @@ mod tests {
         let rendered = format_hover_inferred_method_sig(
             "foo",
             &MethodSig {
+                type_params: Vec::new(),
                 name: "foo".to_string(),
                 params: vec![Param {
                     name: "x".to_string(),
@@ -520,6 +592,7 @@ mod tests {
         let rendered = format_hover_inferred_method_sig(
             "find",
             &MethodSig {
+                type_params: Vec::new(),
                 name: "find".to_string(),
                 params: vec![Param {
                     name: "id".to_string(),
@@ -536,6 +609,7 @@ mod tests {
                 rbs_file_source: true,
                 synthetic_dsl_source: true,
                 overloads: vec![OverloadSig {
+                    type_params: Vec::new(),
                     params: vec![Param {
                         name: "ids".to_string(),
                         param_type: Type::Array(Some(Box::new(Type::Integer))),
@@ -560,6 +634,7 @@ mod tests {
     #[test]
     fn hover_callable_type_formats_method_without_name() {
         let rendered = format_hover_callable_type(&MethodSig {
+            type_params: Vec::new(),
             name: "tag_is_usable".to_string(),
             params: Vec::new(),
             return_type: Type::Nil,
@@ -582,6 +657,7 @@ mod tests {
     #[test]
     fn lens_signature_formats_empty_tuple_as_rbs_empty_tuple() {
         let rendered = format_method_sig_for_lens(&MethodSig {
+            type_params: Vec::new(),
             name: "empty".to_string(),
             params: Vec::new(),
             return_type: Type::Tuple(Vec::new()),
@@ -605,6 +681,7 @@ mod tests {
     #[test]
     fn lens_signature_deduplicates_union_members() {
         let rendered = format_method_sig_for_lens(&MethodSig {
+            type_params: Vec::new(),
             name: "with_lock".to_string(),
             params: vec![Param {
                 name: "autorelease".to_string(),
@@ -631,6 +708,7 @@ mod tests {
     #[test]
     fn lens_signature_avoids_redundant_parentheses_for_single_param_type() {
         let rendered = format_method_sig_for_lens(&MethodSig {
+            type_params: Vec::new(),
             name: "wrap".to_string(),
             params: vec![Param {
                 name: "value".to_string(),
@@ -657,6 +735,7 @@ mod tests {
     #[test]
     fn lens_signature_keeps_parentheses_for_true_union_param_type() {
         let rendered = format_method_sig_for_lens(&MethodSig {
+            type_params: Vec::new(),
             name: "wrap".to_string(),
             params: vec![Param {
                 name: "value".to_string(),
@@ -683,6 +762,7 @@ mod tests {
     #[test]
     fn lens_signature_keeps_grouped_nilable_union_param_type() {
         let rendered = format_method_sig_for_lens(&MethodSig {
+            type_params: Vec::new(),
             name: "wrap".to_string(),
             params: vec![Param {
                 name: "value".to_string(),

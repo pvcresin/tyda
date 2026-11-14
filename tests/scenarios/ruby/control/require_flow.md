@@ -145,6 +145,6 @@ ESCAPED = "nested tool".shellescape
 ESCAPED: String
 
 class Object < BasicObject
-  def consume: (Array[bool] values) -> Array[bool]
+  def consume: [V] (V values) -> V
 end
 ```

@@ -22,7 +22,7 @@ class ExplicitSplatChild < ExplicitSplatParent
 end
 
 class ExplicitSplatParent
-  def pair: (Integer first, String second) -> [Integer, String]
+  def pair: [F, S] (F first, S second) -> [F, S]
 end
 
 class Object < BasicObject
@@ -54,7 +54,7 @@ class EllipsisChild < EllipsisParent
 end
 
 class EllipsisParent
-  def call: (String required, ?optional: Symbol) -> [String, Symbol]
+  def call: [R] (R required, ?optional: Symbol) -> [R, Symbol]
 end
 
 class Object < BasicObject
@@ -82,11 +82,11 @@ def call_block = BlockChild2.new.call("value") { |value| value.to_sym }
 
 ```rbs
 class BlockChild2 < BlockParent2
-  def call: (String required) { (String) -> :value } -> :value
+  def call: [R] (String required) { (String) -> R } -> R
 end
 
 class BlockParent2
-  def call: (String required) { (String) -> :value } -> :value
+  def call: [Req, Ret] (Req required) { (Req) -> Ret } -> Ret
 end
 
 class Object < BasicObject
@@ -118,7 +118,7 @@ class KeywordNilChild < KeywordNilParent
 end
 
 class KeywordNilParent
-  def call: (String required, ?optional: Integer) -> [String, 1]
+  def call: [R] (R required, ?optional: Integer) -> [R, 1]
 end
 
 class Object < BasicObject
@@ -158,7 +158,7 @@ class ContextChild < ContextParent
 end
 
 class ContextParent
-  def identity: (String value) -> String
+  def identity: [V] (V value) -> V
 end
 ```
 
@@ -186,7 +186,7 @@ class ExplicitBlockChild < ExplicitBlockParent
 end
 
 class ExplicitBlockParent
-  def call: (String item) { (String) -> Symbol } -> Symbol
+  def call: [I, R] (I item) { (I) -> R } -> R
 end
 
 class Object < BasicObject
@@ -218,7 +218,7 @@ class ImplicitBlockChild < ImplicitBlockParent
 end
 
 class ImplicitBlockParent
-  def call: (String item) { (String) -> Symbol } -> Symbol
+  def call: [I, R] (I item) { (I) -> R } -> R
 end
 
 class Object < BasicObject
@@ -250,7 +250,7 @@ class EmptyBlockChild < EmptyBlockParent
 end
 
 class EmptyBlockParent
-  def call: (?Symbol item) { (String) -> Symbol } -> Symbol
+  def call: [R] (?Symbol item) { (String) -> R } -> R
 end
 
 class Object < BasicObject

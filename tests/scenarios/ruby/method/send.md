@@ -267,7 +267,7 @@ class Caller
 end
 
 class Item
-  def echo: (untyped value) -> untyped
+  def echo: [V] (V value) -> V
   def label: (untyped value) -> untyped
   def self.via_bare: -> "ok"
   def self.via_public: -> String
@@ -371,7 +371,7 @@ end
 
 ```rbs
 class Relay
-  def echo: (String value) -> String
+  def echo: [V] (V value) -> V
   def label: (name: Symbol) -> Symbol
   def via_send: -> String
   def via_keyword: -> Symbol
@@ -400,7 +400,7 @@ class Dispatcher
 end
 
 class Receiver
-  def echo: (Integer value) -> Integer
+  def echo: [V] (V value) -> V
 end
 ```
 
@@ -462,7 +462,7 @@ end
 class Target
   def read_name: -> "name"
   def read_count: -> 1
-  def write_name: (Symbol value) -> Symbol
+  def write_name: [V] (V value) -> V
   def via_string: (untyped flag) -> (1 | "name")
   def via_symbol: -> "name"
   def via_argument: -> Symbol
@@ -499,7 +499,7 @@ end
 class Target
   def read_name: -> "name"
   def read_count: -> 1
-  def write_name: (Symbol value) -> Symbol
+  def write_name: [V] (V value) -> V
   def via_to_sym: (untyped flag) -> (1 | "name")
   def via_intern: -> Symbol
   def via_method: -> "name"

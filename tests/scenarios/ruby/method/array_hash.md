@@ -169,7 +169,7 @@ def custom_array_new = Array.new(1)
 ### result
 
 ```rbs
-class Array[E]
+class Array[unchecked out E]
   def self.new: (Integer size) -> :custom
 end
 

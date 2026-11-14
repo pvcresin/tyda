@@ -116,7 +116,7 @@ def with_yield = yield 1
 
 ```rbs
 class Object < BasicObject
-  def with_yield: { (Integer) -> untyped } -> untyped
+  def with_yield: [R] { (Integer) -> R } -> R
 end
 ```
 
@@ -171,7 +171,7 @@ end
 
 ```rbs
 class A
-  def foo: ?{ (A) -> A } -> A?
+  def foo: [R] ?{ (A) -> R } -> R?
   def bar: -> A?
 end
 ```
@@ -197,7 +197,7 @@ BlockGivenOverride.new.run
 ```rbs
 class BlockGivenOverride
   def block_given?: -> true
-  def run: { (Symbol) -> untyped } -> untyped
+  def run: [R] { (Symbol) -> R } -> R?
 end
 ```
 
@@ -221,7 +221,7 @@ end
 
 ```rbs
 class InheritedBlockGivenOverride
-  def run: { (Symbol) -> untyped } -> untyped
+  def run: [R] { (Symbol) -> R } -> R?
 end
 
 class Object < BasicObject
@@ -249,7 +249,7 @@ end
 
 ```rbs
 class GuardedYield
-  def run: ?{ (Symbol) -> untyped } -> untyped
+  def run: [R] ?{ (Symbol) -> R } -> R?
 end
 
 class UnrelatedBlockGivenOverride
@@ -303,7 +303,7 @@ end
 
 ```rbs
 class CaseGuardedYield
-  def run: ?{ (Symbol) -> untyped } -> untyped
+  def run: [R] ?{ (Symbol) -> R } -> R?
 end
 
 class ExplicitRequiredGuardedBlock
@@ -311,7 +311,7 @@ class ExplicitRequiredGuardedBlock
 end
 
 class LaterBlockGivenOverride
-  def run: { (Symbol) -> untyped } -> untyped
+  def run: [R] { (Symbol) -> R } -> R?
   def block_given?: -> true
 end
 
@@ -320,7 +320,7 @@ class NestedGuardedYield
 end
 
 class ShortCircuitGuardedYield
-  def run: ?{ (Symbol) -> untyped } -> untyped
+  def run: [R] ?{ (Symbol) -> R } -> (false | R)
 end
 ```
 
@@ -351,11 +351,11 @@ end
 ```rbs
 class InstanceBlockGivenOverrideDoesNotAffectSingleton
   def block_given?: -> true
-  def self.run: ?{ () -> untyped } -> untyped
+  def self.run: [R] ?{ () -> R } -> R?
 end
 
 class SingletonBlockGivenOverride
-  def self.run: { (Symbol) -> untyped } -> untyped
+  def self.run: [R] { (Symbol) -> R } -> R?
   def self.block_given?: -> true
 end
 ```
@@ -453,13 +453,12 @@ class RescueAfterHashLiteral
 end
 
 class RescueAfterRaise
-  def run: { () -> nil } -> nil
+  def run: [R] { () -> R } -> R
 end
 
 class RescueYield
-  def run: ?{ (Symbol) -> untyped } -> untyped
+  def run: [R] ?{ (Symbol) -> R } -> R?
 end
-
 ```
 
 ## Proc.new lambda and arrow syntax
@@ -589,7 +588,7 @@ def make_lambda = -> () { 1 }
 
 ```rbs
 class Object < BasicObject
-  def make_lambda: -> Proc
+  def make_lambda: -> (^() -> 1)
 end
 ```
 
@@ -620,7 +619,7 @@ end
 
 ```rbs
 class Retrier
-  def attempt: (?Integer limit) { (Integer) -> String } -> String
+  def attempt: [R] (?Integer limit) { (Integer) -> R } -> R
 end
 
 class RetrierUser

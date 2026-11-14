@@ -765,6 +765,26 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         self.ensure_external_class(&class_name);
+        // `new` passes its arguments to `initialize`, where a bounded class type parameter is checked.
+        if site.method_name == "new"
+            && let Type::Singleton(class_sym) = lookup_receiver
+            && !self
+                .registry
+                .get_class_type_param_bounds(&class_name)
+                .is_empty()
+        {
+            let mut initialize_site = site.clone();
+            initialize_site.method_name = "initialize".to_string();
+            initialize_site.is_singleton = false;
+            self.argument_type_mismatches_for_site_receiver(
+                &initialize_site,
+                &Type::Class(*class_sym),
+                receiver_type,
+                seen,
+                out,
+            );
+            return;
+        }
         let prefer_singleton = site.is_singleton || matches!(lookup_receiver, Type::Singleton(_));
         if receiver_type.is_some() {
             let stdlib_classes = self
@@ -840,19 +860,48 @@ impl<'a> InferenceEngine<'a> {
         let kwrest = sig.params.iter().find(|p| p.kind == ParamKind::DoubleRest);
 
         // Judge duck alias / interface params structurally against raw RBS, since collapsing them to nominal would cause false positives.
-        let rbs_function_type: Option<rbs_ir::FunctionType> = {
+        let rbs_method_type: Option<rbs_ir::MethodType> = {
             let types = self.registry.lookup_rbs_method_types_with_hint(
                 &class_name,
                 &site.method_name,
                 prefer_singleton,
             );
-            (types.len() == 1).then(|| types[0].function_type.clone())
+            (types.len() == 1).then(|| types[0].clone())
+        };
+        let rbs_function_type = rbs_method_type
+            .as_ref()
+            .map(|method_type| &method_type.function_type);
+        // A parameter typed by a bounded type variable accepts only arguments within the bound.
+        let class_bounds = self
+            .registry
+            .get_class_type_param_bounds(&class_name)
+            .to_vec();
+        let declared_bound = |rbs_ty: Option<&rbs_ir::RbsType>| -> Option<rbs_ir::RbsType> {
+            let rbs_ir::RbsType::Variable(name) = rbs_ty? else {
+                return None;
+            };
+            rbs_method_type
+                .as_ref()
+                .and_then(|method_type| {
+                    method_type
+                        .type_param_bounds
+                        .iter()
+                        .find(|(param, _)| param == name)
+                        .map(|(_, bound)| bound.clone())
+                })
+                .or_else(|| {
+                    class_bounds
+                        .iter()
+                        .find(|(param, _)| param == name.as_str())
+                        .map(|(_, bound)| bound.clone())
+                })
         };
 
         let mut pos_i = 0usize;
         for arg in &site.args {
             // Structural slots are evaluated against raw RBS via `rbs_param_compat` (an already-collapsed nominal type would miss them).
             let mut structural_rbs: Option<&rbs_ir::RbsType> = None;
+            let bound_rbs: Option<rbs_ir::RbsType>;
             let param = match &arg.keyword {
                 None => {
                     let idx = arg.positional_index.unwrap_or(pos_i);
@@ -860,9 +909,9 @@ impl<'a> InferenceEngine<'a> {
                     if positional_ambiguous {
                         continue;
                     }
-                    let rbs_ty = rbs_function_type
-                        .as_ref()
-                        .and_then(|ft| Self::rbs_positional_param_type(ft, idx));
+                    let rbs_ty =
+                        rbs_function_type.and_then(|ft| Self::rbs_positional_param_type(ft, idx));
+                    bound_rbs = declared_bound(rbs_ty);
                     if rbs_ty.is_some_and(Self::rbs_type_is_structural_liberal) {
                         structural_rbs = rbs_ty;
                     }
@@ -876,9 +925,9 @@ impl<'a> InferenceEngine<'a> {
                     }
                 }
                 Some(name) => {
-                    let rbs_ty = rbs_function_type
-                        .as_ref()
-                        .and_then(|ft| Self::rbs_keyword_param_type(ft, name));
+                    let rbs_ty =
+                        rbs_function_type.and_then(|ft| Self::rbs_keyword_param_type(ft, name));
+                    bound_rbs = declared_bound(rbs_ty);
                     if rbs_ty.is_some_and(Self::rbs_type_is_structural_liberal) {
                         structural_rbs = rbs_ty;
                     }
@@ -897,8 +946,22 @@ impl<'a> InferenceEngine<'a> {
                 }
             };
 
+            // A nominal bound compares like a declared class; an interface or alias bound structurally.
+            let bound_type = bound_rbs.as_ref().and_then(|bound| {
+                if Self::rbs_type_is_structural_liberal(bound) {
+                    structural_rbs = Some(bound);
+                    None
+                } else {
+                    Some(crate::rbs::import::convert_imported_rbs_type(
+                        bound,
+                        self.registry.type_aliases(),
+                        Some(&class_name),
+                    ))
+                }
+            });
             // A param whose type is only a literal/`nil` derived from its default value is not treated as a constraint (avoids false positives).
             if structural_rbs.is_none()
+                && bound_type.is_none()
                 && matches!(
                     param.param_type,
                     Type::Nil
@@ -917,9 +980,20 @@ impl<'a> InferenceEngine<'a> {
                 false,
                 site.method_context_singleton_dispatch,
             );
-            let compat = match structural_rbs {
-                Some(rbs_ty) => self.rbs_param_compat(&actual, rbs_ty),
-                None => self.arg_compat(&actual, &param.param_type),
+            if let Some(bound) = &bound_type {
+                let mut classes = BTreeSet::new();
+                Self::collect_diagnostic_type_classes(bound, &mut classes);
+                Self::collect_diagnostic_type_classes(&actual, &mut classes);
+                for class in classes {
+                    if Self::is_core_rbs_class(&class) {
+                        self.ensure_stdlib_class(&class);
+                    }
+                }
+            }
+            let compat = match (structural_rbs, &bound_type) {
+                (Some(rbs_ty), _) => self.rbs_param_compat(&actual, rbs_ty),
+                (None, Some(bound)) => self.arg_compat(&actual, bound),
+                (None, None) => self.arg_compat(&actual, &param.param_type),
             };
             if compat != ArgCompat::No {
                 continue;
@@ -928,9 +1002,10 @@ impl<'a> InferenceEngine<'a> {
             if arg.start >= arg.end || !seen.insert((arg.start, arg.end, receiver_key.clone())) {
                 continue;
             }
-            let expected = match structural_rbs {
-                Some(rbs_ty) => Self::rbs_param_type_display(rbs_ty),
-                None => param.param_type.to_string(),
+            let expected = match (structural_rbs, &bound_type) {
+                (Some(rbs_ty), _) => Self::rbs_param_type_display(rbs_ty),
+                (None, Some(bound)) => bound.to_string(),
+                (None, None) => param.param_type.to_string(),
             };
             out.push(ArgumentTypeMismatch {
                 start: arg.start,

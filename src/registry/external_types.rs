@@ -314,6 +314,27 @@ impl TypeRegistry {
             data.cold_mut().class_type_param_bounds =
                 rbs_data.cold().class_type_param_bounds.clone();
         }
+        if !rbs_data.cold().class_type_param_modifiers.is_empty()
+            && data.cold().class_type_param_modifiers.is_empty()
+        {
+            data.cold_mut().class_type_param_modifiers =
+                rbs_data.cold().class_type_param_modifiers.clone();
+        }
+        for (key, flows) in &rbs_data.cold().param_flows {
+            let cold = data.cold_mut();
+            cold.param_flows.retain(|(existing, _)| existing != key);
+            cold.param_flows.push((*key, flows.clone()));
+        }
+        for text in &rbs_data.cold().embedded_rbs {
+            if !data.cold().embedded_rbs.contains(text) {
+                data.cold_mut().embedded_rbs.push(text.clone());
+            }
+        }
+        for key in &rbs_data.cold().user_rbs_generic_methods {
+            if !data.cold().user_rbs_generic_methods.contains(key) {
+                data.cold_mut().user_rbs_generic_methods.push(*key);
+            }
+        }
         if !rbs_data.cold().class_type_param_defaults.is_empty()
             && data.cold().class_type_param_defaults.is_empty()
         {
@@ -583,6 +604,17 @@ impl TypeRegistry {
         let Some(data) = self.class_data.get_mut(class_name) else {
             return;
         };
+        for method in &rbs_data.methods {
+            let key = (method.name, method.is_singleton);
+            if method
+                .rbs_method_types
+                .iter()
+                .any(|method_type| !method_type.type_params.is_empty())
+                && !data.cold().user_rbs_generic_methods.contains(&key)
+            {
+                data.cold_mut().user_rbs_generic_methods.push(key);
+            }
+        }
 
         for method in &rbs_data.methods {
             let Some(existing_idx) = data

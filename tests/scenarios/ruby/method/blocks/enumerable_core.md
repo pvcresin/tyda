@@ -124,7 +124,7 @@ end
 
 ```rbs
 class DeferredMapResult
-  def self.load_raw: (untyped value) -> untyped
+  def self.load_raw: [V] (V value) -> V
   def self.map_after_guard: (untyped value) -> Array[untyped]
 end
 ```
@@ -383,7 +383,7 @@ class ExplicitBlockInvocation
   def mutation_in_repeated_block_widens: -> Array[1]
   def guarded_yield: () ?{ (?) -> untyped } -> :done
   def guarded_yield_updates_outer_local: -> :after
-  def early_return_before_yield: (untyped flag) { () -> :after } -> (:after | :early)
+  def early_return_before_yield: [R] (untyped flag) { () -> R } -> (:early | R)
   def early_return_joins_outer_local: (untyped flag) -> (:after | :before)
   def escaped_block: () ?{ (?) -> untyped } -> :stored
   def escaped_block_joins_outer_local: -> (:after | :before)
@@ -394,8 +394,8 @@ end
 
 class ExplicitBlockReceiver
   def ignore: () ?{ (?) -> untyped } -> :ignored
-  def run: { () -> :after } -> :after
-  def repeat: { () -> [1] } -> [1]
+  def run: [R] { () -> R } -> R
+  def repeat: [R] { () -> R } -> R
 end
 ```
 
@@ -636,7 +636,7 @@ class LiteralBlockEdges
   def trailing: (?Integer? first, Integer flag) { () -> :after } -> :done
   def retried: (bool flag) ?{ (?) -> untyped } -> :done
   def forwarded: (Integer? flag) { () -> untyped } -> untyped
-  def target: { () -> untyped } -> untyped
+  def target: [R] { () -> R } -> R
   def nil_skips: -> :before
   def symbol_runs: -> :after
   def negated_runs: -> :after
@@ -1890,10 +1890,10 @@ end
 ```rbs
 class Object < BasicObject
   def inspect_reverse_each_value: (untyped value) -> Array["address"]
-  def observed_address: (String address) -> String
+  def observed_address: [A] (A address) -> A
   def inspect_split_header: (untyped value) -> :done
   def split_header: (untyped value) -> untyped
-  def observed_split_header: (untyped address) -> untyped
+  def observed_split_header: [A] (A address) -> A
 end
 ```
 
@@ -1922,7 +1922,7 @@ class NestedBlockCaller
 end
 
 class NestedBlockSink
-  def take: (String value) -> String
+  def take: [V] (V value) -> V
 end
 ```
 

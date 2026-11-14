@@ -172,7 +172,25 @@ fn write_class_body<W: Write>(
     }
     let renderable_constants = renderable_constants(class);
     let renderable_methods = renderable_methods(class, options);
+    for (index, text) in class.embedded_rbs.iter().enumerate() {
+        if index > 0 || !class.mixins.is_empty() {
+            writer.write_all(b"\n")?;
+        }
+        for line in text.lines() {
+            if line.is_empty() {
+                writeln!(writer)?;
+            } else {
+                writeln!(writer, "  {line}")?;
+            }
+        }
+    }
+    if !class.embedded_rbs.is_empty()
+        && (!renderable_constants.is_empty() || !renderable_methods.is_empty())
+    {
+        writer.write_all(b"\n")?;
+    }
     if !class.mixins.is_empty()
+        && class.embedded_rbs.is_empty()
         && (!renderable_constants.is_empty() || !renderable_methods.is_empty())
     {
         writer.write_all(b"\n")?;
@@ -248,6 +266,7 @@ fn write_class_header<W: Write>(
 
 fn class_has_renderable_body(class: &ClassInfo, options: RenderOptions) -> bool {
     !class.sorbet_modifier_comments.is_empty()
+        || !class.embedded_rbs.is_empty()
         || !class.mixins.is_empty()
         || !renderable_constants(class).is_empty()
         || class
@@ -307,6 +326,7 @@ fn write_method_sig<W: Write>(writer: &mut W, method: &MethodSig) -> io::Result<
         "def "
     };
     write!(writer, "  {visibility}{prefix}{}: ", method.name)?;
+    write_type_param_list(writer, &method.type_params)?;
     write_signature(
         writer,
         &method.params,
@@ -323,6 +343,7 @@ fn write_method_sig<W: Write>(writer: &mut W, method: &MethodSig) -> io::Result<
     for overload in &method.overloads {
         write_spaces(writer, header_len + 2)?;
         writer.write_all(b"| ")?;
+        write_type_param_list(writer, &overload.type_params)?;
         write_signature(
             writer,
             &overload.params,
@@ -333,6 +354,19 @@ fn write_method_sig<W: Write>(writer: &mut W, method: &MethodSig) -> io::Result<
         writeln!(writer)?;
     }
     Ok(())
+}
+
+fn write_type_param_list<W: Write>(
+    writer: &mut W,
+    type_params: &[crate::types::TypeParamSig],
+) -> io::Result<()> {
+    if type_params.is_empty() {
+        return Ok(());
+    }
+    let mut list = String::new();
+    // Writing into a String cannot fail.
+    let _ = crate::types::write_type_params(&mut list, type_params);
+    writer.write_all(list.as_bytes())
 }
 
 fn write_signature<W: Write>(

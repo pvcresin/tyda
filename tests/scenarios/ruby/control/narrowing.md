@@ -1176,7 +1176,7 @@ end
 class ExistingPathReader
   def initialize: (untyped path) -> void
   def run: -> String?
-  def report: (String path) -> String
+  def report: [P] (P path) -> P
   private def real_path: -> String
 end
 ```

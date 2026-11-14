@@ -209,7 +209,7 @@ end
 
 class UntypedArmTarget
   def label: -> :label
-  def with_block: { () -> :from_block } -> :from_block
+  def with_block: [R] { () -> R } -> R
 end
 ```
 
@@ -716,7 +716,7 @@ end
 ```rbs
 class BlockOverloadReturn
   def unresolved_block: -> Array[untyped]
-  def yielded_block: { (untyped) -> untyped } -> Array[untyped]
+  def yielded_block: [R] { (String) -> R } -> Array[R]
   def without_block: -> Enumerator["a", Array[untyped]]
 end
 ```

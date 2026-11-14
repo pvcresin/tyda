@@ -204,7 +204,7 @@ end
 ### result
 
 ```rbs
-class Array[E]
+class Array[unchecked out E]
   def !: -> true
 end
 
@@ -238,7 +238,7 @@ class Object < BasicObject
   def regexp_case: -> (:matched | :unmatched)
 end
 
-class Range[E] < Object
+class Range[out E] < Object
   def ===: (untyped _other) -> false
 end
 

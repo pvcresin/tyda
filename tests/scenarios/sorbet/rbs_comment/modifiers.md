@@ -107,7 +107,7 @@ end
 
 ```rbs
 # @requires_ancestor: ::Kernel
-class Box[Elem]
+class Box[out Elem]
   def first: -> Elem
 end
 ```
@@ -226,5 +226,32 @@ end
 ```rbs
 module BoxLike[Elem]
   def id: (Elem x) -> Elem
+end
+```
+
+## A Sorbet-style class type parameter comment keeps its variance
+
+### update
+
+`sorbet/config`
+
+```ruby
+.
+```
+
+```ruby
+#: [out Elem]
+class Producer
+  #: -> Elem
+  def get
+  end
+end
+```
+
+### result
+
+```rbs
+class Producer[out Elem]
+  def get: -> Elem
 end
 ```

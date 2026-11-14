@@ -3736,6 +3736,7 @@ fn enrich_hover_from_definition_context(
             || matches!(hover.ty, Type::Untyped | Type::Todo)
         {
             return crate::analysis::HoverResult {
+                type_params: Vec::new(),
                 ty: sig.return_type.clone(),
                 display_rbs: Some(display_rbs),
                 ..hover
@@ -3748,6 +3749,7 @@ fn enrich_hover_from_definition_context(
         && !matches!(param.param_type, Type::Untyped | Type::Todo)
     {
         return crate::analysis::HoverResult {
+            type_params: Vec::new(),
             ty: param.param_type.clone(),
             display_rbs: None,
             ..hover
@@ -4821,6 +4823,7 @@ end
     fn code_lens_range_for_method_anchors_to_method_name() {
         let source = "class A\n  def foo(x)\n    x\n  end\nend\n";
         let sig = MethodSig {
+            type_params: Vec::new(),
             name: "foo".to_string(),
             params: vec![Param {
                 name: "x".to_string(),
@@ -4850,6 +4853,7 @@ end
     fn collapse_accessor_pair_merges_reader_and_writer_into_optional_arg() {
         let loc = Some(crate::types::SourceLocation { line: 2, column: 2 });
         let getter = MethodSig {
+            type_params: Vec::new(),
             name: "name".to_string(),
             params: Vec::new(),
             return_type: crate::types::Type::String,
@@ -4866,6 +4870,7 @@ end
             is_private: false,
         };
         let setter = MethodSig {
+            type_params: Vec::new(),
             name: "name=".to_string(),
             params: vec![Param {
                 name: "name".to_string(),
@@ -4900,6 +4905,7 @@ end
             (
                 "User".to_string(),
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "name".to_string(),
                     params: Vec::new(),
                     return_type: crate::types::Type::String,
@@ -4919,6 +4925,7 @@ end
             (
                 "User".to_string(),
                 MethodSig {
+                    type_params: Vec::new(),
                     name: "name=".to_string(),
                     params: vec![Param {
                         name: "name".to_string(),
@@ -4953,6 +4960,7 @@ end
     #[test]
     fn annotated_methods_do_not_show_code_lens() {
         let sig = MethodSig {
+            type_params: Vec::new(),
             name: "foo".to_string(),
             params: Vec::new(),
             return_type: crate::types::Type::Integer,
@@ -5200,10 +5208,10 @@ end
     #[test]
     fn hover_contents_formats_method_definition_as_type() {
         let contents = format_hover_body(&crate::analysis::HoverResult {
+            type_params: Vec::new(),
             name: "tag_is_usable".to_string(),
             ty: crate::types::Type::Nil,
             display_rbs: Some("-> nil".to_string()),
-            type_params: Vec::new(),
             can_enrich_from_workspace: false,
             unresolved_method: None,
         });
@@ -6580,7 +6588,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -6986,7 +6994,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x, y: 15.minutes, z: true)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -7068,7 +7076,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -7152,7 +7160,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x, y: 15.minutes, z: true)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -7969,18 +7977,18 @@ end
     #[test]
     fn choose_better_hover_result_prefers_fewer_untyped_params() {
         let primary = crate::analysis::HoverResult {
+            type_params: Vec::new(),
             name: "foo".to_string(),
             ty: Type::Untyped,
             display_rbs: Some("(untyped x, ?y: untyped, ?z: bool) -> untyped".to_string()),
-            type_params: Vec::new(),
             can_enrich_from_workspace: false,
             unresolved_method: None,
         };
         let fallback = crate::analysis::HoverResult {
+            type_params: Vec::new(),
             name: "foo".to_string(),
             ty: Type::Untyped,
             display_rbs: Some("(String x, ?y: untyped, ?z: bool) -> untyped".to_string()),
-            type_params: Vec::new(),
             can_enrich_from_workspace: false,
             unresolved_method: None,
         };
@@ -7995,10 +8003,10 @@ end
     #[test]
     fn choose_better_hover_result_counts_untyped_by_signature_slots() {
         let primary = crate::analysis::HoverResult {
+            type_params: Vec::new(),
             name: "foo".to_string(),
             ty: Type::Untyped,
             display_rbs: Some("(untyped x, ?y: untyped, ?z: bool) -> untyped".to_string()),
-            type_params: Vec::new(),
             can_enrich_from_workspace: false,
             unresolved_method: None,
         };
@@ -8031,10 +8039,10 @@ end
             unresolved_method: None,
         };
         let fallback = crate::analysis::HoverResult {
+            type_params: Vec::new(),
             name: "foo".to_string(),
             ty: Type::Untyped,
             display_rbs: Some("(String x, ?y: untyped, ?z: bool) -> untyped".to_string()),
-            type_params: Vec::new(),
             can_enrich_from_workspace: false,
             unresolved_method: None,
         };
@@ -8103,6 +8111,7 @@ end
     #[test]
     fn is_better_code_lens_sig_prefers_richer_signature_union() {
         let primary = MethodSig {
+            type_params: Vec::new(),
             name: "foo".to_string(),
             params: vec![
                 Param {
@@ -8130,6 +8139,7 @@ end
             is_private: false,
         };
         let fallback = MethodSig {
+            type_params: Vec::new(),
             name: "foo".to_string(),
             params: vec![
                 Param {
@@ -11554,7 +11564,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x, y: 15.minutes, z: true)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -11833,7 +11843,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x, y: 15.minutes, z: true)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -11963,7 +11973,7 @@ end
         let shared_source = concat!(
             "module Shared\n",
             "  def foo(x, y: 15.minutes, z: true)\n",
-            "    x\n",
+            "    x.itself\n",
             "  end\n",
             "end\n",
         );
@@ -11982,6 +11992,8 @@ end
         let shared_uri = Url::from_file_path(concerns_dir.join("shared.rb")).expect("shared uri");
         let (mut service, mut socket) = initialize_lsp(Some(root_uri)).await;
         let _ = open_document(&mut service, &mut socket, &shared_uri, shared_source).await;
+        // Before the scan, the lens shows the file alone; the caller in `a.rb` comes with it.
+        service.inner().ensure_workspace_scanned();
 
         let response = Service::call(
             &mut service,

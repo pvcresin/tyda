@@ -222,20 +222,31 @@ class Level
 end
 ```
 
-## A yield inside a receiver block passes the block parameter type
+## A short type name in an inline RBS annotation resolves in the enclosing class
 
 ```ruby
-class Mapper
-  def map_all(xs) = xs.map { |e| yield e }
-end
+class Lookup
+  # @rbs!
+  #   interface _Named
+  #     def name: () -> String
+  #   end
 
-Mapper.new.map_all([1]) { |e| e.to_s }
+  #: -> _Named
+  def named = raise
+
+  def label = named.name
+end
 ```
 
 ### result
 
 ```rbs
-class Mapper
-  def map_all: (Array[Integer] xs) { (Integer) -> String } -> Array[String]
+class Lookup
+  interface _Named
+    def name: () -> String
+  end
+
+  def named: -> _Named
+  def label: -> String
 end
 ```

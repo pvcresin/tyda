@@ -938,7 +938,7 @@ class ControlFlowMethodOverrides
   def exit: -> :exited
   def abort: -> :aborted
   def loop: -> :looped
-  def with_yield: { () -> bot } -> bot
+  def with_yield: [R] { () -> R } -> R
   def no_yield: -> :ignored
   def bare_calls: -> :after_calls
   def explicit_calls: -> :after_calls

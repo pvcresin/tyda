@@ -406,6 +406,7 @@ pub enum Declaration {
         type_params: Vec<std::string::String>,
         type_param_bounds: Vec<(std::string::String, RbsType)>,
         type_param_defaults: Vec<(std::string::String, RbsType)>,
+        type_param_modifiers: Vec<(std::string::String, TypeParamModifiers)>,
         mixins: Vec<MixinDecl>,
         variables: Vec<VariableDecl>,
     },
@@ -416,6 +417,7 @@ pub enum Declaration {
         type_params: Vec<std::string::String>,
         type_param_bounds: Vec<(std::string::String, RbsType)>,
         type_param_defaults: Vec<(std::string::String, RbsType)>,
+        type_param_modifiers: Vec<(std::string::String, TypeParamModifiers)>,
         self_types: Vec<SelfTypeDecl>,
         mixins: Vec<MixinDecl>,
         variables: Vec<VariableDecl>,
@@ -454,6 +456,19 @@ pub enum Declaration {
         type_param_defaults: Vec<(std::string::String, RbsType)>,
         type_: RbsType,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variance {
+    Covariant,
+    Contravariant,
+}
+
+/// `unchecked out T`: the modifiers of a class or module type parameter. Plain ones are omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TypeParamModifiers {
+    pub variance: Option<Variance>,
+    pub unchecked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1092,6 +1107,7 @@ unsafe fn convert_class_decl(
         extract_type_param_upper_bounds(class.type_params, parser, &member_context);
     let type_param_defaults =
         extract_type_param_defaults(class.type_params, parser, &member_context);
+    let type_param_modifiers = extract_type_param_modifiers(class.type_params, parser);
 
     Ok(Declaration::Class {
         name,
@@ -1102,6 +1118,7 @@ unsafe fn convert_class_decl(
         type_params,
         type_param_bounds,
         type_param_defaults,
+        type_param_modifiers,
         mixins: members.mixins,
         variables: members.variables,
     })
@@ -1124,6 +1141,7 @@ unsafe fn convert_module_decl(
         extract_type_param_upper_bounds(module.type_params, parser, &member_context);
     let type_param_defaults =
         extract_type_param_defaults(module.type_params, parser, &member_context);
+    let type_param_modifiers = extract_type_param_modifiers(module.type_params, parser);
     let self_types = extract_module_self_types(module.self_types, parser, &member_context);
 
     Ok(Declaration::Module {
@@ -1133,6 +1151,7 @@ unsafe fn convert_module_decl(
         type_params,
         type_param_bounds,
         type_param_defaults,
+        type_param_modifiers,
         self_types,
         mixins: members.mixins,
         variables: members.variables,
@@ -1792,6 +1811,41 @@ unsafe fn extract_type_param_names(
                 if !name.is_empty() {
                     result.push(name);
                 }
+            }
+        }
+        cur = entry.next;
+    }
+    result
+}
+
+unsafe fn extract_type_param_modifiers(
+    list: *const ffi::rbs_node_list_t,
+    parser: *mut ffi::rbs_parser_t,
+) -> Vec<(std::string::String, TypeParamModifiers)> {
+    let mut result = Vec::new();
+    if list.is_null() {
+        return result;
+    }
+    let mut cur = (&*list).head;
+    while !cur.is_null() {
+        let entry = &*cur;
+        if !entry.node.is_null() && (&*entry.node).type_ == ffi::rbs_node_type::RBS_AST_TYPE_PARAM {
+            let tp = &*(entry.node as *const ffi::rbs_ast_type_param_t);
+            let modifiers = TypeParamModifiers {
+                variance: match tp.variance {
+                    ffi::rbs_type_param_variance::RBS_TYPE_PARAM_VARIANCE_COVARIANT => {
+                        Some(Variance::Covariant)
+                    }
+                    ffi::rbs_type_param_variance::RBS_TYPE_PARAM_VARIANCE_CONTRAVARIANT => {
+                        Some(Variance::Contravariant)
+                    }
+                    _ => None,
+                },
+                unchecked: tp.unchecked,
+            };
+            let name = resolve_symbol(tp.name, parser);
+            if modifiers != TypeParamModifiers::default() && !name.is_empty() {
+                result.push((name, modifiers));
             }
         }
         cur = entry.next;

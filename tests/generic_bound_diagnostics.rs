@@ -77,11 +77,48 @@ fn inferred_parameters_do_not_report_other_callers_classes() {
     }
 }
 
-// Known issues: each call passes an argument outside an explicit type
-// parameter bound, but no argument_type_mismatch is reported. When a case
-// reports it, move it to a regular test.
 #[test]
-fn known_issue_explicit_bound_violations_not_reported() {
+fn sorbet_type_parameter_binds_to_the_block_return() {
+    let source = concat!(
+        "class Gen\n",
+        "  extend T::Sig\n",
+        "  sig { type_parameters(:U).params(blk: T.proc.returns(T.type_parameter(:U))).returns(T.type_parameter(:U)) }\n",
+        "  def self.run(&blk) = yield\n",
+        "end\n",
+        "class Consumer\n",
+        "  extend T::Sig\n",
+        "  sig { params(s: String).void }\n",
+        "  def self.take(s); end\n",
+        "  def self.go = take(Gen.run { Object.new })\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        let lines = argument_mismatch_lines(source, "", compact);
+        assert_eq!(lines, vec![10], "compact={compact}");
+    }
+}
+
+// `Array#+` takes `[S] (Array[S])`: the type variable is inside `Array`, which still
+// constrains the argument for the `Array` member of the receiver.
+#[test]
+fn a_composite_generic_parameter_still_checks_its_outer_type() {
+    let source = concat!(
+        "class Joiner\n",
+        "  def pick(flag) = flag ? \"a\" : [\"b\"]\n",
+        "  def go = pick(true) + \"s\"\n",
+        "end\n",
+        "Joiner.new.pick(false)\n",
+    );
+    for compact in [false, true] {
+        let lines = argument_mismatch_lines(source, "", compact);
+        assert_eq!(lines, vec![3], "compact={compact}");
+    }
+}
+
+// Each call passes an argument outside an explicit type parameter bound. Passing a value
+// within the bound instead is not reported.
+#[test]
+fn explicit_bound_violations_are_reported() {
     let cases = [
         (
             "an RBS method bound",
@@ -98,8 +135,8 @@ fn known_issue_explicit_bound_violations_not_reported() {
         (
             "an RBS class bound",
             "class NumBox[T < Numeric]\n  def initialize: (T value) -> void\nend\n",
-            "NumBox.new(\"s\")\n",
-            1,
+            "class Maker\n  def make = NumBox.new(\"s\")\nend\n",
+            2,
         ),
         (
             "an inline RBS method bound",
@@ -122,9 +159,11 @@ fn known_issue_explicit_bound_violations_not_reported() {
                 "  #: (T) -> void\n",
                 "  def initialize(value) = @value = value\n",
                 "end\n",
-                "NumBox.new(\"s\")\n",
+                "class Maker\n",
+                "  def make = NumBox.new(\"s\")\n",
+                "end\n",
             ),
-            6,
+            7,
         ),
         (
             "a Sorbet type_member upper bound",
@@ -137,19 +176,24 @@ fn known_issue_explicit_bound_violations_not_reported() {
                 "  sig { params(value: Elem).void }\n",
                 "  def initialize(value) = @value = value\n",
                 "end\n",
-                "NumBox.new(\"s\")\n",
+                "class Maker\n",
+                "  def make = NumBox.new(\"s\")\n",
+                "end\n",
             ),
-            8,
+            9,
         ),
     ];
 
     for (name, rbs_source, source, line) in cases {
-        let reported = [false, true]
-            .into_iter()
-            .any(|compact| argument_mismatch_lines(source, rbs_source, compact).contains(&line));
-        assert!(
-            !reported,
-            "known issue fixed ({name}); move it to a regular test that asserts the mismatch"
-        );
+        for compact in [false, true] {
+            let lines = argument_mismatch_lines(source, rbs_source, compact);
+            assert_eq!(lines, vec![line], "{name}, compact={compact}");
+            let within_bound = source.replace(":s", "1").replace("\"s\"", "1");
+            let lines = argument_mismatch_lines(&within_bound, rbs_source, compact);
+            assert!(
+                lines.is_empty(),
+                "{name} within bound, compact={compact}: {lines:?}"
+            );
+        }
     }
 }

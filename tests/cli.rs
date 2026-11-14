@@ -282,6 +282,42 @@ fn analyze_directory() {
     assert!(stdout.contains("class B"), "missing B: {stdout}");
 }
 
+// The CLI merges per-file results, which must carry the facts these declarations come from.
+#[test]
+fn analyze_directory_keeps_type_params_and_embedded_rbs() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        concat!(
+            "class Holder\n",
+            "  # @rbs!\n",
+            "  #   interface _Named\n",
+            "  #     def name: () -> String\n",
+            "  #   end\n",
+            "\n",
+            "  def keep(x) = x\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+    fs::write(dir.path().join("b.rb"), "Holder.new.keep(1)\n").expect("failed to write");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("  def keep: [X] (X x) -> X"),
+        "missing type param: {stdout}"
+    );
+    assert!(
+        stdout.contains("  interface _Named\n    def name: () -> String\n  end"),
+        "missing embedded RBS: {stdout}"
+    );
+}
+
 #[test]
 fn verbose_shows_file_names() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
@@ -472,6 +508,40 @@ fn coverage_includes_arguments_of_unresolved_receiver_calls() {
     assert_eq!(report["by_kind"]["method_call"]["total"], 2);
     assert_eq!(report["by_kind"]["method_call"]["typed"], 1);
     assert_eq!(report["by_kind"]["method_call"]["unknown"], 1);
+}
+
+#[test]
+fn coverage_keeps_narrowed_receivers_in_yielding_blocks() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("narrowed_yield.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class Paths\n",
+            "  def each_path(paths)\n",
+            "    paths.transform_values do |value|\n",
+            "      if value.is_a?(Array)\n",
+            "        value.map { |path| yield path }\n",
+            "      else\n",
+            "        yield value\n",
+            "      end\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    // The yield pre-scan sees `value` without the `is_a?` narrowing; only the body walk counts.
+    assert_eq!(report["by_kind"]["value"]["typed"], 1);
 }
 
 #[test]
@@ -3958,6 +4028,51 @@ fn diagnostics_suppresses_bare_call_in_module_without_static_mixin_edge() {
 /// variable (a phantom nominalized from Sorbet's unbound `T.type_parameter(:U)`).
 /// Confirms, as a control, that a concrete mismatch (Integer -> String) on the same
 /// method is still reported.
+// A call without a block takes the `return x unless block_given?` value, also when the
+// method is defined in another file.
+#[test]
+fn diagnostics_take_blockless_return_across_files() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("reader.rb"),
+        concat!(
+            "class Reader\n",
+            "  def self.open\n",
+            "    reader = new\n",
+            "    return reader unless block_given?\n",
+            "    begin\n",
+            "      yield reader\n",
+            "    ensure\n",
+            "      reader.close\n",
+            "    end\n",
+            "    nil\n",
+            "  end\n",
+            "\n",
+            "  def close = nil\n",
+            "  def each = nil\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+    fs::write(
+        dir.path().join("user.rb"),
+        "class User\n  def run\n    reader = Reader.open\n    reader.each\n  end\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("missing_method"),
+        "a blockless call does not return the block path's nil: {stdout}"
+    );
+}
+
 #[test]
 fn diagnostics_silences_argument_mismatch_for_unresolved_type_variable() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
@@ -3979,7 +4094,7 @@ class Consumer
   def self.take(s); end
 
   def self.go
-    v = Gen.run { Object.new }
+    v = Gen.run { unknown_value }
     take(v)
     take(123)
   end
@@ -4851,6 +4966,55 @@ fn singleton_method_in_another_file_does_not_resolve_to_private_kernel() {
     assert!(
         stdout.contains("def video: -> 1\n"),
         "a destructured module_function load in another file must resolve to it: {stdout}"
+    );
+}
+
+// Known issue: a scope defined in a concern's `included` block keeps `self` when a model in
+// another file calls it from the CLI. The scenario runner analyzes the other files first and
+// resolves `ActiveRecord::Relation[Pipeline]`. When the check fails, drop it.
+#[test]
+fn known_issue_concern_scope_keeps_self_across_files() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let models = dir.path().join("app/models");
+    fs::create_dir_all(models.join("concerns")).expect("failed to create dirs");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("failed to write");
+    fs::write(
+        models.join("application_record.rb"),
+        "class ApplicationRecord < ActiveRecord::Base\n  self.abstract_class = true\nend\n",
+    )
+    .expect("failed to write");
+    fs::write(
+        models.join("concerns/has_status.rb"),
+        concat!(
+            "module HasStatus\n",
+            "  extend ActiveSupport::Concern\n",
+            "  included do\n",
+            "    scope :failed, -> { where(status: 2) }\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+    fs::write(
+        models.join("pipeline.rb"),
+        "class Pipeline < ApplicationRecord\n  include HasStatus\nend\n",
+    )
+    .expect("failed to write");
+    fs::write(
+        models.join("report.rb"),
+        "class Report\n  def self.failed_pipelines = Pipeline.failed\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def self.failed_pipelines: -> ActiveRecord::Relation[self]"),
+        "known issue fixed (concern scope across files); drop this check: {rbs}"
     );
 }
 

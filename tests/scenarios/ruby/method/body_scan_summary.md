@@ -15,7 +15,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: (untyped x, untyped y) -> untyped
+  def foo: [X] (X x, untyped y) -> X
 end
 ```
 
@@ -121,7 +121,7 @@ end
 
 ```rbs
 class A
-  def foo: { (Integer) -> Integer } -> Integer
+  def foo: [R] { (Integer) -> R } -> R
   def bar: -> Integer
 end
 ```
@@ -145,7 +145,7 @@ end
 
 ```rbs
 class A
-  def foo: ?{ (A) -> A } -> A?
+  def foo: [R] ?{ (A) -> R } -> R?
   def bar: -> A?
 end
 ```

@@ -79,7 +79,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: { (Integer) -> 42 } -> 42
+  def foo: [R] { (Integer) -> R } -> R
   def proxy: { (Integer) -> 42 } -> 42
   def bar: -> 42
 end
@@ -107,7 +107,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def foo: (Integer x) { (Integer) -> 42 } -> 42
+  def foo: [R] (Integer x) { (Integer) -> R } -> R
   def proxy: { (Integer) -> 42 } -> 42
   def bar: -> 42
 end
@@ -265,7 +265,7 @@ end
 
 ```rbs
 class Runner
-  def run: -> Proc
+  def run: -> (^() -> 1)
 end
 ```
 
@@ -392,5 +392,25 @@ end
 ```rbs
 class Runner
   def run: -> [1, { key: 2 }]
+end
+```
+
+## Lambda and proc literals render as proc types
+
+### update
+
+```ruby
+class Maker
+  def make_lambda = ->(n) { "s" }
+  def make_proc = proc { |n| "s" }
+end
+```
+
+### result
+
+```rbs
+class Maker
+  def make_lambda: -> (^(?) -> "s")
+  def make_proc: -> (^(?) -> "s")
 end
 ```

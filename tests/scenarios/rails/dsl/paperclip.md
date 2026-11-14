@@ -40,7 +40,7 @@ end
 
 ```rbs
 class Backup < ActiveRecord::Base
-  def self.has_attached_file: (Symbol name, ?(Hash[untyped, untyped] | { styles: Integer }) options) -> Symbol
+  def self.has_attached_file: [N] (N name, ?(Hash[untyped, untyped] | { styles: Integer }) options) -> N
   def file: -> untyped
 end
 ```

@@ -116,7 +116,7 @@ end
 class IvarCallValue
   def reset: -> nil
   def build: -> Array[Integer]
-  def consume: (Array[Integer] items) -> Array[Integer]
+  def consume: [I] (I items) -> I
 end
 ```
 

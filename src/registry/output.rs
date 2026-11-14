@@ -1,5 +1,6 @@
 use super::*;
 use crate::rbs::ir as rbs_ir;
+use crate::types::TypeParamSig;
 
 impl TypeRegistry {
     fn attr_writer_call_site_value_type(
@@ -76,6 +77,8 @@ impl TypeRegistry {
             .iter()
             .map(|method| {
                 let mut sig = self.build_method_sig(class_name, method);
+                self.apply_declared_type_params(&mut sig, class_name, method);
+                self.apply_inferred_type_params(&mut sig, class_name, method);
                 // look up the visibility override from the sparse map. Both `private` and `protected` are
                 // stored in the map (since RBS has no `protected`, the renderer collapses it to `private`).
                 sig.is_private = data
@@ -121,6 +124,20 @@ impl TypeRegistry {
                 let (before_method, method_and_after) = all_methods.split_at_mut(method_index);
                 (&mut method_and_after[0], &before_method[rbs_sig_index])
             };
+            // A generic declaration only reads correctly as a whole: `T` needs its `[T]`.
+            if !rbs_sig.type_params.is_empty() {
+                method_sig.type_params = rbs_sig.type_params.clone();
+                method_sig.return_type = rbs_sig.return_type.clone();
+                if method_sig.params.len() == rbs_sig.params.len() {
+                    for (param, rbs_param) in method_sig.params.iter_mut().zip(&rbs_sig.params) {
+                        param.param_type = rbs_param.param_type.clone();
+                    }
+                }
+                if rbs_sig.block.is_some() {
+                    method_sig.block = rbs_sig.block.clone();
+                }
+                continue;
+            }
             if method_sig.return_type != Type::Untyped {
                 method_sig.return_type = rbs_sig.return_type.clone();
             }
@@ -279,7 +296,11 @@ impl TypeRegistry {
         let mixins: Vec<(String, String)> = data
             .mixins
             .iter()
-            .filter(|m| !m.external_source)
+            // The `[Elem]` header already declares the generic; Sorbet's runtime module adds nothing.
+            .filter(|m| {
+                !m.external_source
+                    && !(m.kind == MixinKind::Extend && m.module_name.as_ref() == "T::Generic")
+            })
             .map(|m| {
                 let kind_str = match m.kind {
                     MixinKind::Include => "include",
@@ -308,11 +329,12 @@ impl TypeRegistry {
 
         ClassInfo {
             name: name.to_string(),
-            type_params: data.cold().class_type_params.clone(),
+            type_params: self.class_type_param_decls(name, data),
             methods: all_methods,
             aliases: alias_sigs,
             constants,
             sorbet_modifier_comments: data.cold().sorbet_modifier_comments.clone(),
+            embedded_rbs: data.cold().embedded_rbs.clone(),
             superclass: data.superclass.as_ref().map(ToString::to_string),
             mixins,
             is_module: data.is_module,
@@ -395,6 +417,336 @@ impl TypeRegistry {
             rebuilt.append(&mut orphan);
         }
         *all_methods = rebuilt;
+    }
+
+    /// `[unchecked out T < Bound = Default]` entries for the class header. RBS rejects a class
+    /// redeclared with different type parameters, so these follow the declaration exactly.
+    fn class_type_param_decls(&self, class_name: &str, data: &ClassData) -> Vec<String> {
+        let cold = data.cold();
+        cold.class_type_params
+            .iter()
+            .map(|name| {
+                let mut decl = String::new();
+                if let Some((_, modifiers)) = cold
+                    .class_type_param_modifiers
+                    .iter()
+                    .find(|(param, _)| param == name)
+                {
+                    if modifiers.unchecked {
+                        decl.push_str("unchecked ");
+                    }
+                    match modifiers.variance {
+                        Some(rbs_sys::Variance::Covariant) => decl.push_str("out "),
+                        Some(rbs_sys::Variance::Contravariant) => decl.push_str("in "),
+                        None => {}
+                    }
+                }
+                decl.push_str(name);
+                if let Some((_, bound)) = cold
+                    .class_type_param_bounds
+                    .iter()
+                    .find(|(param, _)| param == name)
+                {
+                    let bound = crate::rbs::import::convert_imported_rbs_type(
+                        bound,
+                        self.type_aliases(),
+                        Some(class_name),
+                    );
+                    decl.push_str(&format!(" < {bound}"));
+                }
+                if let Some((_, default)) = cold
+                    .class_type_param_defaults
+                    .iter()
+                    .find(|(param, _)| param == name)
+                {
+                    decl.push_str(&format!(" = {default}"));
+                }
+                decl
+            })
+            .collect()
+    }
+
+    /// A required parameter that is only passed to the return value renders as a type parameter,
+    /// `[T] (T x) -> T`, since the body accepts any value. One that the body also uses otherwise
+    /// takes its callers' types as the bound, `[T < A | B] (T x) -> T`.
+    fn apply_inferred_type_params(
+        &self,
+        sig: &mut MethodSig,
+        owner_class: &str,
+        method: &MethodDef,
+    ) {
+        if method.has_annotation()
+            || method.attr_ivar.is_some()
+            || method.rbs_file_source
+            || !sig.type_params.is_empty()
+        {
+            return;
+        }
+        let Some(flows) = self.param_flows(owner_class, method.name.as_str(), method.is_singleton)
+        else {
+            return;
+        };
+        let positional_slots: Vec<usize> = sig
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, param)| {
+                matches!(
+                    param.kind,
+                    ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+                )
+            })
+            .map(|(slot, _)| slot)
+            .collect();
+        let original_params = sig.params.clone();
+        // Parameters that can become type parameters: position, slot and upper bound.
+        let mut candidates: Vec<(usize, usize, Option<Type>)> = Vec::new();
+        for &(position, flow) in flows.params.iter() {
+            let Some(&slot) = positional_slots.get(position) else {
+                continue;
+            };
+            let upper_bound = match flow {
+                ParamFlow::PassThrough => None,
+                ParamFlow::Constrained => {
+                    let callers = &original_params[slot].param_type;
+                    if matches!(callers.to_string().as_str(), "untyped" | "bot" | "nil") {
+                        continue;
+                    }
+                    Some(callers.clone())
+                }
+            };
+            candidates.push((position, slot, upper_bound));
+        }
+        // A block whose value the method returns renders as one more type parameter.
+        let has_block_return = sig.block.is_some() && mentions_block_return(&flows.return_type);
+        if candidates.is_empty() && !has_block_return {
+            return;
+        }
+        let yield_types = self
+            .lookup_method_block_meta(owner_class, method.name.as_str(), method.is_singleton)
+            .map(|meta| meta.yield_param_types.clone())
+            .unwrap_or_default();
+        // The resolved return keeps its precision; only the places where the body returns a bound
+        // parameter itself become its type parameter.
+        let render_return = |bindings: &HashMap<usize, Sym>, block_return: Option<Sym>| {
+            let _hop_memo = super::DeferredHopMemoScope::enter();
+            let resolve_part = |part: &Type| {
+                let raw = substitute_bare_param_refs(part, bindings);
+                let raw = self.resolve_block_return_refs(owner_class, method, &raw);
+                let raw = if Self::type_contains_param_ref(&raw) {
+                    self.resolve_param_refs_from_resolved(&raw, &original_params)
+                } else {
+                    raw
+                };
+                let resolved = self.resolve_deferred_refs_for_context_owned(
+                    owner_class,
+                    method.is_singleton,
+                    raw,
+                );
+                if Self::type_contains_param_ref(&resolved) {
+                    self.resolve_param_refs_from_resolved(&resolved, &original_params)
+                } else {
+                    resolved
+                }
+            };
+            graft_type_params(
+                &flows.return_type,
+                &sig.return_type,
+                bindings,
+                block_return,
+                &resolve_part,
+            )
+        };
+        // A type parameter that shows in neither the return nor the block relates nothing. Find
+        // them with placeholder names first, so only the kept ones compete for short names.
+        let placeholder = |index: usize| Sym::new(format!("__type_param_{index}"));
+        let placeholder_bindings: HashMap<usize, Sym> = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, (position, _, _))| (*position, placeholder(index)))
+            .collect();
+        let block_placeholder = Sym::new("__type_param_return");
+        let probe = render_return(
+            &placeholder_bindings,
+            has_block_return.then_some(block_placeholder),
+        );
+        let yielded = |position: usize| {
+            yield_types
+                .iter()
+                .any(|ty| matches!(ty, Type::ParamRef(index) if *index == position))
+        };
+        let kept: Vec<&(usize, usize, Option<Type>)> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(index, (position, _, _))| {
+                type_mentions_class(&probe, placeholder(*index).as_str()) || yielded(*position)
+            })
+            .map(|(_, candidate)| candidate)
+            .collect();
+        let keep_block_return =
+            has_block_return && type_mentions_class(&probe, block_placeholder.as_str());
+        if kept.is_empty() && !keep_block_return {
+            return;
+        }
+        let mut bases: Vec<&str> = kept
+            .iter()
+            .map(|(_, slot, _)| original_params[*slot].name.as_str())
+            .collect();
+        if keep_block_return {
+            bases.push("return");
+        }
+        let names = type_param_names(&bases, self.get_class_type_params(owner_class));
+        let bindings: HashMap<usize, Sym> = kept
+            .iter()
+            .zip(&names)
+            .map(|((position, _, _), name)| (*position, Sym::new(name)))
+            .collect();
+        let block_return = keep_block_return.then(|| Sym::new(&names[kept.len()]));
+        let return_type = render_return(&bindings, block_return);
+        let mut type_params: Vec<TypeParamSig> = Vec::new();
+        for ((position, slot, upper_bound), name) in kept.iter().copied().zip(&names) {
+            debug_assert!(bindings.contains_key(position));
+            sig.params[*slot].param_type = Type::Class(Sym::new(name));
+            type_params.push(TypeParamSig {
+                name: name.clone(),
+                upper_bound: upper_bound.clone(),
+                lower_bound: None,
+            });
+        }
+        if let Some(block) = sig.block.as_mut() {
+            for (param, yielded) in block.params.iter_mut().zip(&yield_types) {
+                if let Type::ParamRef(index) = yielded
+                    && let Some(name) = bindings.get(index)
+                {
+                    param.param_type = Type::Class(*name);
+                }
+            }
+            if let Some(name) = block_return {
+                block.return_type = Type::Class(name);
+            }
+        }
+        if let Some(name) = block_return {
+            type_params.push(TypeParamSig {
+                name: name.to_string(),
+                upper_bound: None,
+                lower_bound: None,
+            });
+        }
+        sig.return_type = return_type;
+        sig.type_params = type_params;
+    }
+
+    /// Inference reads a declared method type parameter as `untyped`; the rendered signature
+    /// keeps it by name, with its bounds.
+    fn apply_declared_type_params(
+        &self,
+        sig: &mut MethodSig,
+        owner_class: &str,
+        method: &MethodDef,
+    ) {
+        let Some(primary) = method.rbs_method_types.first() else {
+            return;
+        };
+        self.apply_method_type_params(
+            primary,
+            owner_class,
+            &mut sig.type_params,
+            &mut sig.params,
+            &mut sig.return_type,
+            sig.block.as_mut(),
+        );
+        if !method.extra_overloads.is_empty() {
+            return;
+        }
+        for (overload, method_type) in sig
+            .overloads
+            .iter_mut()
+            .zip(method.rbs_method_types.iter().skip(1))
+        {
+            self.apply_method_type_params(
+                method_type,
+                owner_class,
+                &mut overload.type_params,
+                &mut overload.params,
+                &mut overload.return_type,
+                overload.block.as_mut(),
+            );
+        }
+    }
+
+    fn apply_method_type_params(
+        &self,
+        method_type: &rbs_ir::MethodType,
+        owner_class: &str,
+        type_params: &mut Vec<TypeParamSig>,
+        params: &mut [Param],
+        return_type: &mut Type,
+        block: Option<&mut HoverBlockSig>,
+    ) {
+        if method_type.type_params.is_empty() {
+            return;
+        }
+        let bindings: HashMap<String, Type> = method_type
+            .type_params
+            .iter()
+            .map(|name| (name.to_string(), Type::Class(*name)))
+            .collect();
+        let aliases = self.type_aliases();
+        let convert = |ty: &rbs_ir::RbsType| {
+            crate::rbs::import::convert_imported_rbs_type_with_bindings(
+                ty,
+                aliases,
+                Some(owner_class),
+                &bindings,
+            )
+        };
+        let bound_of = |bounds: &[(Sym, rbs_ir::RbsType)], name: &Sym| {
+            bounds
+                .iter()
+                .find(|(bound_name, _)| bound_name == name)
+                .map(|(_, bound)| convert(bound))
+        };
+        *type_params = method_type
+            .type_params
+            .iter()
+            .map(|name| TypeParamSig {
+                name: name.to_string(),
+                upper_bound: bound_of(&method_type.type_param_bounds, name),
+                lower_bound: bound_of(&method_type.type_param_lower_bounds, name),
+            })
+            .collect();
+        let declared = build_params_from_function_type(
+            &method_type.function_type,
+            &[],
+            aliases,
+            Some(owner_class),
+            &bindings,
+        );
+        let mut positional: Vec<&mut Param> = params
+            .iter_mut()
+            .filter(|param| param.kind != ParamKind::Block)
+            .collect();
+        if positional.len() == declared.len() {
+            for (param, declared) in positional.iter_mut().zip(declared) {
+                param.param_type = declared.param_type;
+            }
+        }
+        *return_type = convert(&method_type.function_type.return_type);
+        if let (Some(block), Some(declared_block)) = (block, method_type.block.as_ref()) {
+            let declared = build_params_from_function_type(
+                &declared_block.function_type,
+                &[],
+                aliases,
+                Some(owner_class),
+                &bindings,
+            );
+            if block.params.len() == declared.len() {
+                for (param, declared) in block.params.iter_mut().zip(declared) {
+                    param.param_type = declared.param_type;
+                }
+            }
+            block.return_type = convert(&declared_block.function_type.return_type);
+        }
     }
 
     pub(super) fn build_method_sig(&self, class_name: &str, method: &MethodDef) -> MethodSig {
@@ -568,6 +920,7 @@ impl TypeRegistry {
                         })
                         .collect();
                     OverloadSig {
+                        type_params: Vec::new(),
                         params: ol_params,
                         return_type: o.return_type.clone(),
                         block: None,
@@ -585,8 +938,10 @@ impl TypeRegistry {
                         &param_names,
                         self.type_aliases(),
                         Some(owner_class),
+                        &HashMap::new(),
                     );
                     OverloadSig {
+                        type_params: Vec::new(),
                         params: ol_params,
                         return_type: crate::rbs::import::convert_imported_rbs_type(
                             &ft.return_type,
@@ -599,6 +954,7 @@ impl TypeRegistry {
                                 &[],
                                 self.type_aliases(),
                                 Some(owner_class),
+                                &HashMap::new(),
                             ),
                             return_type: crate::rbs::import::convert_imported_rbs_type(
                                 &block.function_type.return_type,
@@ -615,6 +971,7 @@ impl TypeRegistry {
         };
 
         let mut sig = MethodSig {
+            type_params: Vec::new(),
             name: method.name.to_string(),
             params,
             return_type,
@@ -765,6 +1122,7 @@ impl TypeRegistry {
                     &[],
                     self.type_aliases(),
                     Some(owner_class),
+                    &HashMap::new(),
                 ),
                 return_type: crate::rbs::import::convert_imported_rbs_type(
                     &block.function_type.return_type,
@@ -908,8 +1266,16 @@ fn build_params_from_function_type(
     fallback_param_names: &[String],
     type_aliases: &HashMap<String, Type>,
     current_scope: Option<&str>,
+    type_bindings: &HashMap<String, Type>,
 ) -> Vec<Param> {
-    use crate::rbs::import::convert_imported_rbs_type;
+    let convert_imported_rbs_type = |ty: &rbs_ir::RbsType, aliases, scope| {
+        crate::rbs::import::convert_imported_rbs_type_with_bindings(
+            ty,
+            aliases,
+            scope,
+            type_bindings,
+        )
+    };
 
     let mut params = Vec::new();
     let mut idx = 0;
@@ -993,9 +1359,312 @@ fn build_params_from_function_type(
     params
 }
 
+/// Replaces the bare uses of the bound parameters with their type parameters. A deferred
+/// reference such as `x.name` keeps its parameter, so the call still resolves with callers' types.
+/// Type parameter names that hint at their parameters: the capitalized initial, or for
+/// parameters sharing an initial, the shortest prefix (or the initials of snake_case parts) that
+/// tells them apart, and a number when nothing does. Names taken by the class's own type
+/// parameters get a number too.
+fn type_param_names(bases: &[&str], reserved: &[String]) -> Vec<String> {
+    let letters = |base: &str| -> Vec<char> {
+        base.chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .skip_while(|ch| !ch.is_ascii_alphabetic())
+            .collect()
+    };
+    let capitalize = |chars: &[char]| -> String {
+        chars
+            .iter()
+            .enumerate()
+            .map(|(index, ch)| {
+                if index == 0 {
+                    ch.to_ascii_uppercase()
+                } else {
+                    ch.to_ascii_lowercase()
+                }
+            })
+            .collect()
+    };
+    let words: Vec<Vec<char>> = bases.iter().map(|base| letters(base)).collect();
+    let initial = |index: usize| -> String {
+        words[index]
+            .first()
+            .map_or_else(|| "T".to_string(), |ch| ch.to_ascii_uppercase().to_string())
+    };
+    let mut names: Vec<String> = (0..bases.len()).map(initial).collect();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for index in 0..bases.len() {
+        match groups
+            .iter_mut()
+            .find(|group| names[group[0]] == names[index])
+        {
+            Some(group) => group.push(index),
+            None => groups.push(vec![index]),
+        }
+    }
+    let distinct = |candidates: &[String]| {
+        candidates
+            .iter()
+            .enumerate()
+            .all(|(index, name)| !candidates[..index].contains(name))
+    };
+    for group in groups.iter().filter(|group| group.len() > 1) {
+        let prefixes = (2..=3).find_map(|length| {
+            let candidates: Vec<String> = group
+                .iter()
+                .map(|&index| capitalize(&words[index][..length.min(words[index].len())]))
+                .collect();
+            distinct(&candidates).then_some(candidates)
+        });
+        let acronyms = || {
+            let candidates: Vec<String> = group
+                .iter()
+                .map(|&index| {
+                    bases[index]
+                        .split('_')
+                        .filter_map(|part| letters(part).first().map(char::to_ascii_uppercase))
+                        .collect()
+                })
+                .collect();
+            distinct(&candidates).then_some(candidates)
+        };
+        let chosen = prefixes.or_else(acronyms).unwrap_or_else(|| {
+            group
+                .iter()
+                .enumerate()
+                .map(|(number, &index)| format!("{}{}", names[index], number + 1))
+                .collect()
+        });
+        for (&index, name) in group.iter().zip(chosen) {
+            names[index] = name;
+        }
+    }
+    for index in 0..names.len() {
+        if reserved.contains(&names[index]) || names[..index].contains(&names[index]) {
+            let base = names[index].clone();
+            names[index] = (1..)
+                .map(|number| format!("{base}{number}"))
+                .find(|name| !reserved.contains(name) && !names.contains(name))
+                .expect("an unused numbered name exists");
+        }
+    }
+    names
+}
+
+fn substitute_bare_param_refs(ty: &Type, bindings: &HashMap<usize, Sym>) -> Type {
+    let recurse = |ty: &Type| substitute_bare_param_refs(ty, bindings);
+    match ty {
+        Type::ParamRef(index) => bindings
+            .get(index)
+            .map_or_else(|| ty.clone(), |name| Type::Class(*name)),
+        Type::Union(types) => Type::Union(types.iter().map(recurse).collect()),
+        Type::Intersection(types) => Type::Intersection(types.iter().map(recurse).collect()),
+        Type::Tuple(types) => Type::Tuple(types.iter().map(recurse).collect()),
+        Type::Array(Some(inner)) => Type::Array(Some(Box::new(recurse(inner)))),
+        Type::Hash(key, value) => Type::Hash(
+            key.as_deref().map(|key| Box::new(recurse(key))),
+            value.as_deref().map(|value| Box::new(recurse(value))),
+        ),
+        Type::Record(fields) => Type::Record(
+            fields
+                .iter()
+                .map(|field| RecordField {
+                    value: recurse(&field.value),
+                    ..field.clone()
+                })
+                .collect(),
+        ),
+        Type::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args.iter().map(recurse).collect(),
+        },
+        _ => ty.clone(),
+    }
+}
+
+/// Whether `name` shows in the rendered type; a union with an `untyped` member renders as
+/// `untyped` and so shows nothing.
+fn type_mentions_class(ty: &Type, name: &str) -> bool {
+    let recurse = |ty: &Type| type_mentions_class(ty, name);
+    if ty.to_string() == "untyped" {
+        return false;
+    }
+    match ty {
+        Type::Class(class) => class.as_str() == name,
+        Type::Union(types) | Type::Intersection(types) | Type::Tuple(types) => {
+            types.iter().any(recurse)
+        }
+        Type::Array(Some(inner)) => recurse(inner),
+        Type::Hash(key, value) => {
+            key.as_deref().is_some_and(recurse) || value.as_deref().is_some_and(recurse)
+        }
+        Type::Record(fields) => fields.iter().any(|field| recurse(&field.value)),
+        Type::Generic { args, .. } => args.iter().any(recurse),
+        Type::Proc { return_type, .. } => recurse(return_type),
+        _ => false,
+    }
+}
+
+/// Builds the rendered return from the resolved one, putting a type parameter where the body
+/// returns a bound parameter. A part whose shape differs between the two is resolved from the
+/// body's form instead.
+fn graft_type_params(
+    body_form: &Type,
+    resolved: &Type,
+    bindings: &HashMap<usize, Sym>,
+    block_return: Option<Sym>,
+    resolve_part: &dyn Fn(&Type) -> Type,
+) -> Type {
+    let mentions_block = block_return.is_some() && mentions_block_return(body_form);
+    if !mentions_bound_param(body_form, bindings) && !mentions_block {
+        return resolved.clone();
+    }
+    let graft = |body_form: &Type, resolved: &Type| {
+        graft_type_params(body_form, resolved, bindings, block_return, resolve_part)
+    };
+    match (body_form, resolved) {
+        (Type::ParamRef(index), _) if bindings.contains_key(index) => Type::Class(bindings[index]),
+        (Type::BlockReturnRef, _) => match block_return {
+            Some(name) => Type::Class(name),
+            None => resolve_part(body_form),
+        },
+        // An arm that is the block value or a bound parameter takes its type parameter. Any
+        // other arm keeps its resolved counterpart, or resolves from the body's form.
+        (Type::Union(body_parts), _) => {
+            let resolved_parts: &[Type] = match resolved {
+                Type::Union(parts) => parts,
+                other => std::slice::from_ref(other),
+            };
+            Type::from_type_vec_preserve_untyped(
+                body_parts
+                    .iter()
+                    .map(|part| match part {
+                        Type::ParamRef(index) if bindings.contains_key(index) => {
+                            Type::Class(bindings[index])
+                        }
+                        Type::BlockReturnRef if block_return.is_some() => {
+                            Type::Class(block_return.expect("checked in the guard"))
+                        }
+                        part => resolved_parts
+                            .iter()
+                            .find(|resolved_part| same_shape(part, resolved_part))
+                            .map_or_else(
+                                || resolve_part(part),
+                                |resolved_part| graft(part, resolved_part),
+                            ),
+                    })
+                    .collect(),
+            )
+        }
+        (Type::Tuple(body_parts), Type::Tuple(parts)) if body_parts.len() == parts.len() => {
+            Type::Tuple(
+                body_parts
+                    .iter()
+                    .zip(parts)
+                    .map(|(body_part, part)| graft(body_part, part))
+                    .collect(),
+            )
+        }
+        (Type::Array(Some(body_inner)), Type::Array(Some(inner))) => {
+            Type::Array(Some(Box::new(graft(body_inner, inner))))
+        }
+        (Type::Hash(Some(body_key), Some(body_value)), Type::Hash(Some(key), Some(value))) => {
+            Type::Hash(
+                Some(Box::new(graft(body_key, key))),
+                Some(Box::new(graft(body_value, value))),
+            )
+        }
+        (Type::Record(body_fields), Type::Record(fields))
+            if body_fields.len() == fields.len()
+                && body_fields
+                    .iter()
+                    .zip(fields)
+                    .all(|(body_field, field)| body_field.key == field.key) =>
+        {
+            Type::Record(
+                body_fields
+                    .iter()
+                    .zip(fields)
+                    .map(|(body_field, field)| RecordField {
+                        value: graft(&body_field.value, &field.value),
+                        ..field.clone()
+                    })
+                    .collect(),
+            )
+        }
+        _ => resolve_part(body_form),
+    }
+}
+
+/// Whether a body arm and a resolved arm are the same kind of type, so the resolved one can
+/// stand for it.
+fn same_shape(body_form: &Type, resolved: &Type) -> bool {
+    match (body_form, resolved) {
+        (Type::Generic { base, .. }, Type::Generic { base: other, .. }) => base == other,
+        (Type::Class(name), Type::Class(other)) => name == other,
+        (Type::Tuple(parts), Type::Tuple(others)) => parts.len() == others.len(),
+        (Type::Record(fields), Type::Record(others)) => {
+            fields.len() == others.len()
+                && fields
+                    .iter()
+                    .zip(others)
+                    .all(|(field, other)| field.key == other.key)
+        }
+        (Type::Array(_), Type::Array(_)) | (Type::Hash(..), Type::Hash(..)) => true,
+        (Type::Nil, Type::Nil) => true,
+        _ => false,
+    }
+}
+
+/// Whether the body's return includes its block's value in a place a type parameter can take.
+pub(super) fn mentions_block_return(ty: &Type) -> bool {
+    match ty {
+        Type::BlockReturnRef => true,
+        Type::Union(types) | Type::Tuple(types) => types.iter().any(mentions_block_return),
+        Type::Array(Some(inner)) => mentions_block_return(inner),
+        Type::Record(fields) => fields
+            .iter()
+            .any(|field| mentions_block_return(&field.value)),
+        _ => false,
+    }
+}
+
+fn mentions_bound_param(ty: &Type, bindings: &HashMap<usize, Sym>) -> bool {
+    let recurse = |ty: &Type| mentions_bound_param(ty, bindings);
+    match ty {
+        Type::ParamRef(index) => bindings.contains_key(index),
+        Type::Union(types) | Type::Intersection(types) | Type::Tuple(types) => {
+            types.iter().any(recurse)
+        }
+        Type::Array(Some(inner)) => recurse(inner),
+        Type::Hash(key, value) => {
+            key.as_deref().is_some_and(recurse) || value.as_deref().is_some_and(recurse)
+        }
+        Type::Record(fields) => fields.iter().any(|field| recurse(&field.value)),
+        Type::Generic { args, .. } => args.iter().any(recurse),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn type_param_names_follow_parameter_names() {
+        let names = |bases: &[&str], reserved: &[&str]| {
+            let reserved: Vec<String> = reserved.iter().map(|name| name.to_string()).collect();
+            type_param_names(bases, &reserved)
+        };
+        assert_eq!(names(&["details", "errors"], &[]), ["D", "E"]);
+        assert_eq!(names(&["details", "data"], &[]), ["De", "Da"]);
+        assert_eq!(names(&["user_id", "user_name"], &[]), ["UI", "UN"]);
+        assert_eq!(names(&["row", "return"], &[]), ["Ro", "Re"]);
+        assert_eq!(names(&["_x", "a", "aa_a"], &[]), ["X", "A", "Aa"]);
+        assert_eq!(names(&["item", "id"], &["I"]), ["It", "Id"]);
+        assert_eq!(names(&["elem"], &["E"]), ["E1"]);
+        assert_eq!(names(&["_"], &[]), ["T"]);
+    }
 
     fn method_def(
         name: &str,

@@ -236,3 +236,104 @@ class LowerUser
   def value: -> Integer
 end
 ```
+
+## A source class keeps the variance and bound of its RBS declaration
+
+```rbs
+class Producer[out T < Numeric]
+  def get: -> T
+end
+```
+
+```ruby
+class Producer
+  def get = nil
+end
+```
+
+### result
+
+```rbs
+class Producer[out T < Numeric]
+  def get: -> untyped
+end
+```
+
+## A generic class infers its type argument from new
+
+```rbs
+class Box[T]
+  def initialize: (T value) -> void
+  def get: -> T
+end
+```
+
+```ruby
+class BoxUser
+  def box = Box.new(1)
+  def value = Box.new(1).get
+end
+```
+
+### result
+
+```rbs
+class BoxUser
+  def box: -> Box[Integer]
+  def value: -> Integer
+end
+```
+
+## A generic RBS method keeps working with a source definition in the same file
+
+```rbs
+class Ident
+  def self.id: [T] (T x) -> T
+end
+```
+
+```ruby
+class Ident
+  def self.id(x) = x
+end
+
+class IdentUser
+  def symbol = Ident.id(:s)
+end
+```
+
+### result
+
+```rbs
+class Ident
+  def self.id: [T] (T x) -> T
+end
+
+class IdentUser
+  def symbol: -> :s
+end
+```
+
+## An argument outside a class type parameter bound does not bind it
+
+```rbs
+class NumBox[T < Numeric]
+  def initialize: (T value) -> void
+end
+```
+
+```ruby
+class NumBoxMaker
+  def outside = NumBox.new("s")
+  def inside = NumBox.new(1)
+end
+```
+
+### result
+
+```rbs
+class NumBoxMaker
+  def outside: -> NumBox[untyped]
+  def inside: -> NumBox[Integer]
+end
+```

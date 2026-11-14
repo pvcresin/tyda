@@ -558,3 +558,158 @@ class ArrayOverloadChoice
                 | (Array[Integer] values) -> Integer
 end
 ```
+
+## A method type parameter in a #: comment
+
+### update
+
+```ruby
+class Ident
+  #: [T] (T x) -> T
+  def id(x) = x
+end
+
+class IdentUser
+  def symbol = Ident.new.id(:s)
+end
+```
+
+### result
+
+```rbs
+class Ident
+  def id: [T] (T x) -> T
+end
+
+class IdentUser
+  def symbol: -> :s
+end
+```
+
+## A union bound in a #: comment
+
+### update
+
+```ruby
+class Bounded
+  #: [T < Integer | String] (T x) -> T
+  def keep(x) = x
+end
+```
+
+### result
+
+```rbs
+class Bounded
+  def keep: [T < Integer | String] (T x) -> T
+end
+```
+
+## A class type parameter from @rbs generic
+
+### update
+
+```ruby
+# @rbs generic T
+class Box
+  #: (T) -> void
+  def initialize(value) = @value = value
+
+  #: -> T
+  def get = @value
+end
+```
+
+### result
+
+```rbs
+class Box[T]
+  def initialize: (T value) -> void
+  def get: -> T
+end
+```
+
+## A class type parameter bound from @rbs generic
+
+### update
+
+```ruby
+# @rbs generic T < Numeric
+class NumBox
+  #: -> T
+  def get = nil
+end
+```
+
+### result
+
+```rbs
+class NumBox[T < Numeric]
+  def get: -> T
+end
+```
+
+## A class type parameter from @rbs generic binds through a typed receiver
+
+### update
+
+```ruby
+# @rbs generic T
+class Holder
+  #: -> T
+  def get = nil
+end
+
+class HolderSource
+  #: -> Holder[Integer]
+  def holder = Holder.new
+end
+
+class HolderUser
+  def value = HolderSource.new.holder.get
+end
+```
+
+### result
+
+```rbs
+class Holder[T]
+  def get: -> T
+end
+
+class HolderSource
+  def holder: -> Holder[Integer]
+end
+
+class HolderUser
+  def value: -> Integer
+end
+```
+
+## An interface embedded with @rbs!
+
+### update
+
+```ruby
+class Greeter
+  # @rbs!
+  #   interface _Named
+  #     def name: () -> String
+  #   end
+
+  #: (_Named x) -> String
+  def greet(x) = x.name
+end
+```
+
+### result
+
+```rbs
+class Greeter
+  interface _Named
+    def name: () -> String
+  end
+
+  def greet: (_Named x) -> String
+end
+```
