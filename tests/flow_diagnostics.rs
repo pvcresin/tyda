@@ -1623,3 +1623,35 @@ fn ivar_hash_key_written_by_or_assign_is_present() {
         assert!(missing.is_empty(), "compact={compact}: {found:?}");
     }
 }
+
+#[test]
+fn nil_subject_never_matches_a_class_when() {
+    let source = concat!(
+        "class Proj\n",
+        "  include UnknownConcern\n",
+        "  def namespace_id = 1\n",
+        "end\n",
+        "class ProjNs\n",
+        "  include UnknownConcern\n",
+        "  def parent_id = 1\n",
+        "end\n",
+        "class Ns\n",
+        "  def ref(from = nil) = cross(from)\n",
+        "  private def cross(from)\n",
+        "    case from\n",
+        "    when Proj then from.namespace_id\n",
+        "    when ProjNs then from.parent_id\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        let found = diagnostics(source, compact);
+        let missing: Vec<_> = found
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| diagnostic.unresolved_method.as_str())
+            .collect();
+        assert!(missing.is_empty(), "compact={compact}: {found:?}");
+    }
+}

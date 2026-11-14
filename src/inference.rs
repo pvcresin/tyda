@@ -58364,6 +58364,25 @@ impl<'a> InferenceEngine<'a> {
         {
             return CaseClassRelation::Always;
         }
+        // `nil`, booleans, numbers and symbols are instances of exactly their class, so a class
+        // outside its known ancestors never matches.
+        if subject_ancestors.is_some()
+            && matches!(
+                subject_type,
+                Type::Nil
+                    | Type::True
+                    | Type::False
+                    | Type::Bool
+                    | Type::Integer
+                    | Type::Float
+                    | Type::Symbol
+                    | Type::LiteralInteger(_)
+                    | Type::LiteralFloat(_)
+                    | Type::LiteralSymbol(_)
+            )
+        {
+            return CaseClassRelation::Never;
+        }
         let target_ancestors = self.registry.ordered_ancestor_names(target_class);
         if target_ancestors
             .as_ref()
