@@ -58119,6 +58119,12 @@ impl<'a> InferenceEngine<'a> {
     ) -> Option<HoverBlockSig> {
         call_node.block()?;
         let owner = self.initialize_owner_class(target_class)?;
+        if !self
+            .registry
+            .method_call_has_user_source_definition(&owner, "initialize", false)
+        {
+            return None;
+        }
         let mut block_scope = scope.fork_for_block();
         self.infer_user_defined_call_block(
             &owner,
