@@ -220,6 +220,8 @@ enum NarrowSubject {
     Local(String),
     Ivar(String),
     SelfMethod(String),
+    /// A constant index read with a literal key (`ENV["TOKEN"]`), keyed by its source.
+    ConstIndex(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -336,8 +338,53 @@ fn call_invalidates_self_facts(
             let name = String::from_utf8_lossy(call.name().as_slice()).to_string();
             !fact_keys.contains_key(&name) && !is_pure_reader(&name)
         }
-        Some(receiver) => matches!(receiver, Node::SelfNode { .. }),
+        Some(receiver) => {
+            matches!(receiver, Node::SelfNode { .. })
+                || (call.name().as_slice() != b"[]"
+                    && is_const_index_fact_receiver(&receiver, fact_keys))
+        }
     }
+}
+
+/// The fact key of a read like `ENV["TOKEN"]`: a constant receiver indexed by one literal key.
+fn const_index_fact_key(node: &Node<'_>) -> Option<String> {
+    let call = node.as_call_node()?;
+    if call.name().as_slice() != b"[]" || call.block().is_some() || call.is_safe_navigation() {
+        return None;
+    }
+    let receiver = call.receiver()?;
+    if !matches!(
+        receiver,
+        Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+    ) {
+        return None;
+    }
+    let arguments: Vec<_> = call.arguments()?.arguments().iter().collect();
+    let [key] = arguments.as_slice() else {
+        return None;
+    };
+    if !matches!(
+        key,
+        Node::StringNode { .. } | Node::SymbolNode { .. } | Node::IntegerNode { .. }
+    ) {
+        return None;
+    }
+    Some(String::from_utf8_lossy(node.location().as_slice()).to_string())
+}
+
+/// Any other call on a constant that holds index facts may change what its index reads return.
+fn is_const_index_fact_receiver(receiver: &Node<'_>, fact_keys: &HashMap<String, Type>) -> bool {
+    if !matches!(
+        receiver,
+        Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+    ) {
+        return false;
+    }
+    let prefix = format!(
+        "{}[",
+        String::from_utf8_lossy(receiver.location().as_slice())
+    );
+    fact_keys.keys().any(|key| key.starts_with(&prefix))
 }
 
 /// A visitor that checks whether a statement contains a node that could invalidate a self fact
@@ -2150,7 +2197,9 @@ impl Scope {
     fn narrow_subject(&mut self, subject: &NarrowSubject, ty: Type) {
         match subject {
             NarrowSubject::Local(name) => self.narrow_correlated_local(name, ty),
-            NarrowSubject::Ivar(name) | NarrowSubject::SelfMethod(name) => {
+            NarrowSubject::Ivar(name)
+            | NarrowSubject::SelfMethod(name)
+            | NarrowSubject::ConstIndex(name) => {
                 self.set_self_fact(name, ty);
             }
         }
@@ -29904,6 +29953,12 @@ impl<'a> InferenceEngine<'a> {
                 self.array_element_fact_read(class_name, node, parse_result, scope)
         {
             return Some(inferred);
+        }
+        if !scope.self_facts.is_empty()
+            && let Some(key) = const_index_fact_key(node)
+            && let Some(fact) = scope.self_facts.get(&key)
+        {
+            return Some(fact.clone());
         }
         if !scope.exclusive_receiver_facts.is_empty() {
             return Self::exclusive_receiver_attribute_read(node, scope);
@@ -59616,6 +59671,15 @@ impl<'a> InferenceEngine<'a> {
                     );
                 };
 
+                if let Some(key) = const_index_fact_key(predicate) {
+                    let current = self.infer_node_type(class_name, predicate, parse_result, scope);
+                    return Some(CondNarrowing {
+                        subject: NarrowSubject::ConstIndex(key),
+                        then_ty: Self::truthy_only(&current),
+                        else_ty: Self::falsy_only(&current),
+                    });
+                }
+
                 if method == "!" {
                     let inner = self.extract_condition_narrowing(
                         class_name,
@@ -63707,6 +63771,7 @@ impl<'a> InferenceEngine<'a> {
                     sig.return_type
                 })
             }),
+            NarrowSubject::ConstIndex(key) => scope.self_facts.get(key).cloned(),
         }
     }
 
