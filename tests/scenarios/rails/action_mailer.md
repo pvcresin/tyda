@@ -275,3 +275,69 @@ class ItemsController < ActionController::Base
   def notice_now: -> Mail::Message
 end
 ```
+
+## A parameterized mailer action returns a message delivery
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class InviteMailer < ApplicationMailer
+  def invite = mail
+end
+
+class Inviter
+  def delivery = InviteMailer.with(email: "a@example.com").invite
+end
+```
+
+### result
+
+```rbs
+class InviteMailer < ApplicationMailer
+  def invite: -> Mail::Message
+  def self.invite: -> ActionMailer::MessageDelivery
+end
+
+class Inviter
+  def delivery: -> ActionMailer::Parameterized::MessageDelivery
+end
+```
+
+## A parameterized mailer accepts only mailer action names
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class InviteMailer < ApplicationMailer
+  def invite = mail
+end
+
+class Inviter
+  def sent = InviteMailer.with(email: "a@example.com").invite.deliver_now
+  def unknown = InviteMailer.with(email: "a@example.com").missing
+  def mailer = InviteMailer.with(email: "a@example.com")
+end
+```
+
+### result
+
+```rbs
+class InviteMailer < ApplicationMailer
+  def invite: -> Mail::Message
+  def self.invite: -> ActionMailer::MessageDelivery
+end
+
+class Inviter
+  def sent: -> Mail::Message
+  def unknown: -> untyped
+  def mailer: -> ActionMailer::Parameterized::Mailer
+end
+```

@@ -35,34 +35,3 @@ class PostsController < ActionController::Base
   def index: -> ActionController::Parameters
 end
 ```
-
-## A parameterized mailer action returns a message delivery
-
-```yaml
-rails_version: 7.1.0
-```
-
-### update
-
-```ruby
-class InviteMailer < ApplicationMailer
-  def invite = mail
-end
-
-class Inviter
-  def delivery = InviteMailer.with(email: "a@example.com").invite
-end
-```
-
-### result
-
-```rbs
-class InviteMailer < ApplicationMailer
-  def invite: -> Mail::Message
-  def self.invite: -> ActionMailer::MessageDelivery
-end
-
-class Inviter
-  def delivery: -> ActionMailer::Parameterized::MessageDelivery
-end
-```
