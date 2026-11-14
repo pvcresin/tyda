@@ -85,35 +85,6 @@ class RangeWhen
 end
 ```
 
-## An alternative class pattern narrows its binding
-
-### update
-
-```rbs
-class NumberPattern
-  def value: -> (Integer | Float | String)
-end
-```
-
-```ruby
-class NumberPattern
-  def number
-    case value
-    in Integer | Float => n then n
-    else 0
-    end
-  end
-end
-```
-
-### result
-
-```rbs
-class NumberPattern
-  def number: -> (Integer | Float)
-end
-```
-
 ## A return on the right of or in an assignment adds nil to the method
 
 ### update

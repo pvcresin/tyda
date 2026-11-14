@@ -60459,6 +60459,30 @@ impl<'a> InferenceEngine<'a> {
                 let capture = pattern.as_capture_pattern_node()?;
                 self.partition_case_pattern(class_name, &capture.value(), subject_type, scope)
             }
+            Node::AlternationPatternNode { .. } => {
+                let alternation = pattern.as_alternation_pattern_node()?;
+                let (left_matched, left_unmatched) = self.partition_case_pattern(
+                    class_name,
+                    &alternation.left(),
+                    subject_type,
+                    scope,
+                )?;
+                // The right side only sees what the left side left unmatched.
+                let (right_matched, unmatched) = match left_unmatched {
+                    Some(rest) => self.partition_case_pattern(
+                        class_name,
+                        &alternation.right(),
+                        Some(&rest),
+                        scope,
+                    )?,
+                    None => (None, None),
+                };
+                let matched = match (left_matched, right_matched) {
+                    (Some(left), Some(right)) => Some(Type::from_type_vec(vec![left, right])),
+                    (left, right) => left.or(right),
+                };
+                Some((matched, unmatched))
+            }
             Node::ArrayPatternNode { .. } => {
                 self.partition_array_pattern(class_name, pattern, subject_type, scope)
             }
