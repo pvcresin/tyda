@@ -1121,8 +1121,8 @@ pub struct InferenceEngine<'a> {
     self_bind_comments: Vec<SorbetSelfBindComment>,
     deferred_method_bodies: Vec<DeferredMethodBody>,
     /// Source ranges of blocks given to `gsub` / `scan` style calls with a regexp literal, and
-    /// the mask of capture groups that hold a String inside them.
-    regexp_block_captures: Vec<(usize, usize, u64)>,
+    /// the mask of capture groups that hold a String inside them (`None` when interpolated).
+    regexp_block_captures: Vec<(usize, usize, Option<u64>)>,
     /// Call sites a deferred body held back for its replay, keyed by the def's start offset.
     suppressed_body_call_sites: BTreeMap<usize, Vec<(String, CallSite)>>,
     active_method_body: Option<ActiveMethodBody>,
@@ -30009,7 +30009,8 @@ impl<'a> InferenceEngine<'a> {
                     .min_by_key(|(start, end, _)| end - start)
                     .map(|(_, _, mask)| *mask);
                 let (matched, required) = match block_captures {
-                    Some(mask) => (true, mask),
+                    Some(Some(mask)) => (true, mask),
+                    Some(None) => (false, 0),
                     None => (scope.regexp_match_captures, scope.regexp_required_captures),
                 };
                 if matched && (1..=64).contains(&number) && required & (1 << (number - 1)) != 0 {
@@ -62414,6 +62415,22 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn predicate_matches_interpolated_regexp(predicate: &Node<'_>) -> bool {
+        let Some(call) = predicate.as_call_node() else {
+            return false;
+        };
+        matches!(
+            call.name().as_slice(),
+            b"=~" | b"match" | b"sub!" | b"gsub!"
+        ) && (call
+            .receiver()
+            .is_some_and(|receiver| receiver.as_interpolated_regular_expression_node().is_some())
+            || call
+                .arguments()
+                .and_then(|args| args.arguments().iter().next())
+                .is_some_and(|arg| arg.as_interpolated_regular_expression_node().is_some()))
+    }
+
     /// Inside the block of `gsub` / `scan` style calls, `$~` is the match of their own pattern.
     fn record_regexp_block_captures(&mut self, call: &ruby_prism::CallNode<'_>) {
         if !matches!(
@@ -62425,17 +62442,22 @@ impl<'a> InferenceEngine<'a> {
         let Some(block) = call.block().and_then(|block| block.as_block_node()) else {
             return;
         };
-        let Some(regexp) = call
+        let Some(pattern) = call
             .arguments()
             .and_then(|args| args.arguments().iter().next())
-            .and_then(|arg| arg.as_regular_expression_node())
         else {
             return;
         };
-        let mask = if regexp.is_extended() {
-            0
+        let mask = if let Some(regexp) = pattern.as_regular_expression_node() {
+            Some(if regexp.is_extended() {
+                0
+            } else {
+                Self::required_regexp_captures(regexp.unescaped())
+            })
+        } else if pattern.as_interpolated_regular_expression_node().is_some() {
+            None
         } else {
-            Self::required_regexp_captures(regexp.unescaped())
+            return;
         };
         let range = (
             block.location().start_offset(),
@@ -62792,11 +62814,15 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
-        if outcome == ConditionOutcome::Truthy
-            && let Some(required) = Self::truthy_predicate_regexp_captures(node)
-        {
-            scope.regexp_match_captures = true;
-            scope.regexp_required_captures = required;
+        if outcome == ConditionOutcome::Truthy {
+            if let Some(required) = Self::truthy_predicate_regexp_captures(node) {
+                scope.regexp_match_captures = true;
+                scope.regexp_required_captures = required;
+            } else if Self::predicate_matches_interpolated_regexp(node) {
+                // The groups of an interpolated pattern are not known, so captures stay unknown.
+                scope.regexp_match_captures = false;
+                scope.regexp_required_captures = 0;
+            }
         }
         if !Self::condition_has_flow_effects(node) {
             return;
