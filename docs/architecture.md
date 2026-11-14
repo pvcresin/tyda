@@ -141,6 +141,8 @@ splat の展開（`[*x]`、`Kernel#Array`、`push(*x)`、呼び出しの `*x`）
 遅延参照として残す。値は Array のまま後続の呼び出しや `<<` に渡り、各遅延解決 pass が中身を解決してから
 同じ規則で要素型を求める。最後まで解決できない部分は `untyped` の要素として表示する。call site は要素数が分からない splat の位置を
 `open_splat` に持ち、parameter への束縛は arity が合う要素数ごとに行って union にする。
+引数の型に `untyped` の腕があれば、その引数は単独の `untyped` と同じく parameter の型の手掛かりにしない
+（`nil` の腕は残し、他の call site の型に `nil` を足す）。
 
 親クラス本体の `self` 呼び出し（call site の `self_call`）は Ruby では実行時の class へ dispatch する。
 call site は記録した class にだけ置き、method の parameter を集めるときに superclass chain の

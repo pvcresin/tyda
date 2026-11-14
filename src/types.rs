@@ -1103,8 +1103,9 @@ impl Type {
     }
 
     /// `append_union_parts` for a call-site argument. A `bot` argument comes from an unreachable
-    /// call and adds no part. Like `from_type_vec`, `untyped | nil` stays unknown, so it keeps
-    /// `untyped` beside `nil`.
+    /// call and adds no part. An argument with an `untyped` arm tells as little as a plain
+    /// `untyped` one, so its typed arms add nothing. Like `from_type_vec`, `untyped | nil` stays
+    /// unknown, so it keeps `untyped` beside `nil`.
     pub fn append_argument_parts(types: &mut Vec<Type>, argument: Type) {
         let tail_start = types.len();
         Self::collect_union_parts(argument, types);
@@ -1113,14 +1114,12 @@ impl Type {
             types.truncate(tail_start);
             return;
         }
-        if tail.contains(&Type::Untyped)
-            && tail.contains(&Type::Nil)
-            && tail
-                .iter()
-                .all(|ty| matches!(ty, Type::Untyped | Type::Nil | Type::Bot))
-        {
+        if tail.contains(&Type::Untyped) {
+            let has_nil = tail.contains(&Type::Nil);
             types.truncate(tail_start);
-            types.extend([Type::Untyped, Type::Nil]);
+            if has_nil {
+                types.extend([Type::Untyped, Type::Nil]);
+            }
             return;
         }
         Self::drop_untyped_tail(types, tail_start);
