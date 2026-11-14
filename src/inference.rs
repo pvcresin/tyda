@@ -6709,6 +6709,15 @@ impl<'a> InferenceEngine<'a> {
         false
     }
 
+    /// The expression inside `def (expr).name`; prism keeps it as the parentheses body.
+    fn def_receiver_expression<'pr>(receiver: &Node<'pr>) -> Option<Node<'pr>> {
+        let body = receiver.as_parentheses_node()?.body()?;
+        match body.as_statements_node() {
+            Some(_) => Self::single_parenthesized_expression(receiver),
+            None => Some(body),
+        }
+    }
+
     fn single_parenthesized_expression<'pr>(node: &Node<'pr>) -> Option<Node<'pr>> {
         let body = node.as_parentheses_node()?.body()?;
         let mut statements = body.as_statements_node()?.body().iter();
@@ -13666,6 +13675,7 @@ impl<'a> InferenceEngine<'a> {
                 let owner_class = node
                     .as_def_node()
                     .and_then(|d| d.receiver())
+                    .map(|recv| Self::def_receiver_expression(&recv).unwrap_or(recv))
                     .and_then(|recv| match recv {
                         Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
                             let raw = self.resolve_constant_path(&recv, parse_result);
@@ -63816,6 +63826,8 @@ impl<'a> InferenceEngine<'a> {
         let Some(receiver) = def_node.receiver() else {
             return (class_name.to_string(), None);
         };
+        // `def (Outer::Foo).name` puts the receiver in parentheses.
+        let receiver = Self::def_receiver_expression(&receiver).unwrap_or(receiver);
         if matches!(receiver, Node::SelfNode { .. }) {
             return (class_name.to_string(), None);
         }
