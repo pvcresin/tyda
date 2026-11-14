@@ -222,6 +222,32 @@ fn analyze_renders_struct_in_default_compact_scan() {
 }
 
 #[test]
+fn ivar_from_optional_param_keeps_default_across_files() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        "class NilDefault\n  def initialize(value = nil)\n    @value = value\n  end\n\n  def value = @value\nend\n",
+    )
+    .expect("failed to write");
+    fs::write(
+        dir.path().join("b.rb"),
+        "class NilDefaultUser\n  def empty = NilDefault.new\n  def named = NilDefault.new(\"a\")\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("def value: -> String?"),
+        "ivar should keep the nil default: {stdout}"
+    );
+}
+
+#[test]
 fn deferred_receivers_resolve_across_files_through_declarations() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
