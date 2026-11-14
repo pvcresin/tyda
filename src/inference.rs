@@ -1784,6 +1784,8 @@ pub(crate) struct Scope {
     dsl_bindings: Arc<HashMap<String, Type>>,
     rspec_context: bool,
     regexp_match_captures: bool,
+    /// Bit `n - 1` is set when `$n` is surely a String after the last regexp match.
+    regexp_required_captures: u64,
     /// Bounded alternatives from the last then/else join, used for tuple shape
     /// and local correlation. Dropped on the next write to a tracked name.
     exclusive_local_alts: Option<Arc<CorrelatedWorlds>>,
@@ -2054,6 +2056,7 @@ impl Scope {
             dsl_bindings: self.dsl_bindings.clone(),
             rspec_context: self.rspec_context,
             regexp_match_captures: self.regexp_match_captures,
+            regexp_required_captures: self.regexp_required_captures,
             exclusive_local_alts: self.exclusive_local_alts.clone(),
         }
     }
@@ -5044,6 +5047,8 @@ impl<'a> InferenceEngine<'a> {
             regexp_match_captures: then_scope.regexp_match_captures
                 || else_scope.regexp_match_captures
                 || base.regexp_match_captures,
+            regexp_required_captures: then_scope.regexp_required_captures
+                & else_scope.regexp_required_captures,
             exclusive_local_alts: None,
             initialized_record_keys: Arc::new(
                 then_scope
@@ -5436,6 +5441,8 @@ impl<'a> InferenceEngine<'a> {
             dsl_bindings: base.dsl_bindings.clone(),
             rspec_context: base.rspec_context,
             regexp_match_captures: base.regexp_match_captures || loop_scope.regexp_match_captures,
+            regexp_required_captures: base.regexp_required_captures
+                & loop_scope.regexp_required_captures,
             exclusive_local_alts: None,
         };
 
@@ -8507,6 +8514,7 @@ impl<'a> InferenceEngine<'a> {
                 loop_scope.next_types = merged.next_types;
                 loop_scope.break_types = merged.break_types;
                 loop_scope.regexp_match_captures = merged.regexp_match_captures;
+                loop_scope.regexp_required_captures = merged.regexp_required_captures;
                 break;
             }
             loop_scope = match entry {
@@ -27236,6 +27244,7 @@ impl<'a> InferenceEngine<'a> {
                 let method_name = String::from_utf8_lossy(call_node.name().as_slice()).to_string();
                 if Self::call_sets_regexp_match_globals(&method_name) {
                     scope.regexp_match_captures = true;
+                    scope.regexp_required_captures = 0;
                 }
                 if matches!(method_name.as_str(), "raise" | "fail") {
                     self.record_raise_exception_from_node(class_name, node, parse_result, scope);
@@ -28409,6 +28418,7 @@ impl<'a> InferenceEngine<'a> {
                         }
                         if Self::when_sets_regexp_match_globals(&when_node) {
                             branch_scope.regexp_match_captures = true;
+                            branch_scope.regexp_required_captures = 0;
                         }
                         if let (Some(subject), Some(narrow_ty)) =
                             (&predicate_subject, &narrowed_type)
@@ -29871,7 +29881,15 @@ impl<'a> InferenceEngine<'a> {
                     .unwrap_or_else(Self::nilable_string_type)
             }
             Node::NumberedReferenceReadNode { .. } => {
-                if scope.regexp_match_captures {
+                let number = node
+                    .as_numbered_reference_read_node()
+                    .map_or(0, |reference| reference.number());
+                if scope.regexp_match_captures
+                    && (1..=64).contains(&number)
+                    && scope.regexp_required_captures & (1 << (number - 1)) != 0
+                {
+                    Type::String
+                } else if scope.regexp_match_captures {
                     Self::nilable_string_type()
                 } else {
                     Type::Untyped
@@ -33983,6 +34001,7 @@ impl<'a> InferenceEngine<'a> {
                         let mut branch_scope = scope.fork_for_branch();
                         if Self::when_sets_regexp_match_globals(&when_node) {
                             branch_scope.regexp_match_captures = true;
+                            branch_scope.regexp_required_captures = 0;
                         }
                         if let (Some(subject), Some(narrow_ty)) =
                             (&predicate_subject, &narrowed_type)
@@ -62192,45 +62211,150 @@ impl<'a> InferenceEngine<'a> {
                 .as_match_write_node()
                 .expect("must be MatchWriteNode");
             scope.regexp_match_captures = true;
+            scope.regexp_required_captures = 0;
             for target in match_node.targets().iter() {
                 self.assign_multi_target(class_name, &target, Type::String, parse_result, scope);
             }
         }
     }
 
-    /// A truthy `=~` or `match` against a regexp literal leaves the match in `$~`.
-    fn truthy_predicate_matches_regexp(predicate: &Node<'_>) -> bool {
-        let is_regexp = |node: &Node<'_>| {
-            matches!(
-                node,
-                Node::RegularExpressionNode { .. } | Node::InterpolatedRegularExpressionNode { .. }
-            )
+    /// A truthy `=~` or `match` against a regexp literal leaves the match in `$~`. Returns the
+    /// mask of capture groups that hold a String after it.
+    fn truthy_predicate_regexp_captures(predicate: &Node<'_>) -> Option<u64> {
+        let regexp_captures = |node: &Node<'_>| match node {
+            Node::RegularExpressionNode { .. } => {
+                let regexp = node.as_regular_expression_node()?;
+                Some(if regexp.is_extended() {
+                    0
+                } else {
+                    Self::required_regexp_captures(regexp.unescaped())
+                })
+            }
+            _ => None,
         };
         match predicate {
             Node::CallNode { .. } => {
                 let call = predicate.as_call_node().expect("must be CallNode");
-                matches!(call.name().as_slice(), b"=~" | b"match")
-                    && (call.receiver().is_some_and(|receiver| is_regexp(&receiver))
-                        || call.arguments().is_some_and(|args| {
-                            args.arguments()
-                                .iter()
-                                .next()
-                                .is_some_and(|arg| is_regexp(&arg))
-                        }))
+                if !matches!(call.name().as_slice(), b"=~" | b"match") {
+                    return None;
+                }
+                call.receiver()
+                    .and_then(|receiver| regexp_captures(&receiver))
+                    .or_else(|| {
+                        call.arguments()
+                            .and_then(|args| args.arguments().iter().next())
+                            .and_then(|arg| regexp_captures(&arg))
+                    })
             }
+            // The right side runs last, so its match is the one left in `$~`.
             Node::AndNode { .. } => {
                 let and_node = predicate.as_and_node().expect("must be AndNode");
-                Self::truthy_predicate_matches_regexp(&and_node.left())
-                    || Self::truthy_predicate_matches_regexp(&and_node.right())
+                Self::truthy_predicate_regexp_captures(&and_node.right())
+                    .or_else(|| Self::truthy_predicate_regexp_captures(&and_node.left()))
             }
             Node::ParenthesesNode { .. } => predicate
                 .as_parentheses_node()
                 .and_then(|parens| parens.body())
                 .and_then(|body| body.as_statements_node())
                 .and_then(|statements| statements.body().iter().last())
-                .is_some_and(|last| Self::truthy_predicate_matches_regexp(&last)),
-            _ => false,
+                .and_then(|last| Self::truthy_predicate_regexp_captures(&last)),
+            _ => None,
         }
+    }
+
+    /// Capture groups of a regexp source that take part in every match: not under `?`, `*`,
+    /// `{0,...}`, an alternation or a lookaround. Named groups or anything unusual give 0.
+    fn required_regexp_captures(source: &[u8]) -> u64 {
+        struct Frame {
+            parent: usize,
+            optional: bool,
+            alternation: bool,
+        }
+        let mut frames = vec![Frame {
+            parent: 0,
+            optional: false,
+            alternation: false,
+        }];
+        let mut open = vec![0usize];
+        let mut captures: Vec<usize> = Vec::new();
+        let mut i = 0;
+        while i < source.len() {
+            match source[i] {
+                b'\\' => i += 1,
+                b'[' => {
+                    let mut depth = 1;
+                    i += 1;
+                    while i < source.len() && depth > 0 {
+                        match source[i] {
+                            b'\\' => i += 1,
+                            b'[' => depth += 1,
+                            b']' => depth -= 1,
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
+                b'(' => {
+                    let rest = &source[i + 1..];
+                    let capturing = !rest.starts_with(b"?");
+                    if rest.starts_with(b"?<")
+                        && !rest.starts_with(b"?<=")
+                        && !rest.starts_with(b"?<!")
+                        || rest.starts_with(b"?'")
+                    {
+                        return 0;
+                    }
+                    let lookaround = rest.starts_with(b"?=")
+                        || rest.starts_with(b"?!")
+                        || rest.starts_with(b"?<=")
+                        || rest.starts_with(b"?<!");
+                    frames.push(Frame {
+                        parent: *open.last().expect("root frame"),
+                        optional: lookaround,
+                        alternation: false,
+                    });
+                    let id = frames.len() - 1;
+                    if capturing {
+                        captures.push(id);
+                    }
+                    open.push(id);
+                }
+                b')' => {
+                    if open.len() == 1 {
+                        return 0;
+                    }
+                    let id = open.pop().expect("open frame");
+                    let quantifier = source.get(i + 1..).unwrap_or_default();
+                    if quantifier.starts_with(b"?")
+                        || quantifier.starts_with(b"*")
+                        || quantifier.starts_with(b"{0")
+                        || quantifier.starts_with(b"{,")
+                    {
+                        frames[id].optional = true;
+                    }
+                }
+                b'|' => frames[*open.last().expect("open frame")].alternation = true,
+                _ => {}
+            }
+            i += 1;
+        }
+        if open.len() != 1 {
+            return 0;
+        }
+        let mut mask = 0u64;
+        for (index, &frame) in captures.iter().enumerate().take(64) {
+            let mut required = !frames[frame].optional;
+            let mut current = frame;
+            while required && current != 0 {
+                current = frames[current].parent;
+                required = !frames[current].optional && !frames[current].alternation;
+            }
+            if required {
+                mask |= 1 << index;
+            }
+        }
+        mask
     }
 
     /// Loads the classes a nested capture compares, so binding can check their superclasses.
@@ -62483,8 +62607,11 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
-        if outcome == ConditionOutcome::Truthy && Self::truthy_predicate_matches_regexp(node) {
+        if outcome == ConditionOutcome::Truthy
+            && let Some(required) = Self::truthy_predicate_regexp_captures(node)
+        {
             scope.regexp_match_captures = true;
+            scope.regexp_required_captures = required;
         }
         if !Self::condition_has_flow_effects(node) {
             return;
