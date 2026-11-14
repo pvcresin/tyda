@@ -410,7 +410,31 @@ end
 
 ```rbs
 class Maker
-  def make_lambda: -> (^(?) -> "s")
+  def make_lambda: -> (^(untyped) -> "s")
   def make_proc: -> (^(?) -> "s")
+end
+```
+
+## A lambda return keeps its parameter count
+
+### update
+
+```ruby
+class Labeler
+  def label = ->(n) { "#{n}!" }
+  def pair = ->(a, b) { :ok }
+  def optional = ->(a, b = 1) { :ok }
+  def keyword = ->(a, key:) { :ok }
+end
+```
+
+### result
+
+```rbs
+class Labeler
+  def label: -> (^(untyped) -> String)
+  def pair: -> (^(untyped, untyped) -> :ok)
+  def optional: -> (^(?) -> :ok)
+  def keyword: -> (^(?) -> :ok)
 end
 ```

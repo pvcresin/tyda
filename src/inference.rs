@@ -18575,6 +18575,7 @@ impl<'a> InferenceEngine<'a> {
                             Type::Proc {
                                 return_type: Box::new(Type::BlockReturnRef),
                                 param_count: 0,
+                                exact_params: false,
                                 literal: None,
                             },
                         );
@@ -24109,6 +24110,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(Self::substitute_block_return_ref(
@@ -24116,6 +24118,7 @@ impl<'a> InferenceEngine<'a> {
                     block_return_type,
                 )),
                 param_count,
+                exact_params,
                 literal,
             },
             other => other,
@@ -31644,6 +31647,7 @@ impl<'a> InferenceEngine<'a> {
                         if let Type::Proc {
                             return_type,
                             param_count,
+                            exact_params: _,
                             literal,
                         } = &safe_nav_receiver_type
                         {
@@ -31670,6 +31674,7 @@ impl<'a> InferenceEngine<'a> {
                                         &bound_receiver,
                                     )),
                                     param_count: param_count.saturating_sub(1),
+                                    exact_params: false,
                                     literal: None,
                                 });
                             }
@@ -35937,6 +35942,9 @@ impl<'a> InferenceEngine<'a> {
             .iter()
             .filter(|param| argument_binding::is_positional(param.kind))
             .count();
+        // A proc accepts any number of arguments, so only a lambda has a fixed arity.
+        let exact_params = literal.kind == ProcKind::Lambda
+            && params.iter().all(|param| param.kind == ParamKind::Required);
         let id = ProcLiteralId::new(self.proc_literal_nonce, literal.start);
         let signature = ProcSignature {
             kind: literal.kind,
@@ -35947,6 +35955,7 @@ impl<'a> InferenceEngine<'a> {
         Type::Proc {
             return_type: Box::new(return_type),
             param_count,
+            exact_params,
             literal: Some(id),
         }
     }
@@ -36123,6 +36132,7 @@ impl<'a> InferenceEngine<'a> {
                             Type::Proc {
                                 return_type: Box::new(Type::BlockReturnRef),
                                 param_count: 0,
+                                exact_params: false,
                                 literal: None,
                             },
                         ),
@@ -46989,6 +46999,7 @@ impl<'a> InferenceEngine<'a> {
                 Type::Proc {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_function_type_param_count(&method_type.function_type),
+                    exact_params: false,
                     literal: None,
                 }
             }
@@ -47095,6 +47106,7 @@ impl<'a> InferenceEngine<'a> {
                 Type::Proc {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_function_type_param_count(&method_type.function_type),
+                    exact_params: false,
                     literal: None,
                 }
             }
@@ -50643,6 +50655,7 @@ impl<'a> InferenceEngine<'a> {
             return Some(Type::Proc {
                 return_type: Box::new(return_type),
                 param_count,
+                exact_params: false,
                 literal: None,
             });
         }
@@ -50685,6 +50698,7 @@ impl<'a> InferenceEngine<'a> {
                 return Some(Type::Proc {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_method_type_positional_param_count(method_type),
+                    exact_params: false,
                     literal: None,
                 });
             }
@@ -50696,6 +50710,7 @@ impl<'a> InferenceEngine<'a> {
                 Sym::new(target_method),
             )),
             param_count: 1,
+            exact_params: false,
             literal: None,
         })
     }
@@ -50759,10 +50774,12 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(Self::unbound_method_return_type(return_type)),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             _ => ty.clone(),
@@ -50853,6 +50870,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(Self::bind_first_positional_param_ref(
@@ -50860,6 +50878,7 @@ impl<'a> InferenceEngine<'a> {
                     bound_receiver,
                 )),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             _ => ty.clone(),
@@ -50887,6 +50906,7 @@ impl<'a> InferenceEngine<'a> {
             return Some(Type::Proc {
                 return_type: Box::new(Self::unbound_method_return_type(&return_type)),
                 param_count: param_count.saturating_add(1),
+                exact_params: false,
                 literal: None,
             });
         }
@@ -50921,6 +50941,7 @@ impl<'a> InferenceEngine<'a> {
                     return_type: Box::new(return_type),
                     param_count: Self::rbs_method_type_positional_param_count(method_type)
                         .saturating_add(1),
+                    exact_params: false,
                     literal: None,
                 });
             }
@@ -50932,6 +50953,7 @@ impl<'a> InferenceEngine<'a> {
                 Sym::new(target_method),
             )),
             param_count: 1,
+            exact_params: false,
             literal: None,
         })
     }
@@ -56549,6 +56571,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_receiver_method_refs_depth(
@@ -56559,6 +56582,7 @@ impl<'a> InferenceEngine<'a> {
                     preserve_untyped,
                 )),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
@@ -56828,6 +56852,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_receiver_method_refs_for_destructuring_depth(
@@ -56837,6 +56862,7 @@ impl<'a> InferenceEngine<'a> {
                     visiting,
                 )),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
@@ -63889,6 +63915,7 @@ impl<'a> InferenceEngine<'a> {
                             Type::Proc {
                                 return_type: Box::new(Type::BlockReturnRef),
                                 param_count: 0,
+                                exact_params: false,
                                 literal: None,
                             },
                         );

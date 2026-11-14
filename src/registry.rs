@@ -8351,6 +8351,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => {
                 let (ret, resolved, unresolved) =
@@ -8360,6 +8361,7 @@ impl TypeRegistry {
                 Type::Proc {
                     return_type: Box::new(ret),
                     param_count: *param_count,
+                    exact_params: *exact_params,
                     literal: *literal,
                 }
             }
@@ -8600,10 +8602,12 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_subclass_refs_in_type(return_type)),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
@@ -9425,6 +9429,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_global_refs(
@@ -9436,6 +9441,7 @@ impl TypeRegistry {
                     budget,
                 )),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::PatternIndexRef(subject, index) => {
@@ -9690,10 +9696,12 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_param_refs_from_resolved(return_type, params)),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
@@ -10321,6 +10329,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_deferred_refs_depth(
@@ -10332,6 +10341,7 @@ impl TypeRegistry {
                     visiting,
                 )),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::Tuple(elems) => Type::Tuple(
@@ -11066,6 +11076,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_call_site_type_from_caller_context(
@@ -11074,6 +11085,7 @@ impl TypeRegistry {
                     visiting,
                 )),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             Type::TruthyProjection(inner)
@@ -13219,10 +13231,12 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(recur(return_type)),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             // don't eagerly resolve while a param marker remains (`_ => Untyped` would destroy the marker -> leave it for call-site substitution).
@@ -14718,6 +14732,7 @@ mod tests {
                 Type::Proc {
                     return_type: Box::new(Type::MethodReturnRef("Box".into(), "value".into())),
                     param_count: 0,
+                    exact_params: false,
                     literal: None,
                 },
             ),
@@ -14757,6 +14772,7 @@ mod tests {
             Type::Proc {
                 return_type: Box::new(Type::Integer),
                 param_count: 0,
+                exact_params: false,
                 literal: None,
             }
         );

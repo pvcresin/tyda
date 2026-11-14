@@ -1246,6 +1246,7 @@ impl TypeRegistry {
             Type::Proc {
                 return_type,
                 param_count,
+                exact_params,
                 literal,
             } => Type::Proc {
                 return_type: Box::new(self.resolve_block_return_refs(
@@ -1254,6 +1255,7 @@ impl TypeRegistry {
                     return_type,
                 )),
                 param_count: *param_count,
+                exact_params: *exact_params,
                 literal: *literal,
             },
             _ => ty.clone(),

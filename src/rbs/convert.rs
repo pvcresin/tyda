@@ -141,6 +141,7 @@ pub(crate) fn convert_rbs_type(rbs_ty: &rbs_ir::RbsType) -> Type {
             Type::Proc {
                 return_type: Box::new(return_type),
                 param_count,
+                exact_params: false,
                 literal: None,
             }
         }
