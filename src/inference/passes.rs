@@ -1069,6 +1069,9 @@ impl<'a> InferenceEngine<'a> {
             Type::ReceiverMethodRef(receiver_type, _) => {
                 Self::type_contains_param_ref(receiver_type)
             }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Self::type_contains_param_ref(receiver) || Self::type_contains_param_ref(result)
+            }
             Type::Proc { return_type, .. } => Self::type_contains_param_ref(return_type),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref),
             _ => false,
@@ -1845,6 +1848,12 @@ impl<'a> InferenceEngine<'a> {
                     keyword_types,
                 );
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Type::resolve_deferred_safe_navigation(
+                    Self::substitute_param_refs_with_keywords(receiver, param_types, keyword_types),
+                    Self::substitute_param_refs_with_keywords(result, param_types, keyword_types),
+                )
             }
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
