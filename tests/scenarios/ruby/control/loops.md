@@ -1605,10 +1605,6 @@ end
 
 ## While loop that walks into a tuple exits with nil
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

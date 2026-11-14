@@ -8432,75 +8432,23 @@ impl<'a> InferenceEngine<'a> {
         loop_scope.loop_depth += 1;
         loop_scope.clear_self_facts();
         loop_scope.enter_jump_target();
-        // Local writes in a loop predicate keep their dedicated handling below.
-        if !is_begin_modifier && Self::condition_has_pattern_capture(predicate) {
-            let body_outcome = if is_until {
-                ConditionOutcome::Falsy
-            } else {
-                ConditionOutcome::Truthy
-            };
-            self.apply_condition_effects(
-                class_name,
-                predicate,
-                body_outcome,
-                parse_result,
-                &mut loop_scope,
-            );
-        }
-        let parenthesized_assignment = if !is_begin_modifier
-            && !is_until
-            && let Node::ParenthesesNode { .. } = predicate
-        {
-            Self::loop_predicate_local_assignment(predicate)
-        } else {
-            None
-        };
-        if let Some(write) = parenthesized_assignment {
-            let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-            let predicate_value = predicate_type.clone();
-            let body_value = Type::project_truthy(&predicate_value).unwrap_or(predicate_value);
-            loop_scope.set(&name, body_value);
-        } else if !is_until && let Node::LocalVariableWriteNode { .. } = predicate {
-            let write = predicate
-                .as_local_variable_write_node()
-                .expect("must be LocalVariableWriteNode");
-            let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-            let value_type =
-                self.infer_node_type(class_name, &write.value(), parse_result, &loop_scope);
-            let truthy = Type::project_truthy(&value_type).unwrap_or(value_type);
-            loop_scope.set(&name, truthy);
-        } else if !is_until && let Node::LocalVariableReadNode { .. } = predicate {
-            let read = predicate
-                .as_local_variable_read_node()
-                .expect("must be LocalVariableReadNode");
-            let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
-            if let Some(value_type) = loop_scope.get(&name).and_then(Type::project_truthy) {
-                loop_scope.set(&name, value_type);
-            }
-        } else if is_until && let Node::LocalVariableReadNode { .. } = predicate {
-            let read = predicate
-                .as_local_variable_read_node()
-                .expect("must be LocalVariableReadNode");
-            let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
-            if let Some(value_type) = loop_scope.get(&name).and_then(Type::project_falsy) {
-                loop_scope.set(&name, value_type);
-            }
-        } else if is_until && let Node::LocalVariableWriteNode { .. } = predicate {
-            let write = predicate
-                .as_local_variable_write_node()
-                .expect("must be LocalVariableWriteNode");
-            let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-            let value_type =
-                self.infer_node_type(class_name, &write.value(), parse_result, &loop_scope);
-            let falsy = Type::project_falsy(&value_type).unwrap_or(value_type);
-            loop_scope.set(&name, falsy);
+        if let Some(entry) = self.narrowed_loop_body_entry(
+            class_name,
+            predicate,
+            Some(&predicate_type),
+            is_begin_modifier,
+            is_until,
+            parse_result,
+            &loop_scope,
+        ) {
+            loop_scope = entry;
         }
         if let Some(loop_entry_scopes) = self.active_loop_entry_scopes.as_mut() {
             loop_entry_scopes.insert(predicate.location().start_offset(), loop_scope.clone());
         }
         const LOOP_FIXPOINT_LIMIT: usize = 4;
         let mut body_exits = false;
-        for _ in 0..LOOP_FIXPOINT_LIMIT {
+        for iteration in 0..LOOP_FIXPOINT_LIMIT {
             let mut body_scope = loop_scope.clone();
             body_exits = self.process_statements_for_returns(
                 class_name,
@@ -8510,7 +8458,17 @@ impl<'a> InferenceEngine<'a> {
             );
             body_scope.join_next_locals();
             let merged = self.merge_loop_scope_locals(&loop_scope, &body_scope);
-            if Self::loop_locals_stable(&loop_scope, &merged) {
+            // The next pass enters the body through the predicate again.
+            let entry = self.narrowed_loop_body_entry(
+                class_name,
+                predicate,
+                None,
+                is_begin_modifier,
+                is_until,
+                parse_result,
+                &merged,
+            );
+            if Self::loop_locals_stable(&loop_scope, entry.as_ref().unwrap_or(&merged)) {
                 loop_scope = body_scope;
                 loop_scope.return_types = merged.return_types;
                 loop_scope.next_types = merged.next_types;
@@ -8518,7 +8476,10 @@ impl<'a> InferenceEngine<'a> {
                 loop_scope.regexp_match_captures = merged.regexp_match_captures;
                 break;
             }
-            loop_scope = merged;
+            loop_scope = match entry {
+                Some(entry) if iteration + 1 < LOOP_FIXPOINT_LIMIT => entry,
+                _ => merged,
+            };
         }
 
         let finishes = self.while_loop_finishes_by_predicate(
@@ -8559,6 +8520,96 @@ impl<'a> InferenceEngine<'a> {
             );
         }
         (loop_value, never_completes)
+    }
+
+    /// The scope the loop body starts with after its predicate passed, or `None` when the
+    /// predicate narrows nothing. `predicate_type` is the predicate's type in `entry`, if known.
+    #[allow(clippy::too_many_arguments)]
+    fn narrowed_loop_body_entry(
+        &mut self,
+        class_name: &str,
+        predicate: &Node<'_>,
+        predicate_type: Option<&Type>,
+        is_begin_modifier: bool,
+        is_until: bool,
+        parse_result: &ParseResult<'_>,
+        entry: &Scope,
+    ) -> Option<Scope> {
+        let pattern_capture = !is_begin_modifier && Self::condition_has_pattern_capture(predicate);
+        let parenthesized_assignment = if !is_begin_modifier
+            && !is_until
+            && let Node::ParenthesesNode { .. } = predicate
+        {
+            Self::loop_predicate_local_assignment(predicate)
+        } else {
+            None
+        };
+        if !pattern_capture
+            && parenthesized_assignment.is_none()
+            && !matches!(
+                predicate,
+                Node::LocalVariableWriteNode { .. } | Node::LocalVariableReadNode { .. }
+            )
+        {
+            return None;
+        }
+        let mut scope = entry.clone();
+        if pattern_capture {
+            let body_outcome = if is_until {
+                ConditionOutcome::Falsy
+            } else {
+                ConditionOutcome::Truthy
+            };
+            self.apply_condition_effects(
+                class_name,
+                predicate,
+                body_outcome,
+                parse_result,
+                &mut scope,
+            );
+        }
+        if let Some(write) = parenthesized_assignment {
+            let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+            let predicate_value = match predicate_type {
+                Some(predicate_type) => predicate_type.clone(),
+                None => self.infer_node_type(class_name, predicate, parse_result, &scope),
+            };
+            let body_value = Type::project_truthy(&predicate_value).unwrap_or(predicate_value);
+            scope.set(&name, body_value);
+        } else if !is_until && let Node::LocalVariableWriteNode { .. } = predicate {
+            let write = predicate
+                .as_local_variable_write_node()
+                .expect("must be LocalVariableWriteNode");
+            let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+            let value_type = self.infer_node_type(class_name, &write.value(), parse_result, &scope);
+            let truthy = Type::project_truthy(&value_type).unwrap_or(value_type);
+            scope.set(&name, truthy);
+        } else if !is_until && let Node::LocalVariableReadNode { .. } = predicate {
+            let read = predicate
+                .as_local_variable_read_node()
+                .expect("must be LocalVariableReadNode");
+            let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
+            if let Some(value_type) = scope.get(&name).and_then(Type::project_truthy) {
+                scope.set(&name, value_type);
+            }
+        } else if is_until && let Node::LocalVariableReadNode { .. } = predicate {
+            let read = predicate
+                .as_local_variable_read_node()
+                .expect("must be LocalVariableReadNode");
+            let name = String::from_utf8_lossy(read.name().as_slice()).to_string();
+            if let Some(value_type) = scope.get(&name).and_then(Type::project_falsy) {
+                scope.set(&name, value_type);
+            }
+        } else if is_until && let Node::LocalVariableWriteNode { .. } = predicate {
+            let write = predicate
+                .as_local_variable_write_node()
+                .expect("must be LocalVariableWriteNode");
+            let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
+            let value_type = self.infer_node_type(class_name, &write.value(), parse_result, &scope);
+            let falsy = Type::project_falsy(&value_type).unwrap_or(value_type);
+            scope.set(&name, falsy);
+        }
+        Some(scope)
     }
 
     fn apply_loop_predicate_residual(
