@@ -113,3 +113,40 @@ class ItemsUser
   def odd: -> Array[untyped]
 end
 ```
+
+## Blockless Enumerable helpers keep the element type from a custom each
+
+```ruby
+class Pair
+  include Enumerable
+
+  def each
+    yield 1
+    yield 2
+  end
+end
+
+class PairUser
+  def all = Pair.new.to_a
+  def head = Pair.new.first
+  def ordered = Pair.new.sort
+  def lowest = Pair.new.min
+end
+```
+
+### result
+
+```rbs
+class Pair
+  include Enumerable
+
+  def each: [R] { (Integer) -> R } -> R
+end
+
+class PairUser
+  def all: -> Array[1 | 2]
+  def head: -> (1 | 2)?
+  def ordered: -> Array[1 | 2]
+  def lowest: -> (1 | 2)?
+end
+```

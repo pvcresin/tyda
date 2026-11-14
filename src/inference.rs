@@ -43758,13 +43758,7 @@ impl<'a> InferenceEngine<'a> {
             &receiver_type_args,
             &mut base_type_vars,
         );
-        // A user class `include Enumerable` carries no element type arg, so the Enumerable block methods (`map`/`select`/...) would otherwise see an unbound element type.
-        // Derive it from the class's own `each` yields.
-        if !Self::enumerable_elem_type_var_bound(&base_type_vars)
-            && let Some(elem) = self.enumerable_elem_from_class_each(&receiver_class)
-        {
-            Self::insert_enumerable_elem_type_vars(&mut base_type_vars, elem);
-        }
+        self.seed_source_each_elem_type_var(&receiver_class, &mut base_type_vars);
         let mut relation_cache = HashMap::new();
         let rbs_mt = rbs_overloads
             .iter()
@@ -52095,6 +52089,7 @@ impl<'a> InferenceEngine<'a> {
         let receiver_type_args = Self::extract_type_args(receiver_type);
         let mut base_type_vars = self.class_type_vars_from_args(&cls, &receiver_type_args);
         Self::seed_enumerable_elem_type_var(&cls, &receiver_type_args, &mut base_type_vars);
+        self.seed_source_each_elem_type_var(&cls, &mut base_type_vars);
         let overloads = self.collect_owned_rbs_overloads(
             &cls,
             method_name,
@@ -52576,6 +52571,20 @@ impl<'a> InferenceEngine<'a> {
             return params;
         }
         vec![elem_type.clone()]
+    }
+
+    /// A user class `include Enumerable` carries no element type arg, so the element type
+    /// comes from the class's own `each` yields.
+    fn seed_source_each_elem_type_var(
+        &self,
+        receiver_class: &str,
+        vars: &mut HashMap<String, Type>,
+    ) {
+        if !Self::enumerable_elem_type_var_bound(vars)
+            && let Some(elem) = self.enumerable_elem_from_class_each(receiver_class)
+        {
+            Self::insert_enumerable_elem_type_vars(vars, elem);
+        }
     }
 
     fn enumerable_elem_from_class_each(&self, class_name: &str) -> Option<Type> {
@@ -53632,6 +53641,7 @@ impl<'a> InferenceEngine<'a> {
             &receiver_type_args,
             &mut class_type_vars,
         );
+        self.seed_source_each_elem_type_var(&receiver_class, &mut class_type_vars);
 
         let prefer_singleton = matches!(receiver_type, Type::Singleton(_));
         let hide_kernel_function =

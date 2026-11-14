@@ -1,42 +1,5 @@
 # Known Issues / Ruby Methods
 
-## Blockless Enumerable helpers keep the element type from a custom each
-
-```ruby
-class Pair
-  include Enumerable
-
-  def each
-    yield 1
-    yield 2
-  end
-end
-
-class PairUser
-  def all = Pair.new.to_a
-  def head = Pair.new.first
-  def ordered = Pair.new.sort
-  def lowest = Pair.new.min
-end
-```
-
-### result
-
-```rbs
-class Pair
-  include Enumerable
-
-  def each: { (Integer) -> untyped } -> untyped
-end
-
-class PairUser
-  def all: -> Array[1 | 2]
-  def head: -> (1 | 2)?
-  def ordered: -> Array[1 | 2]
-  def lowest: -> (1 | 2)?
-end
-```
-
 ## An ivar set from a nil default parameter keeps nil
 
 ```ruby
