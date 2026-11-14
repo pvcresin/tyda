@@ -8574,10 +8574,11 @@ impl TypeRegistry {
                         && !matches!(ret, Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..))
                         && !Self::type_contains_param_ref_static(&ret)
                     {
-                        // resolve an `instance` return to the receiver's instance type (prevents misattribution from baking in an unresolved owner).
-                        return ret.replace_instance_type(&Self::instance_type_for_receiver(
-                            &resolved_receiver,
-                        ));
+                        // resolve `self` / `instance` returns to the receiver (prevents misattribution from baking in an unresolved owner).
+                        return Self::deferred_self_return(&ret, &resolved_receiver)
+                            .replace_instance_type(&Self::instance_type_for_receiver(
+                                &resolved_receiver,
+                            ));
                     }
                     if let Some(ivar_ty) = self.resolve_attr_reader_return_type(
                         &receiver_class,

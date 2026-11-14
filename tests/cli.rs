@@ -4969,11 +4969,10 @@ fn singleton_method_in_another_file_does_not_resolve_to_private_kernel() {
     );
 }
 
-// Known issue: a scope defined in a concern's `included` block keeps `self` when a model in
-// another file calls it from the CLI. The scenario runner analyzes the other files first and
-// resolves `ActiveRecord::Relation[Pipeline]`. When the check fails, drop it.
+// A scope defined in a concern's `included` block returns a relation of the model that a
+// class in another file calls it on.
 #[test]
-fn known_issue_concern_scope_keeps_self_across_files() {
+fn concern_scope_resolves_to_includer_across_files() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let models = dir.path().join("app/models");
     fs::create_dir_all(models.join("concerns")).expect("failed to create dirs");
@@ -5013,8 +5012,8 @@ fn known_issue_concern_scope_keeps_self_across_files() {
     assert!(output.status.success());
     let rbs = String::from_utf8_lossy(&output.stdout);
     assert!(
-        rbs.contains("def self.failed_pipelines: -> ActiveRecord::Relation[self]"),
-        "known issue fixed (concern scope across files); drop this check: {rbs}"
+        rbs.contains("def self.failed_pipelines: -> ActiveRecord::Relation[Pipeline]"),
+        "a concern scope called on a model in another file must return its relation: {rbs}"
     );
 }
 
