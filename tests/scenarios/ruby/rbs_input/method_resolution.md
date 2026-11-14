@@ -1109,10 +1109,6 @@ end
 
 ## Implicit self call selects the matching RBS overload
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```rbs

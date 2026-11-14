@@ -30506,6 +30506,29 @@ impl<'a> InferenceEngine<'a> {
                                 Sym::new(&method_name),
                             );
                         }
+                        // Pick the declared overload by argument, as `self.find(x)` does.
+                        if call_node.block().is_none()
+                            && self
+                                .registry
+                                .lookup_method_def(
+                                    class_name,
+                                    &method_name,
+                                    scope.singleton_dispatch,
+                                )
+                                .is_some_and(|method| {
+                                    method.rbs_file_source && method.rbs_method_types.len() > 1
+                                })
+                            && let Some(result) = self.resolve_overloaded_call(
+                                &call_node,
+                                &implicit_self_type,
+                                &method_name,
+                                class_name,
+                                parse_result,
+                                scope,
+                            )
+                        {
+                            break 'no_recv result;
+                        }
 
                         let block = {
                             let mut block_scope = scope.fork_for_block();
