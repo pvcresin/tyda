@@ -884,6 +884,22 @@ impl TypeRegistry {
                 }
             }
         }
+        // A class-level attr written only from outside reads `nil` until the first write.
+        if method.is_singleton
+            && !method.name.ends_with('=')
+            && method.attr_ivar.is_some()
+            && !Self::is_concrete_for_global_resolve(&return_type)
+            && let Some(setter) =
+                self.lookup_method_def(receiver_class, &format!("{}=", method.name), true)
+            && setter.attr_ivar == method.attr_ivar
+            && !method.has_annotation()
+            && !setter.has_annotation()
+            && let Some(value) = self.resolve_params(receiver_class, setter).first()
+            && Self::is_concrete_for_global_resolve(&value.param_type)
+            && value.param_type != Type::Untyped
+        {
+            return_type = value.param_type.clone().union_with(Type::Nil);
+        }
         if method.name.ends_with('=')
             && method.attr_ivar.is_some()
             && let [param] = params.as_mut_slice()

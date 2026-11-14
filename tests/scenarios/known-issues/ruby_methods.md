@@ -126,27 +126,6 @@ class LaterSetup
 end
 ```
 
-## A singleton attr_accessor reader set outside the class body is nilable
-
-```ruby
-class Level
-  class << self
-    attr_accessor :current
-  end
-end
-
-Level.current = 3
-```
-
-### result
-
-```rbs
-class Level
-  def self.current: -> Integer?
-  def self.current=: (Integer current) -> Integer
-end
-```
-
 ## A short type name in an inline RBS annotation resolves in the enclosing class
 
 ```ruby
