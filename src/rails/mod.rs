@@ -18,6 +18,36 @@ pub use schema::load_schema;
 
 use crate::types::Type;
 
+/// ActiveSupport String extensions that return a String.
+pub const RAILS_STRING_RETURNING_METHODS: &[&str] = &[
+    "squish",
+    "strip_heredoc",
+    "underscore",
+    "camelize",
+    "camelcase",
+    "titleize",
+    "titlecase",
+    "dasherize",
+    "demodulize",
+    "deconstantize",
+    "parameterize",
+    "tableize",
+    "classify",
+    "humanize",
+    "foreign_key",
+    "pluralize",
+    "singularize",
+    "html_safe",
+    "first",
+    "last",
+    "truncate",
+    "truncate_bytes",
+    "truncate_words",
+    "remove",
+    "indent",
+    "inquiry",
+];
+
 /// Same nullability as `load_schema` accessors: `untyped` stays untyped (union
 /// reduction would otherwise collapse `untyped | nil` to `nil`).
 pub fn nullable_column_accessor_type(base: &Type, nullable: bool) -> Type {

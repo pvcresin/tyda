@@ -170,3 +170,33 @@ module User
   def use_value: -> 42
 end
 ```
+
+## A module self call resolves through an includer in another file
+
+### update
+
+### file: lib/item.rb
+
+```ruby
+class Item
+  include Labeled
+
+  def name = "item"
+end
+```
+
+```ruby
+module Labeled
+  def title = name.upcase
+  def label = name.humanize
+end
+```
+
+### result
+
+```rbs
+module Labeled
+  def title: -> String
+  def label: -> untyped
+end
+```

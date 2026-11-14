@@ -3003,6 +3003,8 @@ impl<'a> InferenceEngine<'a> {
         if enabled && self.dsl_activation.auto_detected.is_empty() {
             self.dsl_activation = DslActivation::with_rails_mode(true);
         }
+        self.registry
+            .set_rails_string_inflections(self.rails_feature_enabled());
     }
 
     pub(in crate::inference) fn is_collecting_concern_included(&self) -> bool {
@@ -3210,6 +3212,8 @@ impl<'a> InferenceEngine<'a> {
     pub fn set_dsl_activation(&mut self, activation: DslActivation) {
         self.rails_mode = activation.rails_mode_compat();
         self.dsl_activation = activation;
+        self.registry
+            .set_rails_string_inflections(self.rails_feature_enabled());
     }
 
     pub fn set_ruby_version(&mut self, version: Option<RubyVersion>) {
@@ -56880,7 +56884,7 @@ impl<'a> InferenceEngine<'a> {
                 if self.rails_feature_enabled()
                     && !is_singleton
                     && class_name == "String"
-                    && method_tables::RAILS_STRING_RETURNING_METHODS.contains(&method_name)
+                    && crate::rails::RAILS_STRING_RETURNING_METHODS.contains(&method_name)
                 {
                     return Type::String;
                 }

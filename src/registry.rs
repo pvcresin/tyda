@@ -2772,6 +2772,8 @@ pub struct TypeRegistry {
     inferring_method_bodies: Vec<(Sym, Sym)>,
     /// The project's Rails version; `None` means the latest stable release, as in the engine.
     rails_version: Option<crate::project::RailsVersion>,
+    /// ActiveSupport's String inflections answer on the deferred path, where no engine runs.
+    rails_string_inflections: bool,
 }
 
 /// Registry state a per-file snapshot never populates, kept behind one box.
@@ -2866,6 +2868,7 @@ impl Clone for TypeRegistry {
             pending_scoped_type_refs: self.pending_scoped_type_refs.clone(),
             inferring_method_bodies: Vec::new(),
             rails_version: self.rails_version,
+            rails_string_inflections: self.rails_string_inflections,
         }
     }
 }
@@ -10562,6 +10565,7 @@ impl TypeRegistry {
             }
             // The deferred path has no lazy stdlib loader; return-invariant entries still apply.
             return stdlib_returns::stdlib_receiver_method_return(resolved_receiver, method_name)
+                .or_else(|| self.rails_string_method_return(resolved_receiver, method_name))
                 .unwrap_or(resolved);
         }
         if let Type::Union(parts) = resolved_receiver {
@@ -10621,6 +10625,17 @@ impl TypeRegistry {
             model,
             || self.active_record_primary_key_type(model),
         ))
+    }
+
+    fn rails_string_method_return(&self, receiver: &Type, method_name: &str) -> Option<Type> {
+        (self.rails_string_inflections
+            && matches!(receiver, Type::String | Type::LiteralString(_))
+            && crate::rails::RAILS_STRING_RETURNING_METHODS.contains(&method_name))
+        .then_some(Type::String)
+    }
+
+    pub fn set_rails_string_inflections(&mut self, enabled: bool) {
+        self.rails_string_inflections = enabled;
     }
 
     pub fn set_rails_version(&mut self, version: Option<crate::project::RailsVersion>) {
