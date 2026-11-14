@@ -481,10 +481,6 @@ end
 
 ## `class A::B::C` does not see constants of A::B
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -508,6 +504,45 @@ end
 
 class A::B::C
   def f: -> untyped
+end
+```
+
+## Compact class path inside a module sees that module only
+
+### update
+
+```ruby
+module X
+  XC = 1
+
+  module A
+    AC = 2
+
+    module B
+    end
+  end
+
+  class A::B::C
+    def f = XC
+    def g = AC
+  end
+end
+```
+
+### result
+
+```rbs
+module X
+  XC: 1
+end
+
+module X::A
+  AC: 2
+end
+
+class X::A::B::C
+  def f: -> 1
+  def g: -> untyped
 end
 ```
 
@@ -1681,10 +1716,6 @@ end
 ```
 
 ## Compact class path skips the outer module constant
-
-```yaml
-known_issue: true
-```
 
 ### update
 

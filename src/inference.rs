@@ -1159,6 +1159,9 @@ pub struct InferenceEngine<'a> {
     /// Enclosing `class`/`module` names that are not part of the current FQN
     /// (`class ::Bar` inside `module Foo`).
     lexical_parent_stack: Vec<String>,
+    /// Namespaces named only by a compact `class A::B::C` path. Ruby's cref
+    /// chain skips them, so bare constants are not looked up there.
+    lexical_skipped_scopes: Vec<String>,
     /// Nesting owner for bare constants / relative `class` names. Set while
     /// collecting a `Class.new` / `Module.new` block (those do not push a cref).
     current_cref: Option<String>,
@@ -1303,6 +1306,7 @@ struct MethodCollectionOptions {
 #[derive(Clone)]
 struct MethodBodyContext {
     lexical_parents: Vec<String>,
+    lexical_skipped_scopes: Vec<String>,
     singleton_constants_owner: Option<String>,
     cvar_owner: Option<String>,
 }
@@ -2766,6 +2770,7 @@ impl<'a> InferenceEngine<'a> {
             local_fact_dispatch_span: None,
             dispatching_typed_receiver_arm: false,
             lexical_parent_stack: Vec::new(),
+            lexical_skipped_scopes: Vec::new(),
             current_cref: None,
             singleton_constants: HashMap::new(),
             looking_up_singleton_constants_of: None,
@@ -2861,6 +2866,7 @@ impl<'a> InferenceEngine<'a> {
             local_fact_dispatch_span: None,
             dispatching_typed_receiver_arm: false,
             lexical_parent_stack: Vec::new(),
+            lexical_skipped_scopes: Vec::new(),
             current_cref: None,
             singleton_constants: HashMap::new(),
             looking_up_singleton_constants_of: None,
@@ -4374,7 +4380,7 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn scoped_constant_candidates(bare: &str, class_context: &str) -> Vec<String> {
-        Self::scoped_constant_candidates_with_parents(bare, class_context, &[])
+        Self::scoped_constant_candidates_with_parents(bare, class_context, &[], &[])
     }
 
     fn scoped_constant_candidates_in_context(
@@ -4386,6 +4392,7 @@ impl<'a> InferenceEngine<'a> {
             bare,
             class_context,
             &self.lexical_parent_stack,
+            &self.lexical_skipped_scopes,
         )
     }
 
@@ -4393,6 +4400,7 @@ impl<'a> InferenceEngine<'a> {
         bare: &str,
         class_context: &str,
         extra_parents: &[String],
+        skipped_scopes: &[String],
     ) -> Vec<String> {
         let mut candidates = Vec::new();
         let mut seen = HashSet::new();
@@ -4404,7 +4412,7 @@ impl<'a> InferenceEngine<'a> {
         let mut walk = |ctx: &str| {
             let mut scope = Some(ctx);
             while let Some(s) = scope {
-                if !s.is_empty() {
+                if !s.is_empty() && (s == ctx || !skipped_scopes.iter().any(|skip| skip == s)) {
                     push(crate::sym::join_scope(s, bare));
                 }
                 scope = s.rsplit_once("::").map(|(parent, _)| parent);
@@ -13954,7 +13962,9 @@ impl<'a> InferenceEngine<'a> {
                 self.extract_sorbet_class_modifiers(&class_name, node, parse_result, comments);
                 self.extract_class_type_params(&class_name, node, parse_result, comments);
                 if let Some(body) = class_node.body() {
-                    self.collect_class_body(&class_name, &body, parse_result, comments);
+                    self.with_definition_nesting("Object", &class_name, |engine| {
+                        engine.collect_class_body(&class_name, &body, parse_result, comments);
+                    });
                 }
                 if self.rails_feature_enabled() && self.is_active_record_model_class(&class_name) {
                     self.register_active_record_relation_model_methods(&class_name, class_loc);
@@ -13985,7 +13995,9 @@ impl<'a> InferenceEngine<'a> {
                 self.extract_sorbet_class_modifiers(&module_name, node, parse_result, comments);
                 self.extract_class_type_params(&module_name, node, parse_result, comments);
                 if let Some(body) = module_node.body() {
-                    self.collect_class_body(&module_name, &body, parse_result, comments);
+                    self.with_definition_nesting("Object", &module_name, |engine| {
+                        engine.collect_class_body(&module_name, &body, parse_result, comments);
+                    });
                 }
             }
             Node::SingletonClassNode { .. } => {
@@ -15582,13 +15594,8 @@ impl<'a> InferenceEngine<'a> {
                         );
                         self.extract_class_type_params(&full_name, &node, parse_result, comments);
                         if let Some(body) = class_node.body() {
-                            let raw = self
-                                .resolve_constant_path(&class_node.constant_path(), parse_result);
-                            let lexical_parent = raw
-                                .starts_with("::")
-                                .then(|| class_name.to_string())
-                                .filter(|name| name != "Object");
-                            self.with_lexical_parent(lexical_parent, |engine| {
+                            let enclosing = self.nesting_owner(class_name).to_string();
+                            self.with_definition_nesting(&enclosing, &full_name, |engine| {
                                 engine.with_cleared_cref(|engine| {
                                     engine.collect_class_body(
                                         &full_name,
@@ -15635,13 +15642,8 @@ impl<'a> InferenceEngine<'a> {
                         );
                         self.extract_class_type_params(&full_name, &node, parse_result, comments);
                         if let Some(body) = module_node.body() {
-                            let raw = self
-                                .resolve_constant_path(&module_node.constant_path(), parse_result);
-                            let lexical_parent = raw
-                                .starts_with("::")
-                                .then(|| class_name.to_string())
-                                .filter(|name| name != "Object");
-                            self.with_lexical_parent(lexical_parent, |engine| {
+                            let enclosing = self.nesting_owner(class_name).to_string();
+                            self.with_definition_nesting(&enclosing, &full_name, |engine| {
                                 engine.with_cleared_cref(|engine| {
                                     engine.collect_class_body(
                                         &full_name,
@@ -18555,17 +18557,12 @@ impl<'a> InferenceEngine<'a> {
         let def_start_offset = def_node.location().start_offset();
         let body_ctx = MethodBodyContext {
             lexical_parents: self.lexical_parent_stack.clone(),
+            lexical_skipped_scopes: self.lexical_skipped_scopes.clone(),
             singleton_constants_owner: singleton_class_constants.then(|| class_name.to_string()),
             cvar_owner: cvar_owner.clone(),
         };
-        self.method_body_contexts.insert(
-            def_start_offset,
-            MethodBodyContext {
-                lexical_parents: body_ctx.lexical_parents.clone(),
-                singleton_constants_owner: body_ctx.singleton_constants_owner.clone(),
-                cvar_owner: body_ctx.cvar_owner.clone(),
-            },
-        );
+        self.method_body_contexts
+            .insert(def_start_offset, body_ctx.clone());
         let saved_ctx = self.enter_method_body_context(body_ctx);
 
         let (_, param_infos) = self.collect_param_info(&def_node, class_name, parse_result);
@@ -64187,24 +64184,52 @@ impl<'a> InferenceEngine<'a> {
         result
     }
 
-    fn with_lexical_parent<R>(
+    /// Runs `f` with the cref chain of a `class`/`module` body named `full_name`
+    /// written inside `enclosing`.
+    fn with_definition_nesting<R>(
         &mut self,
-        parent: Option<String>,
+        enclosing: &str,
+        full_name: &str,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
+        let in_enclosing_chain =
+            |scope: &str| scope == enclosing || enclosing.starts_with(&format!("{scope}::"));
+        let mut skipped: Vec<String> = self
+            .lexical_skipped_scopes
+            .iter()
+            .filter(|scope| scope.as_str() != full_name)
+            .cloned()
+            .collect();
+        let mut scope = full_name.rsplit_once("::").map(|(parent, _)| parent);
+        while let Some(s) = scope {
+            if in_enclosing_chain(s) {
+                break;
+            }
+            skipped.push(s.to_string());
+            scope = s.rsplit_once("::").map(|(parent, _)| parent);
+        }
+        let parent = (enclosing != "Object" && !full_name.starts_with(&format!("{enclosing}::")))
+            .then(|| enclosing.to_string());
+        let prev_skipped = std::mem::replace(&mut self.lexical_skipped_scopes, skipped);
+        let pushed_parent = parent.is_some();
         if let Some(parent) = parent {
             self.lexical_parent_stack.push(parent);
-            let result = f(self);
-            self.lexical_parent_stack.pop();
-            result
-        } else {
-            f(self)
         }
+        let result = f(self);
+        if pushed_parent {
+            self.lexical_parent_stack.pop();
+        }
+        self.lexical_skipped_scopes = prev_skipped;
+        result
     }
 
     fn enter_method_body_context(&mut self, ctx: MethodBodyContext) -> MethodBodyContext {
         MethodBodyContext {
             lexical_parents: std::mem::replace(&mut self.lexical_parent_stack, ctx.lexical_parents),
+            lexical_skipped_scopes: std::mem::replace(
+                &mut self.lexical_skipped_scopes,
+                ctx.lexical_skipped_scopes,
+            ),
             singleton_constants_owner: std::mem::replace(
                 &mut self.looking_up_singleton_constants_of,
                 ctx.singleton_constants_owner,
