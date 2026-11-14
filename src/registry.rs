@@ -7645,11 +7645,38 @@ impl TypeRegistry {
             return None;
         }
         if prefer_singleton
+            && let Some(ret) = self.class_new_instance_return(class_name, method_name)
+        {
+            return Some(ret);
+        }
+        if prefer_singleton
             && let Some(ret) = self.inherited_model_singleton_return(class_name, method_name)
         {
             return Some(ret);
         }
         self.lookup_method_return_type_with_hint(class_name, method_name, prefer_singleton)
+    }
+
+    /// `X.new` builds an `X` when no singleton `new` overrides `Class#new`, whose RBS return is untyped.
+    pub(crate) fn class_new_instance_return(
+        &self,
+        class_name: &str,
+        method_name: &str,
+    ) -> Option<Type> {
+        if method_name != "new"
+            || !self
+                .class_data
+                .get(class_name)
+                .is_some_and(|data| !data.is_module)
+        {
+            return None;
+        }
+        match self.first_method_call_owner_cached(class_name, method_name, true) {
+            Some((owner, false)) if Self::is_class_object_instance_owner(&owner) => {}
+            None => {}
+            _ => return None,
+        }
+        Some(Type::Class(Sym::new(class_name)))
     }
 
     /// A query method or scope generated on a parent model returns records of the class it
