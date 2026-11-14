@@ -2068,6 +2068,9 @@ impl Scope {
         scope.hash_key_facts = Arc::default();
         scope.array_element_facts = Arc::default();
         scope.exclusive_receiver_facts = Arc::default();
+        // `gsub` / `scan` style blocks replace `$~`, and other blocks may run after it changed.
+        scope.regexp_match_captures = false;
+        scope.regexp_required_captures = 0;
         scope
     }
 

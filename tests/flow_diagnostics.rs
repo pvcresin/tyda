@@ -1568,3 +1568,30 @@ fn typed_block_walk_does_not_add_missing_method_warnings() {
         assert!(missing_methods.is_empty(), "compact={compact}: {actual:?}");
     }
 }
+
+#[test]
+fn regexp_captures_do_not_report_nil_for_required_groups_or_gsub_blocks() {
+    let source = concat!(
+        "class CaptureUse\n",
+        "  def required(text)\n",
+        "    return unless text =~ /^(\\^+)/\n",
+        "    $1.size\n",
+        "  end\n",
+        "  def in_gsub_block(body)\n",
+        "    body = \"if \" + $1 if body =~ /\\Areturn unless (.*)/\n",
+        "    body.gsub!(/^( *)x/) { $1.size.to_s }\n",
+        "  end\n",
+        "end\n",
+        "CaptureUse.new.required(\"^\")\n",
+        "CaptureUse.new.in_gsub_block(\"x\")\n",
+    );
+    for compact in [false, true] {
+        let found = diagnostics(source, compact);
+        let missing: Vec<_> = found
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| diagnostic.unresolved_method.as_str())
+            .collect();
+        assert!(missing.is_empty(), "compact={compact}: {found:?}");
+    }
+}
