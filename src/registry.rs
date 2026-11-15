@@ -7345,6 +7345,54 @@ impl TypeRegistry {
         None
     }
 
+    /// The type a method of `class_name` reads from `@ivar`: the receiver may be a subclass,
+    /// so the writes of subclass methods join the inherited value.
+    pub(crate) fn lookup_ivar_type_for_reader(
+        &self,
+        class_name: &str,
+        ivar_name: &str,
+    ) -> Option<Type> {
+        let inherited = self.lookup_ivar_type_through_ancestors(class_name, ivar_name);
+        self.join_subclass_ivar_writes(class_name, ivar_name, inherited)
+    }
+
+    pub(crate) fn join_subclass_ivar_writes(
+        &self,
+        class_name: &str,
+        ivar_name: &str,
+        inherited: Option<Type>,
+    ) -> Option<Type> {
+        let Some(index) = &self.tail().subclass_index else {
+            return inherited;
+        };
+        let mut parts: Vec<Type> = Vec::new();
+        let mut pending: Vec<&SharedName> = index
+            .get(class_name.trim_scope_prefix())
+            .map(|subclasses| subclasses.iter().collect())
+            .unwrap_or_default();
+        let mut visited = FxHashSet::default();
+        while let Some(candidate) = pending.pop() {
+            if !visited.insert(candidate.as_ref()) {
+                continue;
+            }
+            if let Some(ty) = self.lookup_ivar_type(candidate, ivar_name) {
+                parts.push(ty);
+            }
+            if let Some(subclasses) = index.get(candidate.as_ref()) {
+                pending.extend(subclasses);
+            }
+        }
+        // Only known values join; an unresolved subclass write keeps the inherited value.
+        parts.retain(Self::is_concrete_for_global_resolve);
+        match inherited {
+            Some(ty) if !parts.is_empty() && Self::is_concrete_for_global_resolve(&ty) => {
+                parts.insert(0, ty);
+                Some(Type::from_type_vec(parts))
+            }
+            other => other,
+        }
+    }
+
     /// untyped ivar: uses the call-site type of the same-named `initialize` param.
     pub(crate) fn infer_attr_type_from_initialize(
         &self,
@@ -9154,8 +9202,7 @@ impl TypeRegistry {
                     ty.clone()
                 } else {
                     visiting.insert(key);
-                    let ivar_type =
-                        self.lookup_ivar_type_through_ancestors(context_class, ivar_name);
+                    let ivar_type = self.lookup_ivar_type_for_reader(context_class, ivar_name);
                     let result = match ivar_type {
                         Some(Type::Untyped)
                         | None
@@ -10085,7 +10132,7 @@ impl TypeRegistry {
                 let ivar_type = if singleton_context {
                     self.lookup_singleton_ivar_type(class_name, ivar_name)
                 } else {
-                    self.lookup_ivar_type_through_ancestors(class_name, ivar_name)
+                    self.lookup_ivar_type_for_reader(class_name, ivar_name)
                 };
                 match ivar_type {
                     Some(Type::Untyped)

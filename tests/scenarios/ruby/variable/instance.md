@@ -606,10 +606,6 @@ end
 
 ## Superclass reader sees instance variable writes from a subclass
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -627,7 +623,7 @@ end
 
 ```rbs
 class Base
-  def value: -> (:base | :child)?
+  def value: -> (:base | :child)
   def assign: -> :base
 end
 
