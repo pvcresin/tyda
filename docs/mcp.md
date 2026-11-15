@@ -132,6 +132,6 @@ jq -c 'select(.callers[]? | .file == "app/models/cart.rb")' trace.jsonl  # そ�
 diff base.jsonl head.jsonl                                       # 2 回の解析で変わったスロット
 ```
 
-位置から引くときは `explain_type_at_position` に `trace_path` を渡す。人に見せるときは `tyda why <id>` の木を使う。
+位置から引くときは `explain_type_at_position` に `trace_path` を渡す。人に見せるときは `tyda why <id> trace.jsonl` の木を使う。
 
 説明対象は現在メソッド呼び出しとメソッド定義に限る。その他の式では `explanation.steps` が空になり、`explanation.message` に理由が入る。このtoolも渡されたsourceと同梱stdlib RBSだけを解析する。workspaceの他ファイル、project固有のRBS/RBI、未保存のeditor bufferは読まないため、呼び出し元の範囲も入力source内に限られる。メソッド本体内の呼び出しは本体に存在する式の証拠であり、すべての分岐が戻り値に寄与することを示すものではない。

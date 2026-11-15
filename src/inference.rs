@@ -21668,6 +21668,7 @@ impl<'a> InferenceEngine<'a> {
         }
         if let Node::CallNode { .. } = node {
             let call_node = node.as_call_node().expect("must be CallNode");
+            let _trace_site = self.enter_trace_site(class_name, node, parse_result, incoming_scope);
             let method_name = String::from_utf8_lossy(call_node.name().as_slice());
             let scope = incoming_scope.clone();
 

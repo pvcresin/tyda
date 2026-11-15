@@ -93,9 +93,9 @@ trace の file が project からの相対パスになり、`tyda why` がソー
 1 つの型の経路:
 
 ```bash
-tyda why 'Foo#bar' .                     # 解析して木を表示する
-tyda trace -o /tmp/t.jsonl .             # 大きな project では一度保存して、
-tyda why 'Foo#bar' --trace /tmp/t.jsonl  # 以降は解析なしで引く
+tyda trace . | tyda why 'Foo#bar'        # 解析してそのまま木を表示する
+tyda trace -o /tmp/trace.jsonl .         # 何度も引くときは trace file に保存して、
+tyda why 'Foo#bar' /tmp/trace.jsonl      # 以降は解析なしで引く（gitlab で約 0.3 秒）
 ```
 
 推論ロジックを変える前後の比較（`render-compare` で RBS の差分が出たときもこの手順を使う）:
@@ -118,7 +118,7 @@ tyda why 'Foo#bar' --trace /tmp/t.jsonl  # 以降は解析なしで引く
 
    ```bash
    diff <(grep '^{"id":"Foo#bar",' /tmp/base.jsonl | jq .) <(grep '^{"id":"Foo#bar",' /tmp/head.jsonl | jq .)
-   tyda why 'Foo#bar' --trace /tmp/head.jsonl   # base でも同じように辿って比べる
+   tyda why 'Foo#bar' /tmp/head.jsonl   # base.jsonl でも同じように辿って比べる
    ```
 
 4. 読み方。変化を依存の方向へ辿ると、必ず次のどちらかに行き着く。

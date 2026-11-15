@@ -153,14 +153,14 @@ base/head の同じ release binary で一度ずつ解析し、解析ファイル
 
 出力は決定的でスロット順に並ぶため、2 回分の trace は通常の `diff` で比べられる。
 
-`tyda why <id> [paths]` は解析と trace を内部で行い、そのスロットから依存を末端まで辿って、各スロットの
-宣言行・呼び出し行・代入行のソースを木で表示する。paths を省略するとカレントディレクトリを解析する。
-`id` はスロット ID の末尾だけでもよい（`#summary`、`@price`）。`--trace <FILE>` を付けると解析せず、
-保存した trace を読む（gitlab で約 0.3 秒）。呼び出し元と代入はスロットごとに 5 件まで表示し、残りの件数を
-添える。trace ファイルには全件が入る。型の変化を調べる手順は [development.md](development.md) の
+`tyda why <id> [FILE]` は trace file（`tyda trace` の出力）を読み、そのスロットから依存を末端まで辿って、
+各スロットの宣言行・呼び出し行・代入行のソースを木で表示する。FILE を省略すると標準入力から読むため、
+`tyda trace . | tyda why 'Foo#bar'` とつなげられる。`id` はスロット ID の末尾だけでもよい（`#summary`、
+`@price`）。一度表示したスロットは `(see above)` で示す。呼び出し元と代入はスロットごとに 5 件まで表示し、
+残りの件数を添える（trace file には全件が入る）。型の変化を調べる手順は [development.md](development.md) の
 「推論の変化を調べる」を参照する。
 
-記録は `tyda trace` / `tyda why` の実行だけが行う。指定しない実行では各記録箇所が 1 回の atomic 読み取りで
+記録は `tyda trace` の実行だけが行う。指定しない実行では各記録箇所が 1 回の atomic 読み取りで
 終わり、追加の状態を持たない。
 同じ入力なら trace は byte 単位で一致する。gitlab 全体では解析時間が約 1.4 倍になり、
 出力は約 54MB になる。
@@ -225,7 +225,7 @@ cargo run -- <path>                         # RBS
 cargo run -- --diagnostics <path>           # JSON Lines diagnostics
 cargo run -- --coverage <path>              # JSON type coverage
 cargo run -- trace <path> > trace.jsonl     # where each type came from (JSON Lines)
-cargo run -- why 'Foo#bar' <path>            # tree of the code a type came from
+cargo run -- trace <path> | cargo run -- why 'Foo#bar'   # tree of the code a type came from
 cargo run -- --lsp                          # LSP server
 cargo run -- mcp                            # MCP server for AI agents
 cargo run -- --include-synthetic-dsl-methods <path>

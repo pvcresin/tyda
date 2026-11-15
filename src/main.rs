@@ -180,21 +180,12 @@ enum Commands {
         #[arg(help = "Files or directories to analyze")]
         paths: Vec<PathBuf>,
     },
-    /// Analyze and show the code a slot's type was computed from, as a tree.
+    /// Show, as a tree, the code a slot's type was computed from in a trace.
     Why {
         #[arg(help = "Slot id (Foo#bar, Foo.bar, Foo@ivar, Foo::CONST) or a suffix of one")]
         id: String,
-        #[arg(help = "Files or directories to analyze [default: .]")]
-        paths: Vec<PathBuf>,
-        #[arg(
-            long,
-            value_name = "FILE",
-            conflicts_with = "paths",
-            help = "Read a trace saved by `tyda trace -o` instead of analyzing"
-        )]
+        #[arg(help = "Trace file written by `tyda trace` [default: stdin]")]
         trace: Option<PathBuf>,
-        #[arg(long, help = "Stop printing dependencies below this depth")]
-        depth: Option<usize>,
     },
 }
 
@@ -313,30 +304,19 @@ fn main() {
             };
             run_trace(&cli, paths, target);
         }
-        Some(Commands::Why {
-            ref id,
-            trace: Some(ref trace),
-            depth,
-            ..
-        }) => {
-            let jsonl = fs::read(trace).unwrap_or_else(|error| {
-                eprintln!("failed to read trace {}: {error}", trace.display());
+        Some(Commands::Why { ref id, ref trace }) => {
+            let jsonl = match trace {
+                Some(path) => fs::read(path),
+                None => {
+                    let mut buf = Vec::new();
+                    std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf).map(|_| buf)
+                }
+            }
+            .unwrap_or_else(|error| {
+                eprintln!("failed to read trace: {error}");
                 std::process::exit(2);
             });
-            print_why(&jsonl, id, depth, &mut std::io::stdout().lock());
-        }
-        Some(Commands::Why {
-            ref id,
-            ref paths,
-            depth,
-            trace: None,
-        }) => {
-            let paths = if paths.is_empty() {
-                vec![PathBuf::from(".")]
-            } else {
-                paths.clone()
-            };
-            run_trace(&cli, &paths, TraceTarget::Why { id, depth });
+            print_why(&jsonl, id, &mut std::io::stdout().lock());
         }
         #[cfg(feature = "mcp")]
         Some(Commands::Mcp) => {
@@ -354,7 +334,7 @@ fn main() {
             }
             if cli.paths.is_empty() {
                 eprintln!(
-                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda trace [-o FILE] <paths...> | tyda why <id> [paths...] | tyda --capability-matrix | tyda --lsp | tyda mcp | tyda --version"
+                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda trace [-o FILE] <paths...> | tyda why <id> [trace] | tyda --capability-matrix | tyda --lsp | tyda mcp | tyda --version"
                 );
                 std::process::exit(1);
             }
@@ -530,7 +510,7 @@ fn run_trace(cli: &Cli, paths: &[PathBuf], target: TraceTarget<'_>) {
     );
 }
 
-fn print_why<W: std::io::Write>(trace_jsonl: &[u8], id: &str, depth: Option<usize>, out: &mut W) {
+fn print_why<W: std::io::Write>(trace_jsonl: &[u8], id: &str, out: &mut W) {
     use tyda::trace::query::{Trace, why};
     let trace = Trace::from_reader(trace_jsonl).unwrap_or_else(|error| {
         eprintln!("failed to read trace: {error}");
@@ -542,7 +522,7 @@ fn print_why<W: std::io::Write>(trace_jsonl: &[u8], id: &str, depth: Option<usiz
             std::process::exit(1);
         }
         [single] => {
-            why(&trace, single, depth, out).ok();
+            why(&trace, single, out).ok();
         }
         many => {
             eprintln!("`{id}` matches several slots:");
@@ -558,11 +538,6 @@ fn print_why<W: std::io::Write>(trace_jsonl: &[u8], id: &str, depth: Option<usiz
 enum TraceTarget<'a> {
     Stdout,
     File(&'a Path),
-    /// Print the dependency tree of one slot.
-    Why {
-        id: &'a str,
-        depth: Option<usize>,
-    },
 }
 
 fn write_trace<W: std::io::Write>(
@@ -580,12 +555,6 @@ fn write_trace<W: std::io::Write>(
             tyda::trace::write_jsonl(registry, &mut writer)?;
             writer.flush()
         }),
-        TraceTarget::Why { id, depth } => {
-            let mut jsonl = Vec::new();
-            tyda::trace::write_jsonl(registry, &mut jsonl).map(|()| {
-                print_why(&jsonl, id, depth, stdout);
-            })
-        }
     };
     if let Err(error) = result {
         eprintln!("failed to write trace: {error}");

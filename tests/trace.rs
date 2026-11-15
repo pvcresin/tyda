@@ -162,9 +162,11 @@ fn trace_prints_sources_to_stdout_or_file() {
 fn trace_why_prints_dependencies_with_source_lines() {
     let dir = tempfile::tempdir().unwrap();
     write_sources(dir.path());
-    let mut args = vec!["why", "User#name"];
+    let mut args = vec!["trace", "-o", "trace.jsonl"];
     args.extend(FILES);
-    let output = tyda(dir.path(), &args);
+    assert!(tyda(dir.path(), &args).status.success());
+
+    let output = tyda(dir.path(), &["why", "User#name", "trace.jsonl"]);
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
@@ -178,23 +180,25 @@ fn trace_why_prints_dependencies_with_source_lines() {
     assert!(stdout.contains("caller user.rb:23"), "{stdout}");
     assert!(stdout.contains("| new(raw.to_s)"), "{stdout}");
 
-    // Without paths, `why` analyzes the current directory; the id may be a suffix.
-    let suffix = String::from_utf8(tyda(dir.path(), &["why", "@name"]).stdout).unwrap();
+    // Without a file, `why` reads the trace from stdin; the id may be a suffix.
+    let mut piped = Command::new(env!("CARGO_BIN_EXE_tyda"))
+        .current_dir(dir.path())
+        .args(["why", "@name"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(
+        piped.stdin.as_mut().unwrap(),
+        &fs::read(dir.path().join("trace.jsonl")).unwrap(),
+    )
+    .unwrap();
+    let piped = piped.wait_with_output().unwrap();
+    let suffix = String::from_utf8(piped.stdout).unwrap();
     assert!(suffix.starts_with("User@name: "), "{suffix}");
 
-    let missing = tyda(dir.path(), &["why", "Nope#nope"]);
+    let missing = tyda(dir.path(), &["why", "Nope#nope", "trace.jsonl"]);
     assert_eq!(missing.status.code(), Some(1));
-
-    // A saved trace answers without analyzing again.
-    let mut args = vec!["trace", "-o", "trace.jsonl"];
-    args.extend(FILES);
-    assert!(tyda(dir.path(), &args).status.success());
-    let mut args = vec!["why", "User#name"];
-    args.extend(FILES);
-    let analyzed = tyda(dir.path(), &args).stdout;
-    let saved = tyda(dir.path(), &["why", "User#name", "--trace", "trace.jsonl"]);
-    assert!(saved.status.success());
-    assert_eq!(saved.stdout, analyzed);
 }
 
 #[test]
@@ -252,4 +256,33 @@ fn trace_links_methods_resolved_inside_one_file() {
         strings(&record(&records, "Item@price")["deps"]),
         ["Item#initialize"]
     );
+}
+
+#[test]
+fn trace_records_top_level_callers() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("greet.rb"),
+        "class Greeter\n  def greet(name)\n    \"Hello, #{name}\"\n  end\nend\n\nGreeter.new.greet(\"alice\")\nGreeter.new.greet(:bob)\n",
+    )
+    .unwrap();
+    let output = tyda(dir.path(), &["trace", "greet.rb"]);
+    let records: Vec<Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let greet = record(&records, "Greeter#greet");
+    let callers: Vec<(u64, &str)> = greet["callers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|caller| {
+            (
+                caller["line"].as_u64().unwrap(),
+                caller["type"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(callers, [(7, "(\"alice\")"), (8, "(:bob)")]);
 }

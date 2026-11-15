@@ -25,7 +25,7 @@ cargo build --release
 - Any diff must be intentional: classify every changed line and mention it in the PR.
 - To find why lines changed, save `tyda trace -o` with the base and head binaries in the same
   subject and follow `docs/development.md` (推論の変化を調べる): the slots whose `type` changed
-  match the RBS diff, and `tyda why <id> --trace <file>` walks each one to the slot where the
+  match the RBS diff, and `tyda why <id> <trace file>` walks each one to the slot where the
   change starts.
 - gitlab is heavy (~8s / ~1GB); the script already runs it with `nice -n 19`, one pass.
 - `--diagnostics` output is a separate gate (JSONL comparison), not covered here.

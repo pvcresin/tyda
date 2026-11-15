@@ -135,40 +135,16 @@ impl SourceCache {
     }
 }
 
-/// Prints `id` and every slot it depends on as a tree. `max_depth` only limits the output.
-pub fn why<W: Write>(
-    trace: &Trace,
-    id: &str,
-    max_depth: Option<usize>,
-    writer: &mut W,
-) -> io::Result<()> {
-    let mut printer = WhyPrinter {
-        trace,
-        max_depth,
-        printed: BTreeSet::new(),
-        sources: SourceCache::default(),
-    };
-    printer.print(id, "", "", 0, writer)
-}
-
-struct WhyPrinter<'a> {
-    trace: &'a Trace,
-    max_depth: Option<usize>,
-    printed: BTreeSet<String>,
-    sources: SourceCache,
-}
-
-impl WhyPrinter<'_> {
-    fn print<W: Write>(
-        &mut self,
-        id: &str,
-        head: &str,
-        indent: &str,
-        depth: usize,
-        writer: &mut W,
-    ) -> io::Result<()> {
-        let Some(record) = self.trace.get(id) else {
-            return writeln!(writer, "{head}{id}  (not in trace)");
+/// Prints `id` and every slot it depends on as a tree; a slot printed once is referred to
+/// as "see above". Walks with an explicit stack, so a long chain cannot overflow it.
+pub fn why<W: Write>(trace: &Trace, id: &str, writer: &mut W) -> io::Result<()> {
+    let mut printed = BTreeSet::new();
+    let mut sources = SourceCache::default();
+    let mut stack = vec![(id.to_string(), String::new(), String::new())];
+    while let Some((id, head, indent)) = stack.pop() {
+        let Some(record) = trace.get(&id) else {
+            writeln!(writer, "{head}{id}  (not in trace)")?;
+            continue;
         };
         let ty = str_field(record, "type").unwrap_or("?");
         let mut header = format!("{head}{id}: {ty}");
@@ -181,13 +157,14 @@ impl WhyPrinter<'_> {
         if let Some(location) = location(record) {
             header.push_str(&format!("  {location}"));
         }
-        if !self.printed.insert(id.to_string()) {
-            return writeln!(writer, "{header}  (see above)");
+        if !printed.insert(id.clone()) {
+            writeln!(writer, "{header}  (see above)")?;
+            continue;
         }
         writeln!(writer, "{header}")?;
         let detail = format!("{indent}    ");
         if let Some(location) = location(record)
-            && let Some(source) = self.sources.line(&location)
+            && let Some(source) = sources.line(&location)
         {
             writeln!(writer, "{detail}| {source}")?;
         }
@@ -201,8 +178,7 @@ impl WhyPrinter<'_> {
             let hidden = items.len().saturating_sub(SHOWN_EVIDENCE);
             for (location, text) in items.into_iter().take(SHOWN_EVIDENCE) {
                 let location = location.unwrap_or_else(|| "?".to_string());
-                let source = self
-                    .sources
+                let source = sources
                     .line(&location)
                     .map(|source| format!("  | {source}"))
                     .unwrap_or_default();
@@ -212,27 +188,22 @@ impl WhyPrinter<'_> {
                 writeln!(writer, "{detail}... {hidden} more {key} in the trace")?;
             }
         }
-        if self.max_depth.is_some_and(|max| depth >= max) {
-            return Ok(());
-        }
-        let deps = self.trace.deps(id);
-        for (index, dep) in deps.iter().enumerate() {
-            let last = index + 1 == deps.len();
-            let (branch, next) = if last {
+        let deps = trace.deps(&id);
+        // Pushed in reverse so the first dependency prints first.
+        for (index, dep) in deps.iter().enumerate().rev() {
+            let (branch, next) = if index + 1 == deps.len() {
                 ("└─ ", "   ")
             } else {
                 ("├─ ", "│  ")
             };
-            self.print(
-                dep,
-                &format!("{indent}{branch}"),
-                &format!("{indent}{next}"),
-                depth + 1,
-                writer,
-            )?;
+            stack.push((
+                dep.to_string(),
+                format!("{indent}{branch}"),
+                format!("{indent}{next}"),
+            ));
         }
-        Ok(())
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -251,7 +222,7 @@ mod tests {
             r#"{"kind":"method","id":"C#c","type":"() -> Integer","deps":[]}"#,
         ]);
         let mut out = Vec::new();
-        why(&trace, "A#a", None, &mut out).unwrap();
+        why(&trace, "A#a", &mut out).unwrap();
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("body: <B#b> | <C#c>"), "{out}");
         assert!(out.contains("(see above)"), "{out}");
