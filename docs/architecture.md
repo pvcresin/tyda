@@ -121,8 +121,9 @@ method は全 call site を要約するので値を widen し、rest は要素�
 値を保ち、rest は Tuple、`**rest` は record にする。keyword を受けない callable では keyword は常に末尾の
 Hash になり、rest があれば rest に入る。proc は positional slot（rest 以外）が2つ以上、または rest と別の
 positional を持つ場合（`|a, *b|`、`|a,|`）だけ単一の配列引数を展開し、長さ不明の配列では各 slot を
-`要素 | nil` にする。不足した必須引数は `nil`、lambda は arity を厳密に扱う。リテラルの `Type::Proc` は
-解析ごとの nonce と開始 offset を詰めた `ProcLiteralId`（u64、文字列を作らない）だけを持ち（等価性・hash では
+`要素 | nil` にする。不足した必須引数は `nil`、lambda は arity を厳密に扱う。`Type::Proc` は `Box<ProcType>`
+で、位置引数の型（不明なら `untyped`、数が arity）、戻り値、種類（Proc / Method / UnboundMethod）を持つ（`Type` の大きさは増やさない）。リテラルの proc は
+解析ごとの nonce と開始 offset を詰めた `ProcLiteralId`（u64、文字列を作らない）も持ち（等価性・hash では
 無視し、同じ構造の Proc は union でまとまる）、parameter 情報と外側 local への代入はファイル単位の engine が持つ
 side table（`ProcSignature`）に置く。表は engine と一緒に破棄され、再推論は同じ entry を置き換える。別の解析の
 id は一致しないので、registry 経由で届いた古い Proc は通常の `ParamRef` 代入に戻る。本体は

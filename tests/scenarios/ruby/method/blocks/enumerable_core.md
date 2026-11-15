@@ -635,7 +635,7 @@ class LiteralBlockEdges
   def optional: (?bool? flag) { () -> :after } -> :done
   def trailing: (?Integer? first, Integer flag) { () -> :after } -> :done
   def retried: (bool flag) ?{ (?) -> untyped } -> :done
-  def forwarded: (Integer? flag) { () -> untyped } -> untyped
+  def forwarded: (Integer? flag) { () -> untyped } -> (:after | :none)
   def target: [R] { () -> R } -> R
   def nil_skips: -> :before
   def symbol_runs: -> :after

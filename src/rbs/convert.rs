@@ -129,7 +129,6 @@ pub(crate) fn convert_rbs_type(rbs_ty: &rbs_ir::RbsType) -> Type {
         }
         rbs_ir::RbsType::Proc(method_type) => {
             let ft = &method_type.function_type;
-            let param_count = rbs_function_type_param_count(ft);
             let return_type = method_type
                 .self_type
                 .as_ref()
@@ -138,12 +137,7 @@ pub(crate) fn convert_rbs_type(rbs_ty: &rbs_ir::RbsType) -> Type {
                         .replace_self_type(&convert_rbs_type(self_type))
                 })
                 .unwrap_or_else(|| convert_rbs_type(&ft.return_type));
-            Type::Proc {
-                return_type: Box::new(return_type),
-                param_count,
-                exact_params: false,
-                literal: None,
-            }
+            rbs_proc_type(ft, return_type, convert_rbs_type)
         }
         rbs_ir::RbsType::Variable(_) => Type::Untyped,
         rbs_ir::RbsType::Alias(name, args) => {
@@ -179,6 +173,31 @@ pub(crate) fn convert_rbs_type(rbs_ty: &rbs_ir::RbsType) -> Type {
             }
         }
     }
+}
+
+/// A proc from an RBS function type. A function of only required positionals keeps their
+/// types; other shapes keep just the parameter count.
+pub fn rbs_proc_type(
+    ft: &rbs_ir::FunctionType,
+    return_type: Type,
+    convert: impl FnMut(&rbs_ir::RbsType) -> Type,
+) -> Type {
+    let only_required = ft.optional_positionals.is_empty()
+        && ft.rest_positionals.is_none()
+        && ft.trailing_positionals.is_empty()
+        && ft.required_keywords.is_empty()
+        && ft.optional_keywords.is_empty()
+        && ft.rest_keywords.is_none();
+    if only_required {
+        let params = ft
+            .required_positionals
+            .iter()
+            .map(|param| &param.type_)
+            .map(convert)
+            .collect();
+        return Type::proc(params, return_type, true, None);
+    }
+    Type::proc_untyped_params(return_type, rbs_function_type_param_count(ft), false, None)
 }
 
 fn rbs_function_type_param_count(ft: &rbs_ir::FunctionType) -> usize {

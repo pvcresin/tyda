@@ -532,7 +532,7 @@ fn type_level(ty: &Type, class_context: &str, method_context: Option<&str>) -> C
             .iter()
             .map(|field| type_level(&field.value, class_context, method_context))
             .fold(CoverageLevel::Typed, merge_levels),
-        Type::Proc { return_type, .. } => type_level(return_type, class_context, method_context),
+        Type::Proc(proc_type) => type_level(&proc_type.return_type, class_context, method_context),
         Type::Generic { base, args } => {
             if base.is_empty() || is_unknown_name(base.as_ref()) {
                 CoverageLevel::Unknown

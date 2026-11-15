@@ -293,7 +293,7 @@ end
 
 ```rbs
 class Source
-  METHOD: Proc
+  METHOD: UnboundMethod
 
   def label: (untyped value) -> untyped
   def self.via_const: -> String

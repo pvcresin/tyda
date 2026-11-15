@@ -1,6 +1,6 @@
 use super::*;
 use crate::rbs::ir as rbs_ir;
-use crate::types::TypeParamSig;
+use crate::types::{CallableKind, TypeParamSig};
 
 impl TypeRegistry {
     fn attr_writer_call_site_value_type(
@@ -499,7 +499,9 @@ impl TypeRegistry {
 
     /// A required parameter that is only passed to the return value renders as a type parameter,
     /// `[T] (T x) -> T`, since the body accepts any value. One that the body also uses otherwise
-    /// takes its callers' types as the bound, `[T < A | B] (T x) -> T`.
+    /// takes its callers' types as the bound, `[T < A | B] (T x) -> T`. A proc parameter whose
+    /// result the method returns renders with the result as a type parameter,
+    /// `[X, R] (^(X) -> R f, X x) -> R`.
     fn apply_inferred_type_params(
         &self,
         sig: &mut MethodSig,
@@ -545,78 +547,131 @@ impl TypeRegistry {
                     }
                     Some(callers.clone())
                 }
+                ParamFlow::Called => continue,
             };
             candidates.push((position, slot, upper_bound));
         }
+        // Proc parameters the body calls, with the argument types of the calls. Any object with
+        // `call` fits, so only procs from callers, or no callers at all, make it a proc type.
+        let has_callers = || {
+            self.class_data.get(owner_class).is_some_and(|data| {
+                data.call_sites.iter().any(|site| {
+                    &*site.method_name == method.name.as_str()
+                        && site.method_is_singleton == method.is_singleton
+                })
+            }) || !self
+                .ancestor_self_call_sites(owner_class, method.name.as_str(), method.is_singleton)
+                .is_empty()
+        };
+        let proc_params: Vec<(usize, usize, &[Type])> = flows
+            .proc_calls
+            .iter()
+            .filter_map(|(position, arg_types)| {
+                let slot = *positional_slots.get(*position)?;
+                let callers = &original_params[slot].param_type;
+                let is_proc = |ty: &Type| {
+                    matches!(ty, Type::Proc(proc_type) if proc_type.kind == CallableKind::Proc)
+                };
+                let accepts = match callers {
+                    Type::Union(parts) => parts.iter().all(is_proc),
+                    other => is_proc(other) || (other.to_string() == "untyped" && !has_callers()),
+                };
+                accepts.then_some((*position, slot, arg_types.as_ref()))
+            })
+            .collect();
+        let body_form = proc_call_results_as_slots(
+            &flows.return_type,
+            &proc_params
+                .iter()
+                .map(|(position, _, _)| *position)
+                .collect::<Vec<_>>(),
+        );
         // A block whose value the method returns renders as one more type parameter.
-        let has_block_return = sig.block.is_some() && mentions_block_return(&flows.return_type);
-        if candidates.is_empty() && !has_block_return {
+        let has_block_return = sig.block.is_some() && mentions_block_return(&body_form);
+        if candidates.is_empty() && !has_block_return && proc_params.is_empty() {
             return;
         }
         let yield_types = self
             .lookup_method_block_meta(owner_class, method.name.as_str(), method.is_singleton)
             .map(|meta| meta.yield_param_types.clone())
             .unwrap_or_default();
+        let resolve_part = |part: &Type, bindings: &HashMap<usize, Sym>| {
+            let _hop_memo = super::DeferredHopMemoScope::enter();
+            let raw = substitute_bare_param_refs(part, bindings);
+            let raw = self.resolve_block_return_refs(owner_class, method, &raw);
+            let raw = if Self::type_contains_param_ref(&raw) {
+                self.resolve_param_refs_from_resolved(&raw, &original_params)
+            } else {
+                raw
+            };
+            let resolved =
+                self.resolve_deferred_refs_for_context_owned(owner_class, method.is_singleton, raw);
+            if Self::type_contains_param_ref(&resolved) {
+                self.resolve_param_refs_from_resolved(&resolved, &original_params)
+            } else {
+                resolved
+            }
+        };
         // The resolved return keeps its precision; only the places where the body returns a bound
         // parameter itself become its type parameter.
         let render_return = |bindings: &HashMap<usize, Sym>, block_return: Option<Sym>| {
-            let _hop_memo = super::DeferredHopMemoScope::enter();
-            let resolve_part = |part: &Type| {
-                let raw = substitute_bare_param_refs(part, bindings);
-                let raw = self.resolve_block_return_refs(owner_class, method, &raw);
-                let raw = if Self::type_contains_param_ref(&raw) {
-                    self.resolve_param_refs_from_resolved(&raw, &original_params)
-                } else {
-                    raw
-                };
-                let resolved = self.resolve_deferred_refs_for_context_owned(
-                    owner_class,
-                    method.is_singleton,
-                    raw,
-                );
-                if Self::type_contains_param_ref(&resolved) {
-                    self.resolve_param_refs_from_resolved(&resolved, &original_params)
-                } else {
-                    resolved
-                }
-            };
             graft_type_params(
-                &flows.return_type,
+                &body_form,
                 &sig.return_type,
                 bindings,
                 block_return,
-                &resolve_part,
+                &|part: &Type| resolve_part(part, bindings),
             )
         };
         // A type parameter that shows in neither the return nor the block relates nothing. Find
         // them with placeholder names first, so only the kept ones compete for short names.
         let placeholder = |index: usize| Sym::new(format!("__type_param_{index}"));
-        let placeholder_bindings: HashMap<usize, Sym> = candidates
+        let mut placeholder_bindings: HashMap<usize, Sym> = candidates
             .iter()
             .enumerate()
             .map(|(index, (position, _, _))| (*position, placeholder(index)))
             .collect();
+        for (index, (position, _, _)) in proc_params.iter().enumerate() {
+            placeholder_bindings.insert(
+                proc_result_slot(*position),
+                placeholder(candidates.len() + index),
+            );
+        }
         let block_placeholder = Sym::new("__type_param_return");
         let probe = render_return(
             &placeholder_bindings,
             has_block_return.then_some(block_placeholder),
         );
-        let yielded = |position: usize| {
+        let kept_proc_results: Vec<usize> = proc_params
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                type_mentions_class(&probe, placeholder(candidates.len() + index).as_str())
+            })
+            .map(|(_, (position, _, _))| *position)
+            .collect();
+        let passed_to_proc = |position: usize| {
             yield_types
                 .iter()
+                .chain(
+                    proc_params
+                        .iter()
+                        .flat_map(|(_, _, arg_types)| arg_types.iter()),
+                )
                 .any(|ty| matches!(ty, Type::ParamRef(index) if *index == position))
         };
         let kept: Vec<&(usize, usize, Option<Type>)> = candidates
             .iter()
             .enumerate()
             .filter(|(index, (position, _, _))| {
-                type_mentions_class(&probe, placeholder(*index).as_str()) || yielded(*position)
+                type_mentions_class(&probe, placeholder(*index).as_str())
+                    || passed_to_proc(*position)
             })
             .map(|(_, candidate)| candidate)
             .collect();
         let keep_block_return =
             has_block_return && type_mentions_class(&probe, block_placeholder.as_str());
-        if kept.is_empty() && !keep_block_return {
+        if kept.is_empty() && !keep_block_return && kept_proc_results.is_empty() {
             return;
         }
         let mut bases: Vec<&str> = kept
@@ -626,13 +681,18 @@ impl TypeRegistry {
         if keep_block_return {
             bases.push("return");
         }
+        bases.extend(kept_proc_results.iter().map(|_| "return"));
         let names = type_param_names(&bases, self.get_class_type_params(owner_class));
-        let bindings: HashMap<usize, Sym> = kept
+        let mut bindings: HashMap<usize, Sym> = kept
             .iter()
             .zip(&names)
             .map(|((position, _, _), name)| (*position, Sym::new(name)))
             .collect();
         let block_return = keep_block_return.then(|| Sym::new(&names[kept.len()]));
+        let proc_result_names = &names[kept.len() + usize::from(keep_block_return)..];
+        for (position, name) in kept_proc_results.iter().zip(proc_result_names) {
+            bindings.insert(proc_result_slot(*position), Sym::new(name));
+        }
         let return_type = render_return(&bindings, block_return);
         let mut type_params: Vec<TypeParamSig> = Vec::new();
         for ((position, slot, upper_bound), name) in kept.iter().copied().zip(&names) {
@@ -643,6 +703,25 @@ impl TypeRegistry {
                 upper_bound: upper_bound.clone(),
                 lower_bound: None,
             });
+        }
+        for &(position, slot, arg_types) in &proc_params {
+            let result = bindings.get(&proc_result_slot(position)).copied();
+            let relates = result.is_some()
+                || arg_types
+                    .iter()
+                    .any(|ty| mentions_bound_param(ty, &bindings));
+            if !relates {
+                continue;
+            }
+            sig.params[slot].param_type = Type::proc(
+                arg_types
+                    .iter()
+                    .map(|ty| resolve_part(ty, &bindings).widen_arg_for_param())
+                    .collect(),
+                result.map_or(Type::Untyped, Type::Class),
+                true,
+                None,
+            );
         }
         if let Some(block) = sig.block.as_mut() {
             for (param, yielded) in block.params.iter_mut().zip(&yield_types) {
@@ -659,6 +738,13 @@ impl TypeRegistry {
         if let Some(name) = block_return {
             type_params.push(TypeParamSig {
                 name: name.to_string(),
+                upper_bound: None,
+                lower_bound: None,
+            });
+        }
+        for name in proc_result_names {
+            type_params.push(TypeParamSig {
+                name: name.clone(),
                 upper_bound: None,
                 lower_bound: None,
             });
@@ -789,11 +875,11 @@ impl TypeRegistry {
     fn rendered_params(&self, receiver_class: &str, method: &MethodDef) -> Vec<Param> {
         let mut params = self.resolve_params(receiver_class, method);
         for param in &mut params {
-            if let Type::Proc { return_type, .. } = &mut param.param_type
-                && !Self::is_concrete_for_global_resolve(return_type)
-                && format!("{return_type:#}") == "untyped"
+            if let Type::Proc(proc_type) = &mut param.param_type
+                && !Self::is_concrete_for_global_resolve(&proc_type.return_type)
+                && format!("{:#}", proc_type.return_type) == "untyped"
             {
-                **return_type = Type::Untyped;
+                proc_type.return_type = Type::Untyped;
             }
         }
         params
@@ -1315,21 +1401,9 @@ impl TypeRegistry {
                     .map(|elem| self.resolve_block_return_refs(owner_class, method, elem))
                     .collect(),
             ),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_block_return_refs(
-                    owner_class,
-                    method,
-                    return_type,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_block_return_refs(owner_class, method, return_type)
+            }))),
             _ => ty.clone(),
         }
     }
@@ -1525,6 +1599,52 @@ fn type_param_names(bases: &[&str], reserved: &[String]) -> Vec<String> {
     names
 }
 
+/// The `ParamRef` slot that stands for the result of calling proc parameter `position`, so
+/// it binds to a type parameter like a parameter does.
+fn proc_result_slot(position: usize) -> usize {
+    usize::MAX / 2 + position
+}
+
+/// Replaces `f.call(...)` results on the given proc parameters with their result slots.
+fn proc_call_results_as_slots(ty: &Type, positions: &[usize]) -> Type {
+    if positions.is_empty() {
+        return ty.clone();
+    }
+    let recurse = |ty: &Type| proc_call_results_as_slots(ty, positions);
+    match ty {
+        Type::ReceiverMethodRef(receiver, method)
+            if method.as_str() == "call"
+                && matches!(receiver.as_ref(), Type::ParamRef(index) if positions.contains(index)) =>
+        {
+            let Type::ParamRef(index) = receiver.as_ref() else {
+                unreachable!("checked in the guard");
+            };
+            Type::ParamRef(proc_result_slot(*index))
+        }
+        Type::Union(types) => Type::Union(types.iter().map(recurse).collect()),
+        Type::Tuple(types) => Type::Tuple(types.iter().map(recurse).collect()),
+        Type::Array(Some(inner)) => Type::Array(Some(Box::new(recurse(inner)))),
+        Type::Hash(key, value) => Type::Hash(
+            key.as_deref().map(|key| Box::new(recurse(key))),
+            value.as_deref().map(|value| Box::new(recurse(value))),
+        ),
+        Type::Record(fields) => Type::Record(
+            fields
+                .iter()
+                .map(|field| RecordField {
+                    value: recurse(&field.value),
+                    ..field.clone()
+                })
+                .collect(),
+        ),
+        Type::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args.iter().map(recurse).collect(),
+        },
+        _ => ty.clone(),
+    }
+}
+
 fn substitute_bare_param_refs(ty: &Type, bindings: &HashMap<usize, Sym>) -> Type {
     let recurse = |ty: &Type| substitute_bare_param_refs(ty, bindings);
     match ty {
@@ -1574,7 +1694,7 @@ fn type_mentions_class(ty: &Type, name: &str) -> bool {
         }
         Type::Record(fields) => fields.iter().any(|field| recurse(&field.value)),
         Type::Generic { args, .. } => args.iter().any(recurse),
-        Type::Proc { return_type, .. } => recurse(return_type),
+        Type::Proc(proc_type) => recurse(&proc_type.return_type),
         _ => false,
     }
 }

@@ -936,6 +936,8 @@ pub struct OverloadDef {
 pub enum ParamFlow {
     PassThrough,
     Constrained,
+    /// Read only as the receiver of `call`: a proc the method calls.
+    Called,
 }
 
 /// The parameter flows of a source method with its return as the body computes it, before
@@ -944,6 +946,8 @@ pub enum ParamFlow {
 pub struct ParamFlows {
     pub params: Box<[(usize, ParamFlow)]>,
     pub return_type: Type,
+    /// The argument types each `Called` parameter is called with.
+    pub proc_calls: Box<[(usize, Box<[Type]>)]>,
 }
 
 #[derive(Debug, Clone)]
@@ -8106,8 +8110,8 @@ impl TypeRegistry {
                     self.collect_deferred_receiver_classes(&field.value, classes);
                 }
             }
-            Type::Proc { return_type, .. } => {
-                self.collect_deferred_receiver_classes(return_type, classes);
+            Type::Proc(proc_type) => {
+                self.collect_deferred_receiver_classes(&proc_type.return_type, classes);
             }
             Type::DeferredSafeNavigation(receiver, result) => {
                 self.collect_deferred_receiver_classes(receiver, classes);
@@ -8329,7 +8333,7 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_contains_untyped_member(&field.value)),
-            Type::Proc { return_type, .. } => Self::type_contains_untyped_member(return_type),
+            Type::Proc(proc_type) => Self::type_contains_untyped_member(&proc_type.return_type),
             Type::DeferredSafeNavigation(receiver, result) => {
                 Self::type_contains_untyped_member(receiver)
                     || Self::type_contains_untyped_member(result)
@@ -8355,7 +8359,7 @@ impl TypeRegistry {
                 .any(|field| Self::type_contains_param_ref_static(&field.value)),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref_static),
             Type::Generic { args, .. } => args.iter().any(Self::type_contains_param_ref_static),
-            Type::Proc { return_type, .. } => Self::type_contains_param_ref_static(return_type),
+            Type::Proc(proc_type) => Self::type_contains_param_ref_static(&proc_type.return_type),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
@@ -8466,17 +8470,11 @@ impl TypeRegistry {
                     args: map_vec(args, rename).into(),
                 }
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(Self::map_nominal_names(return_type, rename)),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => {
+                Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                    Self::map_nominal_names(return_type, rename)
+                })))
+            }
             Type::DeferredSafeNavigation(receiver, result) => {
                 let receiver = Self::map_nominal_names(receiver, rename);
                 Type::resolve_deferred_safe_navigation(
@@ -8514,7 +8512,7 @@ impl TypeRegistry {
             Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
                 parts.iter().any(Self::type_contains_scoped_nominal_ref)
             }
-            Type::Proc { return_type, .. } => Self::type_contains_scoped_nominal_ref(return_type),
+            Type::Proc(proc_type) => Self::type_contains_scoped_nominal_ref(&proc_type.return_type),
             Type::DeferredSafeNavigation(receiver, result) => {
                 Self::type_contains_scoped_nominal_ref(receiver)
                     || Self::type_contains_scoped_nominal_ref(result)
@@ -8585,8 +8583,8 @@ impl TypeRegistry {
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner)
             | Type::SplatRef(inner) => Self::type_contains_subclass_ref_candidate(inner),
-            Type::Proc { return_type, .. } => {
-                Self::type_contains_subclass_ref_candidate(return_type)
+            Type::Proc(proc_type) => {
+                Self::type_contains_subclass_ref_candidate(&proc_type.return_type)
             }
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_subclass_ref_candidate),
             Type::Hash(Some(key), Some(value)) => {
@@ -8707,17 +8705,11 @@ impl TypeRegistry {
                     .map(|t| self.resolve_subclass_refs_in_type(t))
                     .collect(),
             ),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_subclass_refs_in_type(return_type)),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => {
+                Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                    self.resolve_subclass_refs_in_type(return_type)
+                })))
+            }
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_subclass_refs_in_type(subject);
                 if Self::type_contains_subclass_ref_candidate(&resolved_subject) {
@@ -9026,7 +9018,7 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::global_type_contains_ref(&field.value)),
-            Type::Proc { return_type, .. } => Self::global_type_contains_ref(return_type),
+            Type::Proc(proc_type) => Self::global_type_contains_ref(&proc_type.return_type),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
@@ -9093,8 +9085,9 @@ impl TypeRegistry {
                 .iter()
                 .all(|field| Self::is_concrete_for_global_resolve(&field.value)),
             // A proc whose result is unknown is still a known `Proc` value.
-            Type::Proc { return_type, .. } => {
-                **return_type == Type::Untyped || Self::is_concrete_for_global_resolve(return_type)
+            Type::Proc(proc_type) => {
+                proc_type.return_type == Type::Untyped
+                    || Self::is_concrete_for_global_resolve(&proc_type.return_type)
             }
             _ => false,
         }
@@ -9115,7 +9108,7 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .all(|field| Self::is_resolved_attr_return_type(&field.value)),
-            Type::Proc { return_type, .. } => Self::is_resolved_attr_return_type(return_type),
+            Type::Proc(proc_type) => Self::is_resolved_attr_return_type(&proc_type.return_type),
             _ => Self::is_concrete_for_global_resolve(ty),
         }
     }
@@ -9595,24 +9588,16 @@ impl TypeRegistry {
                     Type::Tuple(resolved)
                 }
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_global_refs(
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_global_refs(
                     context_class,
                     return_type,
                     visiting,
                     memo,
                     depth + 1,
                     budget,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+                )
+            }))),
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_global_refs(
                     context_class,
@@ -9869,17 +9854,9 @@ impl TypeRegistry {
                     })
                     .collect(),
             ),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_param_refs_from_resolved(return_type, params)),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_param_refs_from_resolved(return_type, params)
+            }))),
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 let resolved_inner = self.resolve_param_refs_from_resolved(inner, params);
                 let projection = if matches!(ty, Type::TruthyProjection(_)) {
@@ -9953,8 +9930,8 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_needs_deferred_resolution_depth(&field.value, depth + 1)),
-            Type::Proc { return_type, .. } => {
-                Self::type_needs_deferred_resolution_depth(return_type, depth + 1)
+            Type::Proc(proc_type) => {
+                Self::type_needs_deferred_resolution_depth(&proc_type.return_type, depth + 1)
             }
             Type::Tuple(elems) => elems
                 .iter()
@@ -10051,7 +10028,7 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .all(|field| Self::type_is_memo_small(&field.value, budget)),
-            Type::Proc { return_type, .. } => Self::type_is_memo_small(return_type, budget),
+            Type::Proc(proc_type) => Self::type_is_memo_small(&proc_type.return_type, budget),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
@@ -10520,24 +10497,16 @@ impl TypeRegistry {
                     .collect();
                 Type::Record(resolved)
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_deferred_refs_depth(
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_deferred_refs_depth(
                     class_name,
                     singleton_context,
                     return_type,
                     depth + 1,
                     memo,
                     visiting,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+                )
+            }))),
             Type::Tuple(elems) => Type::Tuple(
                 elems
                     .iter()
@@ -11043,8 +11012,8 @@ impl TypeRegistry {
             | Type::SplatRef(subject) => {
                 Self::call_site_walk_is_identity(subject, resolve_method_return_refs)
             }
-            Type::Proc { return_type, .. } => {
-                Self::call_site_walk_is_identity(return_type, resolve_method_return_refs)
+            Type::Proc(proc_type) => {
+                Self::call_site_walk_is_identity(&proc_type.return_type, resolve_method_return_refs)
             }
             _ => true,
         }
@@ -11083,8 +11052,8 @@ impl TypeRegistry {
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner)
             | Type::SplatRef(inner) => Self::type_contains_receiver_method_ref(inner, method_name),
-            Type::Proc { return_type, .. } => {
-                Self::type_contains_receiver_method_ref(return_type, method_name)
+            Type::Proc(proc_type) => {
+                Self::type_contains_receiver_method_ref(&proc_type.return_type, method_name)
             }
             Type::Generic { args, .. } => args
                 .iter()
@@ -11322,21 +11291,9 @@ impl TypeRegistry {
                 );
                 Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_call_site_type_from_caller_context(
-                    call_site,
-                    return_type,
-                    visiting,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_call_site_type_from_caller_context(call_site, return_type, visiting)
+            }))),
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner) => {
@@ -12173,6 +12130,7 @@ impl TypeRegistry {
         is_singleton: bool,
         flows: Vec<(usize, ParamFlow)>,
         return_type: &Type,
+        proc_calls: Vec<(usize, Box<[Type]>)>,
     ) {
         let key = (Sym::new(method_name), is_singleton);
         let existing = self
@@ -12192,9 +12150,32 @@ impl TypeRegistry {
                 ParamFlows {
                     params: flows.into_boxed_slice(),
                     return_type: return_type.clone(),
+                    proc_calls: proc_calls.into_boxed_slice(),
                 },
             ));
         }
+    }
+
+    /// Replaces the body's return of a method without positional parameters after a replay.
+    pub fn refresh_param_flows_return(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        return_type: &Type,
+    ) {
+        let (flows, proc_calls) = self
+            .param_flows(class_name, method_name, is_singleton)
+            .map(|flows| (flows.params.to_vec(), flows.proc_calls.to_vec()))
+            .unwrap_or_default();
+        self.set_param_flows(
+            class_name,
+            method_name,
+            is_singleton,
+            flows,
+            return_type,
+            proc_calls,
+        );
     }
 
     pub fn param_flows(
@@ -13263,7 +13244,7 @@ impl TypeRegistry {
                 Self::type_contains_param_ref(inner)
             }
             Type::NonNilProjection(inner) => Self::type_contains_param_ref(inner),
-            Type::Proc { return_type, .. } => Self::type_contains_param_ref(return_type),
+            Type::Proc(proc_type) => Self::type_contains_param_ref(&proc_type.return_type),
             _ => false,
         }
     }
@@ -13567,17 +13548,9 @@ impl TypeRegistry {
                 let resolved_result = recur(result);
                 Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(recur(return_type)),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(
+                proc_type.map_types(|return_type| recur(return_type)),
+            )),
             // don't eagerly resolve while a param marker remains (`_ => Untyped` would destroy the marker -> leave it for call-site substitution).
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = recur(subject);
@@ -15081,12 +15054,12 @@ mod tests {
             "Box",
             test_method(
                 "callback",
-                Type::Proc {
-                    return_type: Box::new(Type::MethodReturnRef("Box".into(), "value".into())),
-                    param_count: 0,
-                    exact_params: false,
-                    literal: None,
-                },
+                Type::proc_untyped_params(
+                    Type::MethodReturnRef("Box".into(), "value".into()),
+                    0,
+                    false,
+                    None,
+                ),
             ),
         );
         registry.add_method_def(
@@ -15121,12 +15094,7 @@ mod tests {
             .expect("callback method");
         assert_eq!(
             callback.raw_return_type,
-            Type::Proc {
-                return_type: Box::new(Type::Integer),
-                param_count: 0,
-                exact_params: false,
-                literal: None,
-            }
+            Type::proc_untyped_params(Type::Integer, 0, false, None)
         );
         let hash = registry
             .lookup_method_def("Box", "hash", false)

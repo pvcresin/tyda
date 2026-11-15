@@ -451,3 +451,92 @@ class PostsController < ActionController::Base
   def index: -> ActionController::Parameters
 end
 ```
+
+## A before action that halts on nil guards the action
+
+### update
+
+### file: app/models/entry.rb
+
+```ruby
+class Entry < ApplicationRecord
+  def title = "title"
+end
+```
+
+```ruby
+class EntriesController < ApplicationController
+  before_action :require_entry
+
+  def show
+    render_title(entry)
+  end
+
+  private
+
+  def require_entry
+    head :not_found unless entry
+  end
+
+  def entry
+    @entry ||= Entry.find_by(id: params[:id])
+  end
+
+  def render_title(found)
+    found.title
+  end
+end
+```
+
+### result
+
+```rbs
+class EntriesController < ApplicationController
+  def show: -> "title"
+  private def require_entry: -> void
+  private def entry: -> Entry?
+  private def render_title: (Entry found) -> "title"
+end
+```
+
+## A before action with options leaves the action unguarded
+
+### update
+
+### file: app/models/entry.rb
+
+```ruby
+class Entry < ApplicationRecord
+  def title = "title"
+end
+```
+
+```ruby
+class DraftsController < ApplicationController
+  before_action :require_entry, only: :edit
+
+  def show
+    entry&.title
+  end
+
+  private
+
+  def require_entry
+    redirect_to "/" if entry.nil?
+  end
+
+  def entry
+    @entry ||= Entry.find_by(id: params[:id])
+  end
+end
+```
+
+### result
+
+```rbs
+class DraftsController < ApplicationController
+  def show: -> "title"?
+  private def require_entry: -> void
+  private def entry: -> Entry?
+end
+```

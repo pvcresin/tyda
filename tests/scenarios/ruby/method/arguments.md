@@ -510,10 +510,6 @@ end
 
 ## Method object argument keeps the Method parameter type
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -527,7 +523,7 @@ end
 
 ```rbs
 class Caller
-  def invoke: (Method callable) -> untyped
-  def run: -> untyped
+  def invoke: (Method callable) -> Integer
+  def run: -> Integer
 end
 ```

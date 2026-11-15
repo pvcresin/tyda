@@ -4,6 +4,8 @@
 //! returned but constrained by its callers (`[T < A | B] (T x) -> T`). A parameter the body
 //! narrows (a condition, `case`, pattern, or type test) keeps the narrowed return instead.
 //! Yielding a parameter as is passes it to the block parameter, which counts like returning it.
+//! Passing it to `call` on a proc parameter counts the same way. A parameter read only as the
+//! receiver of `call` is a proc the method calls (`[R] (^(A) -> R f) -> R`).
 
 use ruby_prism::{Node, Visit};
 
@@ -36,6 +38,9 @@ pub(super) fn param_flows(body: &Node<'_>, params: &[(usize, &str)]) -> Vec<(usi
         .filter_map(|(&(index, name), uses)| {
             if uses.disqualified || uses.narrowed || uses.reads == 0 {
                 return None;
+            }
+            if uses.called == uses.reads {
+                return Some((index, ParamFlow::Called));
             }
             let name = name.as_bytes();
             let returned = flow_reads(body, name)
@@ -124,8 +129,10 @@ fn flow_step<'pr>(node: &Node<'pr>, name: &[u8], reads: &mut usize, pending: &mu
 #[derive(Clone, Default)]
 struct ParamUse {
     reads: usize,
-    /// Reads passed as is to `yield`.
+    /// Reads passed as is to `yield` or to `call` on a proc parameter.
     yielded: usize,
+    /// Reads as the receiver of a plain `call`.
+    called: usize,
     /// A write or same-named parameter makes a read refer to some other value.
     disqualified: bool,
     /// A condition, `case` subject, pattern match, or type or equality test on it.
@@ -217,6 +224,26 @@ impl<'pr> ParamScan<'_, 'pr> {
     }
 }
 
+/// The receiver of `receiver.call(args)` or `receiver.(args)` with only plain positional
+/// arguments and no block.
+pub(super) fn plain_proc_call<'pr>(node: &ruby_prism::CallNode<'pr>) -> Option<Node<'pr>> {
+    if node.name().as_slice() != b"call" || node.block().is_some() || node.is_safe_navigation() {
+        return None;
+    }
+    let plain = node.arguments().is_none_or(|arguments| {
+        arguments.arguments().iter().all(|argument| {
+            !matches!(
+                argument,
+                Node::SplatNode { .. }
+                    | Node::KeywordHashNode { .. }
+                    | Node::BlockArgumentNode { .. }
+                    | Node::ForwardingArgumentsNode { .. }
+            )
+        })
+    });
+    plain.then(|| node.receiver()).flatten()
+}
+
 fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80
 }
@@ -305,6 +332,22 @@ impl<'pr> Visit<'pr> for ParamScan<'_, 'pr> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         if self.too_deep {
             return;
+        }
+        if let Some(callee) = plain_proc_call(node).and_then(|receiver| self.local_param(&receiver))
+        {
+            self.uses[callee].called += 1;
+            for argument in node
+                .arguments()
+                .iter()
+                .flat_map(|args| args.arguments().iter())
+            {
+                if let Some(index) = argument
+                    .as_local_variable_read_node()
+                    .and_then(|read| self.param_index(read.name().as_slice()))
+                {
+                    self.uses[index].yielded += 1;
+                }
+            }
         }
         if NARROWING_METHODS.contains(&node.name().as_slice()) {
             if let Some(receiver) = node.receiver() {
