@@ -115,21 +115,21 @@ agent は対象ファイルから十分な文脈を含む source を渡し、式
 `max_depth` は最大 5、出力step数は最大 32、各メソッドの呼び出し元は最大 16 件、本体戻り値の証拠は最大 8 件に制限する。上限に達した結果では `explanation.truncated`、`callers_truncated`、または `body_returns_truncated` が `true` になる。出力内のsource spanはLSPと同じ0始まりの行番号・UTF-16 code unit列。宣言位置は1始まりの行番号と0始まりのUTF-8 byte列。
 
 `trace_path` に `tyda trace` の出力ファイルを渡すと、結果に `workspace_trace` を追加する。問い合わせ位置のメソッドの
-スロット ID（`Foo#bar` / `Foo.bar`）を `id` に、そのスロットと依存先の trace レコードを `records` に、近い順で `max_depth`
+宣言 ID（`Foo#bar` / `Foo.bar`）を `id` に、その宣言と依存先の trace レコードを `records` に、近い順で `max_depth`
 段まで返す。各レコードは trace の 1 行に、起点からの段数 `depth` を加えたもの。project 全体の呼び出し元・代入・依存は
-この記録から得る。ファイルが読めない、またはスロットが trace にない場合は `message` に理由が入る。trace は呼び出しのたびに
+この記録から得る。ファイルが読めない、または宣言が trace にない場合は `message` に理由が入る。trace は呼び出しのたびに
 読み直すため、解析し直した結果は次の呼び出しから反映される。
 
 ### agent での trace の使い方
 
 project 全体の由来を調べるときは、最初に一度 `tyda trace -o trace.jsonl <paths>` を実行し、以降はこのファイルを
-検索する。各行は 1 スロットで `{"id":"Foo#bar",...` から始まる。
+検索する。各行は 1 宣言で `{"id":"Foo#bar",...` から始まる。
 
 ```sh
-grep '^{"id":"Cart#total",' trace.jsonl                          # 1 スロットの記録
-jq -c 'select(.deps | index("Item#price"))' trace.jsonl          # Item#price に依存するスロット
+grep '^{"id":"Cart#total",' trace.jsonl                          # 1 宣言の記録
+jq -c 'select(.deps | index("Item#price"))' trace.jsonl          # Item#price に依存する宣言
 jq -c 'select(.callers[]? | .file == "app/models/cart.rb")' trace.jsonl  # そのファイルから呼ばれるメソッド
-diff base.jsonl head.jsonl                                       # 2 回の解析で変わったスロット
+diff base.jsonl head.jsonl                                       # 2 回の解析で変わった宣言
 ```
 
 位置から引くときは `explain_type_at_position` に `trace_path` を渡す。人に見せるときは `tyda why <id> trace.jsonl` の木を使う。

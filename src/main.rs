@@ -180,9 +180,9 @@ enum Commands {
         #[arg(help = "Files or directories to analyze")]
         paths: Vec<PathBuf>,
     },
-    /// Show, as a tree, the code a slot's type was computed from in a trace.
+    /// Show, as a tree, the code a declaration's type was computed from in a trace.
     Why {
-        #[arg(help = "Slot id (Foo#bar, Foo.bar, Foo@ivar, Foo::CONST) or a suffix of one")]
+        #[arg(help = "Declaration id (Foo#bar, Foo.bar, Foo@ivar, Foo::CONST) or a suffix of one")]
         id: String,
         #[arg(help = "Trace file written by `tyda trace` [default: stdin]")]
         trace: Option<PathBuf>,
@@ -518,14 +518,14 @@ fn print_why<W: std::io::Write>(trace_jsonl: &[u8], id: &str, out: &mut W) {
     });
     match trace.find(id).as_slice() {
         [] => {
-            eprintln!("no slot matches `{id}`");
+            eprintln!("no declaration matches `{id}`");
             std::process::exit(1);
         }
         [single] => {
             why(&trace, single, out).ok();
         }
         many => {
-            eprintln!("`{id}` matches several slots:");
+            eprintln!("`{id}` matches several declarations:");
             for candidate in many {
                 eprintln!("  {candidate}");
             }

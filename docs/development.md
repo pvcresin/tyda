@@ -107,14 +107,14 @@ tyda why 'Foo#bar' /tmp/trace.jsonl      # 以降は解析なしで引く（gitl
    (cd subject/gitlab && /path/to/head/tyda trace -o /tmp/head.jsonl .)
    ```
 
-2. 型が変わったスロットを出す。`type` は RBS の宣言と同じ文字列で、この集合は RBS の差分と一致する。
+2. 型が変わった宣言を出す。`type` は RBS の宣言と同じ文字列で、この集合は RBS の差分と一致する。
    trace にはさらに、RBS に出ない ivar・外部 RBS・生成 DSL method の変化も出る。
 
    ```bash
    diff <(jq -c '{id, type}' /tmp/base.jsonl) <(jq -c '{id, type}' /tmp/head.jsonl)
    ```
 
-3. 変わったスロットごとに、自分の入力の何が変わったかを見て、依存を辿る。
+3. 変わった宣言ごとに、自分の入力の何が変わったかを見て、依存を辿る。
 
    ```bash
    diff <(grep '^{"id":"Foo#bar",' /tmp/base.jsonl | jq .) <(grep '^{"id":"Foo#bar",' /tmp/head.jsonl | jq .)
@@ -123,7 +123,7 @@ tyda why 'Foo#bar' /tmp/trace.jsonl      # 以降は解析なしで引く（gitl
 
 4. 読み方。変化を依存の方向へ辿ると、必ず次のどちらかに行き着く。
    - `body` / `callers` / `writes` / `deps` が変わっている: 変化はその入力から来ている。変わった依存先へ進む。
-   - 入力は何も変わらず `type` だけが変わった: そのスロットの宣言行（`file:line`）で、変えたルールが効いている。
+   - 入力は何も変わらず `type` だけが変わった: その宣言の位置（`file:line`）で、変えたルールが効いている。
      ここが原因の箇所。`body` を持たない定数・外部 RBS・生成 DSL method もここに入る。
 
 ソースを変えた比較では行番号がずれて `diff base.jsonl head.jsonl` の行が増えるため、型だけを比べるときは

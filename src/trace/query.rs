@@ -1,4 +1,4 @@
-//! Reads trace JSON Lines: `why` prints the slots a type was computed from.
+//! Reads trace JSON Lines: `why` prints the declarations a type was computed from.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
@@ -44,7 +44,27 @@ impl Trace {
             .unwrap_or_default()
     }
 
-    /// `id` and the slots it depends on, nearest first, at most `max_depth` hops away.
+    /// How many declarations are first reached at each level from `id` (level 0 is `id`).
+    fn level_sizes(&self, id: &str) -> Vec<usize> {
+        let mut seen = BTreeSet::from([id]);
+        let mut frontier = vec![id];
+        let mut sizes = Vec::new();
+        while !frontier.is_empty() {
+            sizes.push(frontier.len());
+            let mut next = Vec::new();
+            for current in frontier {
+                for dep in self.deps(current) {
+                    if seen.insert(dep) {
+                        next.push(dep);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        sizes
+    }
+
+    /// `id` and the declarations it depends on, nearest first, at most `max_depth` hops away.
     pub fn closure(&self, id: &str, max_depth: usize) -> Vec<(usize, &Value)> {
         let mut seen = BTreeSet::from([id]);
         let mut queue = std::collections::VecDeque::from([(id, 0)]);
@@ -110,7 +130,7 @@ fn evidence(record: &Value, key: &str) -> Vec<(Option<String>, String)> {
         .unwrap_or_default()
 }
 
-/// Callers and writes printed per slot; the trace keeps them all.
+/// Callers and writes printed per declaration; the trace keeps them all.
 const SHOWN_EVIDENCE: usize = 5;
 
 /// Source lines quoted next to evidence, read once per file.
@@ -135,13 +155,35 @@ impl SourceCache {
     }
 }
 
-/// Prints `id` and every slot it depends on as a tree; a slot printed once is referred to
-/// as "see above". Walks with an explicit stack, so a long chain cannot overflow it.
+/// Declarations `why` prints in one tree; deeper levels are summarized past this.
+const SHOWN_DECLARATIONS: usize = 200;
+
+/// Prints `id` and the declarations it depends on as a tree; a declaration printed once is
+/// referred to as "see above". The whole tree is printed when it has at most
+/// `SHOWN_DECLARATIONS` declarations; otherwise it stops at the deepest level that keeps
+/// within that count and says how much is left. Walks with an explicit stack, so a long
+/// chain cannot overflow it.
 pub fn why<W: Write>(trace: &Trace, id: &str, writer: &mut W) -> io::Result<()> {
+    let levels = trace.level_sizes(id);
+    let total: usize = levels.iter().sum();
+    let shown_depth = if total <= SHOWN_DECLARATIONS {
+        usize::MAX
+    } else {
+        levels
+            .iter()
+            .scan(0, |sum, size| {
+                *sum += size;
+                Some(*sum)
+            })
+            .take_while(|sum| *sum <= SHOWN_DECLARATIONS)
+            .count()
+            .max(2)
+            - 1
+    };
     let mut printed = BTreeSet::new();
     let mut sources = SourceCache::default();
-    let mut stack = vec![(id.to_string(), String::new(), String::new())];
-    while let Some((id, head, indent)) = stack.pop() {
+    let mut stack = vec![(id.to_string(), String::new(), String::new(), 0)];
+    while let Some((id, head, indent, depth)) = stack.pop() {
         let Some(record) = trace.get(&id) else {
             writeln!(writer, "{head}{id}  (not in trace)")?;
             continue;
@@ -188,6 +230,9 @@ pub fn why<W: Write>(trace: &Trace, id: &str, writer: &mut W) -> io::Result<()> 
                 writeln!(writer, "{detail}... {hidden} more {key} in the trace")?;
             }
         }
+        if depth == shown_depth {
+            continue;
+        }
         let deps = trace.deps(&id);
         // Pushed in reverse so the first dependency prints first.
         for (index, dep) in deps.iter().enumerate().rev() {
@@ -200,8 +245,17 @@ pub fn why<W: Write>(trace: &Trace, id: &str, writer: &mut W) -> io::Result<()> 
                 dep.to_string(),
                 format!("{indent}{branch}"),
                 format!("{indent}{next}"),
+                depth + 1,
             ));
         }
+    }
+    let hidden = total.saturating_sub(levels.iter().take(shown_depth.saturating_add(1)).sum());
+    if hidden > 0 {
+        writeln!(
+            writer,
+            "... {hidden} more declarations in {} more levels; search the trace file for the rest",
+            levels.len() - shown_depth - 1
+        )?;
     }
     Ok(())
 }
@@ -215,7 +269,37 @@ mod tests {
     }
 
     #[test]
-    fn why_prints_each_slot_once() {
+    fn why_summarizes_levels_past_the_declaration_limit() {
+        let mut lines = vec![
+            r#"{"id":"Root#r","kind":"method","type":"t","deps":["A#a","B#b","C#c"]}"#.to_string(),
+        ];
+        for parent in ["A#a", "B#b", "C#c"] {
+            let leaves: Vec<String> = (0..100).map(|i| format!("\"{parent}{i}\"")).collect();
+            lines.push(format!(
+                r#"{{"id":"{parent}","kind":"method","type":"t","deps":[{}]}}"#,
+                leaves.join(",")
+            ));
+            for i in 0..100 {
+                lines.push(format!(
+                    r#"{{"id":"{parent}{i}","kind":"method","type":"t","deps":[]}}"#
+                ));
+            }
+        }
+        let trace = Trace::from_reader(lines.join("\n").as_bytes()).unwrap();
+        let mut out = Vec::new();
+        why(&trace, "Root#r", &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(out.lines().count(), 5, "{out}");
+        assert!(
+            out.ends_with(
+                "... 300 more declarations in 1 more levels; search the trace file for the rest\n"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn why_prints_each_declaration_once() {
         let trace = trace(&[
             r#"{"kind":"method","id":"A#a","type":"() -> Integer","body":"<B#b> | <C#c>","deps":["B#b","C#c"]}"#,
             r#"{"kind":"method","id":"B#b","type":"() -> Integer","deps":["C#c"]}"#,

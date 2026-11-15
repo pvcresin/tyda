@@ -49,7 +49,7 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 | `diagnostics.rs` | missing method、unresolved constant、argument / return type mismatch などの判定 |
 | `lsp.rs` | LSP protocol、document / file cache、CodeLens、Hover、refresh |
 | `mcp.rs` | stdio MCP transport、位置指定推論、明示query時の型由来説明 |
-| `trace.rs` / `trace/` | `tyda trace` の実行時だけ型の由来（呼び出し箇所、ivar 代入、解決前の body、読んだ method の戻り値）を記録し、出力スロットごとの JSON Lines（`tyda trace`）と、それを読んで依存の木を表示する `tyda why` を提供 |
+| `trace.rs` / `trace/` | `tyda trace` の実行時だけ型の由来（呼び出し箇所、ivar 代入、解決前の body、読んだ method の戻り値）を記録し、出力される宣言ごとの JSON Lines（`tyda trace`）と、それを読んで依存の木を表示する `tyda why` を提供 |
 | `main.rs` | CLI 入力展開、batch projection、RBS / diagnostics の出力 |
 
 Sorbet `sig { ... }` のブロック本体は型 DSL として扱い、通常コードとして推論しない。ブロック内の
@@ -251,7 +251,7 @@ TypeProf VSCode 拡張との互換性は protocol boundary に限る。推論結
 4. registry が method の戻り値を読んだとき（`note_return_type_read`）、site があればその method が読んだ戻り値として残す。
    同じ file で先に推論済みの method は型が直接入り `body` に参照が残らないため、この記録で依存をつなぐ
 
-最終 registry の解決後に、RBS の代わりに `trace::write_jsonl` が出力スロットと記録を結合して出力する。依存先は `body` に残る
+最終 registry の解決後に、RBS の代わりに `trace::write_jsonl` が出力される宣言と記録を結合して出力する。依存先は `body` に残る
 参照と、確定した registry で `body` を逐次解決し直したときに読んだ method の戻り値（`RETURN_TYPE_READS`）から
 決める。解決 round 中の読み取りは共有 cache（`resolve_params_cache`）の hit で記録されないことがあり、
 実行ごとに変わるため使わない。受け手の型が解決後に決まる method 参照も最終 registry で受け手を解決する。

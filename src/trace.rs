@@ -4,7 +4,7 @@
 //! one relaxed atomic load per hook and keeps no extra state. When enabled, hooks push
 //! evidence (call sites, ivar writes, and method bodies before resolution) into one
 //! process-wide store, and [`write_jsonl`] joins it with the final registry into one JSON
-//! record per output slot.
+//! record per output declaration.
 
 pub mod query;
 
@@ -365,7 +365,7 @@ fn constant_id(owner: &str, name: &str) -> String {
     }
 }
 
-/// Writes one record with `id` first, so each line starts with the slot it describes
+/// Writes one record with `id` first, so each line starts with the declaration it describes
 /// (the other keys keep serde_json's sorted order).
 fn write_line<W: Write>(writer: &mut W, id: &str, mut record: Value) -> io::Result<()> {
     if let Some(object) = record.as_object_mut() {
@@ -408,7 +408,7 @@ fn sorted_dedup(mut ids: Vec<String>, own_id: &str) -> Vec<String> {
 }
 
 /// Writes one JSON object per rendered method, ivar, and constant, then one per
-/// non-rendered method that a rendered slot depends on.
+/// non-rendered method that a rendered declaration depends on.
 pub fn write_jsonl<W: Write>(registry: &TypeRegistry, writer: &mut W) -> io::Result<()> {
     let store = lock_store().take().unwrap_or_default();
     let dispatch_owner = |(receiver, method, singleton): &MethodKey| -> MethodKey {
@@ -482,7 +482,7 @@ struct Emitter<'a> {
 }
 
 impl Emitter<'_> {
-    /// Slots a type still refers to. A method on a receiver known only after resolution is
+    /// Declarations a type still refers to. A method on a receiver known only after resolution is
     /// named by the receiver's resolved class, and every method by the class defining it.
     fn collect_refs(&self, owner: &str, singleton: bool, ty: &Type, refs: &mut Vec<String>) {
         match ty {
