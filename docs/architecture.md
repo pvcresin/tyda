@@ -49,7 +49,7 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 | `diagnostics.rs` | missing method、unresolved constant、argument / return type mismatch などの判定 |
 | `lsp.rs` | LSP protocol、document / file cache、CodeLens、Hover、refresh |
 | `mcp.rs` | stdio MCP transport、位置指定推論、明示query時の型由来説明 |
-| `trace.rs` / `trace/` | `tyda trace` の実行時だけ型の由来（呼び出し箇所、ivar 代入、解決前の body、読んだ method の戻り値）を記録し、出力スロットごとの JSON Lines と `trace why` を提供 |
+| `trace.rs` / `trace/` | `tyda trace` の実行時だけ型の由来（呼び出し箇所、ivar 代入、解決前の body、読んだ method の戻り値）を記録し、出力スロットごとの JSON Lines（`tyda trace`）と依存の木（`tyda why`）を提供 |
 | `main.rs` | CLI 入力展開、batch projection、RBS / diagnostics の出力 |
 
 Sorbet `sig { ... }` のブロック本体は型 DSL として扱い、通常コードとして推論しない。ブロック内の
@@ -240,7 +240,7 @@ TypeProf VSCode 拡張との互換性は protocol boundary に限る。推論結
 
 ## Trace
 
-`tyda trace` は `trace::enable` で process 全体の記録を有効にする。記録箇所は次の 4 つで、
+`tyda trace` と `tyda why` は `trace::enable` で process 全体の記録を有効にする。記録箇所は次の 4 つで、
 どれも最初に `trace::enabled()`（relaxed atomic の読み取り）を確認するため、指定しない実行では
 追加の状態も計算も持たない。
 

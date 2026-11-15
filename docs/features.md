@@ -149,12 +149,14 @@ base/head の同じ release binary で一度ずつ解析し、解析ファイル
 出力されない依存先（外部 RBS、RBI、生成 DSL method、見つからない参照）も、参照された分だけ
 `rendered: false` や `kind: "unresolved"` のレコードとして出力する。
 
-`tyda trace why <FILE> <id>` は依存を末端まで辿り、各スロットの宣言行・呼び出し行・代入行の
-ソースを並べて表示する。出力は決定的でスロット順に並ぶため、2 回分の trace は通常の `diff` で比べられる。
-subject の RBS が CI で変わったときは、base と head で `tyda trace` を実行して diff を取り、変わったスロットを
-`trace why` で辿る。
+出力は決定的でスロット順に並ぶため、2 回分の trace は通常の `diff` で比べられる。
 
-記録は `tyda trace` の実行だけが行う。指定しない実行では各記録箇所が 1 回の atomic 読み取りで
+`tyda why <id> [paths]` は解析と trace を内部で行い、そのスロットから依存を末端まで辿って、各スロットの
+宣言行・呼び出し行・代入行のソースを木で表示する。paths を省略するとカレントディレクトリを解析する。
+`id` はスロット ID の末尾だけでもよい（`#summary`、`@price`）。subject の RBS が CI で変わったときは、
+base と head の `tyda trace` の diff で変わったスロットを探し、`tyda why` で原因を辿る。
+
+記録は `tyda trace` / `tyda why` の実行だけが行う。指定しない実行では各記録箇所が 1 回の atomic 読み取りで
 終わり、追加の状態を持たない。
 同じ入力なら trace は byte 単位で一致する。gitlab 全体では解析時間が約 1.4 倍になり、
 出力は約 54MB になる。
@@ -219,7 +221,7 @@ cargo run -- <path>                         # RBS
 cargo run -- --diagnostics <path>           # JSON Lines diagnostics
 cargo run -- --coverage <path>              # JSON type coverage
 cargo run -- trace <path> > trace.jsonl     # where each type came from (JSON Lines)
-cargo run -- trace why trace.jsonl 'Foo#bar'
+cargo run -- why 'Foo#bar' <path>            # tree of the code a type came from
 cargo run -- --lsp                          # LSP server
 cargo run -- mcp                            # MCP server for AI agents
 cargo run -- --include-synthetic-dsl-methods <path>

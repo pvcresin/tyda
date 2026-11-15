@@ -1,4 +1,4 @@
-//! Reads `tyda trace` output: `why` prints the slots a type was computed from.
+//! Reads trace JSON Lines: `why` prints the slots a type was computed from.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};

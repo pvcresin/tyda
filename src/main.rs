@@ -169,10 +169,7 @@ enum Commands {
     #[cfg(feature = "mcp")]
     Mcp,
     /// Print where each inferred type came from as JSON Lines, instead of RBS.
-    #[command(args_conflicts_with_subcommands = true)]
     Trace {
-        #[command(subcommand)]
-        command: Option<TraceCommand>,
         #[arg(
             short,
             long,
@@ -183,16 +180,12 @@ enum Commands {
         #[arg(help = "Files or directories to analyze")]
         paths: Vec<PathBuf>,
     },
-}
-
-#[derive(Subcommand)]
-enum TraceCommand {
-    /// Print the slots and source lines a slot's type was computed from.
+    /// Analyze and show the code a slot's type was computed from, as a tree.
     Why {
-        #[arg(help = "Trace file written by `tyda trace`")]
-        trace: PathBuf,
         #[arg(help = "Slot id (Foo#bar, Foo.bar, Foo@ivar, Foo::CONST) or a suffix of one")]
         id: String,
+        #[arg(help = "Files or directories to analyze [default: .]")]
+        paths: Vec<PathBuf>,
         #[arg(long, help = "Stop printing dependencies below this depth")]
         depth: Option<usize>,
     },
@@ -300,40 +293,30 @@ fn main() {
             std::process::exit(1);
         }
         Some(Commands::Trace {
-            command: Some(command),
-            ..
-        }) => run_trace_command(command),
-        Some(Commands::Trace {
-            command: None,
-            output,
-            paths,
+            ref output,
+            ref paths,
         }) => {
-            if cli.coverage || cli.diagnostics || cli.verbose || cli.debug {
-                eprintln!(
-                    "tyda trace cannot be combined with --coverage, --diagnostics, --verbose, or --debug"
-                );
-                std::process::exit(2);
-            }
             if paths.is_empty() {
-                eprintln!("Usage: tyda trace [-o FILE] <paths...> | tyda trace why <trace> <id>");
+                eprintln!("Usage: tyda trace [-o FILE] <paths...>");
                 std::process::exit(1);
             }
             let target = match output.as_deref() {
                 Some(path) => TraceTarget::File(path),
                 None => TraceTarget::Stdout,
             };
-            run_cli(
-                &paths,
-                CliRunOptions {
-                    debug: false,
-                    diagnostics: false,
-                    coverage: false,
-                    verbose: false,
-                    include_synthetic_dsl_methods: cli.include_synthetic_dsl_methods,
-                },
-                cli.dsl.as_deref(),
-                Some(target),
-            );
+            run_trace(&cli, paths, target);
+        }
+        Some(Commands::Why {
+            ref id,
+            ref paths,
+            depth,
+        }) => {
+            let paths = if paths.is_empty() {
+                vec![PathBuf::from(".")]
+            } else {
+                paths.clone()
+            };
+            run_trace(&cli, &paths, TraceTarget::Why { id, depth });
         }
         #[cfg(feature = "mcp")]
         Some(Commands::Mcp) => {
@@ -351,7 +334,7 @@ fn main() {
             }
             if cli.paths.is_empty() {
                 eprintln!(
-                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda trace [-o FILE] <paths...> | tyda --capability-matrix | tyda --lsp | tyda mcp | tyda --version"
+                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda trace [-o FILE] <paths...> | tyda why <id> [paths...] | tyda --capability-matrix | tyda --lsp | tyda mcp | tyda --version"
                 );
                 std::process::exit(1);
             }
@@ -505,36 +488,48 @@ async fn wait_for_termination_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-fn run_trace_command(command: TraceCommand) {
+/// Runs the RBS analysis with tracing on and writes the trace instead of RBS.
+fn run_trace(cli: &Cli, paths: &[PathBuf], target: TraceTarget<'_>) {
+    if cli.coverage || cli.diagnostics || cli.verbose || cli.debug {
+        eprintln!(
+            "tracing cannot be combined with --coverage, --diagnostics, --verbose, or --debug"
+        );
+        std::process::exit(2);
+    }
+    run_cli(
+        paths,
+        CliRunOptions {
+            debug: false,
+            diagnostics: false,
+            coverage: false,
+            verbose: false,
+            include_synthetic_dsl_methods: cli.include_synthetic_dsl_methods,
+        },
+        cli.dsl.as_deref(),
+        Some(target),
+    );
+}
+
+fn print_why<W: std::io::Write>(trace_jsonl: &[u8], id: &str, depth: Option<usize>, out: &mut W) {
     use tyda::trace::query::{Trace, why};
-    let load = |path: &Path| {
-        Trace::load(path).unwrap_or_else(|error| {
-            eprintln!("failed to read trace {}: {error}", path.display());
-            std::process::exit(2);
-        })
-    };
-    let stdout = std::io::stdout();
-    let mut stdout = stdout.lock();
-    match command {
-        TraceCommand::Why { trace, id, depth } => {
-            let trace = load(&trace);
-            let matches = trace.find(&id);
-            match matches.as_slice() {
-                [] => {
-                    eprintln!("no slot matches `{id}`");
-                    std::process::exit(1);
-                }
-                [single] => {
-                    why(&trace, single, depth, &mut stdout).ok();
-                }
-                many => {
-                    eprintln!("`{id}` matches several slots:");
-                    for candidate in many {
-                        eprintln!("  {candidate}");
-                    }
-                    std::process::exit(1);
-                }
+    let trace = Trace::from_reader(trace_jsonl).unwrap_or_else(|error| {
+        eprintln!("failed to read trace: {error}");
+        std::process::exit(1);
+    });
+    match trace.find(id).as_slice() {
+        [] => {
+            eprintln!("no slot matches `{id}`");
+            std::process::exit(1);
+        }
+        [single] => {
+            why(&trace, single, depth, out).ok();
+        }
+        many => {
+            eprintln!("`{id}` matches several slots:");
+            for candidate in many {
+                eprintln!("  {candidate}");
             }
+            std::process::exit(1);
         }
     }
 }
@@ -543,6 +538,11 @@ fn run_trace_command(command: TraceCommand) {
 enum TraceTarget<'a> {
     Stdout,
     File(&'a Path),
+    /// Print the dependency tree of one slot.
+    Why {
+        id: &'a str,
+        depth: Option<usize>,
+    },
 }
 
 fn write_trace<W: std::io::Write>(
@@ -560,6 +560,12 @@ fn write_trace<W: std::io::Write>(
             tyda::trace::write_jsonl(registry, &mut writer)?;
             writer.flush()
         }),
+        TraceTarget::Why { id, depth } => {
+            let mut jsonl = Vec::new();
+            tyda::trace::write_jsonl(registry, &mut jsonl).map(|()| {
+                print_why(&jsonl, id, depth, stdout);
+            })
+        }
     };
     if let Err(error) = result {
         eprintln!("failed to write trace: {error}");

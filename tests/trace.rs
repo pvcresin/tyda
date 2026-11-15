@@ -156,11 +156,9 @@ fn trace_prints_sources_to_stdout_or_file() {
 fn trace_why_prints_dependencies_with_source_lines() {
     let dir = tempfile::tempdir().unwrap();
     write_sources(dir.path());
-    let mut args = vec!["trace", "-o", "trace.jsonl"];
+    let mut args = vec!["why", "User#name"];
     args.extend(FILES);
-    assert!(tyda(dir.path(), &args).status.success());
-
-    let output = tyda(dir.path(), &["trace", "why", "trace.jsonl", "User#name"]);
+    let output = tyda(dir.path(), &args);
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
@@ -174,7 +172,11 @@ fn trace_why_prints_dependencies_with_source_lines() {
     assert!(stdout.contains("caller user.rb:23"), "{stdout}");
     assert!(stdout.contains("| new(raw.to_s)"), "{stdout}");
 
-    let missing = tyda(dir.path(), &["trace", "why", "trace.jsonl", "Nope#nope"]);
+    // Without paths, `why` analyzes the current directory; the id may be a suffix.
+    let suffix = String::from_utf8(tyda(dir.path(), &["why", "@name"]).stdout).unwrap();
+    assert!(suffix.starts_with("User@name: "), "{suffix}");
+
+    let missing = tyda(dir.path(), &["why", "Nope#nope"]);
     assert_eq!(missing.status.code(), Some(1));
 }
 
