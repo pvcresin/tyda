@@ -485,3 +485,42 @@ class Vector
   def +@: -> Vector
 end
 ```
+
+## An optional receiver picks an operator overload without its argument
+
+### update
+
+```ruby
+class Stamp
+  def shifted(flag) = (flag ? Time.now : nil) - 3600
+
+  def elapsed(flag) = (flag ? Time.now : nil) - Time.now
+end
+```
+
+### result
+
+```rbs
+class Stamp
+  def shifted: (untyped flag) -> Time
+  def elapsed: (untyped flag) -> Float
+end
+```
+
+## Each arm of a union receiver picks the overload for the argument
+
+### update
+
+```ruby
+class Mixed
+  def sum(flag) = (flag ? 1 : 2.5) + 1.5
+end
+```
+
+### result
+
+```rbs
+class Mixed
+  def sum: (untyped flag) -> Float
+end
+```
