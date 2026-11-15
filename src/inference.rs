@@ -4832,7 +4832,19 @@ impl<'a> InferenceEngine<'a> {
             }
             AliasTarget::Ivar(name) => {
                 if !scope.singleton_dispatch {
-                    let summary = Self::ivar_value_outside_initialize(scope, ty.clone());
+                    // Parameter refs already in the value are `initialize`'s; only refs the
+                    // change adds name this method's parameters.
+                    let inherits_param_refs = self
+                        .registry
+                        .lookup_ivar_type(class_name, name)
+                        .is_some_and(|current| {
+                            TypeRegistry::type_contains_param_ref_static(&current)
+                        });
+                    let summary = if inherits_param_refs {
+                        ty.clone()
+                    } else {
+                        Self::ivar_value_outside_initialize(scope, ty.clone())
+                    };
                     self.registry.replace_ivar_type(class_name, name, summary);
                 }
                 // A later read in the same method sees the value after the in-place change.
@@ -49838,10 +49850,11 @@ impl<'a> InferenceEngine<'a> {
                 &local_vars,
                 receiver_type,
             );
-            let ret = if mt
-                .annotations
-                .iter()
-                .any(|annotation| annotation.as_ref() == "implicitly-returns-nil")
+            let ret = if ret != Type::Untyped
+                && mt
+                    .annotations
+                    .iter()
+                    .any(|annotation| annotation.as_ref() == "implicitly-returns-nil")
             {
                 ret.union_with(Type::Nil)
             } else {

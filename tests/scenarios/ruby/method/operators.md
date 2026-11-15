@@ -545,3 +545,25 @@ class Capture
   def tag: (untyped text) -> String?
 end
 ```
+
+## An index read on an array of unknown elements stays unknown
+
+### update
+
+```ruby
+class Pairs
+  def first_op(item)
+    if item.is_a?(Array)
+      item[0].to_s
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Pairs
+  def first_op: (untyped item) -> untyped
+end
+```
