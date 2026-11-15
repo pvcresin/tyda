@@ -5582,6 +5582,55 @@ impl TypeRegistry {
         Type::merge_into_vec(types, ty);
     }
 
+    /// A call on a constant not seen yet leaves a `class_data` entry that holds only the call.
+    fn has_class_declaration(&self, name: &str) -> bool {
+        self.class_data.get(name).is_some_and(|data| {
+            data.user_defined
+                || data.loc.is_some()
+                || data.is_module
+                || data.superclass.is_some()
+                || !data.methods.is_empty()
+                || !data.constants.is_empty()
+        })
+    }
+
+    /// A method body that runs before a nested class is defined reads its name bare
+    /// (`Pulse`). Once the class body is done, a bare name that names no top-level class
+    /// means the nested one (`Outer::Pulse`), as at runtime.
+    pub(crate) fn qualify_late_nested_ivar_types(&mut self, class_name: &str) {
+        let Some(data) = self.class_data.get(class_name) else {
+            return;
+        };
+        let mut updates = Vec::new();
+        for (ivar, types) in &data.ivars {
+            let mut changed = false;
+            let qualified: Vec<Type> = types
+                .iter()
+                .map(|ty| {
+                    let next = Self::map_nominal_names(ty, &mut |name| {
+                        if name.contains("::") || self.has_class_declaration(name) {
+                            return None;
+                        }
+                        self.resolve_scoped_nominal_name(class_name, name)
+                    });
+                    changed |= next != *ty;
+                    next
+                })
+                .collect();
+            if changed {
+                updates.push((*ivar, qualified));
+            }
+        }
+        let data = self.class_data_mut(class_name);
+        for (ivar, qualified) in updates {
+            let mut merged = Vec::new();
+            for ty in qualified {
+                Type::merge_into_vec(&mut merged, ty);
+            }
+            data.ivars.insert(ivar, merged);
+        }
+    }
+
     pub fn replace_ivar_type(&mut self, class_name: &str, ivar_name: &str, ty: Type) {
         self.mark_class_has_method_body_facts(class_name);
         let data = self.class_data_mut(class_name);

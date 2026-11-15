@@ -16975,6 +16975,7 @@ impl<'a> InferenceEngine<'a> {
                 &[],
                 false,
             );
+            self.registry.qualify_late_nested_ivar_types(class_name);
         }
     }
 
