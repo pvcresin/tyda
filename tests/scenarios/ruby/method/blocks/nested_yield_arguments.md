@@ -165,3 +165,47 @@ class ReaderUser
   def reader: -> Reader
 end
 ```
+
+## A yield inside an each block passes the element type
+
+### update
+
+```ruby
+class NameList
+  def each_name(names)
+    names.each { |name| yield name }
+  end
+end
+
+NameList.new.each_name(["a"]) { |name| name.size }
+```
+
+### result
+
+```rbs
+class NameList
+  def each_name: (Array[String] names) { (String) -> 1 } -> Array[String]
+end
+```
+
+## A yield of a parameter's first element passes the element type
+
+### update
+
+```ruby
+class NameList
+  def first_name(names)
+    yield names.first
+  end
+end
+
+NameList.new.first_name(["a"]) { |name| name }
+```
+
+### result
+
+```rbs
+class NameList
+  def first_name: [R] (Array[String] names) { (String?) -> R } -> R
+end
+```

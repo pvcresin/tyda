@@ -1133,10 +1133,16 @@ impl TypeRegistry {
                 .iter()
                 .enumerate()
                 .map(|(idx, ty)| {
+                    // A yielded element of a parameter reads the parameter's resolved type first.
+                    let ty = if Self::type_contains_param_ref_static(ty) {
+                        self.resolve_param_refs_from_resolved(ty, method_params)
+                    } else {
+                        ty.clone()
+                    };
                     let ty = self.resolve_deferred_refs_for_context_owned(
                         owner_class,
                         method.is_singleton,
-                        ty.clone(),
+                        ty,
                     );
                     Param {
                         name: format!("arg{idx}"),

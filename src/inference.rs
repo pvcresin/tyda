@@ -20230,17 +20230,27 @@ impl<'a> InferenceEngine<'a> {
                                 parse_result,
                                 scope,
                             );
-                            if let Some(param_types) = self.receiver_call_block_param_types(
-                                class_name,
-                                &call_node,
-                                &receiver,
-                                &receiver_type,
-                                method_name.as_ref(),
-                                param_count,
-                                rbs_block_seed.as_ref(),
-                                parse_result,
-                                scope,
-                            ) {
+                            if let Some(param_types) = self
+                                .receiver_call_block_param_types(
+                                    class_name,
+                                    &call_node,
+                                    &receiver,
+                                    &receiver_type,
+                                    method_name.as_ref(),
+                                    param_count,
+                                    rbs_block_seed.as_ref(),
+                                    parse_result,
+                                    scope,
+                                )
+                                .filter(|types| types.iter().any(|ty| *ty != Type::Untyped))
+                                .or_else(|| {
+                                    Self::deferred_receiver_element_block_param_types(
+                                        &receiver_type,
+                                        method_name.as_ref(),
+                                        param_count,
+                                    )
+                                })
+                            {
                                 self.bind_call_block_param_types(
                                     class_name,
                                     &params,
@@ -56462,6 +56472,45 @@ impl<'a> InferenceEngine<'a> {
             ),
             _ => Type::ReceiverMethodRef(Box::new(receiver_type.clone()), Sym::new(method_name)),
         }
+    }
+
+    /// A block on a parameter's element iterator sees one element of the argument. The
+    /// caller's argument decides it, so a yield of that element names it by reference.
+    fn deferred_receiver_element_block_param_types(
+        receiver_type: &Type,
+        method_name: &str,
+        param_count: usize,
+    ) -> Option<Vec<Type>> {
+        let first_param_only = matches!(method_name, "each_with_index" | "each_with_object");
+        let single_param = matches!(
+            method_name,
+            "each"
+                | "map"
+                | "collect"
+                | "flat_map"
+                | "select"
+                | "filter"
+                | "reject"
+                | "filter_map"
+                | "find"
+                | "detect"
+                | "any?"
+                | "all?"
+                | "none?"
+        );
+        if !Self::is_deferred_ref_receiver(receiver_type)
+            || param_count == 0
+            || !(single_param && param_count == 1 || first_param_only)
+        {
+            return None;
+        }
+        let element = Type::PatternIndexRef(
+            Box::new(Type::PatternRestRef(Box::new(receiver_type.clone()))),
+            0,
+        );
+        let mut types = vec![Type::Untyped; param_count];
+        types[0] = element;
+        Some(types)
     }
 
     fn is_deferred_ref_receiver(ty: &Type) -> bool {
