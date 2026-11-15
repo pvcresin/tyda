@@ -223,6 +223,8 @@ enum NarrowSubject {
     SelfMethod(String),
     /// A constant index read with a literal key (`ENV["TOKEN"]`), keyed by its source.
     ConstIndex(String),
+    /// A hash index read on a local or `@ivar` with a static key (`opts[:name]`).
+    HashKey(String, Type),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -2212,6 +2214,11 @@ impl Scope {
             | NarrowSubject::SelfMethod(name)
             | NarrowSubject::ConstIndex(name) => {
                 self.set_self_fact(name, ty);
+            }
+            NarrowSubject::HashKey(receiver, key) => {
+                if InferenceEngine::truthy_only(&ty).as_ref() == Some(&ty) {
+                    hash_key_flow::record_truthy_hash_key(self, receiver, key);
+                }
             }
         }
     }
@@ -59881,6 +59888,17 @@ impl<'a> InferenceEngine<'a> {
                     );
                 };
 
+                if let Some((receiver_name, key)) =
+                    self.truthy_hash_key_subject(class_name, &call, parse_result, scope)
+                {
+                    let current = self.infer_node_type(class_name, predicate, parse_result, scope);
+                    return Some(CondNarrowing {
+                        subject: NarrowSubject::HashKey(receiver_name, key),
+                        then_ty: Self::truthy_only(&current),
+                        else_ty: None,
+                    });
+                }
+
                 if let Some(key) = const_index_fact_key(predicate) {
                     let current = self.infer_node_type(class_name, predicate, parse_result, scope);
                     return Some(CondNarrowing {
@@ -63982,6 +64000,7 @@ impl<'a> InferenceEngine<'a> {
                 })
             }),
             NarrowSubject::ConstIndex(key) => scope.self_facts.get(key).cloned(),
+            NarrowSubject::HashKey(..) => None,
         }
     }
 

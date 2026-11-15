@@ -22,6 +22,8 @@ pub(super) enum HashKeyIdentity {
 pub(super) struct HashKeyFact {
     keys: Vec<HashKeyIdentity>,
     complete: bool,
+    /// Present keys whose value a truthiness guard has seen as truthy.
+    truthy: Vec<HashKeyIdentity>,
 }
 
 pub(super) type HashKeyFacts = HashMap<String, HashKeyFact>;
@@ -76,8 +78,21 @@ pub(super) fn merge_hash_key_facts(left: &HashKeyFacts, right: &HashKeyFacts) ->
             && right_fact.complete
             && keys.len() == left_fact.keys.len()
             && keys.len() == right_fact.keys.len();
+        let truthy = left_fact
+            .truthy
+            .iter()
+            .filter(|key| right_fact.truthy.contains(key))
+            .cloned()
+            .collect();
         if complete || !keys.is_empty() {
-            merged.insert(name.clone(), HashKeyFact { keys, complete });
+            merged.insert(
+                name.clone(),
+                HashKeyFact {
+                    keys,
+                    complete,
+                    truthy,
+                },
+            );
         }
     }
     merged
@@ -142,6 +157,7 @@ impl FactInvalidator<'_> {
             fact.keys.retain(
                 |key| !matches!(key, HashKeyIdentity::Local(local) if local == name.as_ref()),
             );
+            fact.truthy.retain(|key| fact.keys.contains(key));
             fact.complete &= fact.keys.len() == before;
         }
     }
@@ -254,7 +270,41 @@ impl<'pr> Visit<'pr> for FactInvalidator<'_> {
     }
 }
 
+/// After a truthiness guard on `recv[key]`, the key is present and its value is truthy.
+pub(super) fn record_truthy_hash_key(scope: &mut Scope, receiver: &str, key: &Type) {
+    let identity = HashKeyIdentity::Value(key.clone());
+    let fact = std::sync::Arc::make_mut(&mut scope.hash_key_facts)
+        .entry(receiver.to_string())
+        .or_default();
+    if !fact.keys.contains(&identity) {
+        fact.keys.push(identity.clone());
+    }
+    if !fact.truthy.contains(&identity) {
+        fact.truthy.push(identity);
+    }
+}
+
 impl InferenceEngine<'_> {
+    /// The receiver and static key of a guard like `opts[:name]`.
+    pub(super) fn truthy_hash_key_subject(
+        &mut self,
+        class_name: &str,
+        call: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<(String, Type)> {
+        if call.name().as_slice() != b"[]" || call.block().is_some() || call.is_safe_navigation() {
+            return None;
+        }
+        let name = receiver_name(&call.receiver()?)?;
+        let arguments: Vec<_> = call.arguments()?.arguments().iter().collect();
+        let [key_node] = arguments.as_slice() else {
+            return None;
+        };
+        let key_type = self.infer_node_type(class_name, key_node, parse_result, scope);
+        is_static_key_type(&key_type).then_some((name, key_type))
+    }
+
     pub(super) fn record_hash_key_write(
         &mut self,
         class_name: &str,
@@ -310,6 +360,7 @@ impl InferenceEngine<'_> {
                 HashKeyFact {
                     keys: Vec::new(),
                     complete: true,
+                    truthy: Vec::new(),
                 },
             );
         }
@@ -364,6 +415,9 @@ impl InferenceEngine<'_> {
         }
         let key_type = self.infer_node_type(class_name, &key_node, parse_result, scope);
         let identity = key_identity(&key_node, &key_type)?;
+        if fact.truthy.contains(&identity) {
+            return value_type.map(|value| Self::truthy_only(&value).unwrap_or(value));
+        }
         if fact.keys.contains(&identity) {
             return value_type;
         }
