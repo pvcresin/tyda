@@ -1,6 +1,7 @@
 use super::{DslFeature, MixinKind, Node, ParseResult, Plugin, PluginCx, PluginManifest};
 use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
+use crate::types::MethodOrigin;
 
 pub(super) struct Shrine;
 
@@ -85,12 +86,9 @@ impl<'a> InferenceEngine<'a> {
                 raw_return_type: uploaded_file_type.clone(),
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),

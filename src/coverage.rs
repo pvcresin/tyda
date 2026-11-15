@@ -354,7 +354,7 @@ impl CoverageAccumulator {
             };
 
             for method in &data.methods {
-                if method.rbs_file_source || method.synthetic_dsl_source {
+                if method.origin.is_rbs_file_source() || method.origin.is_synthetic_dsl() {
                     continue;
                 }
                 let signature = registry.lookup_method_sig_exact(

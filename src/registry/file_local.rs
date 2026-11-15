@@ -333,7 +333,7 @@ impl TypeRegistry {
             }
             let method_sigs = self.build_method_sigs_for_class(class_name, data);
             for (method_def, method) in data.methods.iter().zip(method_sigs) {
-                if method.rbs_file_source {
+                if method.origin.is_rbs_file_source() {
                     continue;
                 }
                 if !class_in_file {

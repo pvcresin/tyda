@@ -4,6 +4,7 @@
 //! derives a child [`Scope`], and helper names come from the scope level the
 //! same way `Mapper#name_for_action` builds them.
 
+use crate::types::MethodOrigin;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::rc::Rc;
@@ -569,12 +570,9 @@ fn build_route_helper_method(name: &str, suffix: &str, required_args: usize) -> 
         raw_return_type: Type::String,
         sorbet_modifier_comments: Vec::new(),
         rbs_annotated: true,
-        rbs_inline_annotated: false,
-        sig_annotated: false,
+        origin: MethodOrigin::SyntheticDsl,
         attr_ivar: None,
         is_singleton: false,
-        rbs_file_source: true,
-        synthetic_dsl_source: true,
         rbs_method_types: Default::default(),
         extra_overloads: Vec::new(),
         loc: None,

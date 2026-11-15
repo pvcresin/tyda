@@ -1,5 +1,6 @@
 use crate::rbs::ir as rbs_ir;
 use crate::sym::NamePath;
+use crate::types::MethodOrigin;
 use crate::types::Sym;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::Cell;
@@ -948,12 +949,9 @@ pub struct MethodDef {
     pub raw_return_type: Type,
     pub sorbet_modifier_comments: Vec<String>,
     pub rbs_annotated: bool,
-    pub rbs_inline_annotated: bool,
-    pub sig_annotated: bool,
+    pub origin: MethodOrigin,
     pub attr_ivar: Option<String>,
     pub is_singleton: bool,
-    pub rbs_file_source: bool,
-    pub synthetic_dsl_source: bool,
     pub rbs_method_types: Arc<Vec<rbs_ir::MethodType>>,
     pub extra_overloads: Vec<OverloadDef>,
     pub loc: Option<SourceLocation>,
@@ -1136,12 +1134,9 @@ impl DirtyPattern {
             raw_return_type: return_type,
             sorbet_modifier_comments: Vec::new(),
             rbs_annotated: true,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
+            origin: MethodOrigin::SyntheticDsl,
             attr_ivar: None,
             is_singleton: false,
-            rbs_file_source: true,
-            synthetic_dsl_source: true,
             rbs_method_types: Default::default(),
             extra_overloads: Vec::new(),
             loc: None,
@@ -1259,11 +1254,11 @@ pub struct ConstantCompletionCandidate {
 
 impl MethodDef {
     pub fn has_annotation(&self) -> bool {
-        self.rbs_annotated || self.sig_annotated
+        self.rbs_annotated || self.origin.is_sig()
     }
 
     pub fn is_external_rbs_source(&self) -> bool {
-        self.rbs_file_source && !self.synthetic_dsl_source
+        self.origin.is_external_rbs()
     }
 
     pub fn resolve_param_ref(&self, idx: usize) -> Option<Type> {
@@ -3821,10 +3816,8 @@ impl TypeRegistry {
             return;
         };
         for method in data.methods.iter_mut().skip(start) {
-            if !method.rbs_file_source || !method.synthetic_dsl_source {
-                let inner = Arc::make_mut(method);
-                inner.rbs_file_source = true;
-                inner.synthetic_dsl_source = true;
+            if method.origin != MethodOrigin::SyntheticDsl {
+                Arc::make_mut(method).origin = MethodOrigin::SyntheticDsl;
             }
         }
     }
@@ -3845,7 +3838,7 @@ impl TypeRegistry {
             self.has_mixin_hook_methods = true;
             self.mixin_hook_mixins_applied = false;
         }
-        let is_user = !method.rbs_file_source && !method.synthetic_dsl_source;
+        let is_user = method.origin.is_user_source();
         if is_user {
             self.file_contribution_names.insert(class_name.to_string());
             self.file_contribution_method_names.insert(method.name);
@@ -3869,7 +3862,7 @@ impl TypeRegistry {
             existing.name == method.name && existing.is_singleton == method.is_singleton
         }) {
             let existing = &data.methods[existing_idx];
-            if existing.rbs_file_source && !method.rbs_file_source {
+            if existing.origin.is_rbs_file_source() && !method.origin.is_rbs_file_source() {
                 if data
                     .cold()
                     .user_rbs_generic_methods
@@ -3928,7 +3921,7 @@ impl TypeRegistry {
     ) -> bool {
         let existing = self
             .lookup_method_def(class_name, method.name.as_str(), method.is_singleton)
-            .map(|existing| existing.synthetic_dsl_source);
+            .map(|existing| existing.origin.is_synthetic_dsl());
         if existing == Some(false) {
             return false;
         }
@@ -4020,7 +4013,7 @@ impl TypeRegistry {
                     return Some(Type::Bool);
                 }
                 let generated = Self::method_for_lookup_kind(data, column, Some(false))
-                    .filter(|method| method.synthetic_dsl_source && method.rbs_file_source)
+                    .filter(|method| method.origin == MethodOrigin::SyntheticDsl)
                     .map(|method| method.raw_return_type.clone());
                 return Some(generated.unwrap_or(accessor));
             }
@@ -4070,7 +4063,7 @@ impl TypeRegistry {
                     .methods
                     .iter_mut()
                     .find(|method| method.name.as_str() == column && !method.is_singleton)
-                && method.synthetic_dsl_source
+                && method.origin.is_synthetic_dsl()
             {
                 let method = Arc::make_mut(method);
                 method.raw_return_type = Type::Untyped;
@@ -5712,7 +5705,7 @@ impl TypeRegistry {
                 })
             })
             // An accessor backed by its own ivar replaces the column value, as `serialize` does.
-            .is_some_and(|method| method.synthetic_dsl_source && method.attr_ivar.is_none())
+            .is_some_and(|method| method.origin.is_synthetic_dsl() && method.attr_ivar.is_none())
     }
 
     fn lookup_method_return_type_resolved(
@@ -6937,7 +6930,7 @@ impl TypeRegistry {
             .and_then(|(owner, is_singleton)| {
                 self.lookup_method_def(&owner, method_name, is_singleton)
             })
-            .is_some_and(|method| !method.rbs_file_source)
+            .is_some_and(|method| !method.origin.is_rbs_file_source())
     }
 
     fn resolve_method_call_owner_ref<'a>(
@@ -7549,7 +7542,7 @@ impl TypeRegistry {
                 continue;
             };
             let has_candidate = data.methods.iter().any(|method| {
-                !method.synthetic_dsl_source
+                !method.origin.is_synthetic_dsl()
                     && Self::type_contains_param_ref_static(&method.raw_return_type)
             });
             if !has_candidate {
@@ -7566,7 +7559,7 @@ impl TypeRegistry {
                 .methods
                 .iter()
                 .filter_map(|method| {
-                    if method.synthetic_dsl_source
+                    if method.origin.is_synthetic_dsl()
                         || !Self::type_contains_param_ref_static(&method.raw_return_type)
                     {
                         return None;
@@ -7738,7 +7731,7 @@ impl TypeRegistry {
         // Generated query methods, and scopes, which return a relation of their owner.
         let owner_relation = crate::rails::relation_api::relation_element_type(returns)
             .is_some_and(|elem| matches!(elem, Type::Class(name) if *name == owner.as_ref()));
-        if !(method.synthetic_dsl_source || owner_relation)
+        if !(method.origin.is_synthetic_dsl() || owner_relation)
             || !self.class_inherits_from_active_record(class_name)
         {
             return None;
@@ -8165,7 +8158,7 @@ impl TypeRegistry {
                 .iter()
                 .filter_map(|method| {
                     // `initialize` param substitution only applies to synthesized Struct/Data `initialize`/`with` and `initialize` itself (`ParamRef` for ordinary methods is handled elsewhere).
-                    if !method.synthetic_dsl_source && method.name != "initialize" {
+                    if !method.origin.is_synthetic_dsl() && method.name != "initialize" {
                         return None;
                     }
                     if !Self::type_contains_param_ref_static(&method.raw_return_type) {
@@ -8733,7 +8726,11 @@ impl TypeRegistry {
         self.class_data
             .iter()
             .filter(|(_, data)| {
-                data.user_defined || data.methods.iter().any(|method| !method.rbs_file_source)
+                data.user_defined
+                    || data
+                        .methods
+                        .iter()
+                        .any(|method| !method.origin.is_rbs_file_source())
             })
             .map(|(name, _)| *name)
             .collect()
@@ -12417,7 +12414,7 @@ impl TypeRegistry {
         Self::is_mixin_hook_method(method.name.as_str(), method.is_singleton)
             && !method.has_annotation()
             && !method.is_external_rbs_source()
-            && !method.synthetic_dsl_source
+            && !method.origin.is_synthetic_dsl()
             && method.param_infos.iter().any(|param| {
                 matches!(
                     param.kind,
@@ -12941,7 +12938,7 @@ impl TypeRegistry {
                     || data
                         .methods
                         .iter()
-                        .any(|method| method.rbs_file_source && !method.synthetic_dsl_source)
+                        .any(|method| method.origin.is_external_rbs())
             })
     }
 
@@ -13129,9 +13126,9 @@ impl TypeRegistry {
             {
                 continue;
             }
-            let priority = if !method.rbs_file_source && method.has_annotation() {
+            let priority = if !method.origin.is_rbs_file_source() && method.has_annotation() {
                 1
-            } else if method.rbs_file_source {
+            } else if method.origin.is_rbs_file_source() {
                 2
             } else {
                 3
@@ -13177,7 +13174,13 @@ impl TypeRegistry {
         let methods: Vec<(Sym, bool, bool)> = data
             .methods
             .iter()
-            .map(|method| (method.name, method.is_singleton, method.rbs_file_source))
+            .map(|method| {
+                (
+                    method.name,
+                    method.is_singleton,
+                    method.origin.is_rbs_file_source(),
+                )
+            })
             .collect();
         // rebuild the method index: user definitions take priority, RBS/synthetic only fill empty keys (matches `add_method_def` shadowing order).
         for (idx, (method_name, is_singleton, rbs_file_source)) in methods.iter().enumerate() {
@@ -13779,12 +13782,9 @@ mod tests {
             raw_return_type,
             sorbet_modifier_comments: Vec::new(),
             rbs_annotated: false,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
+            origin: MethodOrigin::RubySource,
             attr_ivar: None,
             is_singleton: false,
-            rbs_file_source: false,
-            synthetic_dsl_source: false,
             rbs_method_types: Default::default(),
             extra_overloads: Vec::new(),
             loc: None,
@@ -14278,12 +14278,9 @@ mod tests {
                 raw_return_type: Type::Untyped,
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: false,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: None,

@@ -1,4 +1,5 @@
 use crate::rbs::ir as rbs_ir;
+use crate::types::MethodOrigin;
 use crate::types::Sym;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -733,12 +734,9 @@ fn apply_method_aliases(
                     raw_return_type: return_type,
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
+                    origin: MethodOrigin::RbsFile,
                     attr_ivar: original.attr_ivar.clone(),
                     is_singleton,
-                    rbs_file_source: true,
-                    synthetic_dsl_source: false,
                     rbs_method_types: std::sync::Arc::new(rbs_method_types),
                     extra_overloads: Vec::new(),
                     loc: None,
@@ -808,9 +806,7 @@ fn register_method_alias_side(
     alias_method.name = Sym::new(new_name);
     alias_method.is_singleton = is_singleton;
     alias_method.rbs_annotated = true;
-    alias_method.rbs_inline_annotated = false;
-    alias_method.rbs_file_source = true;
-    alias_method.synthetic_dsl_source = false;
+    alias_method.origin = MethodOrigin::RbsFile;
     alias_method.loc = None;
     registry.add_method_def(class_name, alias_method);
     if registry.method_visibility(&source_owner, old_name, source_is_singleton)
@@ -1635,12 +1631,9 @@ fn add_methods_to_registry(
                     raw_return_type: return_type.clone(),
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
+                    origin: MethodOrigin::RbsFile,
                     attr_ivar: method.attr_ivar.clone(),
                     is_singleton,
-                    rbs_file_source: true,
-                    synthetic_dsl_source: false,
                     rbs_method_types: std::sync::Arc::clone(&rbs_method_types),
                     extra_overloads: Vec::new(),
                     loc: None,

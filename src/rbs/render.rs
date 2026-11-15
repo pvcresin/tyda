@@ -284,7 +284,8 @@ fn renderable_constants(class: &ClassInfo) -> &[ConstantSig] {
 }
 
 fn is_renderable_method(method: &MethodSig, options: RenderOptions) -> bool {
-    !method.rbs_file_source || options.include_synthetic_dsl_methods && method.synthetic_dsl_source
+    !method.origin.is_rbs_file_source()
+        || options.include_synthetic_dsl_methods && method.origin.is_synthetic_dsl()
 }
 
 fn renderable_methods(class: &ClassInfo, options: RenderOptions) -> Vec<&MethodSig> {

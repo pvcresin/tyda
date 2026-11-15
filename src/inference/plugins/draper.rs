@@ -1,6 +1,7 @@
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
 use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
+use crate::types::MethodOrigin;
 use crate::types::SourceLocation;
 use ruby_prism::{CallNode, ParseResult};
 
@@ -144,9 +145,11 @@ impl<'a> InferenceEngine<'a> {
             delegated.loc = Some(loc);
             delegated.attr_ivar = None;
             delegated.rbs_annotated = true;
-            delegated.rbs_inline_annotated = false;
-            delegated.sig_annotated = false;
-            delegated.rbs_file_source = false;
+            delegated.origin = if delegated.origin.is_synthetic_dsl() {
+                MethodOrigin::SourceDsl
+            } else {
+                MethodOrigin::RubySource
+            };
             self.registry.add_method_def(class_name, delegated);
         }
     }
@@ -160,12 +163,9 @@ impl<'a> InferenceEngine<'a> {
                 raw_return_type: Type::Untyped,
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::SyntheticDsl,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: true,
-                synthetic_dsl_source: true,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: None,
@@ -272,12 +272,9 @@ impl<'a> InferenceEngine<'a> {
                 raw_return_type: Type::Class(Sym::new(class_name)),
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: true,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),
@@ -315,12 +312,9 @@ impl<'a> InferenceEngine<'a> {
                 raw_return_type: Type::Void,
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),

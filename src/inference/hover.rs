@@ -794,7 +794,9 @@ impl<'a> InferenceEngine<'a> {
                     &site.method_name,
                     prefer_singleton,
                 )
-                .filter(|sig| sig.rbs_annotated || sig.rbs_inline_annotated || sig.sig_annotated)
+                .filter(|sig| {
+                    sig.rbs_annotated || sig.origin.is_rbs_inline() || sig.origin.is_sig()
+                })
                 .map(|sig| {
                     let mut classes = BTreeSet::new();
                     for param in &sig.params {
@@ -825,7 +827,7 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         // Only annotated declarations qualify; `rbs_file_source` alone (call-site inference from an empty RBI def) is not treated as authoritative.
-        if !(sig.rbs_annotated || sig.rbs_inline_annotated || sig.sig_annotated) {
+        if !(sig.rbs_annotated || sig.origin.is_rbs_inline() || sig.origin.is_sig()) {
             return;
         }
         // For overloads, report only when every candidate is incompatible; stay silent if even one could match.
@@ -1466,8 +1468,8 @@ impl<'a> InferenceEngine<'a> {
                 continue;
             };
             if initialize.loc.is_none()
-                || initialize.rbs_file_source
-                || initialize.synthetic_dsl_source
+                || initialize.origin.is_rbs_file_source()
+                || initialize.origin.is_synthetic_dsl()
                 || !initialize.overloads.is_empty()
             {
                 continue;
@@ -1844,13 +1846,13 @@ impl<'a> InferenceEngine<'a> {
         };
         // Inferred or incomplete signatures cannot prove a union member's call arity.
         if require_explicit_signature {
-            if !(sig.rbs_annotated || sig.rbs_inline_annotated || sig.sig_annotated) {
+            if !(sig.rbs_annotated || sig.origin.is_rbs_inline() || sig.origin.is_sig()) {
                 return Vec::new();
             }
         } else if !(sig.rbs_annotated
-            || sig.rbs_inline_annotated
-            || sig.sig_annotated
-            || sig.rbs_file_source)
+            || sig.origin.is_rbs_inline()
+            || sig.origin.is_sig()
+            || sig.origin.is_rbs_file_source())
         {
             return Vec::new();
         }
@@ -1964,7 +1966,9 @@ impl<'a> InferenceEngine<'a> {
                             &site.method_name,
                             site.is_singleton,
                         )
-                        .filter(|sig| sig.has_explicit_signature() && !sig.synthetic_dsl_source)
+                        .filter(|sig| {
+                            sig.has_explicit_signature() && !sig.origin.is_synthetic_dsl()
+                        })
                 });
 
             let declared = site.declared.clone().or_else(|| {
@@ -3348,16 +3352,16 @@ impl<'a> InferenceEngine<'a> {
             .or_else(|| method_sig.as_ref().and_then(|sig| sig.loc));
         let mut origins = Vec::new();
         if let Some(sig) = method_sig.as_ref() {
-            if sig.rbs_file_source {
+            if sig.origin.is_rbs_file_source() {
                 origins.push("rbs_file".to_string());
             }
-            if sig.rbs_inline_annotated {
+            if sig.origin.is_rbs_inline() {
                 origins.push("rbs_comment".to_string());
             }
-            if sig.sig_annotated {
+            if sig.origin.is_sig() {
                 origins.push("sorbet_sig".to_string());
             }
-            if sig.synthetic_dsl_source {
+            if sig.origin.is_synthetic_dsl() {
                 origins.push("synthetic_dsl".to_string());
             }
             if sig.rbs_annotated && origins.is_empty() {
@@ -5616,6 +5620,7 @@ impl<'a> InferenceEngine<'a> {
 #[cfg(test)]
 mod arg_compat_tests {
     use super::*;
+    use crate::types::MethodOrigin;
 
     fn engine() -> InferenceEngine<'static> {
         InferenceEngine::new()
@@ -5666,12 +5671,9 @@ mod arg_compat_tests {
                 ),
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: false,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: None,
@@ -5988,12 +5990,9 @@ mod arg_compat_tests {
             raw_return_type: Type::Untyped,
             sorbet_modifier_comments: Vec::new(),
             rbs_annotated: false,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
+            origin: MethodOrigin::RubySource,
             attr_ivar: None,
             is_singleton: false,
-            rbs_file_source: false,
-            synthetic_dsl_source: false,
             rbs_method_types: Default::default(),
             extra_overloads: Vec::new(),
             loc: None,

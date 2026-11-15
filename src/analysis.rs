@@ -830,10 +830,7 @@ pub(crate) fn code_lens_method_sig(
     let mut resolved = external_sig;
     resolved.is_singleton = source_sig.is_singleton;
     resolved.rbs_annotated = source_sig.rbs_annotated;
-    resolved.rbs_inline_annotated = source_sig.rbs_inline_annotated;
-    resolved.sig_annotated = source_sig.sig_annotated;
-    resolved.rbs_file_source = source_sig.rbs_file_source;
-    resolved.synthetic_dsl_source = source_sig.synthetic_dsl_source;
+    resolved.origin = source_sig.origin;
     resolved.loc = source_sig.loc;
     resolved.is_private = source_sig.is_private;
     resolved
@@ -865,7 +862,7 @@ fn playground_display_projection(
         .iter()
         .filter_map(|(_class, sig)| {
             // Hide codelens for already-annotated methods, same as the LSP (it disappears once `#:` is inserted).
-            if sig.rbs_inline_annotated || sig.sig_annotated {
+            if sig.origin.is_rbs_inline() || sig.origin.is_sig() {
                 return None;
             }
             let loc = sig.loc?;
@@ -3747,7 +3744,7 @@ end
             external_registry
                 .get_methods("Module")
                 .iter()
-                .any(|method| method.name.as_str() == "===" && method.rbs_file_source),
+                .any(|method| method.name.as_str() == "===" && method.origin.is_rbs_file_source()),
             "the fixture must preload the standard RBS Module#==="
         );
         let override_snapshot = analyze_definitions_only_snapshot_timed(
@@ -3770,14 +3767,14 @@ end
             external_registry
                 .get_methods("Module")
                 .iter()
-                .any(|method| method.name.as_str() == "===" && method.rbs_file_source),
+                .any(|method| method.name.as_str() == "===" && method.origin.is_rbs_file_source()),
             "the RBS Module#=== slot should remain after snapshot merge"
         );
         assert!(
             !external_registry
                 .get_methods("Module")
                 .iter()
-                .any(|method| method.name.as_str() == "===" && !method.rbs_file_source),
+                .any(|method| method.name.as_str() == "===" && !method.origin.is_rbs_file_source()),
             "the source override should be hidden by the same-owner RBS slot"
         );
 
@@ -3844,7 +3841,7 @@ end
             external_registry
                 .get_methods("Integer")
                 .iter()
-                .any(|method| method.name.as_str() == "==" && method.rbs_file_source),
+                .any(|method| method.name.as_str() == "==" && method.origin.is_rbs_file_source()),
             "the fixture must preload the standard RBS Integer#== slot"
         );
 
@@ -3869,14 +3866,14 @@ end
             external_registry
                 .get_methods("Integer")
                 .iter()
-                .any(|method| method.name.as_str() == "==" && method.rbs_file_source),
+                .any(|method| method.name.as_str() == "==" && method.origin.is_rbs_file_source()),
             "the standard RBS Integer#== slot should remain after snapshot merge"
         );
         assert!(
             !external_registry
                 .get_methods("Integer")
                 .iter()
-                .any(|method| method.name.as_str() == "==" && !method.rbs_file_source),
+                .any(|method| method.name.as_str() == "==" && !method.origin.is_rbs_file_source()),
             "the source Integer#== override should be hidden by the same-owner RBS slot"
         );
     }
@@ -5703,7 +5700,7 @@ end
             .methods_for_file(file_path)
             .iter()
             .filter_map(|(_, sig)| {
-                if sig.rbs_inline_annotated || sig.sig_annotated {
+                if sig.origin.is_rbs_inline() || sig.origin.is_sig() {
                     return None;
                 }
                 let loc = sig.loc?;

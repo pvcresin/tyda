@@ -98,7 +98,7 @@ impl TypeRegistry {
         let locally_annotated: HashSet<(&str, bool)> = data
             .methods
             .iter()
-            .filter(|method| method.has_annotation() && !method.rbs_file_source)
+            .filter(|method| method.has_annotation() && !method.origin.is_rbs_file_source())
             .map(|method| (method.name.as_str(), method.is_singleton))
             .collect();
         for method_index in 0..all_methods.len() {
@@ -108,7 +108,7 @@ impl TypeRegistry {
             )) else {
                 continue;
             };
-            if all_methods[method_index].rbs_file_source
+            if all_methods[method_index].origin.is_rbs_file_source()
                 || locally_annotated.contains(&(
                     all_methods[method_index].name.as_str(),
                     all_methods[method_index].is_singleton,
@@ -477,7 +477,7 @@ impl TypeRegistry {
     ) {
         if method.has_annotation()
             || method.attr_ivar.is_some()
-            || method.rbs_file_source
+            || method.origin.is_rbs_file_source()
             || !sig.type_params.is_empty()
         {
             return;
@@ -995,10 +995,7 @@ impl TypeRegistry {
             sorbet_modifier_comments: method.sorbet_modifier_comments.clone(),
             is_singleton: method.is_singleton,
             rbs_annotated: method.rbs_annotated,
-            rbs_inline_annotated: method.rbs_inline_annotated,
-            sig_annotated: method.sig_annotated,
-            rbs_file_source: method.rbs_file_source,
-            synthetic_dsl_source: method.synthetic_dsl_source,
+            origin: method.origin,
             overloads,
             loc: method.loc,
             is_private: false,
@@ -1674,6 +1671,7 @@ fn mentions_bound_param(ty: &Type, bindings: &HashMap<usize, Sym>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MethodOrigin;
 
     #[test]
     fn type_param_names_follow_parameter_names() {
@@ -1703,12 +1701,13 @@ mod tests {
             raw_return_type: return_type,
             sorbet_modifier_comments: Vec::new(),
             rbs_annotated: false,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
+            origin: if rbs_file_source {
+                MethodOrigin::RbsFile
+            } else {
+                MethodOrigin::RubySource
+            },
             attr_ivar: None,
             is_singleton,
-            rbs_file_source,
-            synthetic_dsl_source: false,
             rbs_method_types: Arc::new(Vec::new()),
             extra_overloads: Vec::new(),
             loc: None,

@@ -1405,7 +1405,7 @@ impl<'a> InferenceEngine<'a> {
                 let Some(method) = self
                     .registry
                     .lookup_method_def(&owner, method_name, true)
-                    .filter(|method| !method.rbs_file_source && method.loc.is_some())
+                    .filter(|method| !method.origin.is_rbs_file_source() && method.loc.is_some())
                 else {
                     return;
                 };

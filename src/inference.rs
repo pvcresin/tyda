@@ -1,6 +1,7 @@
 use crate::prism_compat::LocationExt;
 use crate::rbs::ir as rbs_ir;
 use crate::sym::NamePath;
+use crate::types::MethodOrigin;
 use crate::types::Sym;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -983,6 +984,16 @@ impl InferNodeGuard {
 impl Drop for InferNodeGuard {
     fn drop(&mut self) {
         INFER_NODE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+fn def_origin(rbs_inline_annotated: bool, sig_annotated: bool) -> MethodOrigin {
+    if rbs_inline_annotated {
+        MethodOrigin::RbsInline
+    } else if sig_annotated {
+        MethodOrigin::SorbetSig
+    } else {
+        MethodOrigin::RubySource
     }
 }
 
@@ -3116,7 +3127,7 @@ impl<'a> InferenceEngine<'a> {
             && self
                 .registry
                 .lookup_method_def(owner, method_name, owner_is_singleton)
-                .is_some_and(|method| method.rbs_file_source)
+                .is_some_and(|method| method.origin.is_rbs_file_source())
     }
 
     pub(crate) fn set_required_stdlib_feature_loads(&mut self, loads: Vec<(String, usize)>) {
@@ -3411,12 +3422,9 @@ impl<'a> InferenceEngine<'a> {
                     raw_return_type: Type::Untyped,
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: false,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
+                    origin: MethodOrigin::RbsFile,
                     attr_ivar: None,
                     is_singleton: false,
-                    rbs_file_source: true,
-                    synthetic_dsl_source: false,
                     rbs_method_types: Default::default(),
                     extra_overloads: Vec::new(),
                     loc: None,
@@ -7272,7 +7280,7 @@ impl<'a> InferenceEngine<'a> {
         let method = self
             .registry
             .lookup_method_def(&owner, method_name, is_singleton)?;
-        if method.rbs_file_source
+        if method.origin.is_rbs_file_source()
             || method.rbs_method_types.len() > 1
             || !method.extra_overloads.is_empty()
         {
@@ -7609,7 +7617,7 @@ impl<'a> InferenceEngine<'a> {
         self.ensure_class_available(&owner);
         self.registry
             .lookup_method_def(&owner, "=~", false)
-            .is_some_and(|method| method.rbs_file_source)
+            .is_some_and(|method| method.origin.is_rbs_file_source())
     }
 
     fn static_regexp_literal_pattern(pattern: &[u8]) -> Option<&[u8]> {
@@ -7917,7 +7925,7 @@ impl<'a> InferenceEngine<'a> {
             if self
                 .registry
                 .lookup_method_def(&owner, method_name, false)
-                .is_none_or(|method| !method.rbs_file_source)
+                .is_none_or(|method| !method.origin.is_rbs_file_source())
             {
                 return false;
             }
@@ -7988,7 +7996,7 @@ impl<'a> InferenceEngine<'a> {
         let method_is_rbs = self
             .registry
             .lookup_method_def(&owner, "===", owner_is_singleton)
-            .is_some_and(|method| method.rbs_file_source);
+            .is_some_and(|method| method.origin.is_rbs_file_source());
 
         if target_is_singleton && owner == "Module" && !method_is_rbs {
             return (None, false);
@@ -8892,7 +8900,7 @@ impl<'a> InferenceEngine<'a> {
         let method = self
             .registry
             .lookup_method_def(&owner, "each", is_singleton)?;
-        if method.rbs_file_source || method.synthetic_dsl_source {
+        if method.origin.is_rbs_file_source() || method.origin.is_synthetic_dsl() {
             return None;
         }
         let meta = self
@@ -13400,7 +13408,7 @@ impl<'a> InferenceEngine<'a> {
         let method = self
             .registry
             .lookup_method_def(owner, method_name, is_singleton)?;
-        if !method.rbs_file_source || method.raw_return_type != Type::Untyped {
+        if !method.origin.is_rbs_file_source() || method.raw_return_type != Type::Untyped {
             return None;
         }
         let method_type = method
@@ -13447,7 +13455,7 @@ impl<'a> InferenceEngine<'a> {
             );
         };
         let raw_return = raw_return.unwrap_or_else(|| method_def.raw_return_type.clone());
-        if raw_return == Type::Untyped && !is_singleton && !method_def.rbs_file_source {
+        if raw_return == Type::Untyped && !is_singleton && !method_def.origin.is_rbs_file_source() {
             return Some(Type::MethodReturnRef(
                 Sym::new(owner),
                 Sym::new(method_name),
@@ -14599,7 +14607,7 @@ impl<'a> InferenceEngine<'a> {
         else {
             return;
         };
-        if method.rbs_file_source || method.synthetic_dsl_source {
+        if method.origin.is_rbs_file_source() || method.origin.is_synthetic_dsl() {
             return;
         }
         if !self
@@ -18083,8 +18091,8 @@ impl<'a> InferenceEngine<'a> {
             return;
         };
         if method_info.rbs_annotated
-            || method_info.sig_annotated
-            || method_info.rbs_inline_annotated
+            || method_info.origin.is_sig()
+            || method_info.origin.is_rbs_inline()
         {
             return;
         }
@@ -18212,12 +18220,9 @@ impl<'a> InferenceEngine<'a> {
                     raw_return_type: prop_type.clone(),
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: annotated,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
+                    origin: MethodOrigin::RubySource,
                     attr_ivar: Some(ivar_name.clone()),
                     is_singleton: false,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
                     rbs_method_types: Default::default(),
                     extra_overloads: Vec::new(),
                     loc: Some(prop_loc),
@@ -18238,12 +18243,9 @@ impl<'a> InferenceEngine<'a> {
                         raw_return_type: prop_type,
                         sorbet_modifier_comments: Vec::new(),
                         rbs_annotated: annotated,
-                        rbs_inline_annotated: false,
-                        sig_annotated: false,
+                        origin: MethodOrigin::RubySource,
                         attr_ivar: Some(ivar_name),
                         is_singleton: false,
-                        rbs_file_source: false,
-                        synthetic_dsl_source: false,
                         rbs_method_types: Default::default(),
                         extra_overloads: Vec::new(),
                         loc: Some(prop_loc),
@@ -18896,12 +18898,9 @@ impl<'a> InferenceEngine<'a> {
                     raw_return_type: shorthand.return_type,
                     sorbet_modifier_comments: sorbet_modifier_comments.clone(),
                     rbs_annotated: rbs_inline_annotated,
-                    rbs_inline_annotated,
-                    sig_annotated,
+                    origin: def_origin(rbs_inline_annotated, sig_annotated),
                     attr_ivar: None,
                     is_singleton,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
                     rbs_method_types: std::sync::Arc::new(all_method_types),
                     extra_overloads: Vec::new(),
                     loc: Some(method_loc),
@@ -19024,12 +19023,12 @@ impl<'a> InferenceEngine<'a> {
                     raw_return_type: return_type,
                     sorbet_modifier_comments: sorbet_modifier_comments.clone(),
                     rbs_annotated: rbs_inline_annotated || has_rbs_param_annotations,
-                    rbs_inline_annotated: rbs_inline_annotated || has_rbs_param_annotations,
-                    sig_annotated,
+                    origin: def_origin(
+                        rbs_inline_annotated || has_rbs_param_annotations,
+                        sig_annotated,
+                    ),
                     attr_ivar: None,
                     is_singleton,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
                     rbs_method_types: Default::default(),
                     extra_overloads: Vec::new(),
                     loc: Some(method_loc),
@@ -19417,12 +19416,9 @@ impl<'a> InferenceEngine<'a> {
                 raw_return_type: return_type,
                 sorbet_modifier_comments,
                 rbs_annotated: has_rbs_param_annotations,
-                rbs_inline_annotated: has_rbs_param_annotations,
-                sig_annotated: false,
+                origin: def_origin(has_rbs_param_annotations, false),
                 attr_ivar: None,
                 is_singleton,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(method_loc),
@@ -24055,7 +24051,7 @@ impl<'a> InferenceEngine<'a> {
                 ["===", "=="].into_iter().any(|method_name| {
                     registry
                         .lookup_method_def(owner, method_name, false)
-                        .is_some_and(|method| !method.rbs_file_source)
+                        .is_some_and(|method| !method.origin.is_rbs_file_source())
                 })
             })
         };
@@ -24114,7 +24110,7 @@ impl<'a> InferenceEngine<'a> {
         let is_source = self
             .registry
             .lookup_method_def(&owner, method_name, is_singleton)
-            .is_some_and(|method| !method.rbs_file_source && !method.synthetic_dsl_source);
+            .is_some_and(|method| method.origin.is_user_source());
         let flow = self
             .registry
             .lookup_method_block_meta(&owner, method_name, is_singleton)
@@ -31104,7 +31100,8 @@ impl<'a> InferenceEngine<'a> {
                                     scope.singleton_dispatch,
                                 )
                                 .is_some_and(|method| {
-                                    method.rbs_file_source && method.rbs_method_types.len() > 1
+                                    method.origin.is_rbs_file_source()
+                                        && method.rbs_method_types.len() > 1
                                 })
                             && let Some(result) = self.resolve_overloaded_call(
                                 &call_node,
@@ -43684,7 +43681,7 @@ impl<'a> InferenceEngine<'a> {
             .resolve_instance_method_call_owners("Integer", "times")
             .first()
             .and_then(|owner| self.registry.lookup_method_def(owner, "times", false))
-            .is_some_and(|method| !method.rbs_file_source)
+            .is_some_and(|method| !method.origin.is_rbs_file_source())
     }
 
     fn block_call_receiver_is_known_empty_array(
@@ -49591,7 +49588,7 @@ impl<'a> InferenceEngine<'a> {
                     || self
                         .registry
                         .lookup_method_def(&overload.owner_class, method_name, is_singleton)
-                        .is_some_and(|method| method.synthetic_dsl_source)
+                        .is_some_and(|method| method.origin.is_synthetic_dsl())
                 {
                     return Some(ret);
                 }
@@ -55073,13 +55070,13 @@ impl<'a> InferenceEngine<'a> {
     fn instance_method_has_source_override(&self, class_name: &str, method_name: &str) -> bool {
         self.registry
             .lookup_method_def(class_name, method_name, false)
-            .is_some_and(|method| !method.rbs_file_source)
+            .is_some_and(|method| !method.origin.is_rbs_file_source())
             || self
                 .registry
                 .resolve_instance_method_call_owners(class_name, method_name)
                 .iter()
                 .filter_map(|owner| self.registry.lookup_method_def(owner, method_name, false))
-                .any(|method| !method.rbs_file_source)
+                .any(|method| !method.origin.is_rbs_file_source())
             || self.external_method_call_has_user_source_definition(class_name, method_name, false)
     }
 
@@ -55199,7 +55196,7 @@ impl<'a> InferenceEngine<'a> {
     fn singleton_method_has_source_override(&self, class_name: &str, method_name: &str) -> bool {
         self.registry
             .lookup_method_def(class_name, method_name, true)
-            .is_some_and(|method| !method.rbs_file_source)
+            .is_some_and(|method| !method.origin.is_rbs_file_source())
             || self
                 .registry
                 .resolve_method_call_owners(class_name, method_name, true)
@@ -55208,7 +55205,7 @@ impl<'a> InferenceEngine<'a> {
                     self.registry
                         .lookup_method_def(owner, method_name, *is_singleton)
                 })
-                .any(|method| !method.rbs_file_source)
+                .any(|method| !method.origin.is_rbs_file_source())
             || self.external_method_call_has_user_source_definition(class_name, method_name, true)
     }
 
@@ -57920,7 +57917,7 @@ impl<'a> InferenceEngine<'a> {
         let Some(raw_return) = self
             .registry
             .lookup_method_def_for_dispatch(class_name, method_name, is_singleton)
-            .filter(|method| !method.rbs_file_source)
+            .filter(|method| !method.origin.is_rbs_file_source())
             .map(|method| method.raw_return_type.clone())
         else {
             return false;
@@ -58784,7 +58781,7 @@ impl<'a> InferenceEngine<'a> {
         let module_name = self
             .registry
             .lookup_method_def("Module", "name", false)
-            .is_some_and(|method| method.rbs_file_source);
+            .is_some_and(|method| method.origin.is_rbs_file_source());
         if !module_name {
             return None;
         }
@@ -60497,7 +60494,7 @@ impl<'a> InferenceEngine<'a> {
         let method_rbs = self
             .registry
             .lookup_method_def("Module", "===", false)
-            .is_some_and(|method| method.rbs_file_source);
+            .is_some_and(|method| method.origin.is_rbs_file_source());
         owner == "Module" && !is_singleton && method_rbs
     }
 
@@ -60520,7 +60517,7 @@ impl<'a> InferenceEngine<'a> {
                         external.method_call_has_user_source_definition(owner, "===", false)
                             || external
                                 .lookup_method_def(owner, "===", false)
-                                .is_some_and(|method| !method.rbs_file_source)
+                                .is_some_and(|method| !method.origin.is_rbs_file_source())
                     })
             })
     }
@@ -60559,7 +60556,7 @@ impl<'a> InferenceEngine<'a> {
                         ["===", "=="].into_iter().any(|method_name| {
                             external
                                 .lookup_method_def(owner, method_name, false)
-                                .is_some_and(|method| !method.rbs_file_source)
+                                .is_some_and(|method| !method.origin.is_rbs_file_source())
                         })
                     });
                     direct_override
@@ -62327,7 +62324,7 @@ impl<'a> InferenceEngine<'a> {
                 || self
                     .registry
                     .lookup_method_def(&owner, method_name, false)
-                    .is_none_or(|method| !method.rbs_file_source)
+                    .is_none_or(|method| !method.origin.is_rbs_file_source())
             {
                 return false;
             }
@@ -65241,8 +65238,8 @@ impl<'a> InferenceEngine<'a> {
         };
         // Skip if already annotated or no body
         if method_info.rbs_annotated
-            || method_info.sig_annotated
-            || method_info.rbs_inline_annotated
+            || method_info.origin.is_sig()
+            || method_info.origin.is_rbs_inline()
         {
             return;
         }
@@ -66713,7 +66710,7 @@ end
             .into_iter()
             .find(|(_, method)| method.name == "target_users")
             .expect("target_users method");
-        assert!(method.rbs_inline_annotated);
+        assert!(method.origin.is_rbs_inline());
         assert_eq!(method.return_type.widen().to_string(), "String");
     }
 
@@ -67199,7 +67196,7 @@ end
         let b = classes.iter().find(|c| c.name == "B");
         if let Some(b_class) = b {
             for m in &b_class.methods {
-                if m.rbs_file_source {
+                if m.origin.is_rbs_file_source() {
                     assert!(m.loc.is_none(), "RBS-loaded method should have no location");
                 }
             }

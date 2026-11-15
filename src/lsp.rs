@@ -3610,7 +3610,7 @@ fn choose_better_hover_result(
 }
 
 fn should_show_code_lens(sig: &MethodSig) -> bool {
-    !sig.rbs_file_source && !sig.rbs_inline_annotated && !sig.sig_annotated
+    !sig.origin.is_rbs_file_source() && !sig.origin.is_rbs_inline() && !sig.origin.is_sig()
 }
 
 #[cfg(test)]
@@ -3626,10 +3626,7 @@ fn resolve_code_lens_method_sig(
         analysis.method_definition_sig_at(byte_offset, lazy_loader, Some(workspace_registry))?;
     resolved.is_singleton = method.is_singleton;
     resolved.rbs_annotated = method.rbs_annotated;
-    resolved.rbs_inline_annotated = method.rbs_inline_annotated;
-    resolved.sig_annotated = method.sig_annotated;
-    resolved.rbs_file_source = method.rbs_file_source;
-    resolved.synthetic_dsl_source = method.synthetic_dsl_source;
+    resolved.origin = method.origin;
     resolved.loc = method.loc;
     Some(resolved)
 }
@@ -3823,6 +3820,7 @@ type MethodLocationKey = Option<(u32, u32)>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MethodOrigin;
     use crate::types::{ParamKind, Sym};
     use futures::{SinkExt, StreamExt};
     use tempfile::tempdir;
@@ -4835,10 +4833,7 @@ end
             sorbet_modifier_comments: Vec::new(),
             is_singleton: false,
             rbs_annotated: false,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
-            rbs_file_source: false,
-            synthetic_dsl_source: false,
+            origin: MethodOrigin::RubySource,
             overloads: Vec::new(),
             loc: Some(SourceLocation { line: 2, column: 2 }),
             is_private: false,
@@ -4861,10 +4856,7 @@ end
             sorbet_modifier_comments: Vec::new(),
             is_singleton: false,
             rbs_annotated: true,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
-            rbs_file_source: false,
-            synthetic_dsl_source: false,
+            origin: MethodOrigin::RubySource,
             overloads: Vec::new(),
             loc,
             is_private: false,
@@ -4882,10 +4874,7 @@ end
             sorbet_modifier_comments: Vec::new(),
             is_singleton: false,
             rbs_annotated: true,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
-            rbs_file_source: false,
-            synthetic_dsl_source: false,
+            origin: MethodOrigin::RubySource,
             overloads: Vec::new(),
             loc,
             is_private: false,
@@ -4913,10 +4902,7 @@ end
                     sorbet_modifier_comments: Vec::new(),
                     is_singleton: false,
                     rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
+                    origin: MethodOrigin::RubySource,
                     overloads: Vec::new(),
                     loc,
                     is_private: false,
@@ -4937,10 +4923,7 @@ end
                     sorbet_modifier_comments: Vec::new(),
                     is_singleton: false,
                     rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
+                    origin: MethodOrigin::RubySource,
                     overloads: Vec::new(),
                     loc,
                     is_private: false,
@@ -4968,10 +4951,7 @@ end
             sorbet_modifier_comments: Vec::new(),
             is_singleton: false,
             rbs_annotated: true,
-            rbs_inline_annotated: true,
-            rbs_file_source: false,
-            synthetic_dsl_source: false,
-            sig_annotated: false,
+            origin: MethodOrigin::RbsInline,
             overloads: Vec::new(),
             loc: None,
             is_private: false,
@@ -5026,8 +5006,8 @@ end
             .expect("sig-annotated method");
 
         assert!(!sig.rbs_annotated);
-        assert!(!sig.rbs_inline_annotated);
-        assert!(sig.sig_annotated);
+        assert!(!sig.origin.is_rbs_inline());
+        assert!(sig.origin.is_sig());
         assert!(!should_show_code_lens(sig));
     }
 
@@ -5044,7 +5024,7 @@ end
             .find(|(_class_name, sig)| sig.name == "foo")
             .expect("inline-annotated method");
 
-        assert!(sig.rbs_inline_annotated);
+        assert!(sig.origin.is_rbs_inline());
         assert!(!should_show_code_lens(sig));
     }
 
@@ -5067,7 +5047,7 @@ end
             .find(|(_class_name, sig)| sig.name == "foo")
             .expect("inline-annotated method");
 
-        assert!(sig.rbs_inline_annotated);
+        assert!(sig.origin.is_rbs_inline());
         assert!(!should_show_code_lens(sig));
     }
 
@@ -5099,9 +5079,9 @@ end
             .find(|(_class_name, sig)| sig.name == "name")
             .expect("user-defined method backed by external rbs");
 
-        assert!(!sig.rbs_file_source);
-        assert!(!sig.rbs_inline_annotated);
-        assert!(!sig.sig_annotated);
+        assert!(!sig.origin.is_rbs_file_source());
+        assert!(!sig.origin.is_rbs_inline());
+        assert!(!sig.origin.is_sig());
         assert!(should_show_code_lens(sig));
     }
 
@@ -8130,10 +8110,7 @@ end
             sorbet_modifier_comments: Vec::new(),
             is_singleton: false,
             rbs_annotated: false,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
-            rbs_file_source: false,
-            synthetic_dsl_source: false,
+            origin: MethodOrigin::RubySource,
             overloads: Vec::new(),
             loc: None,
             is_private: false,
@@ -8158,10 +8135,7 @@ end
             sorbet_modifier_comments: Vec::new(),
             is_singleton: false,
             rbs_annotated: false,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
-            rbs_file_source: false,
-            synthetic_dsl_source: false,
+            origin: MethodOrigin::RubySource,
             overloads: Vec::new(),
             loc: None,
             is_private: false,

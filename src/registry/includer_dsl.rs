@@ -1,5 +1,6 @@
 use super::*;
 use crate::rails::classify;
+use crate::types::MethodOrigin;
 
 const COLLECTION_PROXY: &str = "ActiveRecord::Associations::CollectionProxy";
 
@@ -52,7 +53,7 @@ impl TypeRegistry {
                 }
                 let Some(method) = self
                     .lookup_method_def(&owner, macro_name.as_str(), true)
-                    .filter(|method| !method.rbs_file_source && method.loc.is_some())
+                    .filter(|method| !method.origin.is_rbs_file_source() && method.loc.is_some())
                 else {
                     continue;
                 };
@@ -177,11 +178,8 @@ impl TypeRegistry {
             && self
                 .lookup_method_def(class_name, attr_name, false)
                 .is_some_and(|method| {
-                    !method.synthetic_dsl_source
-                        && (method.rbs_file_source
-                            || method.rbs_inline_annotated
-                            || method.sig_annotated
-                            || !method.rbs_annotated)
+                    !method.origin.is_synthetic_dsl()
+                        && (method.origin.is_explicit_signature() || !method.rbs_annotated)
                 });
         if self.has_method_variant(class_name, attr_name, false) && !getter_is_explicit {
             self.update_instance_method_return_type(class_name, attr_name, ty.clone());
@@ -194,12 +192,9 @@ impl TypeRegistry {
                     raw_return_type: ty.clone(),
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
+                    origin: MethodOrigin::RubySource,
                     attr_ivar: Some(format!("@{attr_name}")),
                     is_singleton: false,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
                     rbs_method_types: Default::default(),
                     extra_overloads: Vec::new(),
                     loc: Some(loc),
@@ -212,11 +207,8 @@ impl TypeRegistry {
             && self
                 .lookup_method_def(class_name, &setter_name, false)
                 .is_some_and(|method| {
-                    !method.synthetic_dsl_source
-                        && (method.rbs_file_source
-                            || method.rbs_inline_annotated
-                            || method.sig_annotated
-                            || !method.rbs_annotated)
+                    !method.origin.is_synthetic_dsl()
+                        && (method.origin.is_explicit_signature() || !method.rbs_annotated)
                 });
         if self.has_method_variant(class_name, &setter_name, false) && !setter_is_explicit {
             self.update_instance_method_return_type(class_name, &setter_name, ty.clone());
@@ -234,12 +226,9 @@ impl TypeRegistry {
                     raw_return_type: ty,
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
+                    origin: MethodOrigin::RubySource,
                     attr_ivar: Some(format!("@{attr_name}")),
                     is_singleton: false,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
                     rbs_method_types: Default::default(),
                     extra_overloads: Vec::new(),
                     loc: Some(loc),
@@ -296,12 +285,9 @@ impl TypeRegistry {
                 raw_return_type: return_type,
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),
@@ -318,12 +304,9 @@ impl TypeRegistry {
                 raw_return_type: Type::String,
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: false,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::SourceDsl,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: true,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),
@@ -346,12 +329,9 @@ impl TypeRegistry {
                 raw_return_type: return_type,
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: true,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),
