@@ -760,3 +760,54 @@ class Outer::Holder
   def part: -> Outer::Holder::Part
 end
 ```
+
+## An ivar set from a nil default parameter keeps nil
+
+### update
+
+```ruby
+class NilDefault
+  def initialize(value = nil)
+    @value = value
+  end
+
+  def value = @value
+end
+
+NilDefault.new
+NilDefault.new("a")
+```
+
+### result
+
+```rbs
+class NilDefault
+  def initialize: (?String? value) -> void
+  def value: -> String?
+end
+```
+
+## An ivar set from a default parameter that every caller passes keeps the argument type
+
+### update
+
+```ruby
+class PassedDefault
+  def initialize(value = nil)
+    @value = value
+  end
+
+  def value = @value
+end
+
+PassedDefault.new("a")
+```
+
+### result
+
+```rbs
+class PassedDefault
+  def initialize: (?String? value) -> void
+  def value: -> String
+end
+```

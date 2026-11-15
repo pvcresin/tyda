@@ -3484,7 +3484,16 @@ impl TypeRegistry {
             ),
             None => argument_binding::bind_positional_arguments(&positional_infos, arg_types),
         };
-        for (slot, arg_types) in param_types.iter_mut().zip(bound) {
+        for ((slot, arg_types), info) in param_types.iter_mut().zip(bound).zip(&positional_infos) {
+            // An omitted optional argument takes its default value.
+            if arg_types.is_empty()
+                && open_splat.is_none()
+                && info.kind == ParamKind::Optional
+                && let Some(default_type) = &info.default_type
+                && !Self::type_contains_param_ref_static(default_type)
+            {
+                Type::append_argument_parts(slot, default_type.clone());
+            }
             for arg_type in arg_types {
                 Type::append_argument_parts(slot, arg_type);
             }
