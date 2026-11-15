@@ -37,7 +37,8 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 
 ### Tyda 開発の高速化
 
-- [ ] 型が決まるまでの規則・deferred ref・SCC の経路を出力する `trace` を追加する（上記の explain と同じ基盤）
+- [ ] `--trace` に、型が `untyped` に縮退した箇所と理由（深さ・union・budget の上限、循環）を記録する
+- [ ] `--trace` の記録を MCP の `explain_type_at_position` でも使い、workspace 全体の由来を返す
 - [ ] subject 差分の後退から最小シナリオを自動で切り出す
 - [ ] `inference.rs`・`registry.rs`・`lsp.rs` を責務ごとに分割し、agent の読み込みとビルドの負荷を下げる
 

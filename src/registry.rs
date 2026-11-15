@@ -4433,6 +4433,9 @@ impl TypeRegistry {
     }
 
     pub fn add_call_site(&mut self, class_name: &str, call_site: CallSite) {
+        if crate::trace::enabled() {
+            crate::trace::record_call_site(class_name, &call_site);
+        }
         let mut call_site = call_site;
         self.intern_call_site(&mut call_site);
         self.mark_class_has_method_body_facts(class_name);
@@ -5269,6 +5272,9 @@ impl TypeRegistry {
     /// CLI rendering keeps propagated user-defined call sites so rendered
     /// signatures can still show project-derived parameter types.
     pub fn apply_cli_resolution(&mut self) {
+        if crate::trace::enabled() {
+            self.record_trace_bodies();
+        }
         let timing = std::env::var_os("TYDA_RESOLUTION_TIMING").is_some();
         let mut stamp = std::time::Instant::now();
         let report = |label: &str, stamp: &mut std::time::Instant| {
@@ -5563,6 +5569,9 @@ impl TypeRegistry {
     }
 
     pub fn add_ivar_type(&mut self, class_name: &str, ivar_name: &str, ty: Type) {
+        if crate::trace::enabled() {
+            crate::trace::record_ivar_write(class_name, ivar_name, false, &ty);
+        }
         self.mark_class_has_method_body_facts(class_name);
         let data = self.class_data_mut(class_name);
         let types = data.ivars.entry(Sym::new(ivar_name)).or_default();
@@ -8720,6 +8729,23 @@ impl TypeRegistry {
         self.resolve_method_return_refs_for_classes(&class_names);
     }
 
+    fn record_trace_bodies(&self) {
+        let bodies = self.class_data.iter().flat_map(|(class_name, data)| {
+            data.methods
+                .iter()
+                .filter(|method| !method.origin.is_rbs_file_source())
+                .map(|method| {
+                    (
+                        *class_name,
+                        method.name,
+                        method.is_singleton,
+                        method.raw_return_type.clone(),
+                    )
+                })
+        });
+        crate::trace::record_bodies(bodies);
+    }
+
     /// User-defined classes plus classes reopened by source bodies. Top-level `def`s live on
     /// `Object`, which is not user defined.
     fn source_method_class_names_unsorted(&self) -> Vec<Sym> {
@@ -8869,6 +8895,14 @@ impl TypeRegistry {
             let mut updated_keys: FxHashSet<(Sym, Sym)> = FxHashSet::default();
             let mut changed_slots: Vec<usize> = Vec::new();
             for (slot, update, reads) in results {
+                if crate::trace::enabled()
+                    && let Some(method) = self
+                        .class_data
+                        .get(&pending[slot].0)
+                        .and_then(|data| data.methods.get(pending[slot].1))
+                {
+                    crate::trace::record_reads(pending[slot].0, method.name, &reads);
+                }
                 wake[slot].reads = reads;
                 let Some((method_name, is_singleton, resolved)) = update else {
                     continue;

@@ -49,6 +49,7 @@ receiver 候補が ivar 参照だけなら再推論を起動しない。receiver
 | `diagnostics.rs` | missing method、unresolved constant、argument / return type mismatch などの判定 |
 | `lsp.rs` | LSP protocol、document / file cache、CodeLens、Hover、refresh |
 | `mcp.rs` | stdio MCP transport、位置指定推論、明示query時の型由来説明 |
+| `trace.rs` / `trace/` | `--trace` 指定時だけ型の由来（呼び出し箇所、ivar 代入、解決前の body、解決中に読んだ method）を記録し、出力スロットごとの JSON Lines と `trace why` / `trace diff` を提供 |
 | `main.rs` | CLI 入力展開、batch projection、RBS / diagnostics の出力 |
 
 Sorbet `sig { ... }` のブロック本体は型 DSL として扱い、通常コードとして推論しない。ブロック内の
@@ -235,6 +236,23 @@ TypeProf VSCode 拡張との互換性は protocol boundary に限る。推論結
 同一source内の呼び出し元、宣言元、本体の戻り値と呼び出しを明示query時だけ組み立てる。
 通常のCLI/LSP解析には追加の由来記録を行わない。MCPはtool callerが渡したRuby sourceと同梱stdlib RBS
 だけを使い、workspaceのファイル走査やproject固有RBSの読み込みはしない。詳細は [mcp.md](mcp.md) を参照する。
+
+## Trace
+
+`--trace` を指定すると `trace::enable` が process 全体の記録を有効にする。記録箇所は次の 4 つで、
+どれも最初に `trace::enabled()`（relaxed atomic の読み取り）を確認するため、指定しない実行では
+追加の状態も計算も持たない。
+
+1. 文と method 呼び出しの推論開始時に、file・行・囲む method を thread-local の site に積む
+2. `TypeRegistry::add_call_site` / `add_ivar_type` と singleton ivar の記録で、その site を証拠として残す。
+   registry の merge 中は site がないため記録しない
+3. `apply_cli_resolution` の開始時に source method の未解決の戻り値型（`body`）を写す
+4. `resolve_method_return_refs_for_classes` が slot wake 用に集めている読み取り（`RETURN_TYPE_READS`）を
+   slot ごとに残す
+
+最終 registry の render 後に `trace::write_jsonl` が出力スロットと記録を結合する。受け手の型が解決後に
+決まる method 参照は最終 registry で受け手を解決して依存先を決める。method の由来は
+`MethodDef::origin`（`MethodOrigin`）が単一の正本で、RBS の出力可否や外部宣言の判定もここから導く。
 
 ## 有界性と拡張点
 

@@ -153,6 +153,14 @@ struct Cli {
     )]
     include_synthetic_dsl_methods: bool,
 
+    #[arg(
+        long,
+        global = true,
+        value_name = "FILE",
+        help = "Also write where each inferred type came from to FILE as JSON Lines (see `tyda trace`)"
+    )]
+    trace: Option<PathBuf>,
+
     #[arg(help = "Files or directories to analyze (CLI mode)")]
     paths: Vec<PathBuf>,
 }
@@ -168,6 +176,32 @@ enum Commands {
     },
     #[cfg(feature = "mcp")]
     Mcp,
+    /// Read a trace written by `--trace`.
+    Trace {
+        #[command(subcommand)]
+        command: TraceCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum TraceCommand {
+    /// Print the slots and source lines a slot's type was computed from.
+    Why {
+        #[arg(help = "Trace file written by --trace")]
+        trace: PathBuf,
+        #[arg(help = "Slot id (Foo#bar, Foo.bar, Foo@ivar, Foo::CONST) or a suffix of one")]
+        id: String,
+        #[arg(long, help = "Stop printing dependencies below this depth")]
+        depth: Option<usize>,
+    },
+    /// Group slots whose types differ between two traces by the slot that changed first.
+    /// Exits with 1 when any type differs.
+    Diff {
+        #[arg(help = "Trace of the base revision")]
+        base: PathBuf,
+        #[arg(help = "Trace of the head revision")]
+        head: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -271,6 +305,7 @@ fn main() {
             eprintln!("Usage: tyda lsp --version | tyda lsp --lsp");
             std::process::exit(1);
         }
+        Some(Commands::Trace { command }) => run_trace_command(command),
         #[cfg(feature = "mcp")]
         Some(Commands::Mcp) => {
             if let Err(error) = run_mcp_server() {
@@ -282,6 +317,13 @@ fn main() {
             if cli.coverage && (cli.debug || cli.diagnostics || cli.verbose) {
                 eprintln!(
                     "--coverage cannot be combined with --debug, --diagnostics, or --verbose"
+                );
+                std::process::exit(2);
+            }
+            if cli.trace.is_some() && (cli.coverage || cli.diagnostics || cli.verbose || cli.debug)
+            {
+                eprintln!(
+                    "--trace cannot be combined with --coverage, --diagnostics, --verbose, or --debug"
                 );
                 std::process::exit(2);
             }
@@ -301,6 +343,7 @@ fn main() {
                     include_synthetic_dsl_methods: cli.include_synthetic_dsl_methods,
                 },
                 cli.dsl.as_deref(),
+                cli.trace.as_deref(),
             );
         }
     }
@@ -440,10 +483,72 @@ async fn wait_for_termination_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
+fn run_trace_command(command: TraceCommand) {
+    use tyda::trace::query::{Trace, diff, why};
+    let load = |path: &Path| {
+        Trace::load(path).unwrap_or_else(|error| {
+            eprintln!("failed to read trace {}: {error}", path.display());
+            std::process::exit(2);
+        })
+    };
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    match command {
+        TraceCommand::Why { trace, id, depth } => {
+            let trace = load(&trace);
+            let matches = trace.find(&id);
+            match matches.as_slice() {
+                [] => {
+                    eprintln!("no slot matches `{id}`");
+                    std::process::exit(1);
+                }
+                [single] => {
+                    why(&trace, single, depth, &mut stdout).ok();
+                }
+                many => {
+                    eprintln!("`{id}` matches several slots:");
+                    for candidate in many {
+                        eprintln!("  {candidate}");
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        TraceCommand::Diff { base, head } => {
+            let changed = diff(&load(&base), &load(&head), &mut stdout).unwrap_or(0);
+            if changed > 0 {
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn write_trace(registry: &tyda::registry::TypeRegistry, path: &Path) {
+    use std::io::Write;
+    let result = fs::File::create(path).and_then(|file| {
+        let mut writer = std::io::BufWriter::new(file);
+        tyda::trace::write_jsonl(registry, &mut writer)?;
+        writer.flush()
+    });
+    if let Err(error) = result {
+        eprintln!("failed to write trace {}: {error}", path.display());
+        std::process::exit(1);
+    }
+}
+
+fn run_cli(
+    paths: &[PathBuf],
+    options: CliRunOptions,
+    dsl_spec: Option<&str>,
+    trace_path: Option<&Path>,
+) {
     use std::io::{BufWriter, Write};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    if trace_path.is_some() {
+        tyda::trace::enable();
+    }
 
     let start = Instant::now();
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
@@ -1127,6 +1232,9 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
         )
         .ok();
         stdout.flush().ok();
+        if let Some(path) = trace_path {
+            write_trace(&workspace_rbs, path);
+        }
         let _render_elapsed = render_start.elapsed();
         processed_count.store(total_files, Ordering::Relaxed);
     }

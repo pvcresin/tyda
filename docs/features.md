@@ -129,6 +129,34 @@ base/head の同じ release binary で一度ずつ解析し、解析ファイル
 サイトの減少、`unknown` の増加を失敗として検出する。`untyped` の増加は警告として結果 JSON
 と CI log に残す。Perf と同じ matrix 内で実行するため、追加の Rust build や PR comment は発生しない。
 
+### 型の由来 trace
+
+`--trace <FILE>` は通常の RBS 出力を変えずに、各出力スロットの型がどのコードから決まったかを
+JSON Lines で FILE に書き出す。1 行が 1 スロットで、`id` は `Foo#bar`（instance method）、
+`Foo.bar`（singleton method）、`Foo@ivar`、`Foo::CONST` の形をとる。
+
+- `type`: RBS 出力と同じ宣言文字列
+- `origin`: 宣言の由来。`ruby_source`、`rbs_inline`（`#:` / `# @rbs`）、`sorbet_sig`、`rbi`、
+  `rbs_file`、`synthetic_dsl`（plugin / framework が生成）、`source_dsl`（Ruby source の DSL 呼び出しが生成）
+- `file` / `line`: 宣言の位置
+- `body`: 全体解決の前に method 本体が返していた型。未解決の参照を `<Foo#bar>`、`<@ivar>`、
+  `<param 0>` のように残す
+- `deps`: 型を決めるときに読んだスロット。全体解決で実際に読んだ method と、`body` に残る参照
+- `callers`: 引数の型を渡した呼び出し箇所（`file` / `line` / `in` / 引数の型）
+- `writes`: instance variable への代入箇所
+
+出力されない依存先（外部 RBS、RBI、生成 DSL method、見つからない参照）も、参照された分だけ
+`rendered: false` や `kind: "unresolved"` のレコードとして出力する。
+
+`tyda trace why <FILE> <id>` は依存を末端まで辿り、各スロットの宣言行・呼び出し行・代入行の
+ソースを並べて表示する。`tyda trace diff <BASE> <HEAD>` は型が変わったスロットを、依存先で
+最初に型が変わったスロット（root cause）ごとにまとめ、その root の `body`・呼び出し元・代入・依存の
+差分を表示する。型の差分があれば終了コード 1 を返す。subject の RBS が CI で変わったときは、
+base と head で `--trace` を付けて解析し、`trace diff` で原因のスロットを特定する。
+
+記録は `--trace` を指定した実行だけが行う。指定しない実行では各記録箇所が 1 回の atomic 読み取りで
+終わり、追加の状態を持たない。
+
 ## Rails / gem DSL
 
 Rails の ActiveRecord、ActiveModel、ActiveSupport、ActionController、ActionMailer、ActiveJob、
@@ -188,6 +216,9 @@ Ruby エディタを主領域として PC / 横長画面では左、狭い画面
 cargo run -- <path>                         # RBS
 cargo run -- --diagnostics <path>           # JSON Lines diagnostics
 cargo run -- --coverage <path>              # JSON type coverage
+cargo run -- --trace trace.jsonl <path>     # RBS + where each type came from
+cargo run -- trace why trace.jsonl 'Foo#bar'
+cargo run -- trace diff base.jsonl head.jsonl
 cargo run -- --lsp                          # LSP server
 cargo run -- mcp                            # MCP server for AI agents
 cargo run -- --include-synthetic-dsl-methods <path>

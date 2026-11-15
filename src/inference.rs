@@ -12812,6 +12812,9 @@ impl<'a> InferenceEngine<'a> {
     }
 
     fn record_singleton_ivar(&mut self, class_name: &str, ivar_name: &str, ty: Type) {
+        if crate::trace::enabled() {
+            crate::trace::record_ivar_write(class_name, ivar_name, true, &ty);
+        }
         let bucket = self
             .singleton_ivars
             .entry((class_name.to_string(), ivar_name.to_string()))
@@ -26701,6 +26704,28 @@ impl<'a> InferenceEngine<'a> {
         statement_exits
     }
 
+    fn enter_trace_site(
+        &self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<crate::trace::SiteGuard> {
+        if !crate::trace::enabled() {
+            return None;
+        }
+        let line = offset_to_location(parse_result.source(), node.location().start_offset()).line;
+        let method = scope
+            .method_name
+            .as_deref()
+            .map(|name| crate::trace::method_id(class_name, name, scope.singleton_dispatch));
+        Some(crate::trace::enter_site(
+            self.file_path.as_ref(),
+            line,
+            method,
+        ))
+    }
+
     fn record_ivar_write(
         &mut self,
         class_name: &str,
@@ -26732,6 +26757,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) -> (bool, bool) {
+        let _trace_site = self.enter_trace_site(class_name, node, parse_result, scope);
         if !scope.array_first_facts.is_empty()
             && !Self::statement_consumes_array_first_fact(node, &scope.array_first_facts)
         {
@@ -30601,6 +30627,7 @@ impl<'a> InferenceEngine<'a> {
 
             Node::CallNode { .. } => {
                 let call_node = node.as_call_node().expect("must be CallNode");
+                let _trace_site = self.enter_trace_site(class_name, node, parse_result, scope);
                 let mut method_name =
                     String::from_utf8_lossy(call_node.name().as_slice()).to_string();
                 self.record_regexp_block_captures(&call_node);
