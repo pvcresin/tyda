@@ -55,7 +55,7 @@ struct ExplainTypeAtPositionParams {
     )]
     max_depth: Option<u8>,
     #[schemars(
-        description = "Optional path to a trace written by `tyda --trace` for the whole project. When set, the result also lists that trace's records for the queried method and the slots it depends on, up to max_depth hops."
+        description = "Optional path to a trace written by `tyda trace` for the whole project. When set, the result also lists that trace's records for the queried method and the slots it depends on, up to max_depth hops."
     )]
     trace_path: Option<String>,
 }
@@ -216,7 +216,7 @@ fn build_explanation_result(
     })
 }
 
-/// Records of the queried method in a `--trace` file, with the slots it depends on.
+/// Records of the queried method in a `tyda trace` file, with the slots it depends on.
 fn workspace_trace_json(path: &str, explanation: &TypeExplanation, max_depth: u8) -> Value {
     let Some(method) = explanation
         .steps

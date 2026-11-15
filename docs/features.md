@@ -131,8 +131,8 @@ base/head の同じ release binary で一度ずつ解析し、解析ファイル
 
 ### 型の由来 trace
 
-`--trace <FILE>` は通常の RBS 出力を変えずに、各出力スロットの型がどのコードから決まったかを
-JSON Lines で FILE に書き出す。1 行が 1 スロットで、`id` は `Foo#bar`（instance method）、
+`tyda trace <paths>` は RBS の代わりに、各出力スロットの型がどのコードから決まったかを JSON Lines で
+標準出力に書き出す。`-o <FILE>` を付けると FILE に書く。1 行が 1 スロットで、`id` は `Foo#bar`（instance method）、
 `Foo.bar`（singleton method）、`Foo@ivar`、`Foo::CONST` の形をとる。
 
 - `type`: RBS 出力と同じ宣言文字列
@@ -150,14 +150,13 @@ JSON Lines で FILE に書き出す。1 行が 1 スロットで、`id` は `Foo
 `rendered: false` や `kind: "unresolved"` のレコードとして出力する。
 
 `tyda trace why <FILE> <id>` は依存を末端まで辿り、各スロットの宣言行・呼び出し行・代入行の
-ソースを並べて表示する。`tyda trace diff <BASE> <HEAD>` は型が変わったスロットを、依存先で
-最初に型が変わったスロット（root cause）ごとにまとめ、その root の `body`・呼び出し元・代入・依存の
-差分を表示する。型の差分があれば終了コード 1 を返す。subject の RBS が CI で変わったときは、
-base と head で `--trace` を付けて解析し、`trace diff` で原因のスロットを特定する。
+ソースを並べて表示する。出力は決定的でスロット順に並ぶため、2 回分の trace は通常の `diff` で比べられる。
+subject の RBS が CI で変わったときは、base と head で `tyda trace` を実行して diff を取り、変わったスロットを
+`trace why` で辿る。
 
-記録は `--trace` を指定した実行だけが行う。指定しない実行では各記録箇所が 1 回の atomic 読み取りで
+記録は `tyda trace` の実行だけが行う。指定しない実行では各記録箇所が 1 回の atomic 読み取りで
 終わり、追加の状態を持たない。
-trace の出力は決定的で、同じ入力なら byte 単位で一致する。gitlab 全体では解析時間が約 1.4 倍になり、
+同じ入力なら trace は byte 単位で一致する。gitlab 全体では解析時間が約 1.4 倍になり、
 出力は約 54MB になる。
 
 ## Rails / gem DSL
@@ -219,9 +218,8 @@ Ruby エディタを主領域として PC / 横長画面では左、狭い画面
 cargo run -- <path>                         # RBS
 cargo run -- --diagnostics <path>           # JSON Lines diagnostics
 cargo run -- --coverage <path>              # JSON type coverage
-cargo run -- --trace trace.jsonl <path>     # RBS + where each type came from
+cargo run -- trace <path> > trace.jsonl     # where each type came from (JSON Lines)
 cargo run -- trace why trace.jsonl 'Foo#bar'
-cargo run -- trace diff base.jsonl head.jsonl
 cargo run -- --lsp                          # LSP server
 cargo run -- mcp                            # MCP server for AI agents
 cargo run -- --include-synthetic-dsl-methods <path>

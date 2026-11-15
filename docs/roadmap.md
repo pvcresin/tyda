@@ -29,7 +29,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] 推論シグネチャを RBS 形式で返すファイル / クラス outline を MCP と CLI に追加する
 - [ ] レシーバ型で絞った references / callers を LSP と MCP に追加する。名前一致の候補とは「確実 / 可能性あり」で区別する
 - [ ] 変更ファイルと影響範囲だけを検査し、前回から増えた診断だけを短いテキストと exit code で返す check を追加する。agent 向けの hook テンプレートも用意する
-- [ ] `explain_type_at_position` で、`untyped` がどこから流れ込んだかを示す（`--trace` の縮退理由の記録を使う）
+- [ ] `explain_type_at_position` で、`untyped` がどこから流れ込んだかを示す（`tyda trace` の縮退理由の記録を使う）
 - [ ] シグネチャ変更で影響を受ける呼び出し箇所を返す
 - [ ] クエリごとに時間の予算を設け、超過した部分は `untyped` と diagnostic を返す（固定の深さ制限は使わない）
 - [ ] MCP 設定・hook・agent 向け指示をまとめて生成する導入コマンドを追加する
@@ -37,7 +37,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 
 ### Tyda 開発の高速化
 
-- [ ] `--trace` に、型が `untyped` に縮退した箇所と理由（深さ・union・budget の上限、循環）を記録する
+- [ ] `tyda trace` に、型が `untyped` に縮退した箇所と理由（深さ・union・budget の上限、循環）を記録する
 - [ ] method 戻り値解決の slot wake で、`resolve_params_cache` の hit 時に読み取り（`RETURN_TYPE_READS`）が記録されず、読み取り集合が実行ごとに変わる。RBS 出力の差は subject で未観測だが、起こすべき再評価を逃しうるため、cache に読み取りを持たせて hit 時に再生する（attr reader cache と同じ方式）
 - [ ] subject 差分の後退から最小シナリオを自動で切り出す
 - [ ] `inference.rs`・`registry.rs`・`lsp.rs` を責務ごとに分割し、agent の読み込みとビルドの負荷を下げる

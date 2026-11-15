@@ -1,4 +1,4 @@
-//! Opt-in record of where inferred types come from (`tyda --trace`).
+//! Opt-in record of where inferred types come from (`tyda trace`).
 //!
 //! Recording is off by default. Every hook checks [`enabled`] first, so a normal run pays
 //! one relaxed atomic load per hook and keeps no extra state. When enabled, hooks push

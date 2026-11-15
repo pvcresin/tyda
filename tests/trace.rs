@@ -93,21 +93,36 @@ fn strings(value: &Value) -> Vec<&str> {
 const FILES: [&str; 3] = ["user.rb", "app.rb", "signed.rb"];
 
 #[test]
-fn trace_records_sources_without_changing_rbs_output() {
+fn trace_prints_sources_to_stdout_or_file() {
     let dir = tempfile::tempdir().unwrap();
     write_sources(dir.path());
 
-    let plain = tyda(dir.path(), &FILES);
-    let mut args = vec!["--trace", "trace.jsonl"];
+    let mut args = vec!["trace"];
     args.extend(FILES);
-    let traced = tyda(dir.path(), &args);
-    assert!(traced.status.success());
-    assert_eq!(plain.stdout, traced.stdout, "--trace must not change RBS");
+    let printed = tyda(dir.path(), &args);
+    assert!(printed.status.success());
+    assert_eq!(
+        tyda(dir.path(), &args).stdout,
+        printed.stdout,
+        "the trace must be the same on every run"
+    );
+
+    let mut args = vec!["trace", "-o", "trace.jsonl"];
+    args.extend(FILES);
+    let written = tyda(dir.path(), &args);
+    assert!(written.status.success());
+    assert!(written.stdout.is_empty());
+    assert_eq!(
+        fs::read(dir.path().join("trace.jsonl")).unwrap(),
+        printed.stdout
+    );
 
     let records = read_trace(&dir.path().join("trace.jsonl"));
+    let rbs = String::from_utf8(tyda(dir.path(), &FILES).stdout).unwrap();
 
     let name = record(&records, "User#name");
     assert_eq!(name["type"], "def name: -> String");
+    assert!(rbs.contains("  def name: -> String\n"), "{rbs}");
     assert_eq!(name["origin"], "ruby_source");
     assert_eq!(name["file"], "user.rb");
     assert_eq!(name["line"], 3);
@@ -141,7 +156,7 @@ fn trace_records_sources_without_changing_rbs_output() {
 fn trace_why_prints_dependencies_with_source_lines() {
     let dir = tempfile::tempdir().unwrap();
     write_sources(dir.path());
-    let mut args = vec!["--trace", "trace.jsonl"];
+    let mut args = vec!["trace", "-o", "trace.jsonl"];
     args.extend(FILES);
     assert!(tyda(dir.path(), &args).status.success());
 
@@ -164,42 +179,10 @@ fn trace_why_prints_dependencies_with_source_lines() {
 }
 
 #[test]
-fn trace_diff_groups_changed_slots_by_root_cause() {
-    let dir = tempfile::tempdir().unwrap();
-    write_sources(dir.path());
-    let mut args = vec!["--trace", "base.jsonl"];
-    args.extend(FILES);
-    assert!(tyda(dir.path(), &args).status.success());
-
-    fs::write(
-        dir.path().join("user.rb"),
-        USER_RB.replace("LIMIT * 2", "LIMIT.to_s"),
-    )
-    .unwrap();
-    let mut args = vec!["--trace", "head.jsonl"];
-    args.extend(FILES);
-    assert!(tyda(dir.path(), &args).status.success());
-
-    let same = tyda(dir.path(), &["trace", "diff", "base.jsonl", "base.jsonl"]);
-    assert_eq!(same.status.code(), Some(0));
-
-    let output = tyda(dir.path(), &["trace", "diff", "base.jsonl", "head.jsonl"]);
-    assert_eq!(output.status.code(), Some(1));
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("root User#default_age"), "{stdout}");
-    assert!(stdout.contains("body: Integer -> String"), "{stdout}");
-    assert!(
-        stdout.contains("User#age: def age: -> Integer -> def age: -> String"),
-        "{stdout}"
-    );
-    assert!(!stdout.contains("root User#age"), "{stdout}");
-}
-
-#[test]
 fn trace_rejects_other_output_modes() {
     let dir = tempfile::tempdir().unwrap();
     write_sources(dir.path());
-    let output = tyda(dir.path(), &["--trace", "t.jsonl", "--coverage", "user.rb"]);
+    let output = tyda(dir.path(), &["trace", "--coverage", "user.rb"]);
     assert_eq!(output.status.code(), Some(2));
 }
 
@@ -233,11 +216,11 @@ fn trace_links_methods_resolved_inside_one_file() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("shop.rb"), SHOP_RB).unwrap();
     assert!(
-        tyda(dir.path(), &["--trace", "base.jsonl", "shop.rb"])
+        tyda(dir.path(), &["trace", "-o", "trace.jsonl", "shop.rb"])
             .status
             .success()
     );
-    let records = read_trace(&dir.path().join("base.jsonl"));
+    let records = read_trace(&dir.path().join("trace.jsonl"));
     assert_eq!(
         strings(&record(&records, "Cart#summary")["deps"]),
         ["Cart#total"]
@@ -246,26 +229,8 @@ fn trace_links_methods_resolved_inside_one_file() {
         strings(&record(&records, "Cart#total")["deps"]),
         ["Item#price"]
     );
-
-    fs::write(
-        dir.path().join("shop.rb"),
-        SHOP_RB.replace("Item.new(100)", "Item.new(\"100\")"),
-    )
-    .unwrap();
-    assert!(
-        tyda(dir.path(), &["--trace", "head.jsonl", "shop.rb"])
-            .status
-            .success()
-    );
-    let output = tyda(dir.path(), &["trace", "diff", "base.jsonl", "head.jsonl"]);
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        stdout.contains("5 changed slots, 1 root causes"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("root Item#initialize"), "{stdout}");
-    assert!(
-        stdout.contains("+ caller shop.rb:11 (\"100\") in Cart#initialize"),
-        "{stdout}"
+    assert_eq!(
+        strings(&record(&records, "Item@price")["deps"]),
+        ["Item#initialize"]
     );
 }

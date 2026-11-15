@@ -153,14 +153,6 @@ struct Cli {
     )]
     include_synthetic_dsl_methods: bool,
 
-    #[arg(
-        long,
-        global = true,
-        value_name = "FILE",
-        help = "Also write where each inferred type came from to FILE as JSON Lines (see `tyda trace`)"
-    )]
-    trace: Option<PathBuf>,
-
     #[arg(help = "Files or directories to analyze (CLI mode)")]
     paths: Vec<PathBuf>,
 }
@@ -176,10 +168,20 @@ enum Commands {
     },
     #[cfg(feature = "mcp")]
     Mcp,
-    /// Read a trace written by `--trace`.
+    /// Print where each inferred type came from as JSON Lines, instead of RBS.
+    #[command(args_conflicts_with_subcommands = true)]
     Trace {
         #[command(subcommand)]
-        command: TraceCommand,
+        command: Option<TraceCommand>,
+        #[arg(
+            short,
+            long,
+            value_name = "FILE",
+            help = "Write the trace to FILE instead of stdout"
+        )]
+        output: Option<PathBuf>,
+        #[arg(help = "Files or directories to analyze")]
+        paths: Vec<PathBuf>,
     },
 }
 
@@ -187,20 +189,12 @@ enum Commands {
 enum TraceCommand {
     /// Print the slots and source lines a slot's type was computed from.
     Why {
-        #[arg(help = "Trace file written by --trace")]
+        #[arg(help = "Trace file written by `tyda trace`")]
         trace: PathBuf,
         #[arg(help = "Slot id (Foo#bar, Foo.bar, Foo@ivar, Foo::CONST) or a suffix of one")]
         id: String,
         #[arg(long, help = "Stop printing dependencies below this depth")]
         depth: Option<usize>,
-    },
-    /// Group slots whose types differ between two traces by the slot that changed first.
-    /// Exits with 1 when any type differs.
-    Diff {
-        #[arg(help = "Trace of the base revision")]
-        base: PathBuf,
-        #[arg(help = "Trace of the head revision")]
-        head: PathBuf,
     },
 }
 
@@ -305,7 +299,42 @@ fn main() {
             eprintln!("Usage: tyda lsp --version | tyda lsp --lsp");
             std::process::exit(1);
         }
-        Some(Commands::Trace { command }) => run_trace_command(command),
+        Some(Commands::Trace {
+            command: Some(command),
+            ..
+        }) => run_trace_command(command),
+        Some(Commands::Trace {
+            command: None,
+            output,
+            paths,
+        }) => {
+            if cli.coverage || cli.diagnostics || cli.verbose || cli.debug {
+                eprintln!(
+                    "tyda trace cannot be combined with --coverage, --diagnostics, --verbose, or --debug"
+                );
+                std::process::exit(2);
+            }
+            if paths.is_empty() {
+                eprintln!("Usage: tyda trace [-o FILE] <paths...> | tyda trace why <trace> <id>");
+                std::process::exit(1);
+            }
+            let target = match output.as_deref() {
+                Some(path) => TraceTarget::File(path),
+                None => TraceTarget::Stdout,
+            };
+            run_cli(
+                &paths,
+                CliRunOptions {
+                    debug: false,
+                    diagnostics: false,
+                    coverage: false,
+                    verbose: false,
+                    include_synthetic_dsl_methods: cli.include_synthetic_dsl_methods,
+                },
+                cli.dsl.as_deref(),
+                Some(target),
+            );
+        }
         #[cfg(feature = "mcp")]
         Some(Commands::Mcp) => {
             if let Err(error) = run_mcp_server() {
@@ -320,16 +349,9 @@ fn main() {
                 );
                 std::process::exit(2);
             }
-            if cli.trace.is_some() && (cli.coverage || cli.diagnostics || cli.verbose || cli.debug)
-            {
-                eprintln!(
-                    "--trace cannot be combined with --coverage, --diagnostics, --verbose, or --debug"
-                );
-                std::process::exit(2);
-            }
             if cli.paths.is_empty() {
                 eprintln!(
-                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda --capability-matrix | tyda --lsp | tyda mcp | tyda --version"
+                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda trace [-o FILE] <paths...> | tyda --capability-matrix | tyda --lsp | tyda mcp | tyda --version"
                 );
                 std::process::exit(1);
             }
@@ -343,7 +365,7 @@ fn main() {
                     include_synthetic_dsl_methods: cli.include_synthetic_dsl_methods,
                 },
                 cli.dsl.as_deref(),
-                cli.trace.as_deref(),
+                None,
             );
         }
     }
@@ -484,7 +506,7 @@ async fn wait_for_termination_signal() {
 }
 
 fn run_trace_command(command: TraceCommand) {
-    use tyda::trace::query::{Trace, diff, why};
+    use tyda::trace::query::{Trace, why};
     let load = |path: &Path| {
         Trace::load(path).unwrap_or_else(|error| {
             eprintln!("failed to read trace {}: {error}", path.display());
@@ -514,24 +536,33 @@ fn run_trace_command(command: TraceCommand) {
                 }
             }
         }
-        TraceCommand::Diff { base, head } => {
-            let changed = diff(&load(&base), &load(&head), &mut stdout).unwrap_or(0);
-            if changed > 0 {
-                std::process::exit(1);
-            }
-        }
     }
 }
 
-fn write_trace(registry: &tyda::registry::TypeRegistry, path: &Path) {
+#[derive(Clone, Copy)]
+enum TraceTarget<'a> {
+    Stdout,
+    File(&'a Path),
+}
+
+fn write_trace<W: std::io::Write>(
+    registry: &tyda::registry::TypeRegistry,
+    target: TraceTarget<'_>,
+    stdout: &mut W,
+) {
     use std::io::Write;
-    let result = fs::File::create(path).and_then(|file| {
-        let mut writer = std::io::BufWriter::new(file);
-        tyda::trace::write_jsonl(registry, &mut writer)?;
-        writer.flush()
-    });
+    let result = match target {
+        TraceTarget::Stdout => {
+            tyda::trace::write_jsonl(registry, stdout).and_then(|()| stdout.flush())
+        }
+        TraceTarget::File(path) => fs::File::create(path).and_then(|file| {
+            let mut writer = std::io::BufWriter::new(file);
+            tyda::trace::write_jsonl(registry, &mut writer)?;
+            writer.flush()
+        }),
+    };
     if let Err(error) = result {
-        eprintln!("failed to write trace {}: {error}", path.display());
+        eprintln!("failed to write trace: {error}");
         std::process::exit(1);
     }
 }
@@ -540,13 +571,13 @@ fn run_cli(
     paths: &[PathBuf],
     options: CliRunOptions,
     dsl_spec: Option<&str>,
-    trace_path: Option<&Path>,
+    trace: Option<TraceTarget<'_>>,
 ) {
     use std::io::{BufWriter, Write};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    if trace_path.is_some() {
+    if trace.is_some() {
         tyda::trace::enable();
     }
 
@@ -1220,6 +1251,9 @@ fn run_cli(
                 stdout.flush().ok();
             }
         }
+    } else if let Some(target) = trace {
+        write_trace(&workspace_rbs, target, &mut stdout);
+        processed_count.store(total_files, Ordering::Relaxed);
     } else {
         let render_start = Instant::now();
         render_rbs_to_writer_in_pool(
@@ -1232,9 +1266,6 @@ fn run_cli(
         )
         .ok();
         stdout.flush().ok();
-        if let Some(path) = trace_path {
-            write_trace(&workspace_rbs, path);
-        }
         let _render_elapsed = render_start.elapsed();
         processed_count.store(total_files, Ordering::Relaxed);
     }

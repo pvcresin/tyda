@@ -114,9 +114,9 @@ agent は対象ファイルから十分な文脈を含む source を渡し、式
 
 `max_depth` は最大 5、出力step数は最大 32、各メソッドの呼び出し元は最大 16 件、本体戻り値の証拠は最大 8 件に制限する。上限に達した結果では `explanation.truncated`、`callers_truncated`、または `body_returns_truncated` が `true` になる。出力内のsource spanはLSPと同じ0始まりの行番号・UTF-16 code unit列。宣言位置は1始まりの行番号と0始まりのUTF-8 byte列。
 
-`trace_path` に `tyda --trace` の出力ファイルを渡すと、結果に `workspace_trace` を追加する。問い合わせ位置のメソッドの
+`trace_path` に `tyda trace` の出力ファイルを渡すと、結果に `workspace_trace` を追加する。問い合わせ位置のメソッドの
 スロット ID（`Foo#bar` / `Foo.bar`）を `id` に、そのスロットと依存先の trace レコードを `records` に、近い順で `max_depth`
-段まで返す。各レコードは `--trace` の 1 行に、起点からの段数 `depth` を加えたもの。project 全体の呼び出し元・代入・依存は
+段まで返す。各レコードは trace の 1 行に、起点からの段数 `depth` を加えたもの。project 全体の呼び出し元・代入・依存は
 この記録から得る。ファイルが読めない、またはスロットが trace にない場合は `message` に理由が入る。trace は呼び出しのたびに
 読み直すため、解析し直した結果は次の呼び出しから反映される。
 
