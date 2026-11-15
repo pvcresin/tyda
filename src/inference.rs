@@ -4825,8 +4825,8 @@ impl<'a> InferenceEngine<'a> {
             }
             AliasTarget::Ivar(name) => {
                 if !scope.singleton_dispatch {
-                    self.registry
-                        .replace_ivar_type(class_name, name, ty.clone());
+                    let summary = Self::ivar_value_outside_initialize(scope, ty.clone());
+                    self.registry.replace_ivar_type(class_name, name, summary);
                 }
                 // A later read in the same method sees the value after the in-place change.
                 if scope.self_facts.contains_key(name) {
@@ -18705,11 +18705,13 @@ impl<'a> InferenceEngine<'a> {
         })
     }
 
-    fn resolve_scoped_annotation_type(&self, class_name: &str, ty: &Type) -> Type {
+    fn resolve_scoped_annotation_type(&mut self, class_name: &str, ty: &Type) -> Type {
         if class_name == "Object" || !TypeRegistry::type_contains_scoped_nominal_ref(ty) {
             return ty.clone();
         }
-        self.registry.resolve_scoped_refs_in_type(class_name, ty).0
+        self.registry
+            .resolve_scoped_annotation_type(class_name, ty)
+            .0
     }
 
     fn set_scoped_annotated_param_type(
@@ -18737,12 +18739,10 @@ impl<'a> InferenceEngine<'a> {
         {
             return;
         }
-        let (resolved, any_resolved, any_unresolved) = self
+        let (resolved, any_unresolved) = self
             .registry
-            .resolve_scoped_refs_in_type(class_name, &method_def.raw_return_type);
-        if any_resolved {
-            method_def.raw_return_type = resolved;
-        }
+            .resolve_scoped_annotation_type(class_name, &method_def.raw_return_type);
+        method_def.raw_return_type = resolved;
         if any_unresolved {
             self.registry
                 .push_pending_scoped_type_ref(PendingScopedTypeRef {
@@ -44511,14 +44511,19 @@ impl<'a> InferenceEngine<'a> {
         }
 
         if Self::is_reduce_like(method_name)
-            && init_type.is_some()
-            && Self::is_concrete(&block_return_type)
+            && let Some(init) = &init_type
         {
-            let result = Self::finalize_each_with_object_result(
-                mutable_init_type.clone(),
-                init_type.clone(),
-                block_return_type,
-            );
+            // The block result becomes the accumulator, so one that is not known yet keeps
+            // the result open instead of narrowing it to the initial value.
+            let result = if Self::is_concrete(&block_return_type) {
+                Self::finalize_each_with_object_result(
+                    mutable_init_type.clone(),
+                    init_type.clone(),
+                    block_return_type,
+                )
+            } else {
+                Type::from_type_vec_preserve_untyped(vec![init.clone(), block_return_type])
+            };
             return Some(Self::include_optional_control_type(
                 result,
                 &block_break_type,

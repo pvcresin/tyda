@@ -2018,6 +2018,9 @@ pub struct ClassDataCold {
     pub user_rbs_generic_methods: Vec<(Sym, bool)>,
     /// RBS declarations embedded with `# @rbs!`, rendered as written.
     pub embedded_rbs: Vec<String>,
+    /// Names that this class's annotations write by their last segment (`Inner` for
+    /// `Outer::Inner`), so the rendered signature writes them the same way.
+    pub scoped_annotation_names: Vec<Sym>,
     /// How each source method's required positional parameters flow to its return.
     pub param_flows: Vec<((Sym, bool), ParamFlows)>,
     pub class_type_param_defaults: Vec<(String, Type)>,
@@ -2244,6 +2247,7 @@ impl ClassData {
         cold.class_type_param_modifiers.shrink_to_fit();
         cold.user_rbs_generic_methods.shrink_to_fit();
         cold.embedded_rbs.shrink_to_fit();
+        cold.scoped_annotation_names.shrink_to_fit();
         cold.param_flows.shrink_to_fit();
         cold.class_type_param_defaults.shrink_to_fit();
     }
@@ -2330,6 +2334,7 @@ impl ClassData {
         bytes += cold.class_type_param_defaults.len() * std::mem::size_of::<(String, Type)>();
         bytes += cold.user_rbs_generic_methods.len() * std::mem::size_of::<(Sym, bool)>();
         bytes += string_vec_bytes(&cold.embedded_rbs);
+        bytes += cold.scoped_annotation_names.len() * std::mem::size_of::<Sym>();
         bytes += cold
             .param_flows
             .iter()
@@ -8327,9 +8332,9 @@ impl TypeRegistry {
             return;
         }
         for p in pending {
-            let (resolved, any_resolved, any_unresolved) =
-                self.resolve_scoped_refs_in_type(&p.declaration_scope, &p.raw_type);
-            if any_resolved {
+            let (resolved, any_unresolved) =
+                self.resolve_scoped_annotation_type(&p.declaration_scope, &p.raw_type);
+            if resolved != p.raw_type {
                 self.update_method_return_type_variant(
                     &p.owner_class,
                     &p.method_name,
@@ -8344,32 +8349,17 @@ impl TypeRegistry {
         }
     }
 
-    pub(crate) fn resolve_scoped_refs_in_type(
-        &self,
-        scope_class: &str,
-        ty: &Type,
-    ) -> (Type, bool, bool) {
-        let mut any_resolved = false;
-        let mut any_unresolved = false;
-        let resolved = Self::map_nominal_names(ty, &mut |name| match self
-            .resolve_scoped_nominal_name(scope_class, name)
-        {
-            Some(canonical) => {
-                any_resolved = true;
-                Some(canonical)
-            }
-            None => {
-                any_unresolved = true;
-                None
-            }
-        });
-        (resolved, any_resolved, any_unresolved)
-    }
-
-    /// The inverse of `resolve_scoped_refs_in_type`: `Outer::Name` is written `Name` when
-    /// `Outer` encloses `scope_class` and lexical lookup from there finds no other `Name` first.
+    /// The inverse of `resolve_scoped_annotation_type`: a name the annotations wrote short is
+    /// written `Name` again when lexical lookup from `scope_class` finds no other `Name` first.
     pub(crate) fn relative_scoped_refs_in_type(&self, scope_class: &str, ty: &Type) -> Type {
+        let short_names = self.scoped_annotation_names(scope_class);
+        if short_names.is_empty() {
+            return ty.clone();
+        }
         Self::map_nominal_names(ty, &mut |name| {
+            if !short_names.iter().any(|short| short.as_str() == name) {
+                return None;
+            }
             let (outer, tail) = name.rsplit_once("::")?;
             let encloses = scope_class == outer
                 || scope_class
@@ -8381,6 +8371,12 @@ impl TypeRegistry {
             let found = self.resolve_scoped_class_ref_borrow(scope_class, tail);
             (found == name || !self.class_data.contains_key(found)).then(|| tail.to_string())
         })
+    }
+
+    pub(crate) fn scoped_annotation_names(&self, class_name: &str) -> &[Sym] {
+        self.class_data
+            .get(class_name)
+            .map_or(&[], |data| data.cold().scoped_annotation_names.as_slice())
     }
 
     /// Rewrites each nominal name (`Class` / `Singleton` / `Generic` base) that `rename` maps
@@ -12135,6 +12131,40 @@ impl TypeRegistry {
                     })
             })
             .map(|(_, flows)| flows)
+    }
+
+    /// Resolves an annotation type in the class scope and remembers which names it wrote
+    /// short. Also returns whether a name is not known yet.
+    pub(crate) fn resolve_scoped_annotation_type(
+        &mut self,
+        class_name: &str,
+        ty: &Type,
+    ) -> (Type, bool) {
+        let mut short_names = Vec::new();
+        let mut any_unresolved = false;
+        let resolved = Self::map_nominal_names(ty, &mut |name| match self
+            .resolve_scoped_nominal_name(class_name, name)
+        {
+            Some(canonical) => {
+                if canonical != name.trim_scope_prefix() && !name.starts_with("::") {
+                    short_names.push(Sym::new(&canonical));
+                }
+                Some(canonical)
+            }
+            None => {
+                any_unresolved = true;
+                None
+            }
+        });
+        if !short_names.is_empty() {
+            let cold = self.class_data_mut(class_name).cold_mut();
+            for name in short_names {
+                if !cold.scoped_annotation_names.contains(&name) {
+                    cold.scoped_annotation_names.push(name);
+                }
+            }
+        }
+        (resolved, any_unresolved)
     }
 
     pub fn add_embedded_rbs(&mut self, class_name: &str, text: String) {

@@ -1966,3 +1966,21 @@ class RangeEachReturn
   def run: (Integer limit) -> Range[Integer]
 end
 ```
+
+## reduce keeps a block result that is not known
+
+### update
+
+```ruby
+class Conditions
+  def all?(items) = [items.first].reduce(true) { |memo, item| memo && item }
+end
+```
+
+### result
+
+```rbs
+class Conditions
+  def all?: (untyped items) -> untyped
+end
+```

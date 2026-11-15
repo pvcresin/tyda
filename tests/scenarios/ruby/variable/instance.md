@@ -811,3 +811,32 @@ class PassedDefault
   def value: -> String
 end
 ```
+
+## An in-place change outside initialize does not read initialize arguments
+
+### update
+
+```ruby
+class SpecList
+  def initialize(development = false)
+    @specs = []
+    @development = development
+  end
+
+  def add(*specs) = @specs.concat(specs)
+
+  def specs = @specs
+end
+
+SpecList.new
+```
+
+### result
+
+```rbs
+class SpecList
+  def initialize: (?bool development) -> void
+  def add: (*untyped specs) -> Array[untyped]
+  def specs: -> Array[untyped]
+end
+```
