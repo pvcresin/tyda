@@ -1,4 +1,5 @@
 use crate::prism_compat::LocationExt;
+use crate::types::MethodOrigin;
 use crate::types::Sym;
 use std::path::Path;
 
@@ -750,12 +751,9 @@ fn register_attribute_methods(
             raw_return_type: accessor_type.clone(),
             sorbet_modifier_comments: Vec::new(),
             rbs_annotated: true,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
+            origin: MethodOrigin::SyntheticDsl,
             attr_ivar: None,
             is_singleton: false,
-            rbs_file_source: true,
-            synthetic_dsl_source: true,
             rbs_method_types: Default::default(),
             extra_overloads: Vec::new(),
             loc: None,
@@ -774,12 +772,9 @@ fn register_attribute_methods(
             raw_return_type: accessor_type,
             sorbet_modifier_comments: Vec::new(),
             rbs_annotated: true,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
+            origin: MethodOrigin::SyntheticDsl,
             attr_ivar: None,
             is_singleton: false,
-            rbs_file_source: true,
-            synthetic_dsl_source: true,
             rbs_method_types: Default::default(),
             extra_overloads: Vec::new(),
             loc: None,
@@ -796,12 +791,9 @@ fn register_predicate_method(class_name: &str, name: &str, registry: &mut TypeRe
             raw_return_type: Type::Bool,
             sorbet_modifier_comments: Vec::new(),
             rbs_annotated: true,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
+            origin: MethodOrigin::SyntheticDsl,
             attr_ivar: None,
             is_singleton: false,
-            rbs_file_source: true,
-            synthetic_dsl_source: true,
             rbs_method_types: Default::default(),
             extra_overloads: Vec::new(),
             loc: None,

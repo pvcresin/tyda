@@ -1,6 +1,7 @@
 use super::knowledge_precedence::{DeclKind, MergeRule, SourceKind, merge_rule};
 use super::*;
 use crate::rbs::ir as rbs_ir;
+use crate::types::MethodOrigin;
 
 impl TypeRegistry {
     pub fn merge_rbs_registry(&mut self, rbs_registry: &TypeRegistry) {
@@ -464,8 +465,7 @@ impl TypeRegistry {
                 continue;
             }
             // when the same-named variant is duplicated, keep only the synthesis-source slot's variant (synthetic never shadows user).
-            if method.rbs_file_source
-                && method.synthetic_dsl_source
+            if method.origin == MethodOrigin::SyntheticDsl
                 && rbs_data
                     .method_index
                     .get(method.name.as_str())
@@ -487,17 +487,17 @@ impl TypeRegistry {
             // schema column or foreign-key reader it redefines. A source method whose return is
             // unknown (`def name = super || ""` before the column is visible) keeps the column
             // reader, which describes the same attribute with a type.
-            let generated_slot = data
-                .method_index
-                .get(method.name.as_str())
-                .and_then(|slots| slots.get(method.is_singleton))
-                .filter(|&idx| {
-                    !method.rbs_file_source
-                        && !matches!(method.raw_return_type, Type::Untyped)
-                        && data.methods.get(idx).is_some_and(|existing| {
-                            existing.synthetic_dsl_source && existing.rbs_file_source
-                        })
-                });
+            let generated_slot =
+                data.method_index
+                    .get(method.name.as_str())
+                    .and_then(|slots| slots.get(method.is_singleton))
+                    .filter(|&idx| {
+                        !method.origin.is_rbs_file_source()
+                            && !matches!(method.raw_return_type, Type::Untyped)
+                            && data.methods.get(idx).is_some_and(|existing| {
+                                existing.origin == MethodOrigin::SyntheticDsl
+                            })
+                    });
             if let Some(idx) = generated_slot {
                 data.methods[idx] = method;
             } else if !variant_exists {
@@ -644,8 +644,11 @@ impl TypeRegistry {
             data.user_defined = false;
             for method in &mut data.methods {
                 let method = Arc::make_mut(method);
-                method.rbs_file_source = true;
-                method.synthetic_dsl_source = false;
+                method.origin = if method.origin.is_sig() {
+                    MethodOrigin::Rbi
+                } else {
+                    MethodOrigin::RbsFile
+                };
             }
         }
         self.refresh_mixin_hook_method_flag();

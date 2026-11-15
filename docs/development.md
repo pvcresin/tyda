@@ -84,6 +84,52 @@ TYDA_EXPERIMENTAL_CHECKS=1 cargo run -- --diagnostics <path>
 個別 repository の名前に依存する分岐や、一時的な debug API は追加しない。DSL が runtime に
 登録されるだけで静的に証明できない場合は、外部 RBS / RBI の入力を選ぶ。
 
+## 推論の変化を調べる
+
+型の経路と、推論を変えたときの変化は `tyda why` と `tyda trace` で調べる（出力の形式は
+[features.md](features.md) の「型の由来 trace」）。subject は `subject/<name>` に入って実行すると、
+trace の file が project からの相対パスになり、`tyda why` がソース行を表示できる。
+
+1 つの型の経路:
+
+```bash
+tyda trace . | tyda why 'Foo#bar'        # 解析してそのまま木を表示する
+tyda trace -o /tmp/trace.jsonl .         # 何度も引くときは trace file に保存して、
+tyda why 'Foo#bar' /tmp/trace.jsonl      # 以降は解析なしで引く（gitlab で約 0.3 秒）
+```
+
+推論ロジックを変える前後の比較（`render-compare` で RBS の差分が出たときもこの手順を使う）:
+
+1. base と head の binary で、同じ subject の trace を保存する。
+
+   ```bash
+   (cd subject/gitlab && /path/to/base/tyda trace -o /tmp/base.jsonl .)
+   (cd subject/gitlab && /path/to/head/tyda trace -o /tmp/head.jsonl .)
+   ```
+
+2. 型が変わった宣言を出す。`type` は RBS の宣言と同じ文字列で、この集合は RBS の差分と一致する。
+   trace にはさらに、RBS に出ない ivar・外部 RBS・生成 DSL method の変化も出る。
+
+   ```bash
+   diff <(jq -c '{id, type}' /tmp/base.jsonl) <(jq -c '{id, type}' /tmp/head.jsonl)
+   ```
+
+3. 変わった宣言ごとに、自分の入力の何が変わったかを見て、依存を辿る。
+
+   ```bash
+   diff <(grep '^{"id":"Foo#bar",' /tmp/base.jsonl | jq .) <(grep '^{"id":"Foo#bar",' /tmp/head.jsonl | jq .)
+   tyda why 'Foo#bar' /tmp/head.jsonl   # base.jsonl でも同じように辿って比べる
+   ```
+
+4. 読み方。変化を依存の方向へ辿ると、必ず次のどちらかに行き着く。
+   - `body` / `callers` / `writes` / `deps` が変わっている: 変化はその入力から来ている。変わった依存先へ進む。
+   - 入力は何も変わらず `type` だけが変わった: その宣言の位置（`file:line`）で、変えたルールが効いている。
+     ここが原因の箇所。`body` を持たない定数・外部 RBS・生成 DSL method もここに入る。
+
+ソースを変えた比較では行番号がずれて `diff base.jsonl head.jsonl` の行が増えるため、型だけを比べるときは
+手順 2 の `jq` を使う。trace の出力は決定的で、同じ入力・同じ binary なら byte 単位で一致するため、
+差分はすべて変更によるもの。
+
 ## PR と依存
 
 一つの PR は一つの目的に絞り、その目的に必要な関連修正・テスト・文書をまとめる。説明は簡潔にし、

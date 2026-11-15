@@ -1,3 +1,4 @@
+use crate::types::MethodOrigin;
 use std::collections::HashSet;
 
 use tower_lsp::lsp_types::{Position, Range, TextDocumentContentChangeEvent, Url};
@@ -165,10 +166,7 @@ pub(super) fn fallback_code_lens_methods_from_source(
                     sorbet_modifier_comments: Vec::new(),
                     is_singleton,
                     rbs_annotated: false,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
-                    rbs_file_source: false,
-                    synthetic_dsl_source: false,
+                    origin: MethodOrigin::RubySource,
                     overloads: Vec::new(),
                     loc: Some(SourceLocation {
                         line: line_idx as u32 + 1,

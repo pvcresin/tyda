@@ -1,6 +1,7 @@
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
 use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
+use crate::types::MethodOrigin;
 use crate::types::Type;
 
 pub(super) struct Ams;
@@ -105,12 +106,9 @@ impl<'a> InferenceEngine<'a> {
                 raw_return_type: Type::Class(Sym::new(target_class)),
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),
@@ -161,12 +159,9 @@ impl<'a> InferenceEngine<'a> {
                 raw_return_type: Self::active_record_collection_proxy_type(&target_class),
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: true,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(loc),

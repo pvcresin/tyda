@@ -45,6 +45,7 @@ pub mod schema_parser;
 pub mod sorbet;
 pub mod sym;
 pub mod text_position;
+pub mod trace;
 pub mod types;
 pub mod workspace_discovery;
 pub mod workspace_state;

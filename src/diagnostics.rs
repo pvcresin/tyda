@@ -648,7 +648,7 @@ fn collect_method_holes(
     holes: &mut Vec<TypeHole>,
 ) {
     for method in &data.methods {
-        if method.rbs_file_source {
+        if method.origin.is_rbs_file_source() {
             continue;
         }
         let Some(sig) = registry.lookup_method_sig(class_name, &method.name) else {
@@ -875,6 +875,7 @@ mod tests {
     use super::*;
     use crate::analysis::AnalysisOptions;
     use crate::registry::{MethodDef, ParamInfo};
+    use crate::types::MethodOrigin;
     use crate::types::{ParamKind, SourceLocation, Sym};
 
     #[test]
@@ -898,12 +899,9 @@ mod tests {
                 ),
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: false,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: Some(SourceLocation { line: 2, column: 2 }),

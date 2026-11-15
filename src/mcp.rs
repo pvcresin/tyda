@@ -54,6 +54,10 @@ struct ExplainTypeAtPositionParams {
         description = "Maximum method-body call hops to include; defaults to 3 and is capped at 5."
     )]
     max_depth: Option<u8>,
+    #[schemars(
+        description = "Optional path to a trace written by `tyda trace` for the whole project. When set, the result also lists that trace's records for the queried method and the declarations it depends on, up to max_depth hops."
+    )]
+    trace_path: Option<String>,
 }
 
 impl TydaMcpServer {
@@ -193,7 +197,16 @@ fn build_explanation_result(
 
     Ok(match explanation {
         Some(explanation) => {
-            explanation_result(explanation, &params.source, analysis_time_ms, max_depth)
+            let workspace_trace = params
+                .trace_path
+                .as_deref()
+                .map(|path| workspace_trace_json(path, &explanation, max_depth));
+            let mut result =
+                explanation_result(explanation, &params.source, analysis_time_ms, max_depth);
+            if let (Some(trace), Some(object)) = (workspace_trace, result.as_object_mut()) {
+                object.insert("workspace_trace".to_string(), trace);
+            }
+            result
         }
         None => json!({
             "found": false,
@@ -201,6 +214,37 @@ fn build_explanation_result(
             "analysis_time_ms": analysis_time_ms,
         }),
     })
+}
+
+/// Records of the queried method in a `tyda trace` file, with the declarations it depends on.
+fn workspace_trace_json(path: &str, explanation: &TypeExplanation, max_depth: u8) -> Value {
+    let Some(method) = explanation
+        .steps
+        .first()
+        .and_then(|step| step.method.as_ref())
+    else {
+        return json!({ "message": "No method is at this position." });
+    };
+    let id = crate::trace::method_id(&method.owner, &method.definition_name, method.is_singleton);
+    let trace = match crate::trace::query::Trace::load(std::path::Path::new(path)) {
+        Ok(trace) => trace,
+        Err(error) => return json!({ "id": id, "message": format!("Cannot read {path}: {error}") }),
+    };
+    let records: Vec<Value> = trace
+        .closure(&id, usize::from(max_depth))
+        .into_iter()
+        .map(|(depth, record)| {
+            let mut record = record.clone();
+            if let Some(object) = record.as_object_mut() {
+                object.insert("depth".to_string(), json!(depth));
+            }
+            record
+        })
+        .collect();
+    let message = records
+        .is_empty()
+        .then(|| format!("{id} is not in the trace."));
+    json!({ "id": id, "message": message, "records": records })
 }
 
 fn hover_result(hover: HoverResult, analysis_time_ms: u64) -> Value {
@@ -397,6 +441,7 @@ Example.new.identify(1)
                 line: 5,
                 character: 12,
                 max_depth: Some(3),
+                trace_path: None,
             },
             &stdlib_loader,
         )
@@ -441,6 +486,7 @@ Example.new.count
                 line: 12,
                 character: 12,
                 max_depth: None,
+                trace_path: None,
             },
             &stdlib_loader,
         )
@@ -458,6 +504,7 @@ Example.new.count
                 line: 8,
                 character: 6,
                 max_depth: None,
+                trace_path: None,
             },
             &stdlib_loader,
         )
@@ -475,6 +522,7 @@ Example.new.count
                 line: 1,
                 character: 5,
                 max_depth: None,
+                trace_path: None,
             },
             &stdlib_loader,
         )
@@ -487,6 +535,45 @@ Example.new.count
                 .is_some_and(|origins| origins.iter().any(|origin| origin == "rbs_file")),
             "stdlib method origins: {origins}; explanation: {stdlib}"
         );
+    }
+
+    #[test]
+    fn adds_workspace_trace_records_for_the_queried_method() {
+        let stdlib_loader = LazyRbsLoader::new(default_vendor_rbs_root().join("core"));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let trace_path = dir.path().join("trace.jsonl");
+        std::fs::write(
+            &trace_path,
+            [
+                r#"{"kind":"method","id":"Cart#summary","type":"def summary: -> Integer","deps":["Cart#total"]}"#,
+                r#"{"kind":"method","id":"Cart#total","type":"def total: -> Integer","deps":["Item#price"]}"#,
+                r#"{"kind":"method","id":"Item#price","type":"def price: -> Integer","deps":[]}"#,
+            ]
+            .join("\n"),
+        )
+        .expect("write trace");
+        let result = build_explanation_result(
+            ExplainTypeAtPositionParams {
+                source: "class Cart\n  def summary = 1\nend\n".to_owned(),
+                line: 1,
+                character: 6,
+                max_depth: Some(1),
+                trace_path: Some(trace_path.to_string_lossy().into_owned()),
+            },
+            &stdlib_loader,
+        )
+        .expect("explanation");
+
+        let trace = &result["workspace_trace"];
+        assert_eq!(trace["id"], "Cart#summary");
+        let ids: Vec<&str> = trace["records"]
+            .as_array()
+            .expect("records")
+            .iter()
+            .filter_map(|record| record["id"].as_str())
+            .collect();
+        assert_eq!(ids, ["Cart#summary", "Cart#total"]);
+        assert_eq!(trace["records"][1]["depth"], 1);
     }
 
     #[test]
@@ -511,6 +598,7 @@ Example.new.first
                 line: 11,
                 character: 12,
                 max_depth: Some(1),
+                trace_path: None,
             },
             &stdlib_loader,
         )

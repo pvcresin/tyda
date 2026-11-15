@@ -220,12 +220,9 @@ fn hash_registry_method(method: &MethodDef) -> u64 {
     combine_unordered_hashes(method.param_infos.iter().map(hash_param_info)).hash(&mut hasher);
     method.raw_return_type.hash(&mut hasher);
     method.rbs_annotated.hash(&mut hasher);
-    method.rbs_inline_annotated.hash(&mut hasher);
-    method.sig_annotated.hash(&mut hasher);
+    method.origin.hash(&mut hasher);
     method.attr_ivar.hash(&mut hasher);
     method.is_singleton.hash(&mut hasher);
-    method.rbs_file_source.hash(&mut hasher);
-    method.synthetic_dsl_source.hash(&mut hasher);
     combine_unordered_hashes(method.extra_overloads.iter().map(hash_overload)).hash(&mut hasher);
     for method_type in method.rbs_method_types.iter() {
         hash_rbs_method_type(method_type).hash(&mut hasher);

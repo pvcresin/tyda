@@ -1363,7 +1363,7 @@ impl<'a> InferenceEngine<'a> {
                 continue;
             };
             for method in &data.methods {
-                if !method.rbs_file_source {
+                if !method.origin.is_rbs_file_source() {
                     self.collect_receiver_reference_classes(&method.raw_return_type, &mut pending);
                 }
             }
@@ -2070,6 +2070,7 @@ impl<'a> InferenceEngine<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MethodOrigin;
 
     #[test]
     fn non_nil_projection_applies_after_parameter_substitution() {
@@ -2114,12 +2115,9 @@ mod tests {
             raw_return_type: Type::Integer,
             sorbet_modifier_comments: Vec::new(),
             rbs_annotated: false,
-            rbs_inline_annotated: false,
-            sig_annotated: false,
+            origin: MethodOrigin::RubySource,
             attr_ivar: None,
             is_singleton: false,
-            rbs_file_source: false,
-            synthetic_dsl_source: false,
             rbs_method_types: Default::default(),
             extra_overloads: Vec::new(),
             loc: None,
@@ -2154,12 +2152,9 @@ mod tests {
                 raw_return_type: Type::Integer,
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: false,
-                rbs_inline_annotated: false,
-                sig_annotated: false,
+                origin: MethodOrigin::RubySource,
                 attr_ivar: None,
                 is_singleton: false,
-                rbs_file_source: false,
-                synthetic_dsl_source: false,
                 rbs_method_types: Default::default(),
                 extra_overloads: Vec::new(),
                 loc: None,

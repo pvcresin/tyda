@@ -1,3 +1,4 @@
+use crate::types::MethodOrigin;
 use std::path::Path;
 
 use crate::project::{DslActivation, DslLibrary};
@@ -101,12 +102,9 @@ fn load_environment_predicates(root: &Path, registry: &mut TypeRegistry) {
                     raw_return_type: Type::Bool,
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
-                    rbs_inline_annotated: false,
-                    sig_annotated: false,
+                    origin: MethodOrigin::SyntheticDsl,
                     attr_ivar: None,
                     is_singleton: false,
-                    rbs_file_source: true,
-                    synthetic_dsl_source: true,
                     rbs_method_types: Default::default(),
                     extra_overloads: Vec::new(),
                     loc: None,

@@ -129,6 +129,44 @@ base/head の同じ release binary で一度ずつ解析し、解析ファイル
 サイトの減少、`unknown` の増加を失敗として検出する。`untyped` の増加は警告として結果 JSON
 と CI log に残す。Perf と同じ matrix 内で実行するため、追加の Rust build や PR comment は発生しない。
 
+### 型の由来 trace
+
+`tyda trace <paths>` は RBS の代わりに、出力される各宣言の型がどのコードから決まったかを JSON Lines で
+標準出力に書き出す。`-o <FILE>` を付けると FILE に書く。ここでの宣言は型を持つ method・instance variable・
+定数で、RBS の宣言 1 つにあたる。1 行が 1 宣言で、各行は `id` から始まり、`id` は `Foo#bar`（instance method）、
+`Foo.bar`（singleton method）、`Foo@ivar`、`Foo::CONST` の形をとる。
+
+- `type`: RBS 出力と同じ宣言文字列
+- `origin`: 宣言の由来。`ruby_source`、`rbs_inline`（`#:` / `# @rbs`）、`sorbet_sig`、`rbi`、
+  `rbs_file`、`synthetic_dsl`（plugin / framework が生成）、`source_dsl`（Ruby source の DSL 呼び出しが生成）
+- `file` / `line`: 宣言の位置
+- `body`: 全体解決の前に method 本体が返していた型。未解決の参照を `<Foo#bar>`、`<@ivar>`、
+  `<param 0>` のように残す
+- `deps`: 型を決めるときに読んだ宣言。`body` に残る参照、本体の推論中に戻り値を読んだ method、
+  確定した registry で `body` を解決し直したときに読んだ method、呼び出し元が渡す引数・block の型が参照する
+  宣言、自分の引数をそのまま渡す呼び出し元 method
+- `callers`: 引数の型を渡した呼び出し箇所（`file` / `line` / `in` / 引数の型）
+- `writes`: instance variable への代入箇所。ivar の `type` は method から見える型で、`initialize` の引数を
+  代入した ivar は呼び出し元が渡す型になる。多重代入は `<<param 0>.split>[1]>` のように分解元を残す
+
+出力されない依存先（外部 RBS、RBI、生成 DSL method、見つからない参照）も、参照された分だけ
+`rendered: false` や `kind: "unresolved"` のレコードとして出力する。
+
+出力は決定的で宣言の順に並ぶため、2 回分の trace は通常の `diff` で比べられる。
+
+`tyda why <id> [FILE]` は trace file（`tyda trace` の出力）を読み、その宣言から依存を末端まで辿って、
+各宣言の位置・呼び出し行・代入行のソースを木で表示する。FILE を省略すると標準入力から読むため、
+`tyda trace . | tyda why 'Foo#bar'` とつなげられる。`id` は宣言 ID の末尾だけでもよい（`#summary`、
+`@price`）。一度表示した宣言は `(see above)` で示す。木全体の宣言が 200 件以内なら全部表示し、超える場合は
+合計が 200 件を超えない段まで表示して、残りの宣言の件数と段数を最後に示す。呼び出し元と代入は宣言ごとに 5 件まで表示し、
+残りの件数を添える（trace file には全件が入る）。型の変化を調べる手順は [development.md](development.md) の
+「推論の変化を調べる」を参照する。
+
+記録は `tyda trace` の実行だけが行う。指定しない実行では各記録箇所が 1 回の atomic 読み取りで
+終わり、追加の状態を持たない。
+同じ入力なら trace は byte 単位で一致する。gitlab 全体では解析時間が約 1.4 倍になり、
+出力は約 54MB になる。
+
 ## Rails / gem DSL
 
 Rails の ActiveRecord、ActiveModel、ActiveSupport、ActionController、ActionMailer、ActiveJob、
@@ -188,6 +226,8 @@ Ruby エディタを主領域として PC / 横長画面では左、狭い画面
 cargo run -- <path>                         # RBS
 cargo run -- --diagnostics <path>           # JSON Lines diagnostics
 cargo run -- --coverage <path>              # JSON type coverage
+cargo run -- trace <path> > trace.jsonl     # where each type came from (JSON Lines)
+cargo run -- trace <path> | cargo run -- why 'Foo#bar'   # tree of the code a type came from
 cargo run -- --lsp                          # LSP server
 cargo run -- mcp                            # MCP server for AI agents
 cargo run -- --include-synthetic-dsl-methods <path>

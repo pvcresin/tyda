@@ -168,6 +168,25 @@ enum Commands {
     },
     #[cfg(feature = "mcp")]
     Mcp,
+    /// Print where each inferred type came from as JSON Lines, instead of RBS.
+    Trace {
+        #[arg(
+            short,
+            long,
+            value_name = "FILE",
+            help = "Write the trace to FILE instead of stdout"
+        )]
+        output: Option<PathBuf>,
+        #[arg(help = "Files or directories to analyze")]
+        paths: Vec<PathBuf>,
+    },
+    /// Show, as a tree, the code a declaration's type was computed from in a trace.
+    Why {
+        #[arg(help = "Declaration id (Foo#bar, Foo.bar, Foo@ivar, Foo::CONST) or a suffix of one")]
+        id: String,
+        #[arg(help = "Trace file written by `tyda trace` [default: stdin]")]
+        trace: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -271,6 +290,34 @@ fn main() {
             eprintln!("Usage: tyda lsp --version | tyda lsp --lsp");
             std::process::exit(1);
         }
+        Some(Commands::Trace {
+            ref output,
+            ref paths,
+        }) => {
+            if paths.is_empty() {
+                eprintln!("Usage: tyda trace [-o FILE] <paths...>");
+                std::process::exit(1);
+            }
+            let target = match output.as_deref() {
+                Some(path) => TraceTarget::File(path),
+                None => TraceTarget::Stdout,
+            };
+            run_trace(&cli, paths, target);
+        }
+        Some(Commands::Why { ref id, ref trace }) => {
+            let jsonl = match trace {
+                Some(path) => fs::read(path),
+                None => {
+                    let mut buf = Vec::new();
+                    std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf).map(|_| buf)
+                }
+            }
+            .unwrap_or_else(|error| {
+                eprintln!("failed to read trace: {error}");
+                std::process::exit(2);
+            });
+            print_why(&jsonl, id, &mut std::io::stdout().lock());
+        }
         #[cfg(feature = "mcp")]
         Some(Commands::Mcp) => {
             if let Err(error) = run_mcp_server() {
@@ -287,7 +334,7 @@ fn main() {
             }
             if cli.paths.is_empty() {
                 eprintln!(
-                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda --capability-matrix | tyda --lsp | tyda mcp | tyda --version"
+                    "Usage: tyda <paths...> | tyda --verbose <path> | tyda --debug <path> | tyda --diagnostics <path> | tyda --coverage <path> | tyda --include-synthetic-dsl-methods <path> | tyda trace [-o FILE] <paths...> | tyda why <id> [trace] | tyda --capability-matrix | tyda --lsp | tyda mcp | tyda --version"
                 );
                 std::process::exit(1);
             }
@@ -301,6 +348,7 @@ fn main() {
                     include_synthetic_dsl_methods: cli.include_synthetic_dsl_methods,
                 },
                 cli.dsl.as_deref(),
+                None,
             );
         }
     }
@@ -440,10 +488,93 @@ async fn wait_for_termination_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
+/// Runs the RBS analysis with tracing on and writes the trace instead of RBS.
+fn run_trace(cli: &Cli, paths: &[PathBuf], target: TraceTarget<'_>) {
+    if cli.coverage || cli.diagnostics || cli.verbose || cli.debug {
+        eprintln!(
+            "tracing cannot be combined with --coverage, --diagnostics, --verbose, or --debug"
+        );
+        std::process::exit(2);
+    }
+    run_cli(
+        paths,
+        CliRunOptions {
+            debug: false,
+            diagnostics: false,
+            coverage: false,
+            verbose: false,
+            include_synthetic_dsl_methods: cli.include_synthetic_dsl_methods,
+        },
+        cli.dsl.as_deref(),
+        Some(target),
+    );
+}
+
+fn print_why<W: std::io::Write>(trace_jsonl: &[u8], id: &str, out: &mut W) {
+    use tyda::trace::query::{Trace, why};
+    let trace = Trace::from_reader(trace_jsonl).unwrap_or_else(|error| {
+        eprintln!("failed to read trace: {error}");
+        std::process::exit(1);
+    });
+    match trace.find(id).as_slice() {
+        [] => {
+            eprintln!("no declaration matches `{id}`");
+            std::process::exit(1);
+        }
+        [single] => {
+            why(&trace, single, out).ok();
+        }
+        many => {
+            eprintln!("`{id}` matches several declarations:");
+            for candidate in many {
+                eprintln!("  {candidate}");
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TraceTarget<'a> {
+    Stdout,
+    File(&'a Path),
+}
+
+fn write_trace<W: std::io::Write>(
+    registry: &tyda::registry::TypeRegistry,
+    target: TraceTarget<'_>,
+    stdout: &mut W,
+) {
+    use std::io::Write;
+    let result = match target {
+        TraceTarget::Stdout => {
+            tyda::trace::write_jsonl(registry, stdout).and_then(|()| stdout.flush())
+        }
+        TraceTarget::File(path) => fs::File::create(path).and_then(|file| {
+            let mut writer = std::io::BufWriter::new(file);
+            tyda::trace::write_jsonl(registry, &mut writer)?;
+            writer.flush()
+        }),
+    };
+    if let Err(error) = result {
+        eprintln!("failed to write trace: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run_cli(
+    paths: &[PathBuf],
+    options: CliRunOptions,
+    dsl_spec: Option<&str>,
+    trace: Option<TraceTarget<'_>>,
+) {
     use std::io::{BufWriter, Write};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    if trace.is_some() {
+        tyda::trace::enable();
+    }
 
     let start = Instant::now();
     let is_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
@@ -1115,6 +1246,9 @@ fn run_cli(paths: &[PathBuf], options: CliRunOptions, dsl_spec: Option<&str>) {
                 stdout.flush().ok();
             }
         }
+    } else if let Some(target) = trace {
+        write_trace(&workspace_rbs, target, &mut stdout);
+        processed_count.store(total_files, Ordering::Relaxed);
     } else {
         let render_start = Instant::now();
         render_rbs_to_writer_in_pool(

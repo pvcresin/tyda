@@ -284,7 +284,27 @@ fn renderable_constants(class: &ClassInfo) -> &[ConstantSig] {
 }
 
 fn is_renderable_method(method: &MethodSig, options: RenderOptions) -> bool {
-    !method.rbs_file_source || options.include_synthetic_dsl_methods && method.synthetic_dsl_source
+    !method.origin.is_rbs_file_source()
+        || options.include_synthetic_dsl_methods && method.origin.is_synthetic_dsl()
+}
+
+/// Whether the default RBS output prints this method.
+pub fn is_rendered_method(method: &MethodSig) -> bool {
+    is_renderable_method(method, RenderOptions::default())
+}
+
+/// The constant's RBS declaration as the default output prints it, without indentation.
+pub fn constant_decl_line(constant: &ConstantSig) -> String {
+    let mut buf = Vec::new();
+    write_constant(&mut buf, "", constant).expect("writing into Vec<u8> should not fail");
+    String::from_utf8_lossy(&buf).trim().to_string()
+}
+
+/// The method's RBS declaration as the default output prints it, without indentation.
+pub fn method_sig_line(method: &MethodSig) -> String {
+    let mut buf = Vec::new();
+    write_method_sig(&mut buf, method).expect("writing into Vec<u8> should not fail");
+    String::from_utf8_lossy(&buf).trim().to_string()
 }
 
 fn renderable_methods(class: &ClassInfo, options: RenderOptions) -> Vec<&MethodSig> {
