@@ -49677,24 +49677,40 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<Type> {
-        let mut results = Vec::new();
+        // Decide the arms first, so a call this rule leaves to the others changes nothing.
+        if parts
+            .iter()
+            .any(|part| matches!(part, Type::Union(_)) || Self::is_unresolved_receiver(part))
+        {
+            return None;
+        }
+        let mut arms = Vec::new();
         for part in parts {
-            if *part == Type::Nil
-                && self.type_responds_to_method(&Type::Nil, method_name) == Some(false)
-            {
-                continue;
+            if *part == Type::Nil {
+                match self.type_responds_to_method(&Type::Nil, method_name) {
+                    Some(false) => continue,
+                    Some(true) => {}
+                    None => return None,
+                }
             }
-            if matches!(part, Type::Union(_)) || Self::is_unresolved_receiver(part) {
-                return None;
-            }
-            results.push(self.resolve_overloaded_call(
+            self.type_to_class_name(part)?;
+            arms.push(part);
+        }
+        let mut results = Vec::new();
+        for part in arms {
+            let result = self.resolve_overloaded_call(
                 call_node,
                 part,
                 method_name,
                 class_name,
                 parse_result,
                 scope,
-            )?);
+            )?;
+            // An arm that cannot tell leaves the whole call to the general rules.
+            if result == Type::Untyped {
+                return None;
+            }
+            results.push(result);
         }
         (!results.is_empty()).then(|| Type::from_type_vec(results))
     }
@@ -49708,15 +49724,17 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<Type> {
-        if let Type::Union(parts) = receiver_type {
-            return self.resolve_overloaded_call_per_arm(
+        if let Type::Union(parts) = receiver_type
+            && let Some(result) = self.resolve_overloaded_call_per_arm(
                 call_node,
                 parts,
                 method_name,
                 class_name,
                 parse_result,
                 scope,
-            );
+            )
+        {
+            return Some(result);
         }
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
