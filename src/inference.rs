@@ -49698,7 +49698,7 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    /// Each arm of a union receiver picks its own overload for the arguments. A `nil` arm
+    /// An optional receiver picks the overload for the arguments on its value. A `nil` arm
     /// without the method raises, so it adds nothing to the result.
     fn resolve_overloaded_call_per_arm(
         &mut self,
@@ -49727,6 +49727,11 @@ impl<'a> InferenceEngine<'a> {
             }
             self.type_to_class_name(part)?;
             arms.push(part);
+        }
+        // An optional receiver (`T | nil`) is the call this rule serves. Splitting a union of
+        // several values would answer per value where the general rules answer once.
+        if arms.len() != 1 {
+            return None;
         }
         let mut results = Vec::new();
         for part in arms {
@@ -59948,10 +59953,18 @@ impl<'a> InferenceEngine<'a> {
                     );
                 };
 
-                if let Some((receiver_name, key)) =
-                    self.truthy_hash_key_subject(class_name, &call, parse_result, scope)
-                {
-                    let current = self.infer_node_type(class_name, predicate, parse_result, scope);
+                // The condition walk already observed the read; this query sees it again.
+                let observations = self.suspend_source_observations();
+                let hash_key_subject = self
+                    .truthy_hash_key_subject(class_name, &call, parse_result, scope)
+                    .map(|subject| {
+                        (
+                            subject,
+                            self.infer_node_type(class_name, predicate, parse_result, scope),
+                        )
+                    });
+                self.resume_source_observations(observations);
+                if let Some(((receiver_name, key), current)) = hash_key_subject {
                     return Some(CondNarrowing {
                         subject: NarrowSubject::HashKey(receiver_name, key),
                         then_ty: Self::truthy_only(&current),

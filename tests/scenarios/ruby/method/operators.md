@@ -507,24 +507,6 @@ class Stamp
 end
 ```
 
-## Each arm of a union receiver picks the overload for the argument
-
-### update
-
-```ruby
-class Mixed
-  def sum(flag) = (flag ? 1 : 2.5) + 1.5
-end
-```
-
-### result
-
-```rbs
-class Mixed
-  def sum: (untyped flag) -> Float
-end
-```
-
 ## An index read that may return nil keeps nil on an optional receiver
 
 ### update
