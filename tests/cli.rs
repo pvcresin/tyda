@@ -5018,8 +5018,7 @@ fn concern_scope_resolves_to_includer_across_files() {
 }
 
 // `normalize_value_for` types its `name` parameter, but `value` must stay bound to the callers
-// in other files. The scenario runner still shows `untyped` (known issue in
-// `tests/scenarios/known-issues/rails_models.md`).
+// in other files.
 #[test]
 fn normalize_value_for_binds_value_from_another_file() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");

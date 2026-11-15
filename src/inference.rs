@@ -88,6 +88,9 @@ enum StaticLookupMatch {
     Never,
 }
 
+/// An in-place change of an ivar: its name and the values before and after.
+type IvarMutation = (String, Option<Type>, Type);
+
 #[derive(Clone, Debug, Default)]
 struct ActionGuards {
     callbacks: Vec<String>,
@@ -1177,6 +1180,10 @@ pub struct InferenceEngine<'a> {
     proc_param_calls: Option<Vec<(usize, Vec<Type>)>>,
     /// Methods the body being typed passes its own block to before their return is known.
     late_block_forwards: Vec<(String, String, bool)>,
+    /// In-place ivar changes each method made in its first walk, as (ivar, before, after), so a
+    /// replay starts from the value before them instead of applying them twice.
+    ivar_mutations_by_method: HashMap<(String, String), Vec<IvarMutation>>,
+    replaying_method_body: bool,
     /// Per controller, the unconditional `before_action` callbacks that halt unless a self
     /// method is truthy, and those methods.
     action_guards: HashMap<String, ActionGuards>,
@@ -2868,6 +2875,8 @@ impl<'a> InferenceEngine<'a> {
             blockless_return_capture: None,
             proc_param_calls: None,
             late_block_forwards: Vec::new(),
+            ivar_mutations_by_method: HashMap::new(),
+            replaying_method_body: false,
             action_guards: HashMap::new(),
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
@@ -2971,6 +2980,8 @@ impl<'a> InferenceEngine<'a> {
             blockless_return_capture: None,
             proc_param_calls: None,
             late_block_forwards: Vec::new(),
+            ivar_mutations_by_method: HashMap::new(),
+            replaying_method_body: false,
             action_guards: HashMap::new(),
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
@@ -4870,6 +4881,16 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         Self::ivar_value_outside_initialize(scope, ty.clone())
                     };
+                    if !self.replaying_method_body
+                        && let Some(method_name) = scope.method_name.as_deref()
+                        && method_name != "initialize"
+                    {
+                        let before = self.registry.lookup_ivar_type(class_name, name);
+                        self.ivar_mutations_by_method
+                            .entry((class_name.to_string(), method_name.to_string()))
+                            .or_default()
+                            .push((name.clone(), before, summary.clone()));
+                    }
                     self.registry.replace_ivar_type(class_name, name, summary);
                 }
                 // A later read in the same method sees the value after the in-place change.
@@ -65759,6 +65780,46 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// Puts back the ivar values a method's first walk changed in place.
+    fn undo_first_walk_ivar_mutations(&mut self, class_name: &str, method_name: &str) {
+        let Some(mutations) = self
+            .ivar_mutations_by_method
+            .get(&(class_name.to_string(), method_name.to_string()))
+            .cloned()
+        else {
+            return;
+        };
+        for (name, before, after) in mutations.into_iter().rev() {
+            let Some(current) = self.registry.lookup_ivar_type(class_name, &name) else {
+                continue;
+            };
+            let Some(before) = before else {
+                continue;
+            };
+            if current == after {
+                self.registry.replace_ivar_type(class_name, &name, before);
+                continue;
+            }
+            // Another method appended too; take out only the elements this one appended.
+            if let (Type::Tuple(before), Type::Tuple(after), Type::Tuple(current)) =
+                (&before, &after, &current)
+                && after.starts_with(before)
+            {
+                let mut rest = current.clone();
+                let removed_all = after[before.len()..].iter().all(|appended| {
+                    rest.iter()
+                        .rposition(|element| element == appended)
+                        .map(|position| rest.remove(position))
+                        .is_some()
+                });
+                if removed_all {
+                    self.registry
+                        .replace_ivar_type(class_name, &name, Type::Tuple(rest));
+                }
+            }
+        }
+    }
+
     fn reinfer_method_body<'b>(
         &mut self,
         class_name: &str,
@@ -66204,9 +66265,12 @@ impl<'a> InferenceEngine<'a> {
         } else {
             Vec::new()
         };
+        self.undo_first_walk_ivar_mutations(class_name, &method_name);
 
+        let saved_replaying = std::mem::replace(&mut self.replaying_method_body, true);
         let implicit_return =
             self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
+        self.replaying_method_body = saved_replaying;
         self.refresh_unresolved_yield_param_types(
             class_name,
             &method_name,
