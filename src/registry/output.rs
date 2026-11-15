@@ -245,6 +245,31 @@ impl TypeRegistry {
             .then(|| self.build_class_info(name, data, None))
     }
 
+    /// Inference reads annotation names resolved in the class scope (`Outer::Inner`); the
+    /// rendered signature names them as the annotation can, from inside the class.
+    fn write_annotated_names_relative_to_class(&self, class_name: &str, method: &mut MethodSig) {
+        let relative = |ty: &mut Type| *ty = self.relative_scoped_refs_in_type(class_name, ty);
+        let relative_params = |params: &mut [Param]| {
+            for param in params {
+                relative(&mut param.param_type);
+            }
+        };
+        let relative_block = |block: &mut Option<HoverBlockSig>| {
+            if let Some(block) = block {
+                relative_params(&mut block.params);
+                relative(&mut block.return_type);
+            }
+        };
+        relative_params(&mut method.params);
+        relative(&mut method.return_type);
+        relative_block(&mut method.block);
+        for overload in &mut method.overloads {
+            relative_params(&mut overload.params);
+            relative(&mut overload.return_type);
+            relative_block(&mut overload.block);
+        }
+    }
+
     pub(super) fn build_class_info(
         &self,
         name: &str,
@@ -252,6 +277,12 @@ impl TypeRegistry {
         file_filter: Option<&str>,
     ) -> ClassInfo {
         let mut all_methods = self.build_method_sigs_for_class(name, data);
+        for method in all_methods
+            .iter_mut()
+            .filter(|method| method.rbs_annotated && method.origin.is_rbs_inline())
+        {
+            self.write_annotated_names_relative_to_class(name, method);
+        }
         // synthesize dirty-family methods from the skeleton pattern to byte-match the old materialized version.
         self.splice_dirty_pattern_methods(name, data, &mut all_methods);
 

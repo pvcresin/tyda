@@ -8286,131 +8286,81 @@ impl TypeRegistry {
         }
     }
 
-    fn resolve_scoped_refs_in_type(&self, scope_class: &str, ty: &Type) -> (Type, bool, bool) {
-        // recursive helper for `Option<Box<Type>>` slots.
-        fn resolve_opt(
-            this: &TypeRegistry,
-            scope: &str,
-            slot: &Option<Box<Type>>,
-            any_resolved: &mut bool,
-            any_unresolved: &mut bool,
-        ) -> Option<Box<Type>> {
-            slot.as_ref().map(|inner| {
-                let (ty, resolved, unresolved) = this.resolve_scoped_refs_in_type(scope, inner);
-                *any_resolved |= resolved;
-                *any_unresolved |= unresolved;
-                Box::new(ty)
-            })
-        }
-        fn resolve_vec(
-            this: &TypeRegistry,
-            scope: &str,
-            parts: &[Type],
-            any_resolved: &mut bool,
-            any_unresolved: &mut bool,
-        ) -> Vec<Type> {
-            parts
-                .iter()
-                .map(|part| {
-                    let (ty, resolved, unresolved) = this.resolve_scoped_refs_in_type(scope, part);
-                    *any_resolved |= resolved;
-                    *any_unresolved |= unresolved;
-                    ty
-                })
-                .collect()
-        }
-
+    pub(crate) fn resolve_scoped_refs_in_type(
+        &self,
+        scope_class: &str,
+        ty: &Type,
+    ) -> (Type, bool, bool) {
         let mut any_resolved = false;
         let mut any_unresolved = false;
-        let resolved_type = match ty {
-            Type::Class(name) => match self.resolve_scoped_nominal_name(scope_class, name.as_str())
-            {
-                Some(canonical) => {
-                    any_resolved = true;
-                    Type::Class(Sym::new(&canonical))
-                }
-                None => {
-                    any_unresolved = true;
-                    ty.clone()
-                }
-            },
-            Type::Singleton(name) => {
-                match self.resolve_scoped_nominal_name(scope_class, name.as_str()) {
-                    Some(canonical) => {
-                        any_resolved = true;
-                        Type::Singleton(Sym::new(&canonical))
-                    }
-                    None => {
-                        any_unresolved = true;
-                        ty.clone()
-                    }
-                }
+        let resolved = Self::map_nominal_names(ty, &mut |name| match self
+            .resolve_scoped_nominal_name(scope_class, name)
+        {
+            Some(canonical) => {
+                any_resolved = true;
+                Some(canonical)
             }
-            Type::Array(inner) => Type::Array(resolve_opt(
-                self,
-                scope_class,
-                inner,
-                &mut any_resolved,
-                &mut any_unresolved,
-            )),
-            Type::Hash(key, value) => Type::Hash(
-                resolve_opt(
-                    self,
-                    scope_class,
-                    key,
-                    &mut any_resolved,
-                    &mut any_unresolved,
-                ),
-                resolve_opt(
-                    self,
-                    scope_class,
-                    value,
-                    &mut any_resolved,
-                    &mut any_unresolved,
-                ),
-            ),
-            Type::Union(parts) => Type::Union(resolve_vec(
-                self,
-                scope_class,
-                parts,
-                &mut any_resolved,
-                &mut any_unresolved,
-            )),
-            Type::Intersection(parts) => Type::Intersection(resolve_vec(
-                self,
-                scope_class,
-                parts,
-                &mut any_resolved,
-                &mut any_unresolved,
-            )),
-            Type::Tuple(elems) => Type::Tuple(resolve_vec(
-                self,
-                scope_class,
-                elems,
-                &mut any_resolved,
-                &mut any_unresolved,
-            )),
+            None => {
+                any_unresolved = true;
+                None
+            }
+        });
+        (resolved, any_resolved, any_unresolved)
+    }
+
+    /// The inverse of `resolve_scoped_refs_in_type`: `Outer::Name` is written `Name` when
+    /// `Outer` encloses `scope_class` and lexical lookup from there finds no other `Name` first.
+    pub(crate) fn relative_scoped_refs_in_type(&self, scope_class: &str, ty: &Type) -> Type {
+        Self::map_nominal_names(ty, &mut |name| {
+            let (outer, tail) = name.rsplit_once("::")?;
+            let encloses = scope_class == outer
+                || scope_class
+                    .strip_prefix(outer)
+                    .is_some_and(|rest| rest.starts_with("::"));
+            if !encloses {
+                return None;
+            }
+            let found = self.resolve_scoped_class_ref_borrow(scope_class, tail);
+            (found == name || !self.class_data.contains_key(found)).then(|| tail.to_string())
+        })
+    }
+
+    /// Rewrites each nominal name (`Class` / `Singleton` / `Generic` base) that `rename` maps
+    /// to a new name. Other types carry no nominal reference and stay as they are.
+    fn map_nominal_names(ty: &Type, rename: &mut impl FnMut(&str) -> Option<String>) -> Type {
+        fn map_opt(
+            slot: &Option<Box<Type>>,
+            rename: &mut impl FnMut(&str) -> Option<String>,
+        ) -> Option<Box<Type>> {
+            slot.as_ref()
+                .map(|inner| Box::new(TypeRegistry::map_nominal_names(inner, rename)))
+        }
+        fn map_vec(parts: &[Type], rename: &mut impl FnMut(&str) -> Option<String>) -> Vec<Type> {
+            parts
+                .iter()
+                .map(|part| TypeRegistry::map_nominal_names(part, rename))
+                .collect()
+        }
+        match ty {
+            Type::Class(name) => {
+                rename(name.as_str()).map_or_else(|| ty.clone(), |n| Type::Class(Sym::new(&n)))
+            }
+            Type::Singleton(name) => {
+                rename(name.as_str()).map_or_else(|| ty.clone(), |n| Type::Singleton(Sym::new(&n)))
+            }
+            Type::Array(inner) => Type::Array(map_opt(inner, rename)),
+            Type::Hash(key, value) => {
+                let key = map_opt(key, rename);
+                Type::Hash(key, map_opt(value, rename))
+            }
+            Type::Union(parts) => Type::Union(map_vec(parts, rename)),
+            Type::Intersection(parts) => Type::Intersection(map_vec(parts, rename)),
+            Type::Tuple(elems) => Type::Tuple(map_vec(elems, rename)),
             Type::Generic { base, args } => {
-                let base = match self.resolve_scoped_nominal_name(scope_class, base.as_str()) {
-                    Some(canonical) => {
-                        any_resolved = true;
-                        Sym::new(&canonical)
-                    }
-                    None => {
-                        any_unresolved = true;
-                        *base
-                    }
-                };
+                let base = rename(base.as_str()).map_or(*base, |n| Sym::new(&n));
                 Type::Generic {
                     base,
-                    args: resolve_vec(
-                        self,
-                        scope_class,
-                        args,
-                        &mut any_resolved,
-                        &mut any_unresolved,
-                    )
-                    .into(),
+                    args: map_vec(args, rename).into(),
                 }
             }
             Type::Proc {
@@ -8418,32 +8368,21 @@ impl TypeRegistry {
                 param_count,
                 exact_params,
                 literal,
-            } => {
-                let (ret, resolved, unresolved) =
-                    self.resolve_scoped_refs_in_type(scope_class, return_type);
-                any_resolved |= resolved;
-                any_unresolved |= unresolved;
-                Type::Proc {
-                    return_type: Box::new(ret),
-                    param_count: *param_count,
-                    exact_params: *exact_params,
-                    literal: *literal,
-                }
-            }
+            } => Type::Proc {
+                return_type: Box::new(Self::map_nominal_names(return_type, rename)),
+                param_count: *param_count,
+                exact_params: *exact_params,
+                literal: *literal,
+            },
             Type::DeferredSafeNavigation(receiver, result) => {
-                let (receiver, receiver_resolved, receiver_unresolved) =
-                    self.resolve_scoped_refs_in_type(scope_class, receiver);
-                let (result, result_resolved, result_unresolved) =
-                    self.resolve_scoped_refs_in_type(scope_class, result);
-                any_resolved |= receiver_resolved || result_resolved;
-                any_unresolved |= receiver_unresolved || result_unresolved;
-                Type::resolve_deferred_safe_navigation(receiver, result)
+                let receiver = Self::map_nominal_names(receiver, rename);
+                Type::resolve_deferred_safe_navigation(
+                    receiver,
+                    Self::map_nominal_names(result, rename),
+                )
             }
-            // everything else (builtin / literal / various refs) is treated as having no nominal
-            // reference and is returned as-is.
             _ => ty.clone(),
-        };
-        (resolved_type, any_resolved, any_unresolved)
+        }
     }
 
     /// resolve a raw nominal name in lexical scope and return the canonical key that actually

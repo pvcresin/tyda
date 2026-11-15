@@ -18627,7 +18627,7 @@ impl<'a> InferenceEngine<'a> {
         annotations: &[(usize, RbsParamAnnotation)],
     ) {
         for (index, annotation) in annotations {
-            self.registry.set_annotated_param_type(
+            self.set_scoped_annotated_param_type(
                 class_name,
                 method_name,
                 is_singleton,
@@ -18702,6 +18702,56 @@ impl<'a> InferenceEngine<'a> {
                 Some(class_name),
             )
         })
+    }
+
+    fn resolve_scoped_annotation_type(&self, class_name: &str, ty: &Type) -> Type {
+        if class_name == "Object" || !TypeRegistry::type_contains_scoped_nominal_ref(ty) {
+            return ty.clone();
+        }
+        self.registry.resolve_scoped_refs_in_type(class_name, ty).0
+    }
+
+    fn set_scoped_annotated_param_type(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        index: usize,
+        ty: Type,
+    ) {
+        let ty = self.resolve_scoped_annotation_type(class_name, &ty);
+        self.registry
+            .set_annotated_param_type(class_name, method_name, is_singleton, index, ty);
+    }
+
+    /// An annotation names types as written, so `Inner` inside `class Outer` may mean
+    /// `Outer::Inner`. Resolve the names known now and leave the rest for the merge.
+    fn resolve_scoped_annotated_return_type(
+        &mut self,
+        class_name: &str,
+        method_def: &mut MethodDef,
+    ) {
+        if class_name == "Object"
+            || !TypeRegistry::type_contains_scoped_nominal_ref(&method_def.raw_return_type)
+        {
+            return;
+        }
+        let (resolved, any_resolved, any_unresolved) = self
+            .registry
+            .resolve_scoped_refs_in_type(class_name, &method_def.raw_return_type);
+        if any_resolved {
+            method_def.raw_return_type = resolved;
+        }
+        if any_unresolved {
+            self.registry
+                .push_pending_scoped_type_ref(PendingScopedTypeRef {
+                    owner_class: class_name.to_string(),
+                    method_name: method_def.name.to_string(),
+                    is_singleton: method_def.is_singleton,
+                    declaration_scope: class_name.to_string(),
+                    raw_type: method_def.raw_return_type.clone(),
+                });
+        }
     }
 
     /// A `def` run inside a method body defines its method on the class that lexically
@@ -18884,8 +18934,11 @@ impl<'a> InferenceEngine<'a> {
                 *method_type = method_type.with_type_variables(&class_type_params);
             }
         }
-        let rbs_param_annotations =
+        let mut rbs_param_annotations =
             Self::rbs_param_annotation_indices(&param_infos, &rbs_param_annotation_lines);
+        for (_, annotation) in &mut rbs_param_annotations {
+            annotation.ty = self.resolve_scoped_annotation_type(class_name, &annotation.ty);
+        }
         let rbs_block_meta = Self::rbs_block_meta_from_param_annotations(&rbs_param_annotations);
         let has_rbs_param_annotations = !rbs_param_annotations.is_empty();
         let explicit_return_contract = first_shorthand
@@ -18895,7 +18948,7 @@ impl<'a> InferenceEngine<'a> {
 
         if !rbs_lines.is_empty() || return_annotation.is_some() || has_rbs_param_annotations {
             if let Some(shorthand) = first_shorthand {
-                let method_def = MethodDef {
+                let mut method_def = MethodDef {
                     name: Sym::new(&method_name),
                     param_infos,
                     raw_return_type: shorthand.return_type,
@@ -18911,7 +18964,7 @@ impl<'a> InferenceEngine<'a> {
 
                 for (i, (ty, _kind)) in shorthand.param_types.into_iter().enumerate() {
                     if method_def.param_name_at(i).is_some() {
-                        self.registry.set_annotated_param_type(
+                        self.set_scoped_annotated_param_type(
                             class_name,
                             &method_def.name,
                             method_def.is_singleton,
@@ -18923,7 +18976,7 @@ impl<'a> InferenceEngine<'a> {
                 if let Some(block_ty) = shorthand.block_type {
                     for (i, pi) in method_def.param_infos.iter().enumerate() {
                         if pi.kind == ParamKind::Block {
-                            self.registry.set_annotated_param_type(
+                            self.set_scoped_annotated_param_type(
                                 class_name,
                                 &method_def.name,
                                 method_def.is_singleton,
@@ -18958,6 +19011,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &method_def.param_infos,
                 );
+                self.resolve_scoped_annotated_return_type(class_name, &mut method_def);
                 self.registry.add_method_def_with_file_path(
                     class_name,
                     method_def,
@@ -19020,7 +19074,7 @@ impl<'a> InferenceEngine<'a> {
             }
 
             if let Some(return_type) = return_annotation {
-                let method_def = MethodDef {
+                let mut method_def = MethodDef {
                     name: Sym::new(&method_name),
                     param_infos,
                     raw_return_type: return_type,
@@ -19060,6 +19114,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &method_def.param_infos,
                 );
+                self.resolve_scoped_annotated_return_type(class_name, &mut method_def);
                 self.registry.add_method_def_with_file_path(
                     class_name,
                     method_def,
