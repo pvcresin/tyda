@@ -141,7 +141,8 @@ JSON Lines で FILE に書き出す。1 行が 1 スロットで、`id` は `Foo
 - `file` / `line`: 宣言の位置
 - `body`: 全体解決の前に method 本体が返していた型。未解決の参照を `<Foo#bar>`、`<@ivar>`、
   `<param 0>` のように残す
-- `deps`: 型を決めるときに読んだスロット。全体解決で実際に読んだ method と、`body` に残る参照
+- `deps`: 型を決めるときに読んだスロット。`body` に残る参照、本体の推論中に戻り値を読んだ method、
+  確定した registry で `body` を解決し直したときに読んだ method
 - `callers`: 引数の型を渡した呼び出し箇所（`file` / `line` / `in` / 引数の型）
 - `writes`: instance variable への代入箇所
 

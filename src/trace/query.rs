@@ -281,6 +281,20 @@ impl TraceDiff<'_> {
         field(self.base, id) != field(self.head, id)
     }
 
+    /// Output slots, and dependency records present on both sides. A non-rendered
+    /// dependency that appears or disappears only follows from a change in its user.
+    fn is_reported(&self, id: &str) -> bool {
+        let rendered = |record: &Value| {
+            record.get("rendered") != Some(&Value::Bool(false))
+                && str_field(record, "kind") != Some("unresolved")
+        };
+        match (self.base.get(id), self.head.get(id)) {
+            (Some(_), Some(_)) => true,
+            (Some(record), None) | (None, Some(record)) => rendered(record),
+            (None, None) => false,
+        }
+    }
+
     fn deps(&self, id: &str) -> BTreeSet<String> {
         self.base
             .deps(id)
@@ -301,7 +315,9 @@ impl TraceDiff<'_> {
         }
         let mut roots = BTreeSet::new();
         for dep in self.deps(id) {
-            if dep != id && self.type_changed(&dep) {
+            // A dependency on only one side is a change in `id`'s own inputs, shown there.
+            let on_both_sides = self.base.get(&dep).is_some() && self.head.get(&dep).is_some();
+            if dep != id && on_both_sides && self.type_changed(&dep) {
                 roots.extend(self.roots(&dep));
             }
         }
@@ -327,7 +343,7 @@ pub fn diff<W: Write>(base: &Trace, head: &Trace, writer: &mut W) -> io::Result<
         .keys()
         .chain(head.records.keys())
         .map(String::as_str)
-        .filter(|id| state.type_changed(id))
+        .filter(|id| state.type_changed(id) && state.is_reported(id))
         .collect();
     let mut by_root: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     for id in &ids {

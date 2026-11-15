@@ -22,9 +22,13 @@ thread_local! {
 
 /// `owner_class` must be the class whose `class_data` entry was physically read, not a logical/inherited owner.
 fn note_return_type_read(owner_class: impl Into<Sym>, method_name: impl Into<Sym>) {
+    let (owner_class, method_name) = (owner_class.into(), method_name.into());
+    if crate::trace::enabled() {
+        crate::trace::record_body_read(owner_class, method_name);
+    }
     RETURN_TYPE_READS.with(|cell| {
         if let Some(set) = cell.borrow_mut().as_mut() {
-            set.insert((owner_class.into(), method_name.into()));
+            set.insert((owner_class, method_name));
         }
     });
 }

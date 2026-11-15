@@ -117,6 +117,8 @@ struct TraceStore {
     ivar_writes: FxHashMap<MethodKey, FxHashSet<Evidence>>,
     /// Source method returns as the bodies left them, before global resolution.
     bodies: FxHashMap<MethodKey, Type>,
+    /// Method returns read while inferring each method body, by the reading method's id.
+    body_reads: FxHashMap<String, FxHashSet<(Sym, Sym)>>,
 }
 
 pub fn record_call_site(receiver_class: &str, site: &CallSite) {
@@ -150,6 +152,23 @@ pub fn record_bodies(bodies: impl IntoIterator<Item = (Sym, Sym, bool, Type)>) {
         for (owner, method, singleton, ty) in bodies {
             store.bodies.entry((owner, method, singleton)).or_insert(ty);
         }
+    });
+}
+
+/// A method return read while inferring a body. Inference may already know the callee's
+/// type, so the body need not keep a reference to it.
+pub fn record_body_read(owner: Sym, method: Sym) {
+    let Some(reader) =
+        SITE.with(|cell| cell.borrow().as_ref().and_then(|site| site.method.clone()))
+    else {
+        return;
+    };
+    with_store(|store| {
+        store
+            .body_reads
+            .entry(reader)
+            .or_default()
+            .insert((owner, method));
     });
 }
 
@@ -513,6 +532,11 @@ impl Emitter<'_> {
             && let Some(ivar) = &def.attr_ivar
         {
             deps.push(ivar_id(owner, ivar, method.is_singleton));
+        }
+        if let Some(reads) = self.store.body_reads.get(&id) {
+            for (read_owner, read_method) in reads {
+                deps.push(self.method_ref(read_owner.as_str(), read_method.as_str(), None));
+            }
         }
         let deps = sorted_dedup(deps, &id);
         let record = json!({

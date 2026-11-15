@@ -202,3 +202,70 @@ fn trace_rejects_other_output_modes() {
     let output = tyda(dir.path(), &["--trace", "t.jsonl", "--coverage", "user.rb"]);
     assert_eq!(output.status.code(), Some(2));
 }
+
+const SHOP_RB: &str = r#"class Item
+  attr_reader :price
+
+  def initialize(price)
+    @price = price
+  end
+end
+
+class Cart
+  def initialize
+    @item = Item.new(100)
+  end
+
+  def total
+    @item.price
+  end
+
+  def summary
+    total
+  end
+end
+"#;
+
+/// Inference already knows `total` when it reads `summary` in the same file, so the body
+/// keeps no reference; the trace still links them through the return it read.
+#[test]
+fn trace_links_methods_resolved_inside_one_file() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("shop.rb"), SHOP_RB).unwrap();
+    assert!(
+        tyda(dir.path(), &["--trace", "base.jsonl", "shop.rb"])
+            .status
+            .success()
+    );
+    let records = read_trace(&dir.path().join("base.jsonl"));
+    assert_eq!(
+        strings(&record(&records, "Cart#summary")["deps"]),
+        ["Cart#total"]
+    );
+    assert_eq!(
+        strings(&record(&records, "Cart#total")["deps"]),
+        ["Item#price"]
+    );
+
+    fs::write(
+        dir.path().join("shop.rb"),
+        SHOP_RB.replace("Item.new(100)", "Item.new(\"100\")"),
+    )
+    .unwrap();
+    assert!(
+        tyda(dir.path(), &["--trace", "head.jsonl", "shop.rb"])
+            .status
+            .success()
+    );
+    let output = tyda(dir.path(), &["trace", "diff", "base.jsonl", "head.jsonl"]);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("5 changed slots, 1 root causes"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("root Item#initialize"), "{stdout}");
+    assert!(
+        stdout.contains("+ caller shop.rb:11 (\"100\") in Cart#initialize"),
+        "{stdout}"
+    );
+}
