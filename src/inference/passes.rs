@@ -1082,6 +1082,7 @@ impl<'a> InferenceEngine<'a> {
             }
             Type::Proc { return_type, .. } => Self::type_contains_param_ref(return_type),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref),
+            Type::Generic { args, .. } => args.iter().any(Self::type_contains_param_ref),
             _ => false,
         }
     }
@@ -1951,6 +1952,15 @@ impl<'a> InferenceEngine<'a> {
                     })
                     .collect(),
             ),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args
+                    .iter()
+                    .map(|t| {
+                        Self::substitute_param_refs_with_keywords(t, param_types, keyword_types)
+                    })
+                    .collect(),
+            },
             _ => ty.clone(),
         }
     }

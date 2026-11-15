@@ -35619,12 +35619,32 @@ impl<'a> InferenceEngine<'a> {
             (None, None) => None,
         };
 
-        inner
-            .map(|inner| Type::Generic {
+        if let Some(inner) = inner {
+            return Type::Generic {
                 base: Sym::new("Range"),
                 args: vec![Self::parse_type_string(&inner)].into(),
-            })
-            .unwrap_or_else(|| Type::Class(Sym::new("Range")))
+            };
+        }
+        // An endpoint given by a parameter (`1..limit`) is known once the callers are.
+        let is_param = |ty: &Type| matches!(ty, Type::ParamRef(_) | Type::KeywordParamRef(_));
+        let known_and_param = match (&left_ty, &right_ty) {
+            (Some(left), Some(right)) if is_param(right) => Some((left, right)),
+            (Some(left), Some(right)) if is_param(left) => Some((right, left)),
+            _ => None,
+        };
+        if let Some((known, deferred)) = known_and_param
+            && let Some(known) = Self::range_endpoint_name(known)
+        {
+            return Type::Generic {
+                base: Sym::new("Range"),
+                args: vec![Type::from_type_vec(vec![
+                    Self::parse_type_string(&known),
+                    (*deferred).clone(),
+                ])]
+                .into(),
+            };
+        }
+        Type::Class(Sym::new("Range"))
     }
 
     fn infer_hash_type(

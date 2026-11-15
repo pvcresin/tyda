@@ -5275,11 +5275,9 @@ fn diagnostics_keyword_hash_read_interpolating_a_constant_is_not_nil() {
     assert!(!stdout.contains("NilClass"), "got: {stdout}");
 }
 
-// Known issue: the scenario runner and the LSP keep the element type of `Range#each` with a block
-// (`ruby/method/blocks/enumerable_core.md`), but the single-file CLI drops the type argument.
-// When the check fails, drop it.
+/// A range whose end is a parameter keeps its element type once the callers are known.
 #[test]
-fn known_issue_range_each_drops_element_type_in_a_single_file() {
+fn range_with_parameter_end_keeps_element_type_in_a_single_file() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("source.rb"),
@@ -5299,8 +5297,8 @@ fn known_issue_range_each_drops_element_type_in_a_single_file() {
     assert!(output.status.success());
     let rbs = String::from_utf8_lossy(&output.stdout);
     assert!(
-        rbs.contains("def run: (Integer limit) -> Range\n"),
-        "known issue fixed (Range#each element type); drop this check: {rbs}"
+        rbs.contains("def run: (Integer limit) -> Range[Integer]\n"),
+        "got: {rbs}"
     );
 }
 

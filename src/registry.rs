@@ -8354,6 +8354,7 @@ impl TypeRegistry {
                 .iter()
                 .any(|field| Self::type_contains_param_ref_static(&field.value)),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref_static),
+            Type::Generic { args, .. } => args.iter().any(Self::type_contains_param_ref_static),
             Type::Proc { return_type, .. } => Self::type_contains_param_ref_static(return_type),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
@@ -9851,6 +9852,13 @@ impl TypeRegistry {
                     .map(|t| self.resolve_param_refs_from_resolved(t, params))
                     .collect(),
             ),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args
+                    .iter()
+                    .map(|t| self.resolve_param_refs_from_resolved(t, params))
+                    .collect(),
+            },
             Type::Record(fields) => Type::Record(
                 fields
                     .iter()
@@ -13234,6 +13242,7 @@ impl TypeRegistry {
             Type::Hash(Some(key), None) => Self::type_contains_param_ref(key),
             Type::Hash(None, Some(value)) => Self::type_contains_param_ref(value),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref),
+            Type::Generic { args, .. } => args.iter().any(Self::type_contains_param_ref),
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_contains_param_ref(&field.value)),
@@ -13545,6 +13554,10 @@ impl TypeRegistry {
                 Type::Record(resolved)
             }
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(&recur).collect()),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(&recur).collect(),
+            },
             Type::ReceiverMethodRef(receiver_type, method_name) => {
                 let resolved_receiver = recur(receiver_type);
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
