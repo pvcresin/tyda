@@ -87,8 +87,9 @@ fn current_site() -> Site {
 /// (owner, method name, singleton)
 type MethodKey = (Sym, Sym, bool);
 
-/// Call sites by the method they dispatch to.
+/// Call sites, and their argument types, by the method they dispatch to.
 type CallSitesByOwner<'a> = FxHashMap<MethodKey, Vec<&'a FxHashSet<Evidence>>>;
+type CallTypesByOwner<'a> = FxHashMap<MethodKey, Vec<&'a FxHashSet<(Option<String>, Type)>>>;
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct Evidence {
@@ -113,6 +114,9 @@ impl Evidence {
 struct TraceStore {
     /// Call sites by receiver class and method name.
     call_sites: FxHashMap<MethodKey, FxHashSet<Evidence>>,
+    /// Argument and block types of those call sites that still hold refs, with the
+    /// calling method: the callee's parameter and block types come from them.
+    call_types: FxHashMap<MethodKey, FxHashSet<(Option<String>, Type)>>,
     /// Ivar writes by (owner, ivar, singleton).
     ivar_writes: FxHashMap<MethodKey, FxHashSet<Evidence>>,
     /// Source method returns as the bodies left them, before global resolution.
@@ -130,10 +134,49 @@ pub fn record_call_site(receiver_class: &str, site: &CallSite) {
         Sym::new(site.method_name.as_ref()),
         site.method_is_singleton,
     );
+    let caller = at.method.clone();
+    let typed: Vec<(Option<String>, Type)> = site
+        .arg_types
+        .iter()
+        .chain(site.keyword_arg_types.values())
+        .chain(site.block.iter().map(|block| &block.return_type))
+        .filter(|ty| has_ref(ty))
+        .map(|ty| (caller.clone(), ty.clone()))
+        .collect();
     let evidence = Evidence::at(at, format_call_args(site));
     with_store(|store| {
         store.call_sites.entry(key).or_default().insert(evidence);
+        if !typed.is_empty() {
+            store.call_types.entry(key).or_default().extend(typed);
+        }
     });
+}
+
+fn has_ref(ty: &Type) -> bool {
+    match ty {
+        Type::MethodReturnRef(..)
+        | Type::ReceiverMethodRef(..)
+        | Type::IvarRef(_)
+        | Type::GlobalVariableRef(_) => true,
+        Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+            parts.iter().any(has_ref)
+        }
+        Type::Generic { args, .. } => args.iter().any(has_ref),
+        Type::Array(Some(inner))
+        | Type::TruthyProjection(inner)
+        | Type::FalsyProjection(inner)
+        | Type::NonNilProjection(inner)
+        | Type::SplatRef(inner)
+        | Type::PatternIndexRef(inner, _)
+        | Type::PatternRestRef(inner)
+        | Type::PatternTrailingRef(inner, _)
+        | Type::PatternKeyRef(inner, _)
+        | Type::PatternKeyRestRef(inner, _) => has_ref(inner),
+        Type::Hash(key, value) => [key, value].into_iter().flatten().any(|ty| has_ref(ty)),
+        Type::DeferredSafeNavigation(receiver, value) => has_ref(receiver) || has_ref(value),
+        Type::Record(fields) => fields.iter().any(|field| has_ref(&field.value)),
+        _ => false,
+    }
 }
 
 pub fn record_ivar_write(owner: &str, ivar: &str, singleton: bool, ty: &Type) {
@@ -222,11 +265,19 @@ fn write_symbolic(ty: &Type, out: &mut String) {
         Type::TruthyProjection(inner) => projection("truthy", inner, out),
         Type::FalsyProjection(inner) => projection("falsy", inner, out),
         Type::NonNilProjection(inner) => projection("non-nil", inner, out),
-        Type::PatternIndexRef(..)
-        | Type::PatternRestRef(..)
-        | Type::PatternTrailingRef(..)
-        | Type::PatternKeyRef(..)
-        | Type::PatternKeyRestRef(..) => out.push_str("<pattern>"),
+        Type::PatternIndexRef(subject, index) => pattern(subject, &index.to_string(), out),
+        Type::PatternRestRef(subject) => pattern(subject, "*", out),
+        Type::PatternTrailingRef(subject, index) => {
+            pattern(subject, &format!("-{}", index + 1), out)
+        }
+        Type::PatternKeyRef(subject, key) => {
+            let key = match key.as_ref() {
+                RecordKey::Symbol(name) => format!(":{name}"),
+                RecordKey::String(name) => format!("{name:?}"),
+            };
+            pattern(subject, &key, out)
+        }
+        Type::PatternKeyRestRef(subject, _) => pattern(subject, "**", out),
         Type::Union(parts) => join(parts, " | ", out),
         Type::Intersection(parts) => join(parts, " & ", out),
         Type::Tuple(parts) => {
@@ -270,6 +321,13 @@ fn write_symbolic(ty: &Type, out: &mut String) {
     }
 }
 
+/// A destructured part of `subject`, e.g. `<<param 0>.split>[1]>` for `_, x = a.split`.
+fn pattern(subject: &Type, part: &str, out: &mut String) {
+    out.push('<');
+    write_symbolic(subject, out);
+    out.push_str(&format!("[{part}]>"));
+}
+
 fn projection(name: &str, inner: &Type, out: &mut String) {
     out.push_str(&format!("<{name} "));
     write_symbolic(inner, out);
@@ -282,6 +340,13 @@ pub fn method_id(owner: &str, method: &str, singleton: bool) -> String {
     } else {
         format!("{owner}#{method}")
     }
+}
+
+/// `Foo#bar` / `Foo.bar` to (`Foo`, singleton).
+fn split_method_id(id: &str) -> Option<(&str, bool)> {
+    id.rsplit_once('#')
+        .map(|(owner, _)| (owner, false))
+        .or_else(|| id.rsplit_once('.').map(|(owner, _)| (owner, true)))
 }
 
 pub fn ivar_id(owner: &str, ivar: &str, singleton: bool) -> String {
@@ -346,20 +411,31 @@ fn sorted_dedup(mut ids: Vec<String>, own_id: &str) -> Vec<String> {
 /// non-rendered method that a rendered slot depends on.
 pub fn write_jsonl<W: Write>(registry: &TypeRegistry, writer: &mut W) -> io::Result<()> {
     let store = lock_store().take().unwrap_or_default();
-    let mut call_sites_by_owner = CallSitesByOwner::default();
-    for ((receiver, method, singleton), evidence) in &store.call_sites {
+    let dispatch_owner = |(receiver, method, singleton): &MethodKey| -> MethodKey {
         let owner = registry
             .first_method_call_owner_cached(receiver.as_str(), method.as_str(), *singleton)
             .map_or(*receiver, |(owner, _)| Sym::new(owner.as_ref()));
+        (owner, *method, *singleton)
+    };
+    let mut call_sites_by_owner = CallSitesByOwner::default();
+    for (key, evidence) in &store.call_sites {
         call_sites_by_owner
-            .entry((owner, *method, *singleton))
+            .entry(dispatch_owner(key))
             .or_default()
             .push(evidence);
+    }
+    let mut call_types_by_owner = CallTypesByOwner::default();
+    for (key, types) in &store.call_types {
+        call_types_by_owner
+            .entry(dispatch_owner(key))
+            .or_default()
+            .push(types);
     }
     let mut emitter = Emitter {
         registry,
         store: &store,
         call_sites_by_owner,
+        call_types_by_owner,
         emitted: FxHashSet::default(),
         referenced: Vec::new(),
     };
@@ -400,6 +476,7 @@ struct Emitter<'a> {
     registry: &'a TypeRegistry,
     store: &'a TraceStore,
     call_sites_by_owner: CallSitesByOwner<'a>,
+    call_types_by_owner: CallTypesByOwner<'a>,
     emitted: FxHashSet<String>,
     referenced: Vec<String>,
 }
@@ -416,17 +493,27 @@ impl Emitter<'_> {
                 let resolved = self
                     .registry
                     .resolve_deferred_refs_for_context(owner, singleton, receiver);
-                match &resolved {
-                    Type::Class(class) | Type::Generic { base: class, .. } => {
-                        refs.push(self.method_ref(class.as_str(), method.as_str(), Some(false)));
+                let receivers = match &resolved {
+                    Type::Union(parts) => parts.as_slice(),
+                    other => std::slice::from_ref(other),
+                };
+                for receiver in receivers {
+                    match receiver {
+                        Type::Class(class) | Type::Generic { base: class, .. } => {
+                            refs.push(self.method_ref(
+                                class.as_str(),
+                                method.as_str(),
+                                Some(false),
+                            ));
+                        }
+                        Type::Singleton(class) => {
+                            refs.push(self.method_ref(class.as_str(), method.as_str(), Some(true)));
+                        }
+                        Type::SelfType | Type::InstanceType => {
+                            refs.push(self.method_ref(owner, method.as_str(), Some(singleton)));
+                        }
+                        _ => {}
                     }
-                    Type::Singleton(class) => {
-                        refs.push(self.method_ref(class.as_str(), method.as_str(), Some(true)));
-                    }
-                    Type::SelfType | Type::InstanceType => {
-                        refs.push(self.method_ref(owner, method.as_str(), Some(singleton)));
-                    }
-                    _ => {}
                 }
                 self.collect_refs(owner, singleton, receiver, refs);
             }
@@ -446,7 +533,12 @@ impl Emitter<'_> {
             | Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner)
-            | Type::SplatRef(inner) => self.collect_refs(owner, singleton, inner, refs),
+            | Type::SplatRef(inner)
+            | Type::PatternIndexRef(inner, _)
+            | Type::PatternRestRef(inner)
+            | Type::PatternTrailingRef(inner, _)
+            | Type::PatternKeyRef(inner, _)
+            | Type::PatternKeyRestRef(inner, _) => self.collect_refs(owner, singleton, inner, refs),
             Type::Hash(key, value) => {
                 for inner in [key, value].into_iter().flatten() {
                     self.collect_refs(owner, singleton, inner, refs);
@@ -462,6 +554,22 @@ impl Emitter<'_> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The ivar's type as methods read it. A parameter written in `initialize` takes the
+    /// type its callers pass, as an attr reader of it renders.
+    fn ivar_type(&self, owner: &str, ivar: &str, singleton: bool) -> Option<Type> {
+        if singleton {
+            return self.registry.lookup_singleton_ivar_type(owner, ivar);
+        }
+        let stored = self.registry.lookup_ivar_type(owner, ivar);
+        match stored {
+            None | Some(Type::Untyped | Type::ParamRef(_) | Type::KeywordParamRef(_)) => self
+                .registry
+                .infer_attr_type_from_initialize(owner, ivar)
+                .or(stored),
+            Some(ty) => Some(ty),
         }
     }
 
@@ -508,7 +616,7 @@ impl Emitter<'_> {
         let record = json!({
             "kind": "constant",
             "id": id,
-            "type": constant.const_type.to_string(),
+            "type": crate::rbs::render::constant_decl_line(constant),
             "file": constant.file_path,
             "line": constant.loc.map(|loc| loc.line),
         });
@@ -557,6 +665,23 @@ impl Emitter<'_> {
                 deps.push(self.method_ref(read_owner.as_str(), read_method.as_str(), None));
             }
         }
+        for types in self.call_types_by_owner.get(&key).into_iter().flatten() {
+            for (caller, ty) in types.iter() {
+                let (caller_owner, caller_singleton) = caller
+                    .as_deref()
+                    .and_then(split_method_id)
+                    .unwrap_or((owner, method.is_singleton));
+                self.collect_refs(caller_owner, caller_singleton, ty, &mut deps);
+            }
+        }
+        let callers = self.callers(owner, &method.name, method.is_singleton);
+        // A caller passing its own parameter passes the type its callers give it.
+        deps.extend(
+            callers
+                .iter()
+                .filter(|caller| caller.text.contains("<param "))
+                .filter_map(|caller| caller.method.clone()),
+        );
         let deps = sorted_dedup(deps, &id);
         let record = json!({
             "kind": "method",
@@ -567,7 +692,7 @@ impl Emitter<'_> {
             "line": method.loc.map(|loc| loc.line),
             "body": body.map(symbolic),
             "deps": deps,
-            "callers": evidence_json(&self.callers(owner, &method.name, method.is_singleton)),
+            "callers": evidence_json(&callers),
         });
         self.write_record(id, record, writer)
     }
@@ -600,12 +725,7 @@ impl Emitter<'_> {
         names.dedup();
         for (ivar, singleton) in names {
             let id = ivar_id(owner, ivar.as_str(), singleton);
-            let ty = if singleton {
-                self.registry
-                    .lookup_singleton_ivar_type(owner, ivar.as_str())
-            } else {
-                self.registry.lookup_ivar_type(owner, ivar.as_str())
-            };
+            let ty = self.ivar_type(owner, ivar.as_str(), singleton);
             let writes = self
                 .store
                 .ivar_writes

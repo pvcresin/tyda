@@ -142,9 +142,11 @@ base/head の同じ release binary で一度ずつ解析し、解析ファイル
 - `body`: 全体解決の前に method 本体が返していた型。未解決の参照を `<Foo#bar>`、`<@ivar>`、
   `<param 0>` のように残す
 - `deps`: 型を決めるときに読んだスロット。`body` に残る参照、本体の推論中に戻り値を読んだ method、
-  確定した registry で `body` を解決し直したときに読んだ method
+  確定した registry で `body` を解決し直したときに読んだ method、呼び出し元が渡す引数・block の型が参照する
+  スロット、自分の引数をそのまま渡す呼び出し元 method
 - `callers`: 引数の型を渡した呼び出し箇所（`file` / `line` / `in` / 引数の型）
-- `writes`: instance variable への代入箇所
+- `writes`: instance variable への代入箇所。ivar の `type` は method から見える型で、`initialize` の引数を
+  代入した ivar は呼び出し元が渡す型になる。多重代入は `<<param 0>.split>[1]>` のように分解元を残す
 
 出力されない依存先（外部 RBS、RBI、生成 DSL method、見つからない参照）も、参照された分だけ
 `rendered: false` や `kind: "unresolved"` のレコードとして出力する。
@@ -153,8 +155,10 @@ base/head の同じ release binary で一度ずつ解析し、解析ファイル
 
 `tyda why <id> [paths]` は解析と trace を内部で行い、そのスロットから依存を末端まで辿って、各スロットの
 宣言行・呼び出し行・代入行のソースを木で表示する。paths を省略するとカレントディレクトリを解析する。
-`id` はスロット ID の末尾だけでもよい（`#summary`、`@price`）。subject の RBS が CI で変わったときは、
-base と head の `tyda trace` の diff で変わったスロットを探し、`tyda why` で原因を辿る。
+`id` はスロット ID の末尾だけでもよい（`#summary`、`@price`）。`--trace <FILE>` を付けると解析せず、
+保存した trace を読む（gitlab で約 0.3 秒）。呼び出し元と代入はスロットごとに 5 件まで表示し、残りの件数を
+添える。trace ファイルには全件が入る。型の変化を調べる手順は [development.md](development.md) の
+「推論の変化を調べる」を参照する。
 
 記録は `tyda trace` / `tyda why` の実行だけが行う。指定しない実行では各記録箇所が 1 回の atomic 読み取りで
 終わり、追加の状態を持たない。

@@ -186,6 +186,13 @@ enum Commands {
         id: String,
         #[arg(help = "Files or directories to analyze [default: .]")]
         paths: Vec<PathBuf>,
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with = "paths",
+            help = "Read a trace saved by `tyda trace -o` instead of analyzing"
+        )]
+        trace: Option<PathBuf>,
         #[arg(long, help = "Stop printing dependencies below this depth")]
         depth: Option<usize>,
     },
@@ -308,8 +315,21 @@ fn main() {
         }
         Some(Commands::Why {
             ref id,
+            trace: Some(ref trace),
+            depth,
+            ..
+        }) => {
+            let jsonl = fs::read(trace).unwrap_or_else(|error| {
+                eprintln!("failed to read trace {}: {error}", trace.display());
+                std::process::exit(2);
+            });
+            print_why(&jsonl, id, depth, &mut std::io::stdout().lock());
+        }
+        Some(Commands::Why {
+            ref id,
             ref paths,
             depth,
+            trace: None,
         }) => {
             let paths = if paths.is_empty() {
                 vec![PathBuf::from(".")]

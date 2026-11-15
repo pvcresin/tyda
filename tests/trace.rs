@@ -184,6 +184,17 @@ fn trace_why_prints_dependencies_with_source_lines() {
 
     let missing = tyda(dir.path(), &["why", "Nope#nope"]);
     assert_eq!(missing.status.code(), Some(1));
+
+    // A saved trace answers without analyzing again.
+    let mut args = vec!["trace", "-o", "trace.jsonl"];
+    args.extend(FILES);
+    assert!(tyda(dir.path(), &args).status.success());
+    let mut args = vec!["why", "User#name"];
+    args.extend(FILES);
+    let analyzed = tyda(dir.path(), &args).stdout;
+    let saved = tyda(dir.path(), &["why", "User#name", "--trace", "trace.jsonl"]);
+    assert!(saved.status.success());
+    assert_eq!(saved.stdout, analyzed);
 }
 
 #[test]

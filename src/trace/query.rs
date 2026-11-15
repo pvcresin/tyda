@@ -110,6 +110,9 @@ fn evidence(record: &Value, key: &str) -> Vec<(Option<String>, String)> {
         .unwrap_or_default()
 }
 
+/// Callers and writes printed per slot; the trace keeps them all.
+const SHOWN_EVIDENCE: usize = 5;
+
 /// Source lines quoted next to evidence, read once per file.
 #[derive(Default)]
 struct SourceCache {
@@ -194,7 +197,9 @@ impl WhyPrinter<'_> {
             writeln!(writer, "{detail}body: {body}")?;
         }
         for (label, key) in [("caller", "callers"), ("write", "writes")] {
-            for (location, text) in evidence(record, key) {
+            let items = evidence(record, key);
+            let hidden = items.len().saturating_sub(SHOWN_EVIDENCE);
+            for (location, text) in items.into_iter().take(SHOWN_EVIDENCE) {
                 let location = location.unwrap_or_else(|| "?".to_string());
                 let source = self
                     .sources
@@ -202,6 +207,9 @@ impl WhyPrinter<'_> {
                     .map(|source| format!("  | {source}"))
                     .unwrap_or_default();
                 writeln!(writer, "{detail}{label} {location} {text}{source}")?;
+            }
+            if hidden > 0 {
+                writeln!(writer, "{detail}... {hidden} more {key} in the trace")?;
             }
         }
         if self.max_depth.is_some_and(|max| depth >= max) {
