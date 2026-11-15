@@ -5303,3 +5303,44 @@ fn known_issue_range_each_drops_element_type_in_a_single_file() {
         "known issue fixed (Range#each element type); drop this check: {rbs}"
     );
 }
+
+// Known issue: the scenario runner analyzes the other files first and resolves `Ctx` to
+// `Core::Ctx` (`ruby/variable/constant_resolution.md`). The CLI analyzes each file alone, keeps
+// the bare `Ctx`, and loses the call. When the check fails, drop it.
+#[test]
+fn known_issue_namespace_constant_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("ctx.rb"),
+        concat!(
+            "module Core\n",
+            "  class Ctx\n",
+            "    def initialize(src) = @src = src\n",
+            "    def src = @src\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("user.rb"),
+        concat!(
+            "module Core\n",
+            "  class User\n",
+            "    def make = Ctx.new(\"q\").src\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def make: -> untyped\n"),
+        "known issue fixed (namespace constant from another file); drop this check: {rbs}"
+    );
+}
