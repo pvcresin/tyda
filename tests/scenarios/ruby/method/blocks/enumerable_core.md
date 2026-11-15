@@ -1948,3 +1948,21 @@ class LoopYieldReader
   def each_part: (untyped path) { (String) -> untyped } -> nil
 end
 ```
+
+## Range#each with a block keeps the element type
+
+```ruby
+class RangeEachReturn
+  def run(limit) = (1..limit).each { |i| i }
+end
+
+RangeEachReturn.new.run(3)
+```
+
+### result
+
+```rbs
+class RangeEachReturn
+  def run: (Integer limit) -> Range[Integer]
+end
+```

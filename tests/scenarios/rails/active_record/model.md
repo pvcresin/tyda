@@ -337,7 +337,6 @@ end
 
 ```yaml
 rails_version: 7.1.0
-known_issue: true
 ```
 
 ### update

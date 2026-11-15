@@ -25,35 +25,6 @@ pub const RAILS_HASH_IDENTITY_METHODS: &[&str] = &[
     "to_unsafe_hash",
 ];
 
-pub const RAILS_STRING_RETURNING_METHODS: &[&str] = &[
-    "squish",
-    "strip_heredoc",
-    "underscore",
-    "camelize",
-    "camelcase",
-    "titleize",
-    "titlecase",
-    "dasherize",
-    "demodulize",
-    "deconstantize",
-    "parameterize",
-    "tableize",
-    "classify",
-    "humanize",
-    "foreign_key",
-    "pluralize",
-    "singularize",
-    "html_safe",
-    "first",
-    "last",
-    "truncate",
-    "truncate_bytes",
-    "truncate_words",
-    "remove",
-    "indent",
-    "inquiry",
-];
-
 pub const DURATION_METHODS: &[&str] = &[
     "second", "seconds", "minute", "minutes", "hour", "hours", "day", "days", "week", "weeks",
     "month", "months", "year", "years",

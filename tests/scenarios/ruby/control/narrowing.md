@@ -1350,3 +1350,33 @@ class Store
   def find: -> Integer?
 end
 ```
+
+## A repeated ENV read keeps its truthy guard
+
+```ruby
+class RepeatedEnvRead
+  def run
+    consume(ENV["TOKEN"]) if ENV["TOKEN"]
+  end
+
+  def deleted
+    return unless ENV["TOKEN"]
+    ENV.delete("TOKEN")
+    measure(ENV["TOKEN"])
+  end
+
+  def consume(value) = value.upcase
+  def measure(value) = value&.size
+end
+```
+
+### result
+
+```rbs
+class RepeatedEnvRead
+  def run: -> String?
+  def deleted: -> Integer?
+  def consume: (String value) -> String
+  def measure: (String? value) -> Integer?
+end
+```

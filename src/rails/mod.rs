@@ -1,5 +1,6 @@
 pub mod inflector;
 mod model_tables;
+pub mod parameters;
 pub mod project;
 pub mod relation_api;
 pub mod routes;
@@ -16,6 +17,36 @@ pub use project::{detect_rails, load_project_types, load_project_types_with_acti
 pub use schema::load_schema;
 
 use crate::types::Type;
+
+/// ActiveSupport String extensions that return a String.
+pub const RAILS_STRING_RETURNING_METHODS: &[&str] = &[
+    "squish",
+    "strip_heredoc",
+    "underscore",
+    "camelize",
+    "camelcase",
+    "titleize",
+    "titlecase",
+    "dasherize",
+    "demodulize",
+    "deconstantize",
+    "parameterize",
+    "tableize",
+    "classify",
+    "humanize",
+    "foreign_key",
+    "pluralize",
+    "singularize",
+    "html_safe",
+    "first",
+    "last",
+    "truncate",
+    "truncate_bytes",
+    "truncate_words",
+    "remove",
+    "indent",
+    "inquiry",
+];
 
 /// Same nullability as `load_schema` accessors: `untyped` stays untyped (union
 /// reduction would otherwise collapse `untyped | nil` to `nil`).

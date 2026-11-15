@@ -802,3 +802,18 @@ fn attr_reader_of_a_class_from_another_file_resolves_its_deferred_ivar() {
         .map(|h| (h.name, h.ty.to_string()));
     assert_eq!(got, Some(("version".to_string(), "String".to_string())));
 }
+
+// Known issue: the hover on a `Range#each` call with a block shows the block as
+// `(untyped arg0) -> untyped` and the return as a bare `Range`, while the block parameter and the
+// method return keep `Integer` and `Range[Integer]`. When the check fails, assert the expected
+// `() { (Integer) -> void } -> Range[Integer]` instead.
+#[test]
+fn known_issue_range_each_call_hover_loses_element_type() {
+    let source = "def run(limit) = (1..limit).each { |i| i }\n\nrun(3)\n";
+    let (_, _, display) = hover_with_display(source, 1, 30).expect("hover on `each`");
+    assert_eq!(
+        display.as_deref(),
+        Some("each: () { (untyped arg0) -> untyped } -> Range"),
+        "known issue fixed (Range#each call hover); update this check"
+    );
+}

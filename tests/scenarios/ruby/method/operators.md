@@ -322,7 +322,7 @@ Vector.new(1, 2)
 
 ```rbs
 class Vector
-  def initialize: (untyped x, untyped y) -> void
+  def initialize: (Integer x, Integer y) -> void
   def +: (untyped other) -> Vector
   def -: (untyped other) -> Vector
   def %: (untyped other) -> 0

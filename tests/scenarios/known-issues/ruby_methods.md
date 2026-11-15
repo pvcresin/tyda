@@ -1,90 +1,5 @@
 # Known Issues / Ruby Methods
 
-## Blockless Enumerable helpers keep the element type from a custom each
-
-```ruby
-class Pair
-  include Enumerable
-
-  def each
-    yield 1
-    yield 2
-  end
-end
-
-class PairUser
-  def all = Pair.new.to_a
-  def head = Pair.new.first
-  def ordered = Pair.new.sort
-  def lowest = Pair.new.min
-end
-```
-
-### result
-
-```rbs
-class Pair
-  include Enumerable
-
-  def each: { (Integer) -> untyped } -> untyped
-end
-
-class PairUser
-  def all: -> Array[1 | 2]
-  def head: -> (1 | 2)?
-  def ordered: -> Array[1 | 2]
-  def lowest: -> (1 | 2)?
-end
-```
-
-## Enumerable select with a symbol proc returns an Array
-
-```ruby
-class Items
-  include Enumerable
-
-  def initialize = @items = [1, 2, 3]
-  def each(&block) = @items.each(&block)
-end
-
-class ItemsUser
-  def odd = Items.new.select(&:odd?)
-end
-```
-
-### result
-
-```rbs
-class Items
-  include Enumerable
-
-  def initialize: -> void
-  def each: () ?{ (?) -> untyped } -> untyped
-end
-
-class ItemsUser
-  def odd: -> Array[untyped]
-end
-```
-
-## A default built from an earlier parameter keeps its type
-
-```ruby
-class DefaultDep
-  def double(base, scaled = base * 2) = scaled
-end
-
-DefaultDep.new.double(3)
-```
-
-### result
-
-```rbs
-class DefaultDep
-  def double: (Integer base, ?Integer scaled) -> Integer
-end
-```
-
 ## An ivar set from a nil default parameter keeps nil
 
 ```ruby
@@ -129,27 +44,6 @@ class NameList
 end
 ```
 
-## A yield of a singleton method defined later in the class keeps its type
-
-```ruby
-class LaterSetup
-  def self.setup
-    yield instance
-  end
-
-  def self.instance = new
-end
-```
-
-### result
-
-```rbs
-class LaterSetup
-  def self.setup: { (LaterSetup) -> untyped } -> untyped
-  def self.instance: -> LaterSetup
-end
-```
-
 ## A short type name in an inline RBS annotation resolves in the enclosing class
 
 ```ruby
@@ -176,5 +70,34 @@ class Lookup
 
   def named: -> _Named
   def label: -> String
+end
+```
+
+## A block param yielded from a later singleton method keeps the owner class
+
+```ruby
+class LaterSetup
+  def self.setup
+    yield instance
+  end
+
+  def self.instance = new
+end
+
+class SetupUser
+  def run = LaterSetup.setup { |setup| setup }
+end
+```
+
+### result
+
+```rbs
+class LaterSetup
+  def self.setup: [R] { (LaterSetup) -> R } -> R
+  def self.instance: -> LaterSetup
+end
+
+class SetupUser
+  def run: -> LaterSetup
 end
 ```

@@ -188,3 +188,21 @@ class Runner
   def run: (Symbol a, String b, ?(Integer | String) c) -> (String | 1)
 end
 ```
+
+## A default built from an earlier parameter keeps its type
+
+```ruby
+class DefaultDep
+  def double(base, scaled = base * 2) = scaled
+end
+
+DefaultDep.new.double(3)
+```
+
+### result
+
+```rbs
+class DefaultDep
+  def double: (Integer base, ?Integer scaled) -> Integer
+end
+```

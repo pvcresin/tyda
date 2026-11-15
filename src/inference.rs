@@ -220,6 +220,8 @@ enum NarrowSubject {
     Local(String),
     Ivar(String),
     SelfMethod(String),
+    /// A constant index read with a literal key (`ENV["TOKEN"]`), keyed by its source.
+    ConstIndex(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -336,8 +338,53 @@ fn call_invalidates_self_facts(
             let name = String::from_utf8_lossy(call.name().as_slice()).to_string();
             !fact_keys.contains_key(&name) && !is_pure_reader(&name)
         }
-        Some(receiver) => matches!(receiver, Node::SelfNode { .. }),
+        Some(receiver) => {
+            matches!(receiver, Node::SelfNode { .. })
+                || (call.name().as_slice() != b"[]"
+                    && is_const_index_fact_receiver(&receiver, fact_keys))
+        }
     }
+}
+
+/// The fact key of a read like `ENV["TOKEN"]`: a constant receiver indexed by one literal key.
+fn const_index_fact_key(node: &Node<'_>) -> Option<String> {
+    let call = node.as_call_node()?;
+    if call.name().as_slice() != b"[]" || call.block().is_some() || call.is_safe_navigation() {
+        return None;
+    }
+    let receiver = call.receiver()?;
+    if !matches!(
+        receiver,
+        Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+    ) {
+        return None;
+    }
+    let arguments: Vec<_> = call.arguments()?.arguments().iter().collect();
+    let [key] = arguments.as_slice() else {
+        return None;
+    };
+    if !matches!(
+        key,
+        Node::StringNode { .. } | Node::SymbolNode { .. } | Node::IntegerNode { .. }
+    ) {
+        return None;
+    }
+    Some(String::from_utf8_lossy(node.location().as_slice()).to_string())
+}
+
+/// Any other call on a constant that holds index facts may change what its index reads return.
+fn is_const_index_fact_receiver(receiver: &Node<'_>, fact_keys: &HashMap<String, Type>) -> bool {
+    if !matches!(
+        receiver,
+        Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+    ) {
+        return false;
+    }
+    let prefix = format!(
+        "{}[",
+        String::from_utf8_lossy(receiver.location().as_slice())
+    );
+    fact_keys.keys().any(|key| key.starts_with(&prefix))
 }
 
 /// A visitor that checks whether a statement contains a node that could invalidate a self fact
@@ -2150,7 +2197,9 @@ impl Scope {
     fn narrow_subject(&mut self, subject: &NarrowSubject, ty: Type) {
         match subject {
             NarrowSubject::Local(name) => self.narrow_correlated_local(name, ty),
-            NarrowSubject::Ivar(name) | NarrowSubject::SelfMethod(name) => {
+            NarrowSubject::Ivar(name)
+            | NarrowSubject::SelfMethod(name)
+            | NarrowSubject::ConstIndex(name) => {
                 self.set_self_fact(name, ty);
             }
         }
@@ -2629,12 +2678,12 @@ impl<'a> InferenceEngine<'a> {
         {
             return None;
         }
-        let needs_context = arg_types
-            .iter()
+        // An ivar argument is read in the caller's class, which may differ from the target's.
+        let needs_context = arg_types.iter().any(|ty| {
+            Self::type_contains_call_site_param_ref(ty) || matches!(ty, Type::IvarRef(_))
+        }) || keyword_arg_types
+            .values()
             .any(Self::type_contains_call_site_param_ref)
-            || keyword_arg_types
-                .values()
-                .any(Self::type_contains_call_site_param_ref)
             || keyword_rest_shape.is_some_and(Self::type_contains_call_site_param_ref)
             || block.as_ref().is_some_and(|block| {
                 block
@@ -2954,6 +3003,8 @@ impl<'a> InferenceEngine<'a> {
         if enabled && self.dsl_activation.auto_detected.is_empty() {
             self.dsl_activation = DslActivation::with_rails_mode(true);
         }
+        self.registry
+            .set_rails_string_inflections(self.rails_feature_enabled());
     }
 
     pub(in crate::inference) fn is_collecting_concern_included(&self) -> bool {
@@ -3161,6 +3212,8 @@ impl<'a> InferenceEngine<'a> {
     pub fn set_dsl_activation(&mut self, activation: DslActivation) {
         self.rails_mode = activation.rails_mode_compat();
         self.dsl_activation = activation;
+        self.registry
+            .set_rails_string_inflections(self.rails_feature_enabled());
     }
 
     pub fn set_ruby_version(&mut self, version: Option<RubyVersion>) {
@@ -13256,6 +13309,7 @@ impl<'a> InferenceEngine<'a> {
         super_node: Option<&Node<'_>>,
         parse_result: Option<&ParseResult<'_>>,
         block: Option<&HoverBlockSig>,
+        call_has_block: bool,
     ) -> Option<Type> {
         let method_name = scope.method_name.clone()?;
         if method_name == "initialize" {
@@ -13281,7 +13335,13 @@ impl<'a> InferenceEngine<'a> {
         let returns: Vec<Type> = targets
             .iter()
             .filter_map(|(owner, is_singleton)| {
-                self.super_target_return(owner, &method_name, *is_singleton, &arguments)
+                self.super_target_return(
+                    owner,
+                    &method_name,
+                    *is_singleton,
+                    &arguments,
+                    call_has_block,
+                )
             })
             .collect();
         if returns.is_empty() {
@@ -13321,8 +13381,41 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         is_singleton: bool,
         arguments: &SuperCallArguments,
+        call_has_block: bool,
     ) -> Option<Type> {
-        self.super_target_return_with_raw(owner, method_name, is_singleton, arguments, None)
+        let raw_return = call_has_block
+            .then(|| self.rbs_block_call_return(owner, method_name, is_singleton))
+            .flatten();
+        self.super_target_return_with_raw(owner, method_name, is_singleton, arguments, raw_return)
+    }
+
+    /// An RBS method that requires a block has no block-less return, so a call with a
+    /// block reads the first overload that takes one.
+    fn rbs_block_call_return(
+        &self,
+        owner: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<Type> {
+        let method = self
+            .registry
+            .lookup_method_def(owner, method_name, is_singleton)?;
+        if !method.rbs_file_source || method.raw_return_type != Type::Untyped {
+            return None;
+        }
+        let method_type = method
+            .rbs_method_types
+            .iter()
+            .find(|mt| mt.block.is_some())?;
+        if !method_type.type_params.is_empty() {
+            return None;
+        }
+        let ty = convert_imported_rbs_type(
+            &method_type.function_type.return_type,
+            self.registry.type_aliases(),
+            Some(owner),
+        );
+        Self::is_concrete(&ty).then_some(ty)
     }
 
     fn super_target_return_with_raw(
@@ -17943,6 +18036,16 @@ impl<'a> InferenceEngine<'a> {
         self.infer_node_type(class_name, value, parse_result, scope)
     }
 
+    fn optional_param_default_node<'b>(
+        def_node: &ruby_prism::DefNode<'b>,
+        name: &str,
+    ) -> Option<Node<'b>> {
+        def_node.parameters()?.optionals().iter().find_map(|param| {
+            let opt = param.as_optional_parameter_node()?;
+            (opt.name().as_slice() == name.as_bytes()).then(|| opt.value())
+        })
+    }
+
     fn def_has_bare_super_default(def_node: &ruby_prism::DefNode<'_>) -> bool {
         def_node.parameters().is_some_and(|params| {
             params.optionals().iter().any(|param| {
@@ -21190,6 +21293,29 @@ impl<'a> InferenceEngine<'a> {
         self.push_source_definition_snapshot(span.start, span.end, definition_loc);
     }
 
+    fn push_variable_write_hover(
+        &mut self,
+        class_name: &str,
+        scope: &Scope,
+        node: &Node<'_>,
+        name: &str,
+        ty: &Type,
+    ) {
+        if !self.record_hover_snapshots && self.coverage_recorder.is_none() {
+            return;
+        }
+        let start = node.location().start_offset();
+        self.push_hover_snapshot(HoverSnapshot {
+            start,
+            end: start + name.len(),
+            name: name.to_string(),
+            target: HoverTarget::Value(ty.clone()),
+            class_context: class_name.to_string(),
+            method_context: scope.method_name.clone(),
+            method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
+        });
+    }
+
     fn push_value_hover_snapshot<F>(
         &mut self,
         class_name: &str,
@@ -21631,6 +21757,14 @@ impl<'a> InferenceEngine<'a> {
                             let owner = self
                                 .initialize_owner_class(&target_class)
                                 .unwrap_or(target_class);
+                            let block = self.collect_call_site_block(
+                                &owner,
+                                "initialize",
+                                false,
+                                class_name,
+                                &call_node,
+                                parse_result,
+                            );
                             self.record_inferred_call_site(
                                 &owner,
                                 CallSite {
@@ -21642,7 +21776,7 @@ impl<'a> InferenceEngine<'a> {
                                         .map(|(name, ty)| (name.clone().into(), ty.clone()))
                                         .collect(),
                                     keyword_rest_shape: None,
-                                    block: None,
+                                    block: block.map(Box::new),
                                     caller_context: None,
                                     open_splat: None,
                                     self_call: false,
@@ -26780,6 +26914,7 @@ impl<'a> InferenceEngine<'a> {
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let existing = scope.get(&var_name).cloned().unwrap_or(Type::Nil);
                 let result_type = Self::infer_or_write_result(&existing, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result_type);
                 scope.set(&var_name, result_type);
             }
             Node::LocalVariableAndWriteNode { .. } => {
@@ -26791,6 +26926,7 @@ impl<'a> InferenceEngine<'a> {
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_and_write_result(&current_type, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result_type);
                 scope.set(&var_name, result_type);
             }
             Node::LocalVariableOperatorWriteNode { .. } => {
@@ -26808,6 +26944,7 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let result_type =
                     self.infer_operator_write_result(&current_type, &operator_name, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result_type);
                 scope.set(&var_name, result_type);
             }
             Node::InstanceVariableOperatorWriteNode { .. } => {
@@ -26827,6 +26964,7 @@ impl<'a> InferenceEngine<'a> {
                 );
                 let result_type =
                     self.infer_operator_write_result(&current_type, &operator_name, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &result_type);
                 scope.invalidate_self_facts_for_ivar_write(&ivar_name);
                 if Self::can_track_ivar_write_locally(&write_node.value(), &result_type) {
                     scope.set_self_fact(&ivar_name, result_type.clone());
@@ -27006,6 +27144,7 @@ impl<'a> InferenceEngine<'a> {
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_or_write_result(&current_type, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &result_type);
                 scope.invalidate_self_facts_for_ivar_write(&ivar_name);
                 if Self::can_track_ivar_write_locally(&write_node.value(), &result_type) {
                     scope.set_self_fact(&ivar_name, result_type.clone());
@@ -27029,6 +27168,7 @@ impl<'a> InferenceEngine<'a> {
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let result_type = Self::infer_and_write_result(&current_type, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &result_type);
                 scope.invalidate_self_facts_for_ivar_write(&ivar_name);
                 if Self::can_track_ivar_write_locally(&write_node.value(), &result_type) {
                     scope.set_self_fact(&ivar_name, result_type.clone());
@@ -27046,7 +27186,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_global_variable_write_node()
                     .expect("must be GlobalVariableWriteNode");
                 let name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write_node.value(),
@@ -27055,13 +27195,14 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
             }
             Node::GlobalVariableOrWriteNode { .. } => {
                 let write_node = node
                     .as_global_variable_or_write_node()
                     .expect("must be GlobalVariableOrWriteNode");
                 let name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write_node.value(),
@@ -27070,13 +27211,14 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
             }
             Node::GlobalVariableAndWriteNode { .. } => {
                 let write_node = node
                     .as_global_variable_and_write_node()
                     .expect("must be GlobalVariableAndWriteNode");
                 let name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write_node.value(),
@@ -27085,6 +27227,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
             }
             Node::GlobalVariableOperatorWriteNode { .. } => {
                 let write_node = node
@@ -27096,7 +27239,7 @@ impl<'a> InferenceEngine<'a> {
                     write_node.binary_operator_loc().start_offset(),
                     write_node.binary_operator_loc().end_offset(),
                 );
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write_node.value(),
@@ -27105,6 +27248,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
             }
             Node::ConstantWriteNode { .. } => {
                 let write_node = node
@@ -29814,6 +29958,12 @@ impl<'a> InferenceEngine<'a> {
         {
             return Some(inferred);
         }
+        if !scope.self_facts.is_empty()
+            && let Some(key) = const_index_fact_key(node)
+            && let Some(fact) = scope.self_facts.get(&key)
+        {
+            return Some(fact.clone());
+        }
         if !scope.exclusive_receiver_facts.is_empty() {
             return Self::exclusive_receiver_attribute_read(node, scope);
         }
@@ -30155,17 +30305,7 @@ impl<'a> InferenceEngine<'a> {
                 let var_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
-                let start = node.location().start_offset();
-                let end = start.saturating_add(var_name.len());
-                self.push_hover_snapshot(HoverSnapshot {
-                    start,
-                    end,
-                    name: var_name,
-                    target: HoverTarget::Value(value_type.clone()),
-                    class_context: class_name.to_string(),
-                    method_context: scope.method_name.clone(),
-                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
-                });
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &value_type);
                 value_type
             }
 
@@ -30215,17 +30355,7 @@ impl<'a> InferenceEngine<'a> {
                 let ivar_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
-                let start = node.location().start_offset();
-                let end = start.saturating_add(ivar_name.len());
-                self.push_hover_snapshot(HoverSnapshot {
-                    start,
-                    end,
-                    name: ivar_name,
-                    target: HoverTarget::Value(value_type.clone()),
-                    class_context: class_name.to_string(),
-                    method_context: scope.method_name.clone(),
-                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
-                });
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &value_type);
                 value_type
             }
 
@@ -30237,7 +30367,9 @@ impl<'a> InferenceEngine<'a> {
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
                 let existing = scope.get(&var_name).cloned().unwrap_or(Type::Nil);
-                Self::infer_or_write_result(&existing, &value_type)
+                let result = Self::infer_or_write_result(&existing, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result);
+                result
             }
 
             Node::LocalVariableAndWriteNode { .. } => {
@@ -30248,7 +30380,9 @@ impl<'a> InferenceEngine<'a> {
                 let current_type = scope.get(&var_name).cloned().unwrap_or(Type::Nil);
                 let value_type =
                     self.infer_node_type(class_name, &write_node.value(), parse_result, scope);
-                Self::infer_and_write_result(&current_type, &value_type)
+                let result = Self::infer_and_write_result(&current_type, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result);
+                result
             }
 
             Node::LocalVariableOperatorWriteNode { .. } => {
@@ -30264,7 +30398,10 @@ impl<'a> InferenceEngine<'a> {
                     write_node.binary_operator_loc().start_offset(),
                     write_node.binary_operator_loc().end_offset(),
                 );
-                self.infer_operator_write_result(&current_type, &operator_name, &value_type)
+                let result =
+                    self.infer_operator_write_result(&current_type, &operator_name, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &var_name, &result);
+                result
             }
             Node::InstanceVariableOperatorWriteNode { .. } => {
                 let write_node = node
@@ -30281,7 +30418,10 @@ impl<'a> InferenceEngine<'a> {
                     write_node.binary_operator_loc().start_offset(),
                     write_node.binary_operator_loc().end_offset(),
                 );
-                self.infer_operator_write_result(&current_type, &operator_name, &value_type)
+                let result =
+                    self.infer_operator_write_result(&current_type, &operator_name, &value_type);
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &result);
+                result
             }
             Node::ConstantOperatorWriteNode { .. } => {
                 let write_node = node
@@ -30331,17 +30471,7 @@ impl<'a> InferenceEngine<'a> {
                     .current_ivar_type(class_name, scope, &ivar_name)
                     .unwrap_or(Type::Nil);
                 let resolved = Self::infer_or_write_result(&resolved, &value_type);
-                let start = node.location().start_offset();
-                let end = start + ivar_name.len();
-                self.push_hover_snapshot(HoverSnapshot {
-                    start,
-                    end,
-                    name: ivar_name,
-                    target: HoverTarget::Value(resolved.clone()),
-                    class_context: class_name.to_string(),
-                    method_context: scope.method_name.clone(),
-                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
-                });
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &resolved);
                 resolved
             }
 
@@ -30356,17 +30486,7 @@ impl<'a> InferenceEngine<'a> {
                     .current_ivar_type(class_name, scope, &ivar_name)
                     .unwrap_or(Type::Nil);
                 let resolved = Self::infer_and_write_result(&resolved, &value_type);
-                let start = node.location().start_offset();
-                let end = start + ivar_name.len();
-                self.push_hover_snapshot(HoverSnapshot {
-                    start,
-                    end,
-                    name: ivar_name,
-                    target: HoverTarget::Value(resolved.clone()),
-                    class_context: class_name.to_string(),
-                    method_context: scope.method_name.clone(),
-                    method_context_singleton_dispatch: scope.method_context_singleton_dispatch,
-                });
+                self.push_variable_write_hover(class_name, scope, node, &ivar_name, &resolved);
                 resolved
             }
 
@@ -30674,9 +30794,16 @@ impl<'a> InferenceEngine<'a> {
                                 class_name,
                                 scope,
                             );
+                            let block = self.infer_initialize_call_block(
+                                class_name,
+                                class_name,
+                                &call_node,
+                                parse_result,
+                                scope,
+                            );
                             self.record_inferred_call_site(class_name, {
                                 let caller_context = Self::call_site_caller_context(
-                                    class_name, scope, &arg_types, &kw_types, None, &None,
+                                    class_name, scope, &arg_types, &kw_types, None, &block,
                                 );
                                 let keyword_arg_types = kw_types
                                     .into_iter()
@@ -30688,7 +30815,7 @@ impl<'a> InferenceEngine<'a> {
                                     arg_types,
                                     keyword_arg_types,
                                     keyword_rest_shape: None,
-                                    block: None,
+                                    block: block.map(Box::new),
                                     caller_context,
                                     open_splat: None,
                                     self_call: false,
@@ -31859,9 +31986,16 @@ impl<'a> InferenceEngine<'a> {
                                     .get_class_type_params(&target_class)
                                     .is_empty())
                                 .then(|| (arg_types.to_vec(), kw_types.clone()));
+                                let block = self.infer_initialize_call_block(
+                                    &target_class,
+                                    class_name,
+                                    &call_node,
+                                    parse_result,
+                                    scope,
+                                );
                                 self.record_inferred_call_site(&target_class, {
                                     let caller_context = Self::call_site_caller_context(
-                                        class_name, scope, &arg_types, &kw_types, None, &None,
+                                        class_name, scope, &arg_types, &kw_types, None, &block,
                                     );
                                     let keyword_arg_types = kw_types
                                         .into_iter()
@@ -31873,7 +32007,7 @@ impl<'a> InferenceEngine<'a> {
                                         arg_types,
                                         keyword_arg_types,
                                         keyword_rest_shape: None,
-                                        block: None,
+                                        block: block.map(Box::new),
                                         caller_context,
                                         open_splat: None,
                                         self_call: false,
@@ -34801,6 +34935,7 @@ impl<'a> InferenceEngine<'a> {
                 if let Some(body) = self.active_method_body.as_mut() {
                     body.has_super_call = true;
                 }
+                let call_has_block = block_node.is_some();
                 let block = self.register_forwarding_super_call_site(
                     class_name,
                     scope,
@@ -34808,7 +34943,14 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                 );
                 let ty = self
-                    .resolve_super_call_return(class_name, scope, None, None, block.as_ref())
+                    .resolve_super_call_return(
+                        class_name,
+                        scope,
+                        None,
+                        None,
+                        block.as_ref(),
+                        call_has_block,
+                    )
                     .unwrap_or(Type::Untyped);
                 self.push_super_hover_snapshot(class_name, node, scope, &ty);
                 ty
@@ -34849,6 +34991,7 @@ impl<'a> InferenceEngine<'a> {
                         Some(node),
                         Some(parse_result),
                         block.as_ref(),
+                        super_node.block().is_some(),
                     )
                     .unwrap_or(Type::Untyped);
                 self.push_super_hover_snapshot(class_name, node, scope, &ty);
@@ -34946,6 +35089,7 @@ impl<'a> InferenceEngine<'a> {
                 let value_ty =
                     self.infer_node_type(class_name, &write.value(), parse_result, scope);
                 self.record_class_variable(class_name, &name, value_ty.clone());
+                self.push_variable_write_hover(class_name, scope, node, &name, &value_ty);
                 value_ty
             }
 
@@ -34960,7 +35104,9 @@ impl<'a> InferenceEngine<'a> {
                 let existing = self
                     .current_class_variable_type(class_name, &name)
                     .unwrap_or(Type::Nil);
-                Self::infer_or_write_result(&existing, &value_ty)
+                let result = Self::infer_or_write_result(&existing, &value_ty);
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::ClassVariableAndWriteNode { .. } => {
@@ -34974,7 +35120,9 @@ impl<'a> InferenceEngine<'a> {
                 let existing = self
                     .current_class_variable_type(class_name, &name)
                     .unwrap_or(Type::Nil);
-                Self::infer_and_write_result(&existing, &value_ty)
+                let result = Self::infer_and_write_result(&existing, &value_ty);
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::ClassVariableOperatorWriteNode { .. } => {
@@ -34995,6 +35143,7 @@ impl<'a> InferenceEngine<'a> {
                 let result_ty =
                     self.infer_operator_write_result(&current_ty, &operator_name, &value_ty);
                 self.record_class_variable(class_name, &name, result_ty.clone());
+                self.push_variable_write_hover(class_name, scope, node, &name, &result_ty);
                 result_ty
             }
 
@@ -35003,7 +35152,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_global_variable_write_node()
                     .expect("must be GlobalVariableWriteNode");
                 let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write.value(),
@@ -35011,7 +35160,9 @@ impl<'a> InferenceEngine<'a> {
                     None,
                     parse_result,
                     scope,
-                )
+                );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::GlobalVariableOrWriteNode { .. } => {
@@ -35019,7 +35170,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_global_variable_or_write_node()
                     .expect("must be GlobalVariableOrWriteNode");
                 let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write.value(),
@@ -35027,7 +35178,9 @@ impl<'a> InferenceEngine<'a> {
                     None,
                     parse_result,
                     scope,
-                )
+                );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::GlobalVariableAndWriteNode { .. } => {
@@ -35035,7 +35188,7 @@ impl<'a> InferenceEngine<'a> {
                     .as_global_variable_and_write_node()
                     .expect("must be GlobalVariableAndWriteNode");
                 let name = String::from_utf8_lossy(write.name().as_slice()).to_string();
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write.value(),
@@ -35043,7 +35196,9 @@ impl<'a> InferenceEngine<'a> {
                     None,
                     parse_result,
                     scope,
-                )
+                );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::GlobalVariableOperatorWriteNode { .. } => {
@@ -35056,7 +35211,7 @@ impl<'a> InferenceEngine<'a> {
                     write.binary_operator_loc().start_offset(),
                     write.binary_operator_loc().end_offset(),
                 );
-                self.infer_global_write_result(
+                let result = self.infer_global_write_result(
                     class_name,
                     &name,
                     &write.value(),
@@ -35064,7 +35219,9 @@ impl<'a> InferenceEngine<'a> {
                     Some(&operator_name),
                     parse_result,
                     scope,
-                )
+                );
+                self.push_variable_write_hover(class_name, scope, node, &name, &result);
+                result
             }
 
             Node::BreakNode { .. } => {
@@ -36351,6 +36508,7 @@ impl<'a> InferenceEngine<'a> {
         match value {
             Node::ArrayNode { .. } => {
                 let array_node = value.as_array_node().expect("must be ArrayNode");
+                let element_count = array_node.elements().iter().count();
                 let mut elem_types = Vec::new();
                 for elem in array_node.elements().iter() {
                     let expanded = if let Node::SplatNode { .. } = &elem {
@@ -36358,9 +36516,23 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(expr) = splat.expression() {
                             let inner =
                                 self.infer_node_type(class_name, &expr, parse_result, scope);
+                            let unknown_length = matches!(inner, Type::Array(_))
+                                || Self::destructuring_base_shape_unknown(&inner);
+                            // `a, b = *xs` destructures `xs` itself.
+                            if element_count == 1 && unknown_length {
+                                return inner;
+                            }
+                            if unknown_length {
+                                return self.infer_node_type(
+                                    class_name,
+                                    value,
+                                    parse_result,
+                                    scope,
+                                );
+                            }
                             match inner {
                                 Type::Tuple(elems) => elems,
-                                Type::Array(Some(ref el)) => vec![*el.clone()],
+                                Type::Nil => Vec::new(),
                                 _ => vec![inner],
                             }
                         } else {
@@ -43731,13 +43903,7 @@ impl<'a> InferenceEngine<'a> {
             &receiver_type_args,
             &mut base_type_vars,
         );
-        // A user class `include Enumerable` carries no element type arg, so the Enumerable block methods (`map`/`select`/...) would otherwise see an unbound element type.
-        // Derive it from the class's own `each` yields.
-        if !Self::enumerable_elem_type_var_bound(&base_type_vars)
-            && let Some(elem) = self.enumerable_elem_from_class_each(&receiver_class)
-        {
-            Self::insert_enumerable_elem_type_vars(&mut base_type_vars, elem);
-        }
+        self.seed_source_each_elem_type_var(&receiver_class, &mut base_type_vars);
         let mut relation_cache = HashMap::new();
         let rbs_mt = rbs_overloads
             .iter()
@@ -52039,7 +52205,11 @@ impl<'a> InferenceEngine<'a> {
             return Some(refined);
         }
 
-        if Self::array_filter_keeps_predicate_true(method_name).is_some() {
+        if Self::array_filter_keeps_predicate_true(method_name).is_some()
+            && (matches!(receiver_type, Type::Array(_) | Type::Tuple(_))
+                || Self::is_array_yielding_enumerable_class(receiver_type)
+                || !Self::is_concrete(&method_return))
+        {
             return Some(Self::array_filter_call_result(
                 method_name,
                 Self::rebuild_array_with_elem(receiver_type, &elem_type),
@@ -52064,6 +52234,7 @@ impl<'a> InferenceEngine<'a> {
         let receiver_type_args = Self::extract_type_args(receiver_type);
         let mut base_type_vars = self.class_type_vars_from_args(&cls, &receiver_type_args);
         Self::seed_enumerable_elem_type_var(&cls, &receiver_type_args, &mut base_type_vars);
+        self.seed_source_each_elem_type_var(&cls, &mut base_type_vars);
         let overloads = self.collect_owned_rbs_overloads(
             &cls,
             method_name,
@@ -52545,6 +52716,20 @@ impl<'a> InferenceEngine<'a> {
             return params;
         }
         vec![elem_type.clone()]
+    }
+
+    /// A user class `include Enumerable` carries no element type arg, so the element type
+    /// comes from the class's own `each` yields.
+    fn seed_source_each_elem_type_var(
+        &self,
+        receiver_class: &str,
+        vars: &mut HashMap<String, Type>,
+    ) {
+        if !Self::enumerable_elem_type_var_bound(vars)
+            && let Some(elem) = self.enumerable_elem_from_class_each(receiver_class)
+        {
+            Self::insert_enumerable_elem_type_vars(vars, elem);
+        }
     }
 
     fn enumerable_elem_from_class_each(&self, class_name: &str) -> Option<Type> {
@@ -53601,6 +53786,7 @@ impl<'a> InferenceEngine<'a> {
             &receiver_type_args,
             &mut class_type_vars,
         );
+        self.seed_source_each_elem_type_var(&receiver_class, &mut class_type_vars);
 
         let prefer_singleton = matches!(receiver_type, Type::Singleton(_));
         let hide_kernel_function =
@@ -56656,7 +56842,7 @@ impl<'a> InferenceEngine<'a> {
                 if self.rails_feature_enabled()
                     && !is_singleton
                     && class_name == "String"
-                    && method_tables::RAILS_STRING_RETURNING_METHODS.contains(&method_name)
+                    && crate::rails::RAILS_STRING_RETURNING_METHODS.contains(&method_name)
                 {
                     return Type::String;
                 }
@@ -57994,6 +58180,36 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// `Foo.new { ... }` passes the block on to `initialize`.
+    fn infer_initialize_call_block(
+        &mut self,
+        target_class: &str,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<HoverBlockSig> {
+        call_node.block()?;
+        let owner = self.initialize_owner_class(target_class)?;
+        if !self
+            .registry
+            .method_call_has_user_source_definition(&owner, "initialize", false)
+        {
+            return None;
+        }
+        let mut block_scope = scope.fork_for_block();
+        self.infer_user_defined_call_block(
+            &owner,
+            "initialize",
+            false,
+            None,
+            class_name,
+            call_node,
+            parse_result,
+            &mut block_scope,
+        )
     }
 
     fn initialize_owner_class(&mut self, class_name: &str) -> Option<String> {
@@ -59416,6 +59632,15 @@ impl<'a> InferenceEngine<'a> {
                         self.narrowing_with_default_negation(class_name, scope, subject, truthy),
                     );
                 };
+
+                if let Some(key) = const_index_fact_key(predicate) {
+                    let current = self.infer_node_type(class_name, predicate, parse_result, scope);
+                    return Some(CondNarrowing {
+                        subject: NarrowSubject::ConstIndex(key),
+                        then_ty: Self::truthy_only(&current),
+                        else_ty: Self::falsy_only(&current),
+                    });
+                }
 
                 if method == "!" {
                     let inner = self.extract_condition_narrowing(
@@ -63508,6 +63733,7 @@ impl<'a> InferenceEngine<'a> {
                     sig.return_type
                 })
             }),
+            NarrowSubject::ConstIndex(key) => scope.self_facts.get(key).cloned(),
         }
     }
 
@@ -64843,10 +65069,30 @@ impl<'a> InferenceEngine<'a> {
             };
         }
         let nesting = self.nesting_owner(class_name);
-        if nesting == "Object" {
+        let name = if nesting == "Object" {
             raw
         } else {
             crate::sym::join_scope(nesting, &raw)
+        };
+        self.reopened_alias_target(&name).unwrap_or(name)
+    }
+
+    /// `class Alias` after `Alias = Foo` reopens `Foo`.
+    fn reopened_alias_target(&self, name: &str) -> Option<String> {
+        if Self::is_real_class_data(&self.registry, name) {
+            return None;
+        }
+        let (owner, const_name) = Self::constant_owner_and_name(name);
+        if self
+            .registry
+            .constant_is_namespace_alias(&owner, &const_name)
+            != Some(true)
+        {
+            return None;
+        }
+        match self.constants.get(name)? {
+            Type::Singleton(target) if target.as_str() != name => Some(target.to_string()),
+            _ => None,
         }
     }
 
@@ -65087,6 +65333,22 @@ impl<'a> InferenceEngine<'a> {
             let has_keyword_sites = method_call_sites.iter().any(|site| {
                 !site.keyword_arg_types.is_empty() || site.keyword_rest_shape.is_some()
             });
+            let resolved_sites: Vec<CallSite> = method_call_sites
+                .iter()
+                .filter(|site| Self::call_site_contains_method_ref(site))
+                .map(|site| self.resolve_call_site_method_refs(class_name, site))
+                .collect();
+            let mut resolved_iter = resolved_sites.iter();
+            let method_call_sites: Vec<&CallSite> = method_call_sites
+                .into_iter()
+                .map(|site| {
+                    if Self::call_site_contains_method_ref(site) {
+                        resolved_iter.next().unwrap_or(site)
+                    } else {
+                        site
+                    }
+                })
+                .collect();
             (
                 Self::resolve_param_types_from_grouped_call_sites(
                     &method_info.param_infos,
@@ -65160,7 +65422,7 @@ impl<'a> InferenceEngine<'a> {
             self.active_refinement_set_at(def_node.location().start_offset());
         let mut defer_body_for_unresolved_keyword_rest_shape = false;
         let mut pos_idx = 0;
-        for pi in &method_info.param_infos {
+        for (param_idx, pi) in method_info.param_infos.iter().enumerate() {
             match pi.kind {
                 ParamKind::Required => {
                     if !pi.name.is_empty() {
@@ -65178,7 +65440,23 @@ impl<'a> InferenceEngine<'a> {
                             .get(pos_idx)
                             .cloned()
                             .unwrap_or(Type::Untyped);
-                        if let Some(default_ty) = pi.default_type.clone() {
+                        if let Some(mut default_ty) = pi.default_type.clone() {
+                            if Self::type_contains_param_ref(&default_ty)
+                                && let Some(value) =
+                                    Self::optional_param_default_node(def_node, &pi.name)
+                            {
+                                default_ty =
+                                    self.infer_node_type(class_name, &value, parse_result, &scope);
+                                if !Self::type_needs_backward_propagation(&default_ty) {
+                                    self.registry.update_method_param_default_type_variant(
+                                        class_name,
+                                        &method_name,
+                                        is_singleton,
+                                        param_idx,
+                                        default_ty.clone(),
+                                    );
+                                }
+                            }
                             ty = if ty == Type::Untyped {
                                 default_ty
                             } else {

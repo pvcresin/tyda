@@ -564,3 +564,49 @@ class PostFinder
   def not_live: -> ActiveRecord::Relation[Post]
 end
 ```
+
+## An enum declared by the including model types the column read in a concern
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+### file: app/models/entry.rb
+
+```ruby
+class Entry < ApplicationRecord
+  include Listable
+
+  enum :kind, { backlog: 0, closed: 1 }
+end
+```
+
+```schema
+ActiveRecord::Schema[7.1].define(version: 2024_01_01) do
+  create_table "entries", force: :cascade do |t|
+    t.integer "kind"
+  end
+end
+```
+
+```ruby
+module Listable
+  extend ActiveSupport::Concern
+
+  def title
+    kind.humanize
+  end
+end
+```
+
+### result
+
+```rbs
+module Listable
+  extend ActiveSupport::Concern
+
+  def title: -> String
+end
+```

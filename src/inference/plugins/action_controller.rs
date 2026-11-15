@@ -5,6 +5,9 @@ use crate::types::{Sym, Type};
 use ruby_prism::{CallNode, ParseResult};
 
 const TAG_BUILDER: &str = "ActionView::Helpers::TagHelper::TagBuilder";
+const MESSAGE_DELIVERY: &str = "ActionMailer::MessageDelivery";
+const PARAMETERIZED_MAILER: &str = "ActionMailer::Parameterized::Mailer";
+const PARAMETERIZED_DELIVERY: &str = "ActionMailer::Parameterized::MessageDelivery";
 
 const CLASS_BODY_METHODS: &[&str] = &[
     "helper_method",
@@ -124,14 +127,18 @@ fn response_method_return(method_name: &str) -> Option<Type> {
     }
 }
 
-fn message_delivery_method_return(method_name: &str) -> Option<Type> {
-    match method_name {
-        "message" | "deliver_now" | "deliver_now!" | "deliver_later" | "deliver_later!" => {
-            Some(Type::Untyped)
-        }
-        "processed?" => Some(Type::Bool),
-        _ => None,
-    }
+/// A mailer action has a class-level proxy that returns a message delivery.
+fn is_mailer_action(engine: &PluginCx<'_, '_>, method_name: &str) -> bool {
+    let registry = engine.registry();
+    let delivery = Type::Class(Sym::new(MESSAGE_DELIVERY));
+    registry
+        .user_defined_class_names_unsorted()
+        .iter()
+        .any(|class_name| {
+            registry
+                .lookup_method_def(class_name, method_name, true)
+                .is_some_and(|method| method.raw_return_type == delivery)
+        })
 }
 
 pub(in crate::inference) fn synthetic_method_return(
@@ -149,18 +156,28 @@ pub(in crate::inference) fn synthetic_method_return(
         if engine.rails_feature_enabled()
             && (class_name.ends_with("Mailer")
                 || engine.class_matches_or_inherits(class_name, MAILER_BASES))
-            && engine
+        {
+            if method_name == "with" {
+                return Some(Type::Class(Sym::new(PARAMETERIZED_MAILER)));
+            }
+            if engine
                 .registry()
                 .lookup_method_return_type_with_hint(class_name, method_name, false)
                 .is_some()
-        {
-            return Some(Type::Class(Sym::new("ActionMailer::MessageDelivery")));
+            {
+                return Some(Type::Class(Sym::new(MESSAGE_DELIVERY)));
+            }
         }
         return None;
     }
     let Type::Class(class_name) = receiver_type else {
         return None;
     };
+    // `Mailer.with(...)` forgets which mailer it wraps, so any mailer action name is accepted.
+    if class_name.as_str() == PARAMETERIZED_MAILER {
+        return is_mailer_action(engine, method_name)
+            .then(|| Type::Class(Sym::new(PARAMETERIZED_DELIVERY)));
+    }
     if class_name.as_str() == TAG_BUILDER && engine.dsl_enabled(DslLibrary::ActionControllerHelpers)
     {
         return Some(Type::String);
@@ -171,11 +188,14 @@ pub(in crate::inference) fn synthetic_method_return(
         }
         return response_method_return(method_name);
     }
-    if class_name.as_str() == "ActionMailer::MessageDelivery" {
+    if matches!(
+        class_name.as_str(),
+        MESSAGE_DELIVERY | PARAMETERIZED_DELIVERY
+    ) {
         if !engine.dsl_enabled(DslLibrary::ActionControllerHelpers) {
             return None;
         }
-        return message_delivery_method_return(method_name);
+        return engine.engine.message_delivery_method_return(method_name);
     }
     if engine.rails_feature_enabled()
         && (engine.class_matches_or_inherits(class_name, MAILER_BASES)

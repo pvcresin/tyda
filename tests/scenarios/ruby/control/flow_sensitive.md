@@ -2931,6 +2931,33 @@ class RecursivePredicate
 end
 ```
 
+## A self-recursive predicate without a true arm returns false
+
+```ruby
+class RecursiveTopValue
+  def x = 1
+end
+
+class RecursiveTop
+  def top?(n)
+    return false unless n.is_a?(RecursiveTopValue)
+    n.x ? top?(n) : false
+  end
+end
+```
+
+### result
+
+```rbs
+class RecursiveTop
+  def top?: (RecursiveTopValue n) -> false
+end
+
+class RecursiveTopValue
+  def x: -> 1
+end
+```
+
 ## A nonzero fallback keeps Integer
 
 ### update

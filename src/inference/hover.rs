@@ -1615,8 +1615,7 @@ impl<'a> InferenceEngine<'a> {
                 || (self.rails_feature_enabled()
                     && !prefer_singleton
                     && class == "String"
-                    && super::method_tables::RAILS_STRING_RETURNING_METHODS
-                        .contains(&snap.name.as_str()))
+                    && crate::rails::RAILS_STRING_RETURNING_METHODS.contains(&snap.name.as_str()))
                 || self.external_rbs.is_some_and(|registry| {
                     registry
                         .lookup_method_return_type_via_including_classes(&class, &snap.name)
@@ -4169,7 +4168,7 @@ impl<'a> InferenceEngine<'a> {
         if !prefer_singleton
             && self.rails_feature_enabled()
             && class_name == "String"
-            && super::method_tables::RAILS_STRING_RETURNING_METHODS.contains(&method_name)
+            && crate::rails::RAILS_STRING_RETURNING_METHODS.contains(&method_name)
         {
             return Some(Type::String);
         }

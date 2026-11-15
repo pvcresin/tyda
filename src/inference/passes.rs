@@ -210,6 +210,7 @@ impl<'a> InferenceEngine<'a> {
             };
             let grouped_call_sites = Self::group_call_sites_by_method(&data.call_sites);
             let mut all_param_types: Vec<Vec<Type>> = Vec::with_capacity(data.methods.len());
+            let mut has_call_sites: Vec<bool> = Vec::with_capacity(data.methods.len());
             let caller_ctx_memo = CallerCtxMemoScope::enter();
             for method in &data.methods {
                 let mut method_call_sites: Vec<&CallSite> = grouped_call_sites
@@ -230,6 +231,7 @@ impl<'a> InferenceEngine<'a> {
                     .zip(&forwarded_call_sites)
                     .map(|(site, forwarded)| forwarded.as_ref().unwrap_or(site))
                     .collect();
+                has_call_sites.push(!method_call_sites.is_empty());
                 let param_types = if method_call_sites
                     .iter()
                     .any(|site| Self::call_site_contains_method_ref(site))
@@ -340,6 +342,24 @@ impl<'a> InferenceEngine<'a> {
                     {
                         return None;
                     }
+                    // With no call in this file and no parameter flow to replay, a parameter
+                    // that is still unknown stays a reference for callers in other files.
+                    let keep_unknown = !has_call_sites[idx]
+                        && self
+                            .registry
+                            .param_flows(class_name, method.name.as_str(), method.is_singleton)
+                            .is_none();
+                    let param_types_with_defaults: Vec<Type> = param_types_with_defaults
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, ty)| {
+                            if keep_unknown && ty == Type::Untyped {
+                                Type::ParamRef(index)
+                            } else {
+                                ty
+                            }
+                        })
+                        .collect();
                     let resolved = Self::substitute_param_refs_with_keywords(
                         &method.raw_return_type,
                         &param_types_with_defaults,
@@ -955,7 +975,7 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn call_site_contains_method_ref(call_site: &CallSite) -> bool {
+    pub(super) fn call_site_contains_method_ref(call_site: &CallSite) -> bool {
         call_site
             .arg_types
             .iter()
@@ -970,7 +990,11 @@ impl<'a> InferenceEngine<'a> {
                 .is_some_and(Self::type_contains_method_ref)
     }
 
-    fn resolve_call_site_method_refs(&self, class_name: &str, call_site: &CallSite) -> CallSite {
+    pub(super) fn resolve_call_site_method_refs(
+        &self,
+        class_name: &str,
+        call_site: &CallSite,
+    ) -> CallSite {
         let context_class = call_site
             .caller_context
             .as_deref()
@@ -1044,6 +1068,9 @@ impl<'a> InferenceEngine<'a> {
             | Type::NonNilProjection(subject) => Self::type_contains_param_ref(subject),
             Type::ReceiverMethodRef(receiver_type, _) => {
                 Self::type_contains_param_ref(receiver_type)
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Self::type_contains_param_ref(receiver) || Self::type_contains_param_ref(result)
             }
             Type::Proc { return_type, .. } => Self::type_contains_param_ref(return_type),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref),
@@ -1821,6 +1848,12 @@ impl<'a> InferenceEngine<'a> {
                     keyword_types,
                 );
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Type::resolve_deferred_safe_navigation(
+                    Self::substitute_param_refs_with_keywords(receiver, param_types, keyword_types),
+                    Self::substitute_param_refs_with_keywords(result, param_types, keyword_types),
+                )
             }
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)

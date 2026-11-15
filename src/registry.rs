@@ -2772,6 +2772,8 @@ pub struct TypeRegistry {
     inferring_method_bodies: Vec<(Sym, Sym)>,
     /// The project's Rails version; `None` means the latest stable release, as in the engine.
     rails_version: Option<crate::project::RailsVersion>,
+    /// ActiveSupport's String inflections answer on the deferred path, where no engine runs.
+    rails_string_inflections: bool,
 }
 
 /// Registry state a per-file snapshot never populates, kept behind one box.
@@ -2866,6 +2868,7 @@ impl Clone for TypeRegistry {
             pending_scoped_type_refs: self.pending_scoped_type_refs.clone(),
             inferring_method_bodies: Vec::new(),
             rails_version: self.rails_version,
+            rails_string_inflections: self.rails_string_inflections,
         }
     }
 }
@@ -8574,10 +8577,11 @@ impl TypeRegistry {
                         && !matches!(ret, Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..))
                         && !Self::type_contains_param_ref_static(&ret)
                     {
-                        // resolve an `instance` return to the receiver's instance type (prevents misattribution from baking in an unresolved owner).
-                        return ret.replace_instance_type(&Self::instance_type_for_receiver(
-                            &resolved_receiver,
-                        ));
+                        // resolve `self` / `instance` returns to the receiver (prevents misattribution from baking in an unresolved owner).
+                        return Self::deferred_self_return(&ret, &resolved_receiver)
+                            .replace_instance_type(&Self::instance_type_for_receiver(
+                                &resolved_receiver,
+                            ));
                     }
                     if let Some(ivar_ty) = self.resolve_attr_reader_return_type(
                         &receiver_class,
@@ -10118,6 +10122,23 @@ impl TypeRegistry {
                         return resolved;
                     }
                 }
+                // A module's self call reaches the method through the classes that include it.
+                if !found_definition
+                    && let Some(ret) =
+                        self.lookup_method_return_type_via_including_classes(ref_class, method_name)
+                {
+                    let resolved = self.resolve_deferred_refs_depth(
+                        ref_class,
+                        false,
+                        &ret,
+                        depth + 1,
+                        memo,
+                        visiting,
+                    );
+                    if resolved != Type::Untyped {
+                        return resolved;
+                    }
+                }
                 if !found_definition
                     && subclass_return.is_none()
                     && self.is_inferring_method_body(*ref_class, *method_name)
@@ -10522,6 +10543,11 @@ impl TypeRegistry {
             {
                 return own;
             }
+            if cls == crate::rails::parameters::PARAMETERS_CLASS
+                && let Some(ret) = crate::rails::parameters::method_return(method_name)
+            {
+                return ret;
+            }
             if let Some(target) =
                 crate::rails::time_with_zone::method_missing_target(&cls, method_name)
             {
@@ -10539,6 +10565,7 @@ impl TypeRegistry {
             }
             // The deferred path has no lazy stdlib loader; return-invariant entries still apply.
             return stdlib_returns::stdlib_receiver_method_return(resolved_receiver, method_name)
+                .or_else(|| self.rails_string_method_return(resolved_receiver, method_name))
                 .unwrap_or(resolved);
         }
         if let Type::Union(parts) = resolved_receiver {
@@ -10598,6 +10625,17 @@ impl TypeRegistry {
             model,
             || self.active_record_primary_key_type(model),
         ))
+    }
+
+    fn rails_string_method_return(&self, receiver: &Type, method_name: &str) -> Option<Type> {
+        (self.rails_string_inflections
+            && matches!(receiver, Type::String | Type::LiteralString(_))
+            && crate::rails::RAILS_STRING_RETURNING_METHODS.contains(&method_name))
+        .then_some(Type::String)
+    }
+
+    pub fn set_rails_string_inflections(&mut self, enabled: bool) {
+        self.rails_string_inflections = enabled;
     }
 
     pub fn set_rails_version(&mut self, version: Option<crate::project::RailsVersion>) {
@@ -10836,6 +10874,7 @@ impl TypeRegistry {
         match ty {
             Type::ParamRef(_)
             | Type::KeywordParamRef(_)
+            | Type::IvarRef(_)
             | Type::Union(_)
             | Type::TruthyProjection(..)
             | Type::FalsyProjection(..)
@@ -10987,6 +11026,23 @@ impl TypeRegistry {
             Type::ParamRef(idx) => self
                 .resolve_caller_positional_param_type(call_site, *idx, visiting)
                 .unwrap_or(Type::Untyped),
+            Type::IvarRef(_) => {
+                let Some(ctx) = call_site.caller_context.as_deref() else {
+                    return ty.clone();
+                };
+                let resolved = self.resolve_deferred_refs_for_context(
+                    &ctx.class_name,
+                    ctx.method_is_singleton,
+                    ty,
+                );
+                // The caller's flow facts are gone here, so a nilable ivar would lose its guard.
+                if Self::is_concrete_for_global_resolve(&resolved) && !Type::contains_nil(&resolved)
+                {
+                    resolved
+                } else {
+                    ty.clone()
+                }
+            }
             Type::KeywordParamRef(name) => self
                 .resolve_caller_keyword_param_type(call_site, name, visiting)
                 .unwrap_or(Type::Untyped),

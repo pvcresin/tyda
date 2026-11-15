@@ -4969,11 +4969,10 @@ fn singleton_method_in_another_file_does_not_resolve_to_private_kernel() {
     );
 }
 
-// Known issue: a scope defined in a concern's `included` block keeps `self` when a model in
-// another file calls it from the CLI. The scenario runner analyzes the other files first and
-// resolves `ActiveRecord::Relation[Pipeline]`. When the check fails, drop it.
+// A scope defined in a concern's `included` block returns a relation of the model that a
+// class in another file calls it on.
 #[test]
-fn known_issue_concern_scope_keeps_self_across_files() {
+fn concern_scope_resolves_to_includer_across_files() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let models = dir.path().join("app/models");
     fs::create_dir_all(models.join("concerns")).expect("failed to create dirs");
@@ -5013,8 +5012,40 @@ fn known_issue_concern_scope_keeps_self_across_files() {
     assert!(output.status.success());
     let rbs = String::from_utf8_lossy(&output.stdout);
     assert!(
-        rbs.contains("def self.failed_pipelines: -> ActiveRecord::Relation[self]"),
-        "known issue fixed (concern scope across files); drop this check: {rbs}"
+        rbs.contains("def self.failed_pipelines: -> ActiveRecord::Relation[Pipeline]"),
+        "a concern scope called on a model in another file must return its relation: {rbs}"
+    );
+}
+
+// `normalize_value_for` types its `name` parameter, but `value` must stay bound to the callers
+// in other files. The scenario runner still shows `untyped` (known issue in
+// `tests/scenarios/known-issues/rails_models.md`).
+#[test]
+fn normalize_value_for_binds_value_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let models = dir.path().join("app/models");
+    fs::create_dir_all(&models).expect("failed to create dirs");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("failed to write");
+    fs::write(
+        models.join("post.rb"),
+        "class Post < ApplicationRecord\n  normalizes :title, with: ->(title) { title.strip }\nend\n",
+    )
+    .expect("failed to write");
+    fs::write(
+        models.join("post_titles.rb"),
+        "class PostTitles\n  def normalized = Post.normalize_value_for(:title, \" a \")\nend\n",
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def normalized: -> String"),
+        "normalize_value_for must return the normalizer result for the caller's value: {rbs}"
     );
 }
 
@@ -5242,4 +5273,33 @@ fn diagnostics_keyword_hash_read_interpolating_a_constant_is_not_nil() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.contains("NilClass"), "got: {stdout}");
+}
+
+// Known issue: the scenario runner and the LSP keep the element type of `Range#each` with a block
+// (`ruby/method/blocks/enumerable_core.md`), but the single-file CLI drops the type argument.
+// When the check fails, drop it.
+#[test]
+fn known_issue_range_each_drops_element_type_in_a_single_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("source.rb"),
+        concat!(
+            "class RangeEachReturn\n",
+            "  def run(limit) = (1..limit).each { |i| i }\n",
+            "end\n",
+            "\n",
+            "RangeEachReturn.new.run(3)\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def run: (Integer limit) -> Range\n"),
+        "known issue fixed (Range#each element type); drop this check: {rbs}"
+    );
 }
