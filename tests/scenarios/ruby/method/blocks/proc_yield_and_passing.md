@@ -654,3 +654,34 @@ class Runner
   def invoke: { (Float) -> "s" } -> "s"
 end
 ```
+
+## A block param yielded from a later singleton method keeps the owner class
+
+### update
+
+```ruby
+class LaterSetup
+  def self.setup
+    yield instance
+  end
+
+  def self.instance = new
+end
+
+class SetupUser
+  def run = LaterSetup.setup { |setup| setup }
+end
+```
+
+### result
+
+```rbs
+class LaterSetup
+  def self.setup: [R] { (LaterSetup) -> R } -> R
+  def self.instance: -> LaterSetup
+end
+
+class SetupUser
+  def run: -> LaterSetup
+end
+```

@@ -9213,7 +9213,11 @@ impl TypeRegistry {
                         );
                         visiting.remove(&(*class_name, *method_name));
                         if Self::is_concrete_for_global_resolve(&resolved) {
-                            resolved
+                            self.bind_instance_outside_ref_class(
+                                context_class,
+                                class_name,
+                                resolved,
+                            )
                         } else {
                             ty.clone()
                         }
@@ -10144,7 +10148,8 @@ impl TypeRegistry {
                         };
                         let resolved = self.resolve_param_refs_from_resolved(&raw, &params);
                         if resolved != Type::Untyped {
-                            return resolved;
+                            return self
+                                .bind_instance_outside_ref_class(class_name, ref_class, resolved);
                         }
                         if let Some(ivar_ty) = self.resolve_attr_reader_return_type(
                             owner.as_ref(),
@@ -10497,6 +10502,26 @@ impl TypeRegistry {
     /// `x = C | x` has least solution `C`, so a cycle back to `self_ref` in return position adds
     /// nothing. A body made only of that cycle gives no evidence and stays `untyped`. Nested
     /// occurrences (`[x]`) are left for the caller to degrade.
+    /// `instance` in a self call's result names the receiver's class. Read from a class that
+    /// does not inherit the method (a value yielded to another class's block), that receiver is
+    /// `ref_class`, not the reading class.
+    pub(crate) fn bind_instance_outside_ref_class(
+        &self,
+        class_name: &str,
+        ref_class: &str,
+        ty: Type,
+    ) -> Type {
+        if class_name == ref_class
+            || !ty.contains_instance_type()
+            || self
+                .ordered_ancestor_names(class_name)
+                .is_some_and(|ancestors| ancestors.iter().any(|name| name.as_ref() == ref_class))
+        {
+            return ty;
+        }
+        ty.replace_instance_type(&Type::Class(Sym::new(ref_class)))
+    }
+
     fn without_return_position_self_ref(resolved: Type, self_ref: &Type) -> Type {
         // A truthiness projection of `x` (from `x || y`, `x&.m`) is still a back edge to `x`.
         let is_self = |part: &Type| match part {

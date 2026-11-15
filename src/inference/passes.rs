@@ -526,7 +526,11 @@ impl<'a> InferenceEngine<'a> {
                         depth + 1,
                     );
                     visiting.remove(&(class_name.to_string(), *method_name));
-                    return resolved;
+                    return registry.bind_instance_outside_ref_class(
+                        context_class,
+                        class_name,
+                        resolved,
+                    );
                 }
                 registry
                     .resolve_attr_reader_return_type(class_name, method_name, false)
