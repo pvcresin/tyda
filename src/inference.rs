@@ -24696,6 +24696,68 @@ impl<'a> InferenceEngine<'a> {
         Some(self.resolve_receiver_method_refs(&substituted))
     }
 
+    /// A method of another file whose return reads only its positional arguments returns, at
+    /// each call, what this call's arguments make of it. This file's calls are not among the
+    /// workspace's callers, so the workspace cannot resolve it for them.
+    fn resolve_workspace_argument_return(
+        &mut self,
+        owner_class: &str,
+        method_name: &str,
+        method_is_singleton: bool,
+        positional_arg_types: &[Type],
+    ) -> Option<Type> {
+        if self
+            .registry
+            .file_contribution_names()
+            .contains(owner_class)
+        {
+            return None;
+        }
+        let method = self
+            .registry
+            .lookup_method_def(owner_class, method_name, method_is_singleton)
+            .or_else(|| {
+                self.external_rbs?
+                    .lookup_method_def(owner_class, method_name, method_is_singleton)
+            })?;
+        if !method.origin.is_user_source() {
+            return None;
+        }
+        let return_type = method.raw_return_type.clone();
+        let mut refs = Vec::new();
+        if !Self::collect_argument_receiver_refs(&return_type, &mut refs)
+            || refs.is_empty()
+            || !refs.iter().all(|index| {
+                positional_arg_types
+                    .get(*index)
+                    .is_some_and(|ty| !matches!(ty, Type::Untyped | Type::Bot))
+            })
+        {
+            return None;
+        }
+        let arg_types: Vec<Type> = positional_arg_types
+            .iter()
+            .cloned()
+            .map(Type::widen_arg_for_param)
+            .collect();
+        let resolved = self
+            .resolve_receiver_method_refs(&Self::substitute_param_refs(&return_type, &arg_types));
+        Self::is_concrete(&resolved).then_some(resolved)
+    }
+
+    /// `collect_positional_param_refs`, also through the receivers of deferred calls.
+    fn collect_argument_receiver_refs(ty: &Type, refs: &mut Vec<usize>) -> bool {
+        match ty {
+            Type::ReceiverMethodRef(receiver, _) => {
+                Self::collect_argument_receiver_refs(receiver, refs)
+            }
+            Type::Union(parts) => parts
+                .iter()
+                .all(|part| Self::collect_argument_receiver_refs(part, refs)),
+            other => Self::collect_positional_param_refs(other, refs),
+        }
+    }
+
     /// Collects the positional parameter refs in `ty`; false when it also refers to other
     /// per-call values (keywords or the block), which this substitution does not bind.
     fn collect_positional_param_refs(ty: &Type, refs: &mut Vec<usize>) -> bool {
@@ -32846,6 +32908,14 @@ impl<'a> InferenceEngine<'a> {
                                     })
                                     .or_else(|| {
                                         self.resolve_user_defined_generic_call(
+                                            &target_class,
+                                            &method_name,
+                                            method_is_singleton,
+                                            &arg_types,
+                                        )
+                                    })
+                                    .or_else(|| {
+                                        self.resolve_workspace_argument_return(
                                             &target_class,
                                             &method_name,
                                             method_is_singleton,

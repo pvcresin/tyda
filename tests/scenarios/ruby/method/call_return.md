@@ -800,3 +800,29 @@ class Factory
   def build: ((singleton(Bar) | singleton(Foo)) klass) -> (Bar | Foo)
 end
 ```
+
+## A call to another file's method reads the return with this call's arguments
+
+### update
+
+### file: lib/util.rb
+
+```ruby
+class Util
+  def self.clean(v) = v.strip
+end
+```
+
+```ruby
+class User
+  def name = Util.clean(" a ")
+end
+```
+
+### result
+
+```rbs
+class User
+  def name: -> String
+end
+```
