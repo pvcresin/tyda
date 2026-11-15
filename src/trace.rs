@@ -300,6 +300,25 @@ fn constant_id(owner: &str, name: &str) -> String {
     }
 }
 
+/// Writes one record with `id` first, so each line starts with the slot it describes
+/// (the other keys keep serde_json's sorted order).
+fn write_line<W: Write>(writer: &mut W, id: &str, mut record: Value) -> io::Result<()> {
+    if let Some(object) = record.as_object_mut() {
+        object.remove("id");
+    }
+    let rest = serde_json::to_string(&record)?;
+    writer.write_all(b"{\"id\":")?;
+    serde_json::to_writer(&mut *writer, id)?;
+    match rest.strip_prefix('{').filter(|rest| *rest != "}") {
+        Some(rest) => {
+            writer.write_all(b",")?;
+            writer.write_all(rest.as_bytes())?;
+        }
+        None => writer.write_all(b"}")?,
+    }
+    writer.write_all(b"\n")
+}
+
 fn evidence_json(evidence: &FxHashSet<Evidence>) -> Vec<Value> {
     let mut sorted: Vec<&Evidence> = evidence.iter().collect();
     sorted.sort();
@@ -474,9 +493,9 @@ impl Emitter<'_> {
             self.referenced
                 .extend(deps.iter().filter_map(Value::as_str).map(str::to_string));
         }
+        write_line(writer, &id, record)?;
         self.emitted.insert(id);
-        serde_json::to_writer(&mut *writer, &record)?;
-        writer.write_all(b"\n")
+        Ok(())
     }
 
     fn write_constant<W: Write>(
@@ -629,9 +648,8 @@ impl Emitter<'_> {
                 continue;
             }
             let record = self.referenced_record(&id);
-            self.emitted.insert(id.clone());
-            serde_json::to_writer(&mut *writer, &record)?;
-            writer.write_all(b"\n")?;
+            write_line(writer, &id, record)?;
+            self.emitted.insert(id);
         }
         Ok(())
     }

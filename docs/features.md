@@ -132,7 +132,7 @@ base/head の同じ release binary で一度ずつ解析し、解析ファイル
 ### 型の由来 trace
 
 `tyda trace <paths>` は RBS の代わりに、各出力スロットの型がどのコードから決まったかを JSON Lines で
-標準出力に書き出す。`-o <FILE>` を付けると FILE に書く。1 行が 1 スロットで、`id` は `Foo#bar`（instance method）、
+標準出力に書き出す。`-o <FILE>` を付けると FILE に書く。1 行が 1 スロットで、各行は `id` から始まり、`id` は `Foo#bar`（instance method）、
 `Foo.bar`（singleton method）、`Foo@ivar`、`Foo::CONST` の形をとる。
 
 - `type`: RBS 出力と同じ宣言文字列

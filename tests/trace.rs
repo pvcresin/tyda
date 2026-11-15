@@ -117,6 +117,12 @@ fn trace_prints_sources_to_stdout_or_file() {
         printed.stdout
     );
 
+    let text = String::from_utf8(printed.stdout).unwrap();
+    assert!(
+        text.lines().all(|line| line.starts_with("{\"id\":")),
+        "{text}"
+    );
+
     let records = read_trace(&dir.path().join("trace.jsonl"));
     let rbs = String::from_utf8(tyda(dir.path(), &FILES).stdout).unwrap();
 

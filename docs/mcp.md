@@ -120,4 +120,18 @@ agent は対象ファイルから十分な文脈を含む source を渡し、式
 この記録から得る。ファイルが読めない、またはスロットが trace にない場合は `message` に理由が入る。trace は呼び出しのたびに
 読み直すため、解析し直した結果は次の呼び出しから反映される。
 
+### agent での trace の使い方
+
+project 全体の由来を調べるときは、最初に一度 `tyda trace -o trace.jsonl <paths>` を実行し、以降はこのファイルを
+検索する。各行は 1 スロットで `{"id":"Foo#bar",...` から始まる。
+
+```sh
+grep '^{"id":"Cart#total",' trace.jsonl                          # 1 スロットの記録
+jq -c 'select(.deps | index("Item#price"))' trace.jsonl          # Item#price に依存するスロット
+jq -c 'select(.callers[]? | .file == "app/models/cart.rb")' trace.jsonl  # そのファイルから呼ばれるメソッド
+diff base.jsonl head.jsonl                                       # 2 回の解析で変わったスロット
+```
+
+位置から引くときは `explain_type_at_position` に `trace_path` を渡す。人に見せるときは `tyda why <id>` の木を使う。
+
 説明対象は現在メソッド呼び出しとメソッド定義に限る。その他の式では `explanation.steps` が空になり、`explanation.message` に理由が入る。このtoolも渡されたsourceと同梱stdlib RBSだけを解析する。workspaceの他ファイル、project固有のRBS/RBI、未保存のeditor bufferは読まないため、呼び出し元の範囲も入力source内に限られる。メソッド本体内の呼び出しは本体に存在する式の証拠であり、すべての分岐が戻り値に寄与することを示すものではない。
