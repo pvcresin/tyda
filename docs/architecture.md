@@ -235,7 +235,8 @@ TypeProf VSCode 拡張との互換性は protocol boundary に限る。推論結
 説明を返す。`explain_type_at_position` は hover snapshot、引数検査site、method return siteを使い、
 同一source内の呼び出し元、宣言元、本体の戻り値と呼び出しを明示query時だけ組み立てる。
 通常のCLI/LSP解析には追加の由来記録を行わない。MCPはtool callerが渡したRuby sourceと同梱stdlib RBS
-だけを使い、workspaceのファイル走査やproject固有RBSの読み込みはしない。詳細は [mcp.md](mcp.md) を参照する。
+だけを使い、workspaceのファイル走査やproject固有RBSの読み込みはしない。project全体の由来は、callerが
+`trace_path`で渡した`--trace`の出力から、問い合わせたメソッドと依存先のレコードを返す。詳細は [mcp.md](mcp.md) を参照する。
 
 ## Trace
 

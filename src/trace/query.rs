@@ -45,6 +45,28 @@ impl Trace {
             .unwrap_or_default()
     }
 
+    /// `id` and the slots it depends on, nearest first, at most `max_depth` hops away.
+    pub fn closure(&self, id: &str, max_depth: usize) -> Vec<(usize, &Value)> {
+        let mut seen = BTreeSet::from([id]);
+        let mut queue = std::collections::VecDeque::from([(id, 0)]);
+        let mut found = Vec::new();
+        while let Some((current, depth)) = queue.pop_front() {
+            let Some(record) = self.get(current) else {
+                continue;
+            };
+            found.push((depth, record));
+            if depth == max_depth {
+                continue;
+            }
+            for dep in self.deps(current) {
+                if seen.insert(dep) {
+                    queue.push_back((dep, depth + 1));
+                }
+            }
+        }
+        found
+    }
+
     /// Ids matching `query` exactly, or else ids that end with it (`#name`, `@ivar`).
     pub fn find(&self, query: &str) -> Vec<&str> {
         if let Some((id, _)) = self.records.get_key_value(query) {
