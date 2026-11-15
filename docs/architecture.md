@@ -239,7 +239,7 @@ TypeProf VSCode 拡張との互換性は protocol boundary に限る。推論結
 
 ## Trace
 
-`--trace` を指定すると `trace::enable` が process 全体の記録を有効にする。記録箇所は次の 4 つで、
+`--trace` を指定すると `trace::enable` が process 全体の記録を有効にする。記録箇所は次の 3 つで、
 どれも最初に `trace::enabled()`（relaxed atomic の読み取り）を確認するため、指定しない実行では
 追加の状態も計算も持たない。
 
@@ -247,12 +247,13 @@ TypeProf VSCode 拡張との互換性は protocol boundary に限る。推論結
 2. `TypeRegistry::add_call_site` / `add_ivar_type` と singleton ivar の記録で、その site を証拠として残す。
    registry の merge 中は site がないため記録しない
 3. `apply_cli_resolution` の開始時に source method の未解決の戻り値型（`body`）を写す
-4. `resolve_method_return_refs_for_classes` が slot wake 用に集めている読み取り（`RETURN_TYPE_READS`）を
-   slot ごとに残す
 
-最終 registry の render 後に `trace::write_jsonl` が出力スロットと記録を結合する。受け手の型が解決後に
-決まる method 参照は最終 registry で受け手を解決して依存先を決める。method の由来は
-`MethodDef::origin`（`MethodOrigin`）が単一の正本で、RBS の出力可否や外部宣言の判定もここから導く。
+最終 registry の render 後に `trace::write_jsonl` が出力スロットと記録を結合する。依存先は `body` に残る
+参照と、確定した registry で `body` を逐次解決し直したときに読んだ method の戻り値（`RETURN_TYPE_READS`）から
+決める。解決 round 中の読み取りは共有 cache（`resolve_params_cache`）の hit で記録されないことがあり、
+実行ごとに変わるため使わない。受け手の型が解決後に決まる method 参照も最終 registry で受け手を解決する。
+method の由来は `MethodDef::origin`（`MethodOrigin`）が単一の正本で、RBS の出力可否や外部宣言の判定も
+ここから導く。
 
 ## 有界性と拡張点
 

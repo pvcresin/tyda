@@ -2,9 +2,9 @@
 //!
 //! Recording is off by default. Every hook checks [`enabled`] first, so a normal run pays
 //! one relaxed atomic load per hook and keeps no extra state. When enabled, hooks push
-//! evidence (call sites, ivar writes, method bodies before resolution, and the method
-//! returns each slot read while resolving) into one process-wide store, and
-//! [`write_jsonl`] joins it with the final registry into one JSON record per output slot.
+//! evidence (call sites, ivar writes, and method bodies before resolution) into one
+//! process-wide store, and [`write_jsonl`] joins it with the final registry into one JSON
+//! record per output slot.
 
 pub mod query;
 
@@ -87,8 +87,8 @@ fn current_site() -> Site {
 /// (owner, method name, singleton)
 type MethodKey = (Sym, Sym, bool);
 
-/// Call sites by (method name, singleton), with the receiver class.
-type CallSitesByMethod<'a> = FxHashMap<(Sym, bool), Vec<(Sym, &'a FxHashSet<Evidence>)>>;
+/// Call sites by the method they dispatch to.
+type CallSitesByOwner<'a> = FxHashMap<MethodKey, Vec<&'a FxHashSet<Evidence>>>;
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct Evidence {
@@ -117,8 +117,6 @@ struct TraceStore {
     ivar_writes: FxHashMap<MethodKey, FxHashSet<Evidence>>,
     /// Source method returns as the bodies left them, before global resolution.
     bodies: FxHashMap<MethodKey, Type>,
-    /// Method returns read while resolving each (owner, method) return.
-    reads: FxHashMap<(Sym, Sym), FxHashSet<(Sym, Sym)>>,
 }
 
 pub fn record_call_site(receiver_class: &str, site: &CallSite) {
@@ -152,19 +150,6 @@ pub fn record_bodies(bodies: impl IntoIterator<Item = (Sym, Sym, bool, Type)>) {
         for (owner, method, singleton, ty) in bodies {
             store.bodies.entry((owner, method, singleton)).or_insert(ty);
         }
-    });
-}
-
-pub fn record_reads(owner: Sym, method: Sym, reads: &[(Sym, Sym)]) {
-    if reads.is_empty() {
-        return;
-    }
-    with_store(|store| {
-        store
-            .reads
-            .entry((owner, method))
-            .or_default()
-            .extend(reads.iter().copied());
     });
 }
 
@@ -323,17 +308,20 @@ fn sorted_dedup(mut ids: Vec<String>, own_id: &str) -> Vec<String> {
 /// non-rendered method that a rendered slot depends on.
 pub fn write_jsonl<W: Write>(registry: &TypeRegistry, writer: &mut W) -> io::Result<()> {
     let store = lock_store().take().unwrap_or_default();
-    let mut call_sites_by_method = CallSitesByMethod::default();
+    let mut call_sites_by_owner = CallSitesByOwner::default();
     for ((receiver, method, singleton), evidence) in &store.call_sites {
-        call_sites_by_method
-            .entry((*method, *singleton))
+        let owner = registry
+            .first_method_call_owner_cached(receiver.as_str(), method.as_str(), *singleton)
+            .map_or(*receiver, |(owner, _)| Sym::new(owner.as_ref()));
+        call_sites_by_owner
+            .entry((owner, *method, *singleton))
             .or_default()
-            .push((*receiver, evidence));
+            .push(evidence);
     }
     let mut emitter = Emitter {
         registry,
         store: &store,
-        call_sites_by_method,
+        call_sites_by_owner,
         emitted: FxHashSet::default(),
         referenced: Vec::new(),
     };
@@ -373,7 +361,7 @@ pub fn write_jsonl<W: Write>(registry: &TypeRegistry, writer: &mut W) -> io::Res
 struct Emitter<'a> {
     registry: &'a TypeRegistry,
     store: &'a TraceStore,
-    call_sites_by_method: CallSitesByMethod<'a>,
+    call_sites_by_owner: CallSitesByOwner<'a>,
     emitted: FxHashSet<String>,
     referenced: Vec<String>,
 }
@@ -511,9 +499,11 @@ impl Emitter<'_> {
         let body = self.store.bodies.get(&key);
         if let Some(body) = body {
             self.collect_refs(owner, method.is_singleton, body, &mut deps);
-        }
-        if let Some(reads) = self.store.reads.get(&(owner_sym, name_sym)) {
-            for (read_owner, read_method) in reads {
+            // Resolving the body again on the final registry names the methods it reads
+            // through ancestors, call-site parameters, and attr readers.
+            for (read_owner, read_method) in
+                self.registry.return_type_reads(owner_sym, name_sym, body)
+            {
                 deps.push(self.method_ref(read_owner.as_str(), read_method.as_str(), None));
             }
         }
@@ -541,24 +531,12 @@ impl Emitter<'_> {
 
     /// Call sites whose receiver dispatches `method` to `owner`.
     fn callers(&self, owner: &str, method: &str, singleton: bool) -> FxHashSet<Evidence> {
-        let mut found = FxHashSet::default();
-        let Some(sites) = self
-            .call_sites_by_method
-            .get(&(Sym::new(method), singleton))
-        else {
-            return found;
-        };
-        for (receiver, evidence) in sites {
-            let dispatches = receiver.as_str() == owner
-                || self
-                    .registry
-                    .first_method_call_owner_cached(receiver.as_str(), method, singleton)
-                    .is_some_and(|(found_owner, _)| found_owner.as_ref() == owner);
-            if dispatches {
-                found.extend(evidence.iter().cloned());
-            }
-        }
-        found
+        self.call_sites_by_owner
+            .get(&(Sym::new(owner), Sym::new(method), singleton))
+            .into_iter()
+            .flatten()
+            .flat_map(|evidence| evidence.iter().cloned())
+            .collect()
     }
 
     fn write_ivars<W: Write>(

@@ -8729,6 +8729,40 @@ impl TypeRegistry {
         self.resolve_method_return_refs_for_classes(&class_names);
     }
 
+    /// Method returns read while resolving `ty` as the return of `class_name#method_name`.
+    /// Run against a frozen registry so cache hits, and so the reads, do not depend on
+    /// thread scheduling.
+    pub(crate) fn return_type_reads(
+        &self,
+        class_name: Sym,
+        method_name: Sym,
+        ty: &Type,
+    ) -> Vec<(Sym, Sym)> {
+        if !Self::global_type_contains_ref(ty) {
+            return Vec::new();
+        }
+        let mut visiting = FxHashSet::default();
+        let mut memo = FxHashMap::default();
+        visiting.insert((class_name, method_name));
+        let _caller_ctx_memo_scope = CallerCtxMemoScope::enter();
+        let outer = RETURN_TYPE_READS.with(|cell| cell.borrow_mut().replace(FxHashSet::default()));
+        let mut budget = GlobalResolveBudget::new();
+        budget.cycle_root = Some((class_name, method_name));
+        self.resolve_global_refs(
+            class_name.as_str(),
+            ty,
+            &mut visiting,
+            &mut memo,
+            0,
+            &mut budget,
+        );
+        let reads =
+            RETURN_TYPE_READS.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), outer));
+        reads
+            .map(|set| set.into_iter().collect())
+            .unwrap_or_default()
+    }
+
     fn record_trace_bodies(&self) {
         let bodies = self.class_data.iter().flat_map(|(class_name, data)| {
             data.methods
@@ -8895,14 +8929,6 @@ impl TypeRegistry {
             let mut updated_keys: FxHashSet<(Sym, Sym)> = FxHashSet::default();
             let mut changed_slots: Vec<usize> = Vec::new();
             for (slot, update, reads) in results {
-                if crate::trace::enabled()
-                    && let Some(method) = self
-                        .class_data
-                        .get(&pending[slot].0)
-                        .and_then(|data| data.methods.get(pending[slot].1))
-                {
-                    crate::trace::record_reads(pending[slot].0, method.name, &reads);
-                }
                 wake[slot].reads = reads;
                 let Some((method_name, is_singleton, resolved)) = update else {
                     continue;

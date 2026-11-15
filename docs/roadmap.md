@@ -39,6 +39,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 
 - [ ] `--trace` に、型が `untyped` に縮退した箇所と理由（深さ・union・budget の上限、循環）を記録する
 - [ ] `--trace` の記録を MCP の `explain_type_at_position` でも使い、workspace 全体の由来を返す
+- [ ] method 戻り値解決の slot wake で、`resolve_params_cache` の hit 時に読み取り（`RETURN_TYPE_READS`）が記録されず、読み取り集合が実行ごとに変わる。RBS 出力の差は subject で未観測だが、起こすべき再評価を逃しうるため、cache に読み取りを持たせて hit 時に再生する（attr reader cache と同じ方式）
 - [ ] subject 差分の後退から最小シナリオを自動で切り出す
 - [ ] `inference.rs`・`registry.rs`・`lsp.rs` を責務ごとに分割し、agent の読み込みとビルドの負荷を下げる
 
