@@ -784,10 +784,6 @@ end
 
 ## Proc writer on a class-level attr keeps the Proc type
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

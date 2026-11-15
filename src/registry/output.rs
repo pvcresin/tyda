@@ -784,13 +784,28 @@ impl TypeRegistry {
         self.build_method_sig_for_receiver(class_name, class_name, method)
     }
 
+    /// A lambda argument whose result is decided only by a later call (it reads its own
+    /// parameters) renders as `Proc`; a signature takes that result as unknown.
+    fn rendered_params(&self, receiver_class: &str, method: &MethodDef) -> Vec<Param> {
+        let mut params = self.resolve_params(receiver_class, method);
+        for param in &mut params {
+            if let Type::Proc { return_type, .. } = &mut param.param_type
+                && !Self::is_concrete_for_global_resolve(return_type)
+                && format!("{return_type:#}") == "untyped"
+            {
+                **return_type = Type::Untyped;
+            }
+        }
+        params
+    }
+
     pub(super) fn build_method_sig_for_receiver(
         &self,
         receiver_class: &str,
         owner_class: &str,
         method: &MethodDef,
     ) -> MethodSig {
-        let mut params = self.resolve_params(receiver_class, method);
+        let mut params = self.rendered_params(receiver_class, method);
         if method
             .rbs_method_types
             .iter()
@@ -903,7 +918,7 @@ impl TypeRegistry {
             {
                 return_type = return_type.union_with(value_type);
             } else {
-                let setter_params = self.resolve_params(receiver_class, setter);
+                let setter_params = self.rendered_params(receiver_class, setter);
                 if let Some(value) = setter_params.first()
                     && Self::is_concrete_for_global_resolve(&value.param_type)
                 {
@@ -925,7 +940,7 @@ impl TypeRegistry {
             && setter.attr_ivar == method.attr_ivar
             && !method.has_annotation()
             && !setter.has_annotation()
-            && let Some(value) = self.resolve_params(receiver_class, setter).first()
+            && let Some(value) = self.rendered_params(receiver_class, setter).first()
             && Self::is_concrete_for_global_resolve(&value.param_type)
             && value.param_type != Type::Untyped
         {

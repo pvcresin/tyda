@@ -9091,7 +9091,10 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .all(|field| Self::is_concrete_for_global_resolve(&field.value)),
-            Type::Proc { return_type, .. } => Self::is_concrete_for_global_resolve(return_type),
+            // A proc whose result is unknown is still a known `Proc` value.
+            Type::Proc { return_type, .. } => {
+                **return_type == Type::Untyped || Self::is_concrete_for_global_resolve(return_type)
+            }
             _ => false,
         }
     }
