@@ -524,3 +524,24 @@ class Mixed
   def sum: (untyped flag) -> Float
 end
 ```
+
+## An index read that may return nil keeps nil on an optional receiver
+
+### update
+
+```ruby
+class Capture
+  def tag(text)
+    text =~ /(?<tag>a)/
+    $~[:tag]
+  end
+end
+```
+
+### result
+
+```rbs
+class Capture
+  def tag: (untyped text) -> String?
+end
+```

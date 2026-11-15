@@ -49800,6 +49800,15 @@ impl<'a> InferenceEngine<'a> {
                 &local_vars,
                 receiver_type,
             );
+            let ret = if mt
+                .annotations
+                .iter()
+                .any(|annotation| annotation.as_ref() == "implicitly-returns-nil")
+            {
+                ret.union_with(Type::Nil)
+            } else {
+                ret
+            };
             if ret != Type::Untyped && Self::is_concrete(&ret) {
                 // A plugin's overload order is its declared answer for an unknown argument.
                 let is_singleton = matches!(receiver_type, Type::Singleton(_));
