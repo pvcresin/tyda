@@ -1,9 +1,10 @@
+use super::super::{NarrowSubject, Scope};
 use super::{DslFeature, Plugin, PluginCx, PluginManifest};
 use crate::prism_compat::LocationExt;
 use crate::project::DslLibrary;
 use crate::types::MethodOrigin;
 use crate::types::{Sym, Type};
-use ruby_prism::{CallNode, ParseResult};
+use ruby_prism::{CallNode, Node, ParseResult, Visit};
 
 const TAG_BUILDER: &str = "ActionView::Helpers::TagHelper::TagBuilder";
 const MESSAGE_DELIVERY: &str = "ActionMailer::MessageDelivery";
@@ -305,10 +306,183 @@ impl<'a> InferenceEngine<'a> {
         &mut self,
         class_name: &str,
         call_node: &ruby_prism::CallNode<'_>,
-        _parse_result: &ParseResult<'_>,
+        parse_result: &ParseResult<'_>,
     ) {
-        for name in Self::extract_symbol_args(call_node) {
-            let _ = self.registry.has_method_named(class_name, &name);
+        let names = Self::extract_symbol_args(call_node);
+        for name in &names {
+            let _ = self.registry.has_method_named(class_name, name);
+        }
+        // Options such as `only:` or `if:` leave some actions unguarded.
+        let unconditional = call_node.arguments().is_some_and(|arguments| {
+            arguments
+                .arguments()
+                .iter()
+                .all(|argument| argument.as_symbol_node().is_some())
+        });
+        if call_node.name().as_slice() != b"before_action" || !unconditional {
+            return;
+        }
+        for callback in names {
+            let guarded = halting_guards(parse_result, class_name, &callback);
+            if guarded.is_empty() {
+                continue;
+            }
+            let guards = self
+                .action_guards
+                .entry(class_name.to_string())
+                .or_default();
+            guards.callbacks.push(callback);
+            guards.methods.extend(guarded);
         }
     }
+
+    /// An action runs only after its `before_action` callbacks; one that halts unless a self
+    /// method is truthy (`head :not_found unless entry`) leaves that method truthy there.
+    pub(in crate::inference) fn seed_action_guard_facts(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        scope: &mut Scope,
+    ) {
+        let Some(guards) = self.action_guards.get(class_name) else {
+            return;
+        };
+        if guards
+            .callbacks
+            .iter()
+            .any(|callback| callback == method_name)
+            || guards.methods.iter().any(|guarded| guarded == method_name)
+            || self
+                .registry
+                .method_visibility(class_name, method_name, false)
+                .is_some()
+        {
+            return;
+        }
+        for guarded in &guards.methods {
+            let subject = NarrowSubject::SelfMethod(guarded.clone());
+            if let Some(narrowed) = self
+                .resolve_subject_input_type(class_name, scope, &subject)
+                .and_then(|input| Self::truthy_only(&input))
+            {
+                scope.narrow_subject(&subject, narrowed);
+            }
+        }
+    }
+}
+
+/// Self methods that the callback `name` of `class_name` halts on when they are falsy.
+fn halting_guards(parse_result: &ParseResult<'_>, class_name: &str, name: &str) -> Vec<String> {
+    let mut finder = CallbackDefFinder {
+        class_name,
+        name: name.as_bytes(),
+        namespace: Vec::new(),
+        guards: None,
+    };
+    finder.visit(&parse_result.node());
+    finder.guards.unwrap_or_default()
+}
+
+struct CallbackDefFinder<'a> {
+    class_name: &'a str,
+    name: &'a [u8],
+    namespace: Vec<String>,
+    guards: Option<Vec<String>>,
+}
+
+impl CallbackDefFinder<'_> {
+    fn in_target_class(&self) -> bool {
+        self.namespace.join("::") == self.class_name.trim_start_matches("::")
+    }
+}
+
+impl<'pr> Visit<'pr> for CallbackDefFinder<'_> {
+    fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
+        self.namespace
+            .push(String::from_utf8_lossy(node.constant_path().location().as_slice()).to_string());
+        ruby_prism::visit_class_node(self, node);
+        self.namespace.pop();
+    }
+
+    fn visit_module_node(&mut self, node: &ruby_prism::ModuleNode<'pr>) {
+        self.namespace
+            .push(String::from_utf8_lossy(node.constant_path().location().as_slice()).to_string());
+        ruby_prism::visit_module_node(self, node);
+        self.namespace.pop();
+    }
+
+    fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
+        if self.guards.is_none()
+            && node.receiver().is_none()
+            && node.parameters().is_none()
+            && node.name().as_slice() == self.name
+            && self.in_target_class()
+        {
+            let statements = node
+                .body()
+                .and_then(|body| body.as_statements_node())
+                .map(|statements| statements.body().iter().collect::<Vec<_>>())
+                .unwrap_or_default();
+            self.guards = Some(statements.iter().filter_map(halting_guard).collect());
+        }
+    }
+}
+
+/// `halt unless m`, or `halt if m.nil?` / `m.blank?` / `!m`, where `halt` responds or raises.
+fn halting_guard(statement: &Node<'_>) -> Option<String> {
+    let (predicate, body, negated) = if let Some(unless_node) = statement.as_unless_node() {
+        if unless_node.else_clause().is_some() {
+            return None;
+        }
+        (unless_node.predicate(), unless_node.statements()?, false)
+    } else {
+        let if_node = statement.as_if_node()?;
+        if if_node.subsequent().is_some() {
+            return None;
+        }
+        (if_node.predicate(), if_node.statements()?, true)
+    };
+    let mut body = body.body().iter();
+    let (Some(halt), None) = (body.next(), body.next()) else {
+        return None;
+    };
+    if !halts(&halt) {
+        return None;
+    }
+    let subject = if negated {
+        let call = predicate.as_call_node()?;
+        if !matches!(call.name().as_slice(), b"nil?" | b"blank?" | b"!")
+            || call.arguments().is_some()
+        {
+            return None;
+        }
+        call.receiver()?
+    } else {
+        predicate
+    };
+    let call = subject.as_call_node()?;
+    (call.receiver().is_none() && call.arguments().is_none() && call.block().is_none())
+        .then(|| String::from_utf8_lossy(call.name().as_slice()).to_string())
+}
+
+fn halts(node: &Node<'_>) -> bool {
+    if let Some(return_node) = node.as_return_node() {
+        let mut values = return_node
+            .arguments()
+            .into_iter()
+            .flat_map(|arguments| arguments.arguments().iter());
+        return matches!((values.next(), values.next()), (Some(value), None) if halts(&value));
+    }
+    node.as_call_node().is_some_and(|call| {
+        call.receiver().is_none()
+            && matches!(
+                call.name().as_slice(),
+                b"head"
+                    | b"render"
+                    | b"redirect_to"
+                    | b"redirect_back"
+                    | b"redirect_back_or_to"
+                    | b"raise"
+            )
+    })
 }

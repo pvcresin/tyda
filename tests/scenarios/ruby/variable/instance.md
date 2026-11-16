@@ -606,10 +606,6 @@ end
 
 ## Superclass reader sees instance variable writes from a subclass
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -627,7 +623,7 @@ end
 
 ```rbs
 class Base
-  def value: -> (:base | :child)?
+  def value: -> (:base | :child)
   def assign: -> :base
 end
 
@@ -684,5 +680,159 @@ OrFallback.new("a")
 class OrFallback
   def initialize: (String? label) -> void
   def label: -> String
+end
+```
+
+## A multiple assignment qualifies a constant defined later in the class
+
+### update
+
+```ruby
+module Outer
+  class Apu
+    def initialize
+      @p0, @p1 = Pulse.new(self), Pulse.new(self)
+      @single = Pulse.new(self)
+      @mixer = Mixer.new(@p0, @single)
+    end
+
+    def p0 = @p0
+
+    class Pulse
+      def initialize(x) = @x = x
+    end
+
+    class Mixer
+      def initialize(a, b)
+        @a = a
+        @b = b
+      end
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Outer::Apu
+  def initialize: -> void
+  def p0: -> Outer::Apu::Pulse
+end
+
+class Outer::Apu::Mixer
+  def initialize: (Outer::Apu::Pulse a, Outer::Apu::Pulse b) -> void
+end
+
+class Outer::Apu::Pulse
+  def initialize: (Outer::Apu x) -> void
+end
+```
+
+## An ivar read of a class defined later in the class body names the nested class
+
+### update
+
+```ruby
+module Outer
+  class Holder
+    def initialize
+      @part = Part.new
+    end
+
+    def part = @part
+
+    class Part
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Outer::Holder
+  def initialize: -> void
+  def part: -> Outer::Holder::Part
+end
+```
+
+## An ivar set from a nil default parameter keeps nil
+
+### update
+
+```ruby
+class NilDefault
+  def initialize(value = nil)
+    @value = value
+  end
+
+  def value = @value
+end
+
+NilDefault.new
+NilDefault.new("a")
+```
+
+### result
+
+```rbs
+class NilDefault
+  def initialize: (?String? value) -> void
+  def value: -> String?
+end
+```
+
+## An ivar set from a default parameter that every caller passes keeps the argument type
+
+### update
+
+```ruby
+class PassedDefault
+  def initialize(value = nil)
+    @value = value
+  end
+
+  def value = @value
+end
+
+PassedDefault.new("a")
+```
+
+### result
+
+```rbs
+class PassedDefault
+  def initialize: (?String? value) -> void
+  def value: -> String
+end
+```
+
+## An in-place change outside initialize does not read initialize arguments
+
+### update
+
+```ruby
+class SpecList
+  def initialize(development = false)
+    @specs = []
+    @development = development
+  end
+
+  def add(*specs) = @specs.concat(specs)
+
+  def specs = @specs
+end
+
+SpecList.new
+```
+
+### result
+
+```rbs
+class SpecList
+  def initialize: (?bool development) -> void
+  def add: (*untyped specs) -> Array[untyped]
+  def specs: -> Array[untyped]
 end
 ```

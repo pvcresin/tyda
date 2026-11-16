@@ -261,7 +261,7 @@ class Object < BasicObject
   def match_named_values: (untyped text) -> [String?, String?]?
   def match_named_hash: (untyped text) -> { "host" => String?, "port" => String? }?
   def match_named_names: (untyped text) -> ["host", "port"]?
-  def regexp_receiver_named_capture: (untyped text) -> [String, [String?]]?
+  def regexp_receiver_named_capture: (untyped text) -> [String?, [String?]]?
 end
 ```
 

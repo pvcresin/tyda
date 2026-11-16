@@ -631,10 +631,6 @@ end
 
 ## Block passed through to a block.call method keeps the call-site return
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -643,14 +639,51 @@ class Runner
   def invoke(&block) = block.call(1.0)
 end
 
-Runner.new.run { |n| "s" }
+class RunnerUser
+  def value = Runner.new.run { |n| "s" }
+end
 ```
 
 ### result
 
 ```rbs
 class Runner
-  def run: { (Float) -> "s" } -> "s"
-  def invoke: { (Float) -> "s" } -> "s"
+  def run: [R] { (Float) -> R } -> R
+  def invoke: [R] { (Float) -> R } -> R
+end
+
+class RunnerUser
+  def value: -> "s"
+end
+```
+
+## A block param yielded from a later singleton method keeps the owner class
+
+### update
+
+```ruby
+class LaterSetup
+  def self.setup
+    yield instance
+  end
+
+  def self.instance = new
+end
+
+class SetupUser
+  def run = LaterSetup.setup { |setup| setup }
+end
+```
+
+### result
+
+```rbs
+class LaterSetup
+  def self.setup: [R] { (LaterSetup) -> R } -> R
+  def self.instance: -> LaterSetup
+end
+
+class SetupUser
+  def run: -> LaterSetup
 end
 ```

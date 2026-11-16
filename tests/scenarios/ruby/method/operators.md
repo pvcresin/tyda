@@ -485,3 +485,67 @@ class Vector
   def +@: -> Vector
 end
 ```
+
+## An optional receiver picks an operator overload without its argument
+
+### update
+
+```ruby
+class Stamp
+  def shifted(flag) = (flag ? Time.now : nil) - 3600
+
+  def elapsed(flag) = (flag ? Time.now : nil) - Time.now
+end
+```
+
+### result
+
+```rbs
+class Stamp
+  def shifted: (untyped flag) -> Time
+  def elapsed: (untyped flag) -> Float
+end
+```
+
+## An index read that may return nil keeps nil on an optional receiver
+
+### update
+
+```ruby
+class Capture
+  def tag(text)
+    text =~ /(?<tag>a)/
+    $~[:tag]
+  end
+end
+```
+
+### result
+
+```rbs
+class Capture
+  def tag: (untyped text) -> String?
+end
+```
+
+## An index read on an array of unknown elements stays unknown
+
+### update
+
+```ruby
+class Pairs
+  def first_op(item)
+    if item.is_a?(Array)
+      item[0].to_s
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Pairs
+  def first_op: (untyped item) -> untyped
+end
+```

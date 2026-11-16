@@ -713,3 +713,68 @@ class Greeter
   def greet: (_Named x) -> String
 end
 ```
+
+## A short type name in an inline RBS annotation resolves in the enclosing class
+
+### update
+
+```ruby
+class Lookup
+  # @rbs!
+  #   interface _Named
+  #     def name: () -> String
+  #   end
+
+  #: -> _Named
+  def named = raise
+
+  def label = named.name
+end
+```
+
+### result
+
+```rbs
+class Lookup
+  interface _Named
+    def name: () -> String
+  end
+
+  def named: -> _Named
+  def label: -> String
+end
+```
+
+## A short class name in an inline RBS annotation resolves in the enclosing class
+
+### update
+
+```ruby
+class Shelf
+  class Book
+    def title = "t"
+  end
+
+  #: (Book book) -> Book
+  def keep(book) = book
+
+  # @rbs book: Book
+  def title_of(book) = book.title
+
+  def first_title = keep(Book.new).title
+end
+```
+
+### result
+
+```rbs
+class Shelf
+  def keep: (Book book) -> Book
+  def title_of: (Book book) -> "t"
+  def first_title: -> "t"
+end
+
+class Shelf::Book
+  def title: -> "t"
+end
+```

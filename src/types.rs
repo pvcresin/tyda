@@ -115,14 +115,7 @@ pub enum Type {
     SelfType,
     // At a call site this resolves to the receiver; when rendering a declaration, it resolves to an instance of the owner.
     InstanceType,
-    Proc {
-        return_type: Box<Type>,
-        param_count: usize,
-        // True when the proc takes exactly `param_count` required positional params (a lambda literal).
-        exact_params: bool,
-        // Source literals bind call arguments through a side table; ignored by equality.
-        literal: Option<ProcLiteralId>,
-    },
+    Proc(Box<ProcType>),
     Tuple(Vec<Type>),
     TruthyProjection(Box<Type>),
     FalsyProjection(Box<Type>),
@@ -130,10 +123,7 @@ pub enum Type {
     // The element type of `[*a, *b, ...]` over the parts of the inner `Tuple`, waiting for a part known only later.
     SplatRef(Box<Type>),
     // `args` is stored as `Box<[Type]>` rather than `Vec` for a narrower slot.
-    Generic {
-        base: Sym,
-        args: Box<[Type]>,
-    },
+    Generic { base: Sym, args: Box<[Type]> },
 }
 
 impl RecordKey {
@@ -145,6 +135,47 @@ impl RecordKey {
 }
 
 impl Type {
+    pub fn proc(
+        params: Vec<Type>,
+        return_type: Type,
+        exact_params: bool,
+        literal: Option<ProcLiteralId>,
+    ) -> Type {
+        Type::Proc(Box::new(ProcType {
+            params,
+            return_type,
+            kind: CallableKind::Proc,
+            exact_params,
+            literal,
+        }))
+    }
+
+    /// The same callable as another kind; other types stay as they are.
+    pub fn with_callable_kind(self, kind: CallableKind) -> Type {
+        match self {
+            Type::Proc(mut proc_type) => {
+                proc_type.kind = kind;
+                Type::Proc(proc_type)
+            }
+            other => other,
+        }
+    }
+
+    /// A proc whose parameter types are unknown.
+    pub fn proc_untyped_params(
+        return_type: Type,
+        param_count: usize,
+        exact_params: bool,
+        literal: Option<ProcLiteralId>,
+    ) -> Type {
+        Type::proc(
+            vec![Type::Untyped; param_count],
+            return_type,
+            exact_params,
+            literal,
+        )
+    }
+
     pub fn deep_extra_bytes(&self) -> usize {
         const SLOT: usize = std::mem::size_of::<Type>();
         fn vec_bytes(types: &[Type]) -> usize {
@@ -189,7 +220,11 @@ impl Type {
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner)
             | Type::SplatRef(inner) => SLOT + inner.deep_extra_bytes(),
-            Type::Proc { return_type, .. } => SLOT + return_type.deep_extra_bytes(),
+            Type::Proc(proc_type) => {
+                std::mem::size_of::<ProcType>()
+                    + vec_bytes(&proc_type.params)
+                    + proc_type.return_type.deep_extra_bytes()
+            }
             _ => 0,
         }
     }
@@ -411,20 +446,7 @@ impl PartialEq for Type {
             | (Type::FalsyProjection(t1), Type::FalsyProjection(t2))
             | (Type::NonNilProjection(t1), Type::NonNilProjection(t2))
             | (Type::SplatRef(t1), Type::SplatRef(t2)) => t1 == t2,
-            (
-                Type::Proc {
-                    return_type: r1,
-                    param_count: p1,
-                    exact_params: e1,
-                    ..
-                },
-                Type::Proc {
-                    return_type: r2,
-                    param_count: p2,
-                    exact_params: e2,
-                    ..
-                },
-            ) => p1 == p2 && e1 == e2 && r1 == r2,
+            (Type::Proc(a), Type::Proc(b)) => a == b,
             (Type::Generic { base: b1, args: a1 }, Type::Generic { base: b2, args: a2 }) => {
                 b1 == b2 && a1 == a2
             }
@@ -489,16 +511,7 @@ impl std::hash::Hash for Type {
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner)
             | Type::SplatRef(inner) => inner.hash(state),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                ..
-            } => {
-                return_type.hash(state);
-                param_count.hash(state);
-                exact_params.hash(state);
-            }
+            Type::Proc(proc_type) => proc_type.hash(state),
             Type::Tuple(types) => types.hash(state),
             Type::Generic { base, args } => {
                 base.hash(state);
@@ -629,20 +642,7 @@ impl Type {
             | (Type::FalsyProjection(t1), Type::FalsyProjection(t2))
             | (Type::NonNilProjection(t1), Type::NonNilProjection(t2))
             | (Type::SplatRef(t1), Type::SplatRef(t2)) => t1.cmp(t2),
-            (
-                Type::Proc {
-                    return_type: a,
-                    param_count: pa,
-                    exact_params: ea,
-                    ..
-                },
-                Type::Proc {
-                    return_type: b,
-                    param_count: pb,
-                    exact_params: eb,
-                    ..
-                },
-            ) => a.cmp(b).then(pa.cmp(pb)).then(ea.cmp(eb)),
+            (Type::Proc(a), Type::Proc(b)) => a.cmp(b),
             (Type::Tuple(a), Type::Tuple(b)) => a.cmp(b),
             (Type::Intersection(a), Type::Intersection(b)) => a.cmp(b),
             // Since it shares a discriminant, comparisons involving `Generic` fall back to Display strings (compatible with the old flat representation).
@@ -700,17 +700,9 @@ impl Type {
                     })
                     .collect(),
             ),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(return_type.replace_self_type(self_type)),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(
+                proc_type.map_types(|ty| ty.replace_self_type(self_type)),
+            )),
             Type::TruthyProjection(inner) => {
                 Type::TruthyProjection(Box::new(inner.replace_self_type(self_type)))
             }
@@ -763,7 +755,10 @@ impl Type {
             Type::DeferredSafeNavigation(receiver, result) => {
                 receiver.contains_instance_type() || result.contains_instance_type()
             }
-            Type::Proc { return_type, .. } => return_type.contains_instance_type(),
+            Type::Proc(proc_type) => {
+                proc_type.return_type.contains_instance_type()
+                    || proc_type.params.iter().any(Type::contains_instance_type)
+            }
             _ => false,
         }
     }
@@ -806,17 +801,9 @@ impl Type {
                     })
                     .collect(),
             ),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(return_type.replace_instance_type(instance_type)),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(
+                proc_type.map_types(|ty| ty.replace_instance_type(instance_type)),
+            )),
             Type::TruthyProjection(inner) => {
                 Type::TruthyProjection(Box::new(inner.replace_instance_type(instance_type)))
             }
@@ -859,9 +846,11 @@ impl Type {
         let merged_proc = Self::merged_proc_member(types);
         let mut proc_written = false;
         for ty in types {
-            let rendered = match (ty, &merged_proc) {
-                (Type::Proc { .. }, Some(_)) if proc_written => continue,
-                (Type::Proc { .. }, Some(merged)) => {
+            let is_proc =
+                matches!(ty, Type::Proc(proc_type) if proc_type.kind == CallableKind::Proc);
+            let rendered = match &merged_proc {
+                Some(_) if is_proc && proc_written => continue,
+                Some(merged) if is_proc => {
                     proc_written = true;
                     merged.to_string()
                 }
@@ -876,36 +865,46 @@ impl Type {
 
     /// Several procs in one union render as one proc returning the union of their returns.
     fn merged_proc_member(types: &[Type]) -> Option<Type> {
-        let mut returns = Vec::new();
-        let mut arities = Vec::new();
-        for ty in types {
-            if let Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                ..
-            } = ty
-            {
-                returns.push(return_type.as_ref().clone());
-                arities.push((*param_count, *exact_params));
-            }
-        }
-        if returns.len() < 2 {
+        let procs: Vec<&ProcType> = types
+            .iter()
+            .filter_map(|ty| match ty {
+                Type::Proc(proc_type) if proc_type.kind == CallableKind::Proc => {
+                    Some(proc_type.as_ref())
+                }
+                _ => None,
+            })
+            .collect();
+        let first = procs.first()?;
+        if procs.len() < 2 {
             return None;
         }
-        let (param_count, exact_params) = match arities[0] {
-            first @ (_, true) if arities.iter().all(|arity| *arity == first) => first,
-            _ => (
-                usize::from(arities.iter().any(|(count, _)| *count > 0)),
-                false,
-            ),
+        let returns = procs.iter().map(|p| p.return_type.clone()).collect();
+        let same_shape = first.exact_params
+            && procs
+                .iter()
+                .all(|p| p.exact_params && p.params.len() == first.params.len());
+        let (params, exact_params) = if same_shape {
+            let params = (0..first.params.len())
+                .map(|index| {
+                    let param = &first.params[index];
+                    if procs.iter().all(|p| &p.params[index] == param) {
+                        param.clone()
+                    } else {
+                        Type::Untyped
+                    }
+                })
+                .collect();
+            (params, true)
+        } else {
+            let takes_params = procs.iter().any(|p| !p.params.is_empty());
+            (vec![Type::Untyped; usize::from(takes_params)], false)
         };
-        Some(Type::Proc {
-            return_type: Box::new(Type::from_type_vec(returns)),
-            param_count,
+        Some(Type::proc(
+            params,
+            Type::from_type_vec(returns),
             exact_params,
-            literal: None,
-        })
+            None,
+        ))
     }
 
     pub fn union_with(self, other: Type) -> Type {
@@ -1597,20 +1596,23 @@ impl fmt::Display for Type {
             Type::SelfType => write!(f, "self"),
             Type::InstanceType => write!(f, "instance"),
             // Parenthesized so the proc type stays one type inside a union, `?` or parameter list.
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                ..
-            } => {
-                let return_type = format!("{return_type:#}");
+            Type::Proc(proc_type) if proc_type.kind == CallableKind::Method => write!(f, "Method"),
+            Type::Proc(proc_type) if proc_type.kind == CallableKind::UnboundMethod => {
+                write!(f, "UnboundMethod")
+            }
+            Type::Proc(proc_type) => {
+                let return_type = format!("{:#}", proc_type.return_type);
                 if return_type == "untyped" {
                     write!(f, "Proc")
-                } else if *param_count == 0 {
+                } else if proc_type.params.is_empty() {
                     write!(f, "(^() -> {return_type})")
-                } else if *exact_params {
-                    let params = vec!["untyped"; *param_count].join(", ");
-                    write!(f, "(^({params}) -> {return_type})")
+                } else if proc_type.exact_params {
+                    let params: Vec<std::string::String> = proc_type
+                        .params
+                        .iter()
+                        .map(|param| format!("{param:#}"))
+                        .collect();
+                    write!(f, "(^({}) -> {return_type})", params.join(", "))
                 } else {
                     write!(f, "(^(?) -> {return_type})")
                 }
@@ -1652,6 +1654,96 @@ pub enum ParamKind {
     KeywordOptional,
     DoubleRest,
     Block,
+}
+
+/// A proc or lambda value. `params` holds the positional parameter types, `untyped` where
+/// unknown; its length is the parameter count.
+/// What kind of callable object a `Type::Proc` is. A `Method` or `UnboundMethod` keeps its
+/// signature for calls but renders as its class, since RBS proc types accept only procs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CallableKind {
+    #[default]
+    Proc,
+    Method,
+    UnboundMethod,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcType {
+    pub params: Vec<Type>,
+    pub return_type: Type,
+    pub kind: CallableKind,
+    /// True when the proc takes exactly `params` as required positional params.
+    pub exact_params: bool,
+    /// Source literals bind call arguments through a side table; ignored by equality.
+    pub literal: Option<ProcLiteralId>,
+}
+
+impl ProcType {
+    pub fn param_count(&self) -> usize {
+        self.params.len()
+    }
+
+    pub fn map_types(&self, mut f: impl FnMut(&Type) -> Type) -> ProcType {
+        ProcType {
+            params: self.params.iter().map(&mut f).collect(),
+            return_type: f(&self.return_type),
+            kind: self.kind,
+            exact_params: self.exact_params,
+            literal: self.literal,
+        }
+    }
+
+    pub fn with_return_type(&self, return_type: Type) -> ProcType {
+        ProcType {
+            params: self.params.clone(),
+            return_type,
+            kind: self.kind,
+            exact_params: self.exact_params,
+            literal: self.literal,
+        }
+    }
+
+    fn key(&self) -> (&[Type], &Type, bool, CallableKind) {
+        (
+            &self.params,
+            &self.return_type,
+            self.exact_params,
+            self.kind,
+        )
+    }
+}
+
+impl PartialEq for ProcType {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for ProcType {}
+
+impl std::hash::Hash for ProcType {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
+}
+
+impl PartialOrd for ProcType {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ProcType {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let (pa, ra, ea, ka) = self.key();
+        let (pb, rb, eb, kb) = other.key();
+        ra.cmp(rb)
+            .then(pa.len().cmp(&pb.len()))
+            .then(ea.cmp(&eb))
+            .then(ka.cmp(&kb))
+            .then_with(|| pa.cmp(pb))
+    }
 }
 
 /// Identifies a source proc literal within one analysis: the analysis's nonce in the high bits

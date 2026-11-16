@@ -1782,3 +1782,34 @@ class Object < BasicObject
   def run: -> Mod::Inner
 end
 ```
+
+## A constant read through the namespace of a class in another file names that class
+
+### update
+
+### file: lib/core/ctx.rb
+
+```ruby
+module Core
+  class Ctx
+    def initialize(src) = @src = src
+    def src = @src
+  end
+end
+```
+
+```ruby
+module Core
+  class User
+    def make = Ctx.new("q").src
+  end
+end
+```
+
+### result
+
+```rbs
+class Core::User
+  def make: -> String
+end
+```

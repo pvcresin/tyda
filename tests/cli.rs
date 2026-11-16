@@ -5018,8 +5018,7 @@ fn concern_scope_resolves_to_includer_across_files() {
 }
 
 // `normalize_value_for` types its `name` parameter, but `value` must stay bound to the callers
-// in other files. The scenario runner still shows `untyped` (known issue in
-// `tests/scenarios/known-issues/rails_models.md`).
+// in other files.
 #[test]
 fn normalize_value_for_binds_value_from_another_file() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
@@ -5275,11 +5274,9 @@ fn diagnostics_keyword_hash_read_interpolating_a_constant_is_not_nil() {
     assert!(!stdout.contains("NilClass"), "got: {stdout}");
 }
 
-// Known issue: the scenario runner and the LSP keep the element type of `Range#each` with a block
-// (`ruby/method/blocks/enumerable_core.md`), but the single-file CLI drops the type argument.
-// When the check fails, drop it.
+/// A range whose end is a parameter keeps its element type once the callers are known.
 #[test]
-fn known_issue_range_each_drops_element_type_in_a_single_file() {
+fn range_with_parameter_end_keeps_element_type_in_a_single_file() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("source.rb"),
@@ -5299,7 +5296,48 @@ fn known_issue_range_each_drops_element_type_in_a_single_file() {
     assert!(output.status.success());
     let rbs = String::from_utf8_lossy(&output.stdout);
     assert!(
-        rbs.contains("def run: (Integer limit) -> Range\n"),
-        "known issue fixed (Range#each element type); drop this check: {rbs}"
+        rbs.contains("def run: (Integer limit) -> Range[Integer]\n"),
+        "got: {rbs}"
+    );
+}
+
+// Known issue: the scenario runner analyzes the other files first and resolves `Ctx` to
+// `Core::Ctx` (`ruby/variable/constant_resolution.md`). The CLI analyzes each file alone, keeps
+// the bare `Ctx`, and loses the call. When the check fails, drop it.
+#[test]
+fn known_issue_namespace_constant_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("ctx.rb"),
+        concat!(
+            "module Core\n",
+            "  class Ctx\n",
+            "    def initialize(src) = @src = src\n",
+            "    def src = @src\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("user.rb"),
+        concat!(
+            "module Core\n",
+            "  class User\n",
+            "    def make = Ctx.new(\"q\").src\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def make: -> untyped\n"),
+        "known issue fixed (namespace constant from another file); drop this check: {rbs}"
     );
 }

@@ -302,3 +302,91 @@ class Names
   def map_row: [Ro, Re] (Ro row) { (Ro) -> Re } -> Re
 end
 ```
+
+## Calling a proc parameter links its argument and return types
+
+### update
+
+```ruby
+class Applier
+  def apply(f, x) = f.call(x)
+  def run(f) = f.call(1)
+  def run0(f) = f.()
+end
+```
+
+### result
+
+```rbs
+class Applier
+  def apply: [X, R] ((^(X) -> R) f, X x) -> R
+  def run: [R] ((^(Integer) -> R) f) -> R
+  def run0: [R] ((^() -> R) f) -> R
+end
+```
+
+## Each call returns what the passed proc returns
+
+### update
+
+```ruby
+class Runner
+  def run(f) = f.call(1)
+  def apply(f, x) = f.call(x)
+end
+
+class RunnerUser
+  def constant = Runner.new.run(proc { 1 })
+  def added = Runner.new.run(->(v) { v + 1 })
+  def text = Runner.new.apply(->(v) { v.to_s }, 1)
+end
+```
+
+### result
+
+```rbs
+class Runner
+  def run: [R] ((^(Integer) -> R) f) -> R
+  def apply: [X, R] ((^(X) -> R) f, X x) -> R
+end
+
+class RunnerUser
+  def constant: -> 1
+  def added: -> Integer
+  def text: -> String
+end
+```
+
+## A called parameter whose callers pass other objects keeps their types
+
+### update
+
+```ruby
+class Service
+  def call(value) = value.to_s
+end
+
+class Dispatcher
+  def dispatch(handler) = handler.call(1)
+end
+
+class DispatcherUser
+  def run = Dispatcher.new.dispatch(Service.new)
+end
+```
+
+### result
+
+```rbs
+class Dispatcher
+  def dispatch: (Service handler) -> String
+end
+
+class DispatcherUser
+  def run: -> String
+end
+
+class Service
+  def call: (Integer value) -> String
+end
+```

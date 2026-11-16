@@ -41,12 +41,10 @@ impl WorkspaceState {
             | Type::MethodReturnRef(..)
             | Type::ReceiverMethodRef(..)
             | Type::BlockReturnRef => true,
-            Type::Array(Some(inner))
-            | Type::PatternRestRef(inner)
-            | Type::SplatRef(inner)
-            | Type::Proc {
-                return_type: inner, ..
-            } => Self::type_needs_display_workspace(inner),
+            Type::Array(Some(inner)) | Type::PatternRestRef(inner) | Type::SplatRef(inner) => {
+                Self::type_needs_display_workspace(inner)
+            }
+            Type::Proc(proc_type) => Self::type_needs_display_workspace(&proc_type.return_type),
             Type::Hash(Some(key), Some(value)) => {
                 Self::type_needs_display_workspace(key) || Self::type_needs_display_workspace(value)
             }

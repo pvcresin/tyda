@@ -635,7 +635,7 @@ class LiteralBlockEdges
   def optional: (?bool? flag) { () -> :after } -> :done
   def trailing: (?Integer? first, Integer flag) { () -> :after } -> :done
   def retried: (bool flag) ?{ (?) -> untyped } -> :done
-  def forwarded: (Integer? flag) { () -> untyped } -> untyped
+  def forwarded: (Integer? flag) { () -> untyped } -> (:after | :none)
   def target: [R] { () -> R } -> R
   def nil_skips: -> :before
   def symbol_runs: -> :after
@@ -1964,5 +1964,23 @@ RangeEachReturn.new.run(3)
 ```rbs
 class RangeEachReturn
   def run: (Integer limit) -> Range[Integer]
+end
+```
+
+## reduce keeps a block result that is not known
+
+### update
+
+```ruby
+class Conditions
+  def all?(items) = [items.first].reduce(true) { |memo, item| memo && item }
+end
+```
+
+### result
+
+```rbs
+class Conditions
+  def all?: (untyped items) -> untyped
 end
 ```

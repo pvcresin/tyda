@@ -22,8 +22,8 @@ use crate::rbs::stdlib_loader::LazyRbsLoader;
 use crate::registry::argument_binding::{self, ArgumentRules, ProcKind};
 use crate::registry::{
     BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, ConstantAlias, KeywordArgTypes,
-    LiteralBranchedDef, MethodBlockMeta, MethodBodySummary, MethodDef, MixinKind, ParamInfo,
-    PendingScopedTypeRef, TypeRegistry, Visibility,
+    LiteralBranchedDef, MethodBlockMeta, MethodBodySummary, MethodDef, MixinKind, ParamFlow,
+    ParamInfo, PendingScopedTypeRef, TypeRegistry, Visibility,
 };
 use crate::sorbet::annotations::{
     extract_sig_source, find_method_annotations, sig_source_return_type, sig_sources_to_rbs_lines,
@@ -34,8 +34,8 @@ use crate::sorbet::comments::{
 };
 use crate::sorbet::rbi::LazyRbiLoader;
 use crate::types::{
-    HoverBlockSig, MethodSig, NamespaceAliasKind, Param, ParamKind, ProcLiteralId, RecordField,
-    RecordKey, SharedPath, SourceLocation, SplatElements, Type,
+    CallableKind, HoverBlockSig, MethodSig, NamespaceAliasKind, Param, ParamKind, ProcLiteralId,
+    ProcType, RecordField, RecordKey, SharedPath, SourceLocation, SplatElements, Type,
 };
 
 mod array_element_flow;
@@ -86,6 +86,15 @@ enum StaticLookupMatch {
     Always,
     Maybe,
     Never,
+}
+
+/// An in-place change of an ivar: its name and the values before and after.
+type IvarMutation = (String, Option<Type>, Type);
+
+#[derive(Clone, Debug, Default)]
+struct ActionGuards {
+    callbacks: Vec<String>,
+    methods: Vec<String>,
 }
 
 struct CaseModuleNameNarrowing {
@@ -223,6 +232,8 @@ enum NarrowSubject {
     SelfMethod(String),
     /// A constant index read with a literal key (`ENV["TOKEN"]`), keyed by its source.
     ConstIndex(String),
+    /// A hash index read on a local or `@ivar` with a static key (`opts[:name]`).
+    HashKey(String, Type),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1047,6 +1058,8 @@ struct DeferredMethodBody {
     is_singleton: bool,
     start_offset: usize,
     has_existing_defer_reason: bool,
+    /// Methods it passes its own block to that were not typed yet.
+    late_block_forwards: Vec<(String, String, bool)>,
     has_case_class_dispatch: bool,
     has_super_call: bool,
     unresolved_block_receivers: Option<DeferredBlockReceiverCandidates>,
@@ -1063,6 +1076,8 @@ struct DeferredMethodReplay {
     receiver_dependency_resolved: bool,
     case_dispatch_needs_replay: bool,
     source_return_dependency_resolved: bool,
+    /// A method this body passes its own block to now returns that block's value.
+    block_forward_resolved: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1161,6 +1176,17 @@ pub struct InferenceEngine<'a> {
     /// Method body statements being walked, and the return of a blockless call once a
     /// `return x unless block_given?` guard in them is reached.
     blockless_return_capture: Option<(usize, Option<Type>)>,
+    /// Argument types of `call` on a proc parameter of the method body being typed.
+    proc_param_calls: Option<Vec<(usize, Vec<Type>)>>,
+    /// Methods the body being typed passes its own block to before their return is known.
+    late_block_forwards: Vec<(String, String, bool)>,
+    /// In-place ivar changes each method made in its first walk, as (ivar, before, after), so a
+    /// replay starts from the value before them instead of applying them twice.
+    ivar_mutations_by_method: HashMap<(String, String), Vec<IvarMutation>>,
+    replaying_method_body: bool,
+    /// Per controller, the unconditional `before_action` callbacks that halt unless a self
+    /// method is truthy, and those methods.
+    action_guards: HashMap<String, ActionGuards>,
     definition_snapshots: Vec<DefinitionSnapshot>,
     pending_constant_definition_snapshots: Vec<PendingConstantDefinitionSnapshot>,
     arg_check_sites: Vec<ArgCheckSite>,
@@ -2213,6 +2239,11 @@ impl Scope {
             | NarrowSubject::ConstIndex(name) => {
                 self.set_self_fact(name, ty);
             }
+            NarrowSubject::HashKey(receiver, key) => {
+                if InferenceEngine::truthy_only(&ty).as_ref() == Some(&ty) {
+                    hash_key_flow::record_truthy_hash_key(self, receiver, key);
+                }
+            }
         }
     }
 
@@ -2668,7 +2699,9 @@ impl<'a> InferenceEngine<'a> {
                 Self::type_contains_call_site_param_ref(receiver)
                     || Self::type_contains_call_site_param_ref(result)
             }
-            Type::Proc { return_type, .. } => Self::type_contains_call_site_param_ref(return_type),
+            Type::Proc(proc_type) => {
+                Self::type_contains_call_site_param_ref(&proc_type.return_type)
+            }
             _ => false,
         }
     }
@@ -2840,6 +2873,11 @@ impl<'a> InferenceEngine<'a> {
             first_walk_call_snapshots: hover_index.first_walk_call_snapshots,
             coverage_recorder: None,
             blockless_return_capture: None,
+            proc_param_calls: None,
+            late_block_forwards: Vec::new(),
+            ivar_mutations_by_method: HashMap::new(),
+            replaying_method_body: false,
+            action_guards: HashMap::new(),
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: hover_index.arg_check_sites,
@@ -2940,6 +2978,11 @@ impl<'a> InferenceEngine<'a> {
             first_walk_call_snapshots: Vec::new(),
             coverage_recorder: None,
             blockless_return_capture: None,
+            proc_param_calls: None,
+            late_block_forwards: Vec::new(),
+            ivar_mutations_by_method: HashMap::new(),
+            replaying_method_body: false,
+            action_guards: HashMap::new(),
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
             arg_check_sites: Vec::new(),
@@ -4825,8 +4868,30 @@ impl<'a> InferenceEngine<'a> {
             }
             AliasTarget::Ivar(name) => {
                 if !scope.singleton_dispatch {
-                    self.registry
-                        .replace_ivar_type(class_name, name, ty.clone());
+                    // Parameter refs already in the value are `initialize`'s; only refs the
+                    // change adds name this method's parameters.
+                    let inherits_param_refs = self
+                        .registry
+                        .lookup_ivar_type(class_name, name)
+                        .is_some_and(|current| {
+                            TypeRegistry::type_contains_param_ref_static(&current)
+                        });
+                    let summary = if inherits_param_refs {
+                        ty.clone()
+                    } else {
+                        Self::ivar_value_outside_initialize(scope, ty.clone())
+                    };
+                    if !self.replaying_method_body
+                        && let Some(method_name) = scope.method_name.as_deref()
+                        && method_name != "initialize"
+                    {
+                        let before = self.registry.lookup_ivar_type(class_name, name);
+                        self.ivar_mutations_by_method
+                            .entry((class_name.to_string(), method_name.to_string()))
+                            .or_default()
+                            .push((name.clone(), before, summary.clone()));
+                    }
+                    self.registry.replace_ivar_type(class_name, name, summary);
                 }
                 // A later read in the same method sees the value after the in-place change.
                 if scope.self_facts.contains_key(name) {
@@ -16975,6 +17040,7 @@ impl<'a> InferenceEngine<'a> {
                 &[],
                 false,
             );
+            self.registry.qualify_late_nested_ivar_types(class_name);
         }
     }
 
@@ -18627,7 +18693,7 @@ impl<'a> InferenceEngine<'a> {
         annotations: &[(usize, RbsParamAnnotation)],
     ) {
         for (index, annotation) in annotations {
-            self.registry.set_annotated_param_type(
+            self.set_scoped_annotated_param_type(
                 class_name,
                 method_name,
                 is_singleton,
@@ -18702,6 +18768,56 @@ impl<'a> InferenceEngine<'a> {
                 Some(class_name),
             )
         })
+    }
+
+    fn resolve_scoped_annotation_type(&mut self, class_name: &str, ty: &Type) -> Type {
+        if class_name == "Object" || !TypeRegistry::type_contains_scoped_nominal_ref(ty) {
+            return ty.clone();
+        }
+        self.registry
+            .resolve_scoped_annotation_type(class_name, ty)
+            .0
+    }
+
+    fn set_scoped_annotated_param_type(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        index: usize,
+        ty: Type,
+    ) {
+        let ty = self.resolve_scoped_annotation_type(class_name, &ty);
+        self.registry
+            .set_annotated_param_type(class_name, method_name, is_singleton, index, ty);
+    }
+
+    /// An annotation names types as written, so `Inner` inside `class Outer` may mean
+    /// `Outer::Inner`. Resolve the names known now and leave the rest for the merge.
+    fn resolve_scoped_annotated_return_type(
+        &mut self,
+        class_name: &str,
+        method_def: &mut MethodDef,
+    ) {
+        if class_name == "Object"
+            || !TypeRegistry::type_contains_scoped_nominal_ref(&method_def.raw_return_type)
+        {
+            return;
+        }
+        let (resolved, any_unresolved) = self
+            .registry
+            .resolve_scoped_annotation_type(class_name, &method_def.raw_return_type);
+        method_def.raw_return_type = resolved;
+        if any_unresolved {
+            self.registry
+                .push_pending_scoped_type_ref(PendingScopedTypeRef {
+                    owner_class: class_name.to_string(),
+                    method_name: method_def.name.to_string(),
+                    is_singleton: method_def.is_singleton,
+                    declaration_scope: class_name.to_string(),
+                    raw_type: method_def.raw_return_type.clone(),
+                });
+        }
     }
 
     /// A `def` run inside a method body defines its method on the class that lexically
@@ -18884,8 +19000,11 @@ impl<'a> InferenceEngine<'a> {
                 *method_type = method_type.with_type_variables(&class_type_params);
             }
         }
-        let rbs_param_annotations =
+        let mut rbs_param_annotations =
             Self::rbs_param_annotation_indices(&param_infos, &rbs_param_annotation_lines);
+        for (_, annotation) in &mut rbs_param_annotations {
+            annotation.ty = self.resolve_scoped_annotation_type(class_name, &annotation.ty);
+        }
         let rbs_block_meta = Self::rbs_block_meta_from_param_annotations(&rbs_param_annotations);
         let has_rbs_param_annotations = !rbs_param_annotations.is_empty();
         let explicit_return_contract = first_shorthand
@@ -18895,7 +19014,7 @@ impl<'a> InferenceEngine<'a> {
 
         if !rbs_lines.is_empty() || return_annotation.is_some() || has_rbs_param_annotations {
             if let Some(shorthand) = first_shorthand {
-                let method_def = MethodDef {
+                let mut method_def = MethodDef {
                     name: Sym::new(&method_name),
                     param_infos,
                     raw_return_type: shorthand.return_type,
@@ -18911,7 +19030,7 @@ impl<'a> InferenceEngine<'a> {
 
                 for (i, (ty, _kind)) in shorthand.param_types.into_iter().enumerate() {
                     if method_def.param_name_at(i).is_some() {
-                        self.registry.set_annotated_param_type(
+                        self.set_scoped_annotated_param_type(
                             class_name,
                             &method_def.name,
                             method_def.is_singleton,
@@ -18923,7 +19042,7 @@ impl<'a> InferenceEngine<'a> {
                 if let Some(block_ty) = shorthand.block_type {
                     for (i, pi) in method_def.param_infos.iter().enumerate() {
                         if pi.kind == ParamKind::Block {
-                            self.registry.set_annotated_param_type(
+                            self.set_scoped_annotated_param_type(
                                 class_name,
                                 &method_def.name,
                                 method_def.is_singleton,
@@ -18958,6 +19077,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &method_def.param_infos,
                 );
+                self.resolve_scoped_annotated_return_type(class_name, &mut method_def);
                 self.registry.add_method_def_with_file_path(
                     class_name,
                     method_def,
@@ -19020,7 +19140,7 @@ impl<'a> InferenceEngine<'a> {
             }
 
             if let Some(return_type) = return_annotation {
-                let method_def = MethodDef {
+                let mut method_def = MethodDef {
                     name: Sym::new(&method_name),
                     param_infos,
                     raw_return_type: return_type,
@@ -19060,6 +19180,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     &method_def.param_infos,
                 );
+                self.resolve_scoped_annotated_return_type(class_name, &mut method_def);
                 self.registry.add_method_def_with_file_path(
                     class_name,
                     method_def,
@@ -19181,12 +19302,7 @@ impl<'a> InferenceEngine<'a> {
                     if !pi.name.is_empty() {
                         scope.set(
                             &pi.name,
-                            Type::Proc {
-                                return_type: Box::new(Type::BlockReturnRef),
-                                param_count: 0,
-                                exact_params: false,
-                                literal: None,
-                            },
+                            Type::proc_untyped_params(Type::BlockReturnRef, 0, false, None),
                         );
                         scope.current_block_param_name = Some(pi.name.clone());
                     }
@@ -19205,6 +19321,9 @@ impl<'a> InferenceEngine<'a> {
             &param_infos,
             &rbs_param_annotations,
         );
+        if !is_singleton {
+            self.seed_action_guard_facts(class_name, &method_name, &mut scope);
+        }
         for (name, loc) in param_definition_locations {
             if scope.get(&name).is_some() {
                 scope.set_definition(&name, loc);
@@ -19258,6 +19377,8 @@ impl<'a> InferenceEngine<'a> {
                 .then(ActiveMethodBody::default),
         );
         self.registry.begin_method_body(class_name, &method_name);
+        let saved_proc_param_calls = self.proc_param_calls.replace(Vec::new());
+        let saved_late_block_forwards = std::mem::take(&mut self.late_block_forwards);
         let mut blockless_return = None;
         let mut return_type = if method_name == "initialize" {
             if let Some(body) = def_node.body() {
@@ -19285,6 +19406,11 @@ impl<'a> InferenceEngine<'a> {
             Type::Nil
         };
         self.registry.end_method_body();
+        let proc_param_calls =
+            std::mem::replace(&mut self.proc_param_calls, saved_proc_param_calls)
+                .unwrap_or_default();
+        let late_block_forwards =
+            std::mem::replace(&mut self.late_block_forwards, saved_late_block_forwards);
         self.suppress_body_call_sites = saved_suppress_call_sites;
         if method_name != "initialize"
             && let Some(body) = def_node.body()
@@ -19311,12 +19437,14 @@ impl<'a> InferenceEngine<'a> {
                 .map(|(index, param)| (index, param.name.as_str()))
                 .collect();
             let flows = param_flow::param_flows(&body, &required);
+            let proc_calls = Self::merge_proc_param_calls(&flows, proc_param_calls);
             self.registry.set_param_flows(
                 class_name,
                 &method_name,
                 is_singleton,
                 flows,
                 &return_type,
+                proc_calls,
             );
         }
 
@@ -19484,6 +19612,9 @@ impl<'a> InferenceEngine<'a> {
             (has_existing_defer_reason || has_deferred_block_receiver_return || has_super_call)
                 && !rbs_inline_annotated
                 && !sig_annotated;
+        // A block passed on to a method not typed yet returns what that method makes of it.
+        let replays_block_forward =
+            !late_block_forwards.is_empty() && !rbs_inline_annotated && !sig_annotated;
         if defers_body && !suppressed_call_sites.is_empty() {
             self.suppressed_body_call_sites
                 .insert(def_node.location().start_offset(), suppressed_call_sites);
@@ -19492,12 +19623,13 @@ impl<'a> InferenceEngine<'a> {
                 self.registry.add_call_site(&owner, site);
             }
         }
-        if defers_body {
+        if defers_body || replays_block_forward {
             self.deferred_method_bodies.push(DeferredMethodBody {
                 class_name: class_name.to_string(),
                 is_singleton,
                 start_offset: def_node.location().start_offset(),
                 has_existing_defer_reason,
+                late_block_forwards,
                 has_case_class_dispatch,
                 has_super_call,
                 unresolved_block_receivers: has_deferred_block_receiver_return
@@ -20174,17 +20306,27 @@ impl<'a> InferenceEngine<'a> {
                                 parse_result,
                                 scope,
                             );
-                            if let Some(param_types) = self.receiver_call_block_param_types(
-                                class_name,
-                                &call_node,
-                                &receiver,
-                                &receiver_type,
-                                method_name.as_ref(),
-                                param_count,
-                                rbs_block_seed.as_ref(),
-                                parse_result,
-                                scope,
-                            ) {
+                            if let Some(param_types) = self
+                                .receiver_call_block_param_types(
+                                    class_name,
+                                    &call_node,
+                                    &receiver,
+                                    &receiver_type,
+                                    method_name.as_ref(),
+                                    param_count,
+                                    rbs_block_seed.as_ref(),
+                                    parse_result,
+                                    scope,
+                                )
+                                .filter(|types| types.iter().any(|ty| *ty != Type::Untyped))
+                                .or_else(|| {
+                                    Self::deferred_receiver_element_block_param_types(
+                                        &receiver_type,
+                                        method_name.as_ref(),
+                                        param_count,
+                                    )
+                                })
+                            {
                                 self.bind_call_block_param_types(
                                     class_name,
                                     &params,
@@ -24596,6 +24738,75 @@ impl<'a> InferenceEngine<'a> {
         Self::refined_enumerator_return_from_type(&method.raw_return_type, &yield_type)
     }
 
+    /// Records the argument types of `f.call(args)` on a proc parameter `f` of the method body
+    /// being typed.
+    fn record_proc_param_call(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) {
+        if self.proc_param_calls.is_none() {
+            return;
+        }
+        let Some(receiver) = param_flow::plain_proc_call(call_node) else {
+            return;
+        };
+        let Some(read) = receiver.as_local_variable_read_node() else {
+            return;
+        };
+        let name = String::from_utf8_lossy(read.name().as_slice());
+        let Some(&Type::ParamRef(index)) = scope.get(name.as_ref()) else {
+            return;
+        };
+        let arg_types: Vec<Type> = call_node
+            .arguments()
+            .iter()
+            .flat_map(|arguments| arguments.arguments().iter())
+            .map(|argument| self.infer_node_type(class_name, &argument, parse_result, scope))
+            .collect();
+        if let Some(calls) = &mut self.proc_param_calls {
+            calls.push((index, arg_types));
+        }
+    }
+
+    /// Joins the calls on each `Called` parameter. A parameter called with different numbers
+    /// of arguments is left out.
+    fn merge_proc_param_calls(
+        flows: &[(usize, ParamFlow)],
+        calls: Vec<(usize, Vec<Type>)>,
+    ) -> Vec<(usize, Box<[Type]>)> {
+        let mut merged: Vec<(usize, Option<Vec<Vec<Type>>>)> = Vec::new();
+        for (index, arg_types) in calls {
+            if !flows.contains(&(index, ParamFlow::Called)) {
+                continue;
+            }
+            match merged.iter_mut().find(|(called, _)| *called == index) {
+                Some((_, Some(positions))) if positions.len() == arg_types.len() => {
+                    for (position, ty) in positions.iter_mut().zip(arg_types) {
+                        position.push(ty);
+                    }
+                }
+                Some((_, slot)) => *slot = None,
+                None => merged.push((
+                    index,
+                    Some(arg_types.into_iter().map(|ty| vec![ty]).collect()),
+                )),
+            }
+        }
+        merged
+            .into_iter()
+            .filter_map(|(index, positions)| {
+                let arg_types = positions?
+                    .into_iter()
+                    .map(Type::from_type_vec_preserve_untyped)
+                    .collect();
+                Some((index, arg_types))
+            })
+            .collect()
+    }
+
     /// A method rendered with type parameters returns, at each call, the argument types bound
     /// to them, literals included, rather than the union over all callers.
     fn resolve_user_defined_generic_call(
@@ -24613,8 +24824,13 @@ impl<'a> InferenceEngine<'a> {
                     external.param_flows(owner_class, method_name, method_is_singleton)
                 })
             })?;
+        // A call on a proc parameter takes what the proc passed here returns.
+        let return_type =
+            Self::call_proc_arguments(&flows.return_type, &flows.proc_calls, positional_arg_types);
         let mut refs = Vec::new();
-        if !Self::collect_positional_param_refs(&flows.return_type, &mut refs) || refs.is_empty() {
+        if !Self::collect_positional_param_refs(&return_type, &mut refs)
+            || (refs.is_empty() && return_type == flows.return_type)
+        {
             return None;
         }
         let all_bound = refs.iter().all(|index| {
@@ -24626,8 +24842,144 @@ impl<'a> InferenceEngine<'a> {
         if !all_bound {
             return None;
         }
-        let substituted = Self::substitute_param_refs(&flows.return_type, positional_arg_types);
+        let substituted = Self::substitute_param_refs(&return_type, positional_arg_types);
         Some(self.resolve_receiver_method_refs(&substituted))
+    }
+
+    /// Replaces `f.call(args)` on a proc parameter with what the proc this call passes returns
+    /// for those arguments.
+    fn call_proc_arguments(
+        ty: &Type,
+        proc_calls: &[(usize, Box<[Type]>)],
+        positional_arg_types: &[Type],
+    ) -> Type {
+        if proc_calls.is_empty() {
+            return ty.clone();
+        }
+        let recurse = |ty: &Type| Self::call_proc_arguments(ty, proc_calls, positional_arg_types);
+        match ty {
+            Type::ReceiverMethodRef(receiver, method) if method.as_str() == "call" => {
+                let Type::ParamRef(index) = receiver.as_ref() else {
+                    return ty.clone();
+                };
+                let Some((_, call_args)) = proc_calls.iter().find(|(called, _)| called == index)
+                else {
+                    return ty.clone();
+                };
+                let call_args: Vec<Type> = call_args
+                    .iter()
+                    .map(|arg| Self::substitute_param_refs(arg, positional_arg_types))
+                    .collect();
+                positional_arg_types
+                    .get(*index)
+                    .and_then(|proc_arg| Self::proc_result_for_arguments(proc_arg, &call_args))
+                    .unwrap_or_else(|| ty.clone())
+            }
+            Type::Union(parts) => {
+                Type::from_type_vec_preserve_untyped(parts.iter().map(recurse).collect())
+            }
+            Type::Tuple(parts) => Type::Tuple(parts.iter().map(recurse).collect()),
+            Type::Array(Some(inner)) => Type::Array(Some(Box::new(recurse(inner)))),
+            Type::Hash(Some(key), Some(value)) => {
+                Type::Hash(Some(Box::new(recurse(key))), Some(Box::new(recurse(value))))
+            }
+            Type::Record(fields) => Type::Record(
+                fields
+                    .iter()
+                    .map(|field| RecordField {
+                        value: recurse(&field.value),
+                        ..field.clone()
+                    })
+                    .collect(),
+            ),
+            _ => ty.clone(),
+        }
+    }
+
+    /// What calling `proc_arg` with `call_args` returns, when it is a proc, or a union of procs,
+    /// that accepts that many arguments.
+    fn proc_result_for_arguments(proc_arg: &Type, call_args: &[Type]) -> Option<Type> {
+        match proc_arg {
+            Type::Proc(proc_type) => {
+                if proc_type.exact_params && proc_type.param_count() != call_args.len() {
+                    return None;
+                }
+                Some(Self::substitute_param_refs(
+                    &proc_type.return_type,
+                    call_args,
+                ))
+            }
+            Type::Union(parts) => {
+                let results = parts
+                    .iter()
+                    .map(|part| Self::proc_result_for_arguments(part, call_args))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Type::from_type_vec_preserve_untyped(results))
+            }
+            _ => None,
+        }
+    }
+
+    /// A method of another file whose return reads only its positional arguments returns, at
+    /// each call, what this call's arguments make of it. This file's calls are not among the
+    /// workspace's callers, so the workspace cannot resolve it for them.
+    fn resolve_workspace_argument_return(
+        &mut self,
+        owner_class: &str,
+        method_name: &str,
+        method_is_singleton: bool,
+        positional_arg_types: &[Type],
+    ) -> Option<Type> {
+        if self
+            .registry
+            .file_contribution_names()
+            .contains(owner_class)
+        {
+            return None;
+        }
+        let method = self
+            .registry
+            .lookup_method_def(owner_class, method_name, method_is_singleton)
+            .or_else(|| {
+                self.external_rbs?
+                    .lookup_method_def(owner_class, method_name, method_is_singleton)
+            })?;
+        if !method.origin.is_user_source() {
+            return None;
+        }
+        let return_type = method.raw_return_type.clone();
+        let mut refs = Vec::new();
+        if !Self::collect_argument_receiver_refs(&return_type, &mut refs)
+            || refs.is_empty()
+            || !refs.iter().all(|index| {
+                positional_arg_types
+                    .get(*index)
+                    .is_some_and(|ty| !matches!(ty, Type::Untyped | Type::Bot))
+            })
+        {
+            return None;
+        }
+        let arg_types: Vec<Type> = positional_arg_types
+            .iter()
+            .cloned()
+            .map(Type::widen_arg_for_param)
+            .collect();
+        let resolved = self
+            .resolve_receiver_method_refs(&Self::substitute_param_refs(&return_type, &arg_types));
+        Self::is_concrete(&resolved).then_some(resolved)
+    }
+
+    /// `collect_positional_param_refs`, also through the receivers of deferred calls.
+    fn collect_argument_receiver_refs(ty: &Type, refs: &mut Vec<usize>) -> bool {
+        match ty {
+            Type::ReceiverMethodRef(receiver, _) => {
+                Self::collect_argument_receiver_refs(receiver, refs)
+            }
+            Type::Union(parts) => parts
+                .iter()
+                .all(|part| Self::collect_argument_receiver_refs(part, refs)),
+            other => Self::collect_positional_param_refs(other, refs),
+        }
     }
 
     /// Collects the positional parameter refs in `ty`; false when it also refers to other
@@ -24655,8 +25007,8 @@ impl<'a> InferenceEngine<'a> {
             Type::Generic { args, .. } => args
                 .iter()
                 .all(|arg| Self::collect_positional_param_refs(arg, refs)),
-            Type::Proc { return_type, .. } => {
-                Self::collect_positional_param_refs(return_type, refs)
+            Type::Proc(proc_type) => {
+                Self::collect_positional_param_refs(&proc_type.return_type, refs)
             }
             other => !Self::type_contains_call_site_param_ref(other),
         }
@@ -24722,7 +25074,7 @@ impl<'a> InferenceEngine<'a> {
             | Type::PatternKeyRef(receiver_type, _)
             | Type::PatternKeyRestRef(receiver_type, _)
             | Type::SplatRef(receiver_type) => Self::type_contains_block_return_ref(receiver_type),
-            Type::Proc { return_type, .. } => Self::type_contains_block_return_ref(return_type),
+            Type::Proc(proc_type) => Self::type_contains_block_return_ref(&proc_type.return_type),
             _ => false,
         }
     }
@@ -24807,20 +25159,12 @@ impl<'a> InferenceEngine<'a> {
                 )),
                 keys,
             ),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(Self::substitute_block_return_ref(
-                    *return_type,
-                    block_return_type,
-                )),
-                param_count,
-                exact_params,
-                literal,
-            },
+            Type::Proc(mut proc_type) => {
+                let return_type = std::mem::replace(&mut proc_type.return_type, Type::Untyped);
+                proc_type.return_type =
+                    Self::substitute_block_return_ref(return_type, block_return_type);
+                Type::Proc(proc_type)
+            }
             other => other,
         }
     }
@@ -24842,6 +25186,33 @@ impl<'a> InferenceEngine<'a> {
             }
             other => Some(other),
         }
+    }
+
+    /// Passing this method's own block on (`&block`) makes the callee's block value this
+    /// method's block value.
+    fn forwarded_block_sig() -> HoverBlockSig {
+        HoverBlockSig {
+            params: Vec::new(),
+            return_type: Type::BlockReturnRef,
+            required: true,
+        }
+    }
+
+    fn forwards_current_block_param(call_node: &ruby_prism::CallNode<'_>, scope: &Scope) -> bool {
+        call_node
+            .block()
+            .and_then(|block| block.as_block_argument_node())
+            .and_then(|block_arg| block_arg.expression())
+            .and_then(|expr| {
+                expr.as_local_variable_read_node()
+                    .map(|read| read.name().as_slice().to_vec())
+            })
+            .is_some_and(|name| {
+                scope
+                    .current_block_param_name
+                    .as_deref()
+                    .is_some_and(|current| current.as_bytes() == name.as_slice())
+            })
     }
 
     fn resolve_user_defined_block_call_return(
@@ -25949,15 +26320,17 @@ impl<'a> InferenceEngine<'a> {
                     return None;
                 }
             }
-            let Type::Proc {
-                return_type,
-                param_count,
-                ..
-            } = self.infer_node_type(class_name, &expr, parse_result, scope)
+            let Type::Proc(proc_type) =
+                self.infer_node_type(class_name, &expr, parse_result, scope)
             else {
                 return None;
             };
-            if param_count != block_param_types.len() {
+            let ProcType {
+                params,
+                return_type,
+                ..
+            } = *proc_type;
+            if params.len() != block_param_types.len() {
                 return None;
             }
             let return_type = Self::substitute_param_refs(&return_type, &block_param_types);
@@ -30632,6 +31005,7 @@ impl<'a> InferenceEngine<'a> {
                 let mut method_name =
                     String::from_utf8_lossy(call_node.name().as_slice()).to_string();
                 self.record_regexp_block_captures(&call_node);
+                self.record_proc_param_call(class_name, &call_node, parse_result, scope);
 
                 if let Some(sorbet_type) = self.try_resolve_sorbet_assertion(
                     class_name,
@@ -31165,16 +31539,33 @@ impl<'a> InferenceEngine<'a> {
                         };
                         let arg_types_for_resolve = arg_types.clone();
                         let kw_types_for_resolve = kw_types.clone();
-                        let user_defined_block_call_result = block.as_ref().and_then(|block| {
-                            self.resolve_user_defined_block_call_return(
-                                class_name,
-                                &method_name,
+                        let forwarded_block = (block.is_none()
+                            && Self::forwards_current_block_param(&call_node, scope))
+                        .then(Self::forwarded_block_sig);
+                        let user_defined_block_call_result = block
+                            .as_ref()
+                            .or(forwarded_block.as_ref())
+                            .and_then(|block| {
+                                self.resolve_user_defined_block_call_return(
+                                    class_name,
+                                    &method_name,
+                                    scope.singleton_dispatch,
+                                    &arg_types,
+                                    &kw_types,
+                                    block,
+                                )
+                            });
+                        // A recursive call adds nothing a replay could resolve.
+                        if forwarded_block.is_some()
+                            && user_defined_block_call_result.is_none()
+                            && scope.method_name.as_deref() != Some(method_name.as_str())
+                        {
+                            self.late_block_forwards.push((
+                                class_name.to_string(),
+                                method_name.clone(),
                                 scope.singleton_dispatch,
-                                &arg_types,
-                                &kw_types,
-                                block,
-                            )
-                        });
+                            ));
+                        }
                         let user_defined_no_block_enumerator_result = if call_node.block().is_none()
                         {
                             self.resolve_user_defined_no_block_enumerator_call(
@@ -32487,15 +32878,15 @@ impl<'a> InferenceEngine<'a> {
                             }
                         }
 
-                        if let Type::Proc {
-                            return_type,
-                            param_count,
-                            exact_params: _,
-                            literal,
-                        } = &safe_nav_receiver_type
-                        {
+                        if let Type::Proc(proc_value) = &safe_nav_receiver_type {
+                            let return_type = &proc_value.return_type;
+                            let literal = &proc_value.literal;
                             if method_name == "to_proc" && call_node.arguments().is_none() {
-                                break 'recv wrap(safe_nav_receiver_type.clone());
+                                break 'recv wrap(
+                                    safe_nav_receiver_type
+                                        .clone()
+                                        .with_callable_kind(CallableKind::Proc),
+                                );
                             }
                             if method_name == "curry" {
                                 break 'recv wrap(safe_nav_receiver_type.clone());
@@ -32511,15 +32902,18 @@ impl<'a> InferenceEngine<'a> {
                                         self.infer_node_type(class_name, &arg, parse_result, scope)
                                     })
                                     .unwrap_or(Type::Untyped);
-                                break 'recv wrap(Type::Proc {
-                                    return_type: Box::new(Self::bind_first_positional_param_ref(
-                                        return_type,
-                                        &bound_receiver,
-                                    )),
-                                    param_count: param_count.saturating_sub(1),
-                                    exact_params: false,
-                                    literal: None,
-                                });
+                                break 'recv wrap(
+                                    Type::proc(
+                                        proc_value.params.iter().skip(1).cloned().collect(),
+                                        Self::bind_first_positional_param_ref(
+                                            return_type,
+                                            &bound_receiver,
+                                        ),
+                                        false,
+                                        None,
+                                    )
+                                    .with_callable_kind(CallableKind::Method),
+                                );
                             }
                             if method_name == "bind_call" {
                                 let mut arg_types = Vec::new();
@@ -32591,7 +32985,7 @@ impl<'a> InferenceEngine<'a> {
                                         parse_result,
                                         scope,
                                     )
-                                } else if *param_count > 0 {
+                                } else if proc_value.param_count() > 0 {
                                     let mut arg_types = Vec::new();
                                     if let Some(args) = call_node.arguments() {
                                         for arg in args.arguments().iter() {
@@ -32607,7 +33001,7 @@ impl<'a> InferenceEngine<'a> {
                                         Self::substitute_param_refs(return_type, &arg_types);
                                     self.resolve_receiver_method_refs(&substituted)
                                 } else {
-                                    *return_type.clone()
+                                    return_type.clone()
                                 };
                                 break 'recv wrap(result);
                             }
@@ -32785,6 +33179,14 @@ impl<'a> InferenceEngine<'a> {
                                             method_is_singleton,
                                             &arg_types,
                                         )
+                                    })
+                                    .or_else(|| {
+                                        self.resolve_workspace_argument_return(
+                                            &target_class,
+                                            &method_name,
+                                            method_is_singleton,
+                                            &arg_types,
+                                        )
                                     });
                             }
                             block_uses_rbs_signature = self.block_call_uses_rbs_signature(
@@ -32835,16 +33237,30 @@ impl<'a> InferenceEngine<'a> {
                                     block.return_type.clone(),
                                 );
                             }
-                            user_defined_block_call_result = block.as_ref().and_then(|block| {
-                                self.resolve_user_defined_block_call_return(
-                                    &target_class,
-                                    &method_name,
+                            let forwarded_block = (block.is_none()
+                                && Self::forwards_current_block_param(&call_node, scope))
+                            .then(Self::forwarded_block_sig);
+                            user_defined_block_call_result = block
+                                .as_ref()
+                                .or(forwarded_block.as_ref())
+                                .and_then(|block| {
+                                    self.resolve_user_defined_block_call_return(
+                                        &target_class,
+                                        &method_name,
+                                        method_is_singleton,
+                                        &arg_types,
+                                        &kw_types,
+                                        block,
+                                    )
+                                });
+                            if forwarded_block.is_some() && user_defined_block_call_result.is_none()
+                            {
+                                self.late_block_forwards.push((
+                                    target_class.clone(),
+                                    method_name.clone(),
                                     method_is_singleton,
-                                    &arg_types,
-                                    &kw_types,
-                                    block,
-                                )
-                            });
+                                ));
+                            }
                             self.record_inferred_call_site(&target_class, {
                                 let caller_context =
                                     self.call_site_caller_context_for_target(TargetedCallSite {
@@ -35476,12 +35892,32 @@ impl<'a> InferenceEngine<'a> {
             (None, None) => None,
         };
 
-        inner
-            .map(|inner| Type::Generic {
+        if let Some(inner) = inner {
+            return Type::Generic {
                 base: Sym::new("Range"),
                 args: vec![Self::parse_type_string(&inner)].into(),
-            })
-            .unwrap_or_else(|| Type::Class(Sym::new("Range")))
+            };
+        }
+        // An endpoint given by a parameter (`1..limit`) is known once the callers are.
+        let is_param = |ty: &Type| matches!(ty, Type::ParamRef(_) | Type::KeywordParamRef(_));
+        let known_and_param = match (&left_ty, &right_ty) {
+            (Some(left), Some(right)) if is_param(right) => Some((left, right)),
+            (Some(left), Some(right)) if is_param(left) => Some((right, left)),
+            _ => None,
+        };
+        if let Some((known, deferred)) = known_and_param
+            && let Some(known) = Self::range_endpoint_name(known)
+        {
+            return Type::Generic {
+                base: Sym::new("Range"),
+                args: vec![Type::from_type_vec(vec![
+                    Self::parse_type_string(&known),
+                    (*deferred).clone(),
+                ])]
+                .into(),
+            };
+        }
+        Type::Class(Sym::new("Range"))
     }
 
     fn infer_hash_type(
@@ -36885,12 +37321,7 @@ impl<'a> InferenceEngine<'a> {
             params: params.into(),
         };
         self.proc_literals.insert(id, Arc::new(signature));
-        Type::Proc {
-            return_type: Box::new(return_type),
-            param_count,
-            exact_params,
-            literal: Some(id),
-        }
+        Type::proc_untyped_params(return_type, param_count, exact_params, Some(id))
     }
 
     fn captured_local_writes(
@@ -37062,12 +37493,7 @@ impl<'a> InferenceEngine<'a> {
                         }
                         ParamKind::Block => block_scope.set(
                             &info.name,
-                            Type::Proc {
-                                return_type: Box::new(Type::BlockReturnRef),
-                                param_count: 0,
-                                exact_params: false,
-                                literal: None,
-                            },
+                            Type::proc_untyped_params(Type::BlockReturnRef, 0, false, None),
                         ),
                         _ => {}
                     }
@@ -37694,14 +38120,15 @@ impl<'a> InferenceEngine<'a> {
             return Some(self.resolve_symbol_proc_return_type(previous_type, &sym_name));
         }
 
-        if let Type::Proc {
-            return_type,
-            param_count,
-            ..
-        } = self.infer_node_type(class_name, &expr, parse_result, scope)
+        if let Type::Proc(proc_type) = self.infer_node_type(class_name, &expr, parse_result, scope)
         {
-            let resolved = if param_count == 0 {
-                *return_type
+            let ProcType {
+                params,
+                return_type,
+                ..
+            } = *proc_type;
+            let resolved = if params.is_empty() {
+                return_type
             } else {
                 Self::substitute_param_refs(&return_type, std::slice::from_ref(previous_type))
             };
@@ -44455,14 +44882,19 @@ impl<'a> InferenceEngine<'a> {
         }
 
         if Self::is_reduce_like(method_name)
-            && init_type.is_some()
-            && Self::is_concrete(&block_return_type)
+            && let Some(init) = &init_type
         {
-            let result = Self::finalize_each_with_object_result(
-                mutable_init_type.clone(),
-                init_type.clone(),
-                block_return_type,
-            );
+            // The block result becomes the accumulator, so one that is not known yet keeps
+            // the result open instead of narrowing it to the initial value.
+            let result = if Self::is_concrete(&block_return_type) {
+                Self::finalize_each_with_object_result(
+                    mutable_init_type.clone(),
+                    init_type.clone(),
+                    block_return_type,
+                )
+            } else {
+                Type::from_type_vec_preserve_untyped(vec![init.clone(), block_return_type])
+            };
             return Some(Self::include_optional_control_type(
                 result,
                 &block_break_type,
@@ -46391,11 +46823,11 @@ impl<'a> InferenceEngine<'a> {
         else {
             return method_return;
         };
-        let Type::Proc { return_type, .. } = init_type else {
+        let Type::Proc(proc_type) = init_type else {
             return method_return;
         };
 
-        let ifnone_return = *return_type;
+        let ifnone_return = proc_type.return_type;
         match Self::without_nil(&method_return) {
             Some(found_type) => found_type.union_with(ifnone_return),
             None => ifnone_return,
@@ -47923,12 +48355,11 @@ impl<'a> InferenceEngine<'a> {
             rbs_ir::RbsType::Proc(method_type) => {
                 let effective_return = Self::rbs_proc_effective_return_type(method_type);
                 let return_type = Self::substitute_rbs_type_vars(&effective_return, vars);
-                Type::Proc {
-                    return_type: Box::new(return_type),
-                    param_count: Self::rbs_function_type_param_count(&method_type.function_type),
-                    exact_params: false,
-                    literal: None,
-                }
+                crate::rbs::convert::rbs_proc_type(
+                    &method_type.function_type,
+                    return_type,
+                    |param| Self::substitute_rbs_type_vars(param, vars),
+                )
             }
             _ => convert_rbs_type(rbs_ty),
         }
@@ -48030,12 +48461,11 @@ impl<'a> InferenceEngine<'a> {
                 let effective_return = Self::rbs_proc_effective_return_type(method_type);
                 let return_type =
                     Self::substitute_rbs_return_type_vars(&effective_return, vars, receiver_type);
-                Type::Proc {
-                    return_type: Box::new(return_type),
-                    param_count: Self::rbs_function_type_param_count(&method_type.function_type),
-                    exact_params: false,
-                    literal: None,
-                }
+                crate::rbs::convert::rbs_proc_type(
+                    &method_type.function_type,
+                    return_type,
+                    |param| Self::substitute_rbs_type_vars(param, vars),
+                )
             }
             _ => Self::substitute_rbs_type_vars(rbs_ty, vars),
         }
@@ -48422,9 +48852,9 @@ impl<'a> InferenceEngine<'a> {
                 self.resolve_type_variable(inner, &non_nil, vars);
             }
             rbs_ir::RbsType::Proc(method_type) => {
-                if let Type::Proc { return_type, .. } = actual_type {
+                if let Type::Proc(proc_type) = actual_type {
                     let expected_return = Self::rbs_proc_effective_return_type(method_type);
-                    self.resolve_type_variable(&expected_return, return_type, vars);
+                    self.resolve_type_variable(&expected_return, &proc_type.return_type, vars);
                 }
             }
             _ => {}
@@ -49120,17 +49550,13 @@ impl<'a> InferenceEngine<'a> {
         actual_type: &Type,
         cache: &mut RbsRelationCache,
     ) -> bool {
-        let Type::Proc {
-            return_type,
-            param_count,
-            ..
-        } = actual_type
-        else {
+        let Type::Proc(proc_type) = actual_type else {
             return false;
         };
+        let return_type = &proc_type.return_type;
 
         let ft = &method_type.function_type;
-        if !Self::rbs_function_type_accepts_positional_arg_count(ft, *param_count) {
+        if !Self::rbs_function_type_accepts_positional_arg_count(ft, proc_type.param_count()) {
             return false;
         }
         matches!(
@@ -49518,6 +49944,60 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// An optional receiver picks the overload for the arguments on its value. A `nil` arm
+    /// without the method raises, so it adds nothing to the result.
+    fn resolve_overloaded_call_per_arm(
+        &mut self,
+        call_node: &ruby_prism::CallNode<'_>,
+        parts: &[Type],
+        method_name: &str,
+        class_name: &str,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> Option<Type> {
+        // Decide the arms first, so a call this rule leaves to the others changes nothing.
+        if parts
+            .iter()
+            .any(|part| matches!(part, Type::Union(_)) || Self::is_unresolved_receiver(part))
+        {
+            return None;
+        }
+        let mut arms = Vec::new();
+        for part in parts {
+            if *part == Type::Nil {
+                match self.type_responds_to_method(&Type::Nil, method_name) {
+                    Some(false) => continue,
+                    Some(true) => {}
+                    None => return None,
+                }
+            }
+            self.type_to_class_name(part)?;
+            arms.push(part);
+        }
+        // An optional receiver (`T | nil`) is the call this rule serves. Splitting a union of
+        // several values would answer per value where the general rules answer once.
+        if arms.len() != 1 {
+            return None;
+        }
+        let mut results = Vec::new();
+        for part in arms {
+            let result = self.resolve_overloaded_call(
+                call_node,
+                part,
+                method_name,
+                class_name,
+                parse_result,
+                scope,
+            )?;
+            // An arm that cannot tell leaves the whole call to the general rules.
+            if result == Type::Untyped {
+                return None;
+            }
+            results.push(result);
+        }
+        (!results.is_empty()).then(|| Type::from_type_vec(results))
+    }
+
     fn resolve_overloaded_call(
         &mut self,
         call_node: &ruby_prism::CallNode<'_>,
@@ -49527,6 +50007,18 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> Option<Type> {
+        if let Type::Union(parts) = receiver_type
+            && let Some(result) = self.resolve_overloaded_call_per_arm(
+                call_node,
+                parts,
+                method_name,
+                class_name,
+                parse_result,
+                scope,
+            )
+        {
+            return Some(result);
+        }
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
 
@@ -49609,6 +50101,16 @@ impl<'a> InferenceEngine<'a> {
                 &local_vars,
                 receiver_type,
             );
+            let ret = if ret != Type::Untyped
+                && mt
+                    .annotations
+                    .iter()
+                    .any(|annotation| annotation.as_ref() == "implicitly-returns-nil")
+            {
+                ret.union_with(Type::Nil)
+            } else {
+                ret
+            };
             if ret != Type::Untyped && Self::is_concrete(&ret) {
                 // A plugin's overload order is its declared answer for an unknown argument.
                 let is_singleton = matches!(receiver_type, Type::Singleton(_));
@@ -51482,16 +51984,6 @@ impl<'a> InferenceEngine<'a> {
             .count()
     }
 
-    fn rbs_function_type_param_count(ft: &rbs_ir::FunctionType) -> usize {
-        ft.required_positionals.len()
-            + ft.optional_positionals.len()
-            + usize::from(ft.rest_positionals.is_some())
-            + ft.trailing_positionals.len()
-            + ft.required_keywords.len()
-            + ft.optional_keywords.len()
-            + usize::from(ft.rest_keywords.is_some())
-    }
-
     fn rbs_method_type_positional_param_count(method_type: &rbs_ir::MethodType) -> usize {
         method_type.function_type.required_positionals.len()
             + method_type.function_type.optional_positionals.len()
@@ -51557,6 +52049,16 @@ impl<'a> InferenceEngine<'a> {
 
     fn resolve_method_object_proc(
         &mut self,
+        class_name: &str,
+        receiver_type: &Type,
+        target_method: &str,
+    ) -> Option<Type> {
+        self.resolve_method_object_signature(class_name, receiver_type, target_method)
+            .map(|ty| ty.with_callable_kind(CallableKind::Method))
+    }
+
+    fn resolve_method_object_signature(
+        &mut self,
         _class_name: &str,
         receiver_type: &Type,
         target_method: &str,
@@ -51579,12 +52081,12 @@ impl<'a> InferenceEngine<'a> {
             })
         {
             let return_type = self.resolve_self_type(&return_type, receiver_type);
-            return Some(Type::Proc {
-                return_type: Box::new(return_type),
+            return Some(Type::proc_untyped_params(
+                return_type,
                 param_count,
-                exact_params: false,
-                literal: None,
-            });
+                false,
+                None,
+            ));
         }
 
         let receiver_type_args = Self::extract_type_args(receiver_type);
@@ -51622,24 +52124,21 @@ impl<'a> InferenceEngine<'a> {
                 receiver_type,
             );
             if Self::is_concrete(&return_type) && return_type != Type::Untyped {
-                return Some(Type::Proc {
-                    return_type: Box::new(return_type),
-                    param_count: Self::rbs_method_type_positional_param_count(method_type),
-                    exact_params: false,
-                    literal: None,
-                });
+                return Some(Type::proc_untyped_params(
+                    return_type,
+                    Self::rbs_method_type_positional_param_count(method_type),
+                    false,
+                    None,
+                ));
             }
         }
 
-        Some(Type::Proc {
-            return_type: Box::new(Type::ReceiverMethodRef(
-                Box::new(receiver_type.clone()),
-                Sym::new(target_method),
-            )),
-            param_count: 1,
-            exact_params: false,
-            literal: None,
-        })
+        Some(Type::proc_untyped_params(
+            Type::ReceiverMethodRef(Box::new(receiver_type.clone()), Sym::new(target_method)),
+            1,
+            false,
+            None,
+        ))
     }
 
     fn unbound_method_return_type(ty: &Type) -> Type {
@@ -51698,17 +52197,11 @@ impl<'a> InferenceEngine<'a> {
                 Box::new(Self::unbound_method_return_type(subject)),
                 keys.clone(),
             ),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(Self::unbound_method_return_type(return_type)),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => {
+                Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                    Self::unbound_method_return_type(return_type)
+                })))
+            }
             _ => ty.clone(),
         }
     }
@@ -51794,25 +52287,23 @@ impl<'a> InferenceEngine<'a> {
                 )),
                 keys.clone(),
             ),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(Self::bind_first_positional_param_ref(
-                    return_type,
-                    bound_receiver,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                Self::bind_first_positional_param_ref(return_type, bound_receiver)
+            }))),
             _ => ty.clone(),
         }
     }
 
     fn resolve_unbound_method_object_proc_for_owner(
+        &mut self,
+        owner_class: &str,
+        target_method: &str,
+    ) -> Option<Type> {
+        self.resolve_unbound_method_object_signature(owner_class, target_method)
+            .map(|ty| ty.with_callable_kind(CallableKind::UnboundMethod))
+    }
+
+    fn resolve_unbound_method_object_signature(
         &mut self,
         owner_class: &str,
         target_method: &str,
@@ -51830,12 +52321,12 @@ impl<'a> InferenceEngine<'a> {
                 })
             })
         {
-            return Some(Type::Proc {
-                return_type: Box::new(Self::unbound_method_return_type(&return_type)),
-                param_count: param_count.saturating_add(1),
-                exact_params: false,
-                literal: None,
-            });
+            return Some(Type::proc_untyped_params(
+                Self::unbound_method_return_type(&return_type),
+                param_count.saturating_add(1),
+                false,
+                None,
+            ));
         }
 
         let receiver_type_args = Self::extract_type_args(&instance_receiver);
@@ -51864,25 +52355,21 @@ impl<'a> InferenceEngine<'a> {
             );
             let return_type = Self::unbound_method_return_type(&return_type);
             if return_type != Type::Untyped {
-                return Some(Type::Proc {
-                    return_type: Box::new(return_type),
-                    param_count: Self::rbs_method_type_positional_param_count(method_type)
-                        .saturating_add(1),
-                    exact_params: false,
-                    literal: None,
-                });
+                return Some(Type::proc_untyped_params(
+                    return_type,
+                    Self::rbs_method_type_positional_param_count(method_type).saturating_add(1),
+                    false,
+                    None,
+                ));
             }
         }
 
-        Some(Type::Proc {
-            return_type: Box::new(Type::ReceiverMethodRef(
-                Box::new(instance_receiver),
-                Sym::new(target_method),
-            )),
-            param_count: 1,
-            exact_params: false,
-            literal: None,
-        })
+        Some(Type::proc_untyped_params(
+            Type::ReceiverMethodRef(Box::new(instance_receiver), Sym::new(target_method)),
+            1,
+            false,
+            None,
+        ))
     }
 
     fn lookup_instance_method_def_for_unbound_owner(
@@ -52004,15 +52491,10 @@ impl<'a> InferenceEngine<'a> {
             let lvar = expr.as_local_variable_read_node()?;
             let var_name = String::from_utf8_lossy(lvar.name().as_slice()).to_string();
             let var_type = scope.get(&var_name)?.clone();
-            if let Type::Proc {
-                ref return_type,
-                param_count,
-                ..
-            } = var_type
-            {
+            if let Type::Proc(proc_type) = &var_type {
                 let resolved = self.proc_block_argument_return_type(
-                    return_type,
-                    param_count,
+                    &proc_type.return_type,
+                    proc_type.param_count(),
                     receiver_type,
                     method_name,
                 );
@@ -52029,15 +52511,12 @@ impl<'a> InferenceEngine<'a> {
         }
 
         if let Node::CallNode { .. } = &expr {
-            if let Type::Proc {
-                return_type,
-                param_count,
-                ..
-            } = self.infer_node_type(class_name, &expr, parse_result, scope)
+            if let Type::Proc(proc_type) =
+                self.infer_node_type(class_name, &expr, parse_result, scope)
             {
                 let resolved = self.proc_block_argument_return_type(
-                    &return_type,
-                    param_count,
+                    &proc_type.return_type,
+                    proc_type.param_count(),
                     receiver_type,
                     method_name,
                 );
@@ -56403,6 +56882,45 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// A block on a parameter's element iterator sees one element of the argument. The
+    /// caller's argument decides it, so a yield of that element names it by reference.
+    fn deferred_receiver_element_block_param_types(
+        receiver_type: &Type,
+        method_name: &str,
+        param_count: usize,
+    ) -> Option<Vec<Type>> {
+        let first_param_only = matches!(method_name, "each_with_index" | "each_with_object");
+        let single_param = matches!(
+            method_name,
+            "each"
+                | "map"
+                | "collect"
+                | "flat_map"
+                | "select"
+                | "filter"
+                | "reject"
+                | "filter_map"
+                | "find"
+                | "detect"
+                | "any?"
+                | "all?"
+                | "none?"
+        );
+        if !Self::is_deferred_ref_receiver(receiver_type)
+            || param_count == 0
+            || !(single_param && param_count == 1 || first_param_only)
+        {
+            return None;
+        }
+        let element = Type::PatternIndexRef(
+            Box::new(Type::PatternRestRef(Box::new(receiver_type.clone()))),
+            0,
+        );
+        let mut types = vec![Type::Untyped; param_count];
+        types[0] = element;
+        Some(types)
+    }
+
     fn is_deferred_ref_receiver(ty: &Type) -> bool {
         matches!(ty, Type::ParamRef(_) | Type::KeywordParamRef(_))
     }
@@ -57240,7 +57758,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .all(|field| Self::receiver_resolution_is_identity(&field.value)),
-            Type::Proc { return_type, .. } => Self::receiver_resolution_is_identity(return_type),
+            Type::Proc(proc_type) => Self::receiver_resolution_is_identity(&proc_type.return_type),
             _ => true,
         }
     }
@@ -57515,23 +58033,15 @@ impl<'a> InferenceEngine<'a> {
                     .collect();
                 Type::Tuple(resolved)
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_receiver_method_refs_depth(
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_receiver_method_refs_depth(
                     return_type,
                     depth + 1,
                     memo,
                     visiting,
                     preserve_untyped,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+                )
+            }))),
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_receiver_method_refs_depth(
                     subject,
@@ -57796,22 +58306,14 @@ impl<'a> InferenceEngine<'a> {
                     .collect();
                 Type::Tuple(resolved)
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_receiver_method_refs_for_destructuring_depth(
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_receiver_method_refs_for_destructuring_depth(
                     return_type,
                     depth + 1,
                     memo,
                     visiting,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+                )
+            }))),
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_receiver_method_refs_for_destructuring_depth(
                     subject,
@@ -57901,7 +58403,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Hash(None, Some(v)) => Self::is_concrete(v),
             Type::Record(fields) => fields.iter().all(|field| Self::is_concrete(&field.value)),
             Type::Tuple(elems) => elems.iter().all(Self::is_concrete),
-            Type::Proc { return_type, .. } => Self::is_concrete(return_type),
+            Type::Proc(proc_type) => Self::is_concrete(&proc_type.return_type),
             _ => true,
         }
     }
@@ -57931,7 +58433,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_contains_untyped(&field.value)),
-            Type::Proc { return_type, .. } => Self::type_contains_untyped(return_type),
+            Type::Proc(proc_type) => Self::type_contains_untyped(&proc_type.return_type),
             _ => false,
         }
     }
@@ -58000,8 +58502,8 @@ impl<'a> InferenceEngine<'a> {
             Type::Tuple(elems) => elems
                 .iter()
                 .any(Self::type_contains_receiver_resolution_ref),
-            Type::Proc { return_type, .. } => {
-                Self::type_contains_receiver_resolution_ref(return_type)
+            Type::Proc(proc_type) => {
+                Self::type_contains_receiver_resolution_ref(&proc_type.return_type)
             }
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
@@ -59657,6 +60159,25 @@ impl<'a> InferenceEngine<'a> {
                         self.narrowing_with_default_negation(class_name, scope, subject, truthy),
                     );
                 };
+
+                // The condition walk already observed the read; this query sees it again.
+                let observations = self.suspend_source_observations();
+                let hash_key_subject = self
+                    .truthy_hash_key_subject(class_name, &call, parse_result, scope)
+                    .map(|subject| {
+                        (
+                            subject,
+                            self.infer_node_type(class_name, predicate, parse_result, scope),
+                        )
+                    });
+                self.resume_source_observations(observations);
+                if let Some(((receiver_name, key), current)) = hash_key_subject {
+                    return Some(CondNarrowing {
+                        subject: NarrowSubject::HashKey(receiver_name, key),
+                        then_ty: Self::truthy_only(&current),
+                        else_ty: None,
+                    });
+                }
 
                 if let Some(key) = const_index_fact_key(predicate) {
                     let current = self.infer_node_type(class_name, predicate, parse_result, scope);
@@ -63759,6 +64280,7 @@ impl<'a> InferenceEngine<'a> {
                 })
             }),
             NarrowSubject::ConstIndex(key) => scope.self_facts.get(key).cloned(),
+            NarrowSubject::HashKey(..) => None,
         }
     }
 
@@ -64600,6 +65122,16 @@ impl<'a> InferenceEngine<'a> {
             std::mem::take(&mut self.deferred_method_bodies)
                 .into_iter()
                 .filter_map(|body| {
+                    // Replay only when such a method turned out to return its block's value.
+                    let block_forward_resolved = body.late_block_forwards.iter().any(
+                        |(owner, method_name, is_singleton)| {
+                            self.registry
+                                .lookup_method_def(owner, method_name, *is_singleton)
+                                .is_some_and(|method| {
+                                    Self::type_contains_block_return_ref(&method.raw_return_type)
+                                })
+                        },
+                    );
                     let receiver_dependency_resolved = body.has_super_call
                         || body
                             .unresolved_block_receivers
@@ -64615,10 +65147,13 @@ impl<'a> InferenceEngine<'a> {
                                 })
                             });
                     if include_existing_defer_reasons {
-                        if !body.has_existing_defer_reason && !receiver_dependency_resolved {
+                        if !body.has_existing_defer_reason
+                            && !receiver_dependency_resolved
+                            && !block_forward_resolved
+                        {
                             return None;
                         }
-                    } else if !receiver_dependency_resolved {
+                    } else if !receiver_dependency_resolved && !block_forward_resolved {
                         return None;
                     }
                     Some((
@@ -64628,7 +65163,8 @@ impl<'a> InferenceEngine<'a> {
                             receiver_dependency_resolved,
                             case_dispatch_needs_replay: include_existing_defer_reasons
                                 && body.has_case_class_dispatch,
-                            source_return_dependency_resolved: false,
+                            source_return_dependency_resolved: block_forward_resolved,
+                            block_forward_resolved,
                         },
                     ))
                 })
@@ -65244,6 +65780,46 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// Puts back the ivar values a method's first walk changed in place.
+    fn undo_first_walk_ivar_mutations(&mut self, class_name: &str, method_name: &str) {
+        let Some(mutations) = self
+            .ivar_mutations_by_method
+            .get(&(class_name.to_string(), method_name.to_string()))
+            .cloned()
+        else {
+            return;
+        };
+        for (name, before, after) in mutations.into_iter().rev() {
+            let Some(current) = self.registry.lookup_ivar_type(class_name, &name) else {
+                continue;
+            };
+            let Some(before) = before else {
+                continue;
+            };
+            if current == after {
+                self.registry.replace_ivar_type(class_name, &name, before);
+                continue;
+            }
+            // Another method appended too; take out only the elements this one appended.
+            if let (Type::Tuple(before), Type::Tuple(after), Type::Tuple(current)) =
+                (&before, &after, &current)
+                && after.starts_with(before)
+            {
+                let mut rest = current.clone();
+                let removed_all = after[before.len()..].iter().all(|appended| {
+                    rest.iter()
+                        .rposition(|element| element == appended)
+                        .map(|position| rest.remove(position))
+                        .is_some()
+                });
+                if removed_all {
+                    self.registry
+                        .replace_ivar_type(class_name, &name, Type::Tuple(rest));
+                }
+            }
+        }
+    }
+
     fn reinfer_method_body<'b>(
         &mut self,
         class_name: &str,
@@ -65421,7 +65997,14 @@ impl<'a> InferenceEngine<'a> {
         let has_suppressed_call_sites = self
             .suppressed_body_call_sites
             .contains_key(&def_node.location().start_offset());
+        // A block parameter alone binds nothing from callers.
+        let binds_caller_params = !replay.block_forward_resolved
+            || method_info
+                .param_infos
+                .iter()
+                .any(|param| param.kind != ParamKind::Block);
         if !method_info.param_infos.is_empty()
+            && binds_caller_params
             && !has_concrete
             && !has_keyword_sites
             && !receiver_replay_can_use_defaults
@@ -65654,12 +66237,7 @@ impl<'a> InferenceEngine<'a> {
                     if !pi.name.is_empty() {
                         scope.set(
                             &pi.name,
-                            Type::Proc {
-                                return_type: Box::new(Type::BlockReturnRef),
-                                param_count: 0,
-                                exact_params: false,
-                                literal: None,
-                            },
+                            Type::proc_untyped_params(Type::BlockReturnRef, 0, false, None),
                         );
                         scope.current_block_param_name = Some(pi.name.clone());
                     }
@@ -65687,9 +66265,12 @@ impl<'a> InferenceEngine<'a> {
         } else {
             Vec::new()
         };
+        self.undo_first_walk_ivar_mutations(class_name, &method_name);
 
+        let saved_replaying = std::mem::replace(&mut self.replaying_method_body, true);
         let implicit_return =
             self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
+        self.replaying_method_body = saved_replaying;
         self.refresh_unresolved_yield_param_types(
             class_name,
             &method_name,
@@ -65748,6 +66329,21 @@ impl<'a> InferenceEngine<'a> {
             return;
         }
 
+        // Without positional parameters, the replayed return is still the body's own form.
+        let has_positional_params = method_info.param_infos.iter().any(|param| {
+            matches!(
+                param.kind,
+                ParamKind::Required | ParamKind::Optional | ParamKind::Rest
+            )
+        });
+        if !has_positional_params && Self::type_contains_block_return_ref(&new_return_type) {
+            self.registry.refresh_param_flows_return(
+                class_name,
+                &method_name,
+                is_singleton,
+                &new_return_type,
+            );
+        }
         self.registry.update_method_return_type_variant(
             class_name,
             &method_name,
@@ -66128,11 +66724,10 @@ mod tests {
             let mut scope = Scope::default();
             for node in program.statements().body().iter() {
                 let ty = engine.infer_node_type("Object", &node, &parse_result, &scope);
-                if let Type::Proc {
-                    literal: Some(id), ..
-                } = &ty
+                if let Type::Proc(proc_type) = &ty
+                    && let Some(id) = proc_type.literal
                 {
-                    ids.push(*id);
+                    ids.push(id);
                 }
                 engine.process_statement("Object", &node, &parse_result, &mut scope);
             }
@@ -66141,13 +66736,12 @@ mod tests {
         assert!(!ids.is_empty());
         let mut other = InferenceEngine::new();
         let first = program.statements().body().iter().next().expect("first");
-        let Type::Proc {
-            literal: Some(other_id),
-            ..
-        } = other.infer_node_type("Object", &first, &parse_result, &Scope::default())
+        let Type::Proc(proc_type) =
+            other.infer_node_type("Object", &first, &parse_result, &Scope::default())
         else {
             panic!("expected a proc literal");
         };
+        let other_id = proc_type.literal.expect("expected a proc literal");
         assert!(
             !ids.contains(&other_id),
             "ids from another analysis must not match"

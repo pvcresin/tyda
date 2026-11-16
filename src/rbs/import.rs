@@ -1932,8 +1932,9 @@ fn convert_pending_rbs_type(
                 })
                 .collect(),
         ),
-        rbs_ir::RbsType::Proc(method_type) => Type::Proc {
-            return_type: Box::new(proc_return_type_with_self(
+        rbs_ir::RbsType::Proc(method_type) => crate::rbs::convert::rbs_proc_type(
+            &method_type.function_type,
+            proc_return_type_with_self(
                 convert_pending_rbs_type(
                     &method_type.function_type.return_type,
                     raw_aliases,
@@ -1954,11 +1955,19 @@ fn convert_pending_rbs_type(
                         type_bindings,
                     )
                 }),
-            )),
-            param_count: rbs_function_type_param_count(&method_type.function_type),
-            exact_params: false,
-            literal: None,
-        },
+            ),
+            |param| {
+                convert_pending_rbs_type(
+                    param,
+                    raw_aliases,
+                    resolved_aliases,
+                    visiting,
+                    existing_aliases,
+                    current_scope,
+                    type_bindings,
+                )
+            },
+        ),
     }
 }
 
@@ -2297,8 +2306,9 @@ fn convert_imported_rbs_type_inner(
                 })
                 .collect(),
         ),
-        rbs_ir::RbsType::Proc(method_type) => Type::Proc {
-            return_type: Box::new(proc_return_type_with_self(
+        rbs_ir::RbsType::Proc(method_type) => crate::rbs::convert::rbs_proc_type(
+            &method_type.function_type,
+            proc_return_type_with_self(
                 convert_imported_rbs_type_inner(
                     &method_type.function_type.return_type,
                     type_aliases,
@@ -2317,11 +2327,18 @@ fn convert_imported_rbs_type_inner(
                         visiting,
                     )
                 }),
-            )),
-            param_count: rbs_function_type_param_count(&method_type.function_type),
-            exact_params: false,
-            literal: None,
-        },
+            ),
+            |param| {
+                convert_imported_rbs_type_inner(
+                    param,
+                    type_aliases,
+                    alias_templates,
+                    current_scope,
+                    type_bindings,
+                    visiting,
+                )
+            },
+        ),
         rbs_ir::RbsType::Intersection(types) => Type::Intersection(
             types
                 .iter()
@@ -2339,16 +2356,6 @@ fn convert_imported_rbs_type_inner(
         ),
         _ => convert_rbs_type(rbs_ty),
     }
-}
-
-fn rbs_function_type_param_count(ft: &rbs_ir::FunctionType) -> usize {
-    ft.required_positionals.len()
-        + ft.optional_positionals.len()
-        + usize::from(ft.rest_positionals.is_some())
-        + ft.trailing_positionals.len()
-        + ft.required_keywords.len()
-        + ft.optional_keywords.len()
-        + usize::from(ft.rest_keywords.is_some())
 }
 
 fn resolve_alias_reference_name<F>(

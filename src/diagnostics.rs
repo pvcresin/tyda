@@ -571,7 +571,7 @@ pub fn has_todo_marker(ty: &Type) -> bool {
         Type::Hash(Some(key), None) => has_todo_marker(key),
         Type::Hash(None, Some(value)) => has_todo_marker(value),
         Type::Record(fields) => fields.iter().any(|field| has_todo_marker(&field.value)),
-        Type::Proc { return_type, .. } => has_todo_marker(return_type),
+        Type::Proc(proc_type) => has_todo_marker(&proc_type.return_type),
         _ => false,
     }
 }
@@ -607,17 +607,7 @@ fn user_facing_type(ty: &Type) -> Type {
                 })
                 .collect(),
         ),
-        Type::Proc {
-            return_type,
-            param_count,
-            exact_params,
-            literal,
-        } => Type::Proc {
-            return_type: Box::new(user_facing_type(return_type)),
-            param_count: *param_count,
-            exact_params: *exact_params,
-            literal: *literal,
-        },
+        Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(user_facing_type))),
         _ => ty.clone(),
     }
 }
@@ -767,7 +757,7 @@ fn reason_from_type(ty: &Type, annotated: bool) -> TypeHoleReason {
                 (reason != TypeHoleReason::Unknown).then_some(reason)
             })
             .unwrap_or(TypeHoleReason::DeferredType),
-        Type::Proc { return_type, .. } => reason_from_type(return_type, annotated),
+        Type::Proc(proc_type) => reason_from_type(&proc_type.return_type, annotated),
         _ => TypeHoleReason::DeferredType,
     }
 }
@@ -789,7 +779,7 @@ fn type_contains_hole(ty: &Type) -> bool {
         Type::Hash(Some(key), None) => type_contains_hole(key),
         Type::Hash(None, Some(value)) => type_contains_hole(value),
         Type::Record(fields) => fields.iter().any(|field| type_contains_hole(&field.value)),
-        Type::Proc { return_type, .. } => type_contains_hole(return_type),
+        Type::Proc(proc_type) => type_contains_hole(&proc_type.return_type),
         _ => false,
     }
 }

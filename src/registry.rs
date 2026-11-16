@@ -936,6 +936,8 @@ pub struct OverloadDef {
 pub enum ParamFlow {
     PassThrough,
     Constrained,
+    /// Read only as the receiver of `call`: a proc the method calls.
+    Called,
 }
 
 /// The parameter flows of a source method with its return as the body computes it, before
@@ -944,6 +946,8 @@ pub enum ParamFlow {
 pub struct ParamFlows {
     pub params: Box<[(usize, ParamFlow)]>,
     pub return_type: Type,
+    /// The argument types each `Called` parameter is called with.
+    pub proc_calls: Box<[(usize, Box<[Type]>)]>,
 }
 
 #[derive(Debug, Clone)]
@@ -2018,6 +2022,9 @@ pub struct ClassDataCold {
     pub user_rbs_generic_methods: Vec<(Sym, bool)>,
     /// RBS declarations embedded with `# @rbs!`, rendered as written.
     pub embedded_rbs: Vec<String>,
+    /// Names that this class's annotations write by their last segment (`Inner` for
+    /// `Outer::Inner`), so the rendered signature writes them the same way.
+    pub scoped_annotation_names: Vec<Sym>,
     /// How each source method's required positional parameters flow to its return.
     pub param_flows: Vec<((Sym, bool), ParamFlows)>,
     pub class_type_param_defaults: Vec<(String, Type)>,
@@ -2244,6 +2251,7 @@ impl ClassData {
         cold.class_type_param_modifiers.shrink_to_fit();
         cold.user_rbs_generic_methods.shrink_to_fit();
         cold.embedded_rbs.shrink_to_fit();
+        cold.scoped_annotation_names.shrink_to_fit();
         cold.param_flows.shrink_to_fit();
         cold.class_type_param_defaults.shrink_to_fit();
     }
@@ -2330,6 +2338,7 @@ impl ClassData {
         bytes += cold.class_type_param_defaults.len() * std::mem::size_of::<(String, Type)>();
         bytes += cold.user_rbs_generic_methods.len() * std::mem::size_of::<(Sym, bool)>();
         bytes += string_vec_bytes(&cold.embedded_rbs);
+        bytes += cold.scoped_annotation_names.len() * std::mem::size_of::<Sym>();
         bytes += cold
             .param_flows
             .iter()
@@ -3484,7 +3493,16 @@ impl TypeRegistry {
             ),
             None => argument_binding::bind_positional_arguments(&positional_infos, arg_types),
         };
-        for (slot, arg_types) in param_types.iter_mut().zip(bound) {
+        for ((slot, arg_types), info) in param_types.iter_mut().zip(bound).zip(&positional_infos) {
+            // An omitted optional argument takes its default value.
+            if arg_types.is_empty()
+                && open_splat.is_none()
+                && info.kind == ParamKind::Optional
+                && let Some(default_type) = &info.default_type
+                && !Self::type_contains_param_ref_static(default_type)
+            {
+                Type::append_argument_parts(slot, default_type.clone());
+            }
             for arg_type in arg_types {
                 Type::append_argument_parts(slot, arg_type);
             }
@@ -5582,6 +5600,55 @@ impl TypeRegistry {
         Type::merge_into_vec(types, ty);
     }
 
+    /// A call on a constant not seen yet leaves a `class_data` entry that holds only the call.
+    fn has_class_declaration(&self, name: &str) -> bool {
+        self.class_data.get(name).is_some_and(|data| {
+            data.user_defined
+                || data.loc.is_some()
+                || data.is_module
+                || data.superclass.is_some()
+                || !data.methods.is_empty()
+                || !data.constants.is_empty()
+        })
+    }
+
+    /// A method body that runs before a nested class is defined reads its name bare
+    /// (`Pulse`). Once the class body is done, a bare name that names no top-level class
+    /// means the nested one (`Outer::Pulse`), as at runtime.
+    pub(crate) fn qualify_late_nested_ivar_types(&mut self, class_name: &str) {
+        let Some(data) = self.class_data.get(class_name) else {
+            return;
+        };
+        let mut updates = Vec::new();
+        for (ivar, types) in &data.ivars {
+            let mut changed = false;
+            let qualified: Vec<Type> = types
+                .iter()
+                .map(|ty| {
+                    let next = Self::map_nominal_names(ty, &mut |name| {
+                        if name.contains("::") || self.has_class_declaration(name) {
+                            return None;
+                        }
+                        self.resolve_scoped_nominal_name(class_name, name)
+                    });
+                    changed |= next != *ty;
+                    next
+                })
+                .collect();
+            if changed {
+                updates.push((*ivar, qualified));
+            }
+        }
+        let data = self.class_data_mut(class_name);
+        for (ivar, qualified) in updates {
+            let mut merged = Vec::new();
+            for ty in qualified {
+                Type::merge_into_vec(&mut merged, ty);
+            }
+            data.ivars.insert(ivar, merged);
+        }
+    }
+
     pub fn replace_ivar_type(&mut self, class_name: &str, ivar_name: &str, ty: Type) {
         self.mark_class_has_method_body_facts(class_name);
         let data = self.class_data_mut(class_name);
@@ -7282,6 +7349,54 @@ impl TypeRegistry {
         None
     }
 
+    /// The type a method of `class_name` reads from `@ivar`: the receiver may be a subclass,
+    /// so the writes of subclass methods join the inherited value.
+    pub(crate) fn lookup_ivar_type_for_reader(
+        &self,
+        class_name: &str,
+        ivar_name: &str,
+    ) -> Option<Type> {
+        let inherited = self.lookup_ivar_type_through_ancestors(class_name, ivar_name);
+        self.join_subclass_ivar_writes(class_name, ivar_name, inherited)
+    }
+
+    pub(crate) fn join_subclass_ivar_writes(
+        &self,
+        class_name: &str,
+        ivar_name: &str,
+        inherited: Option<Type>,
+    ) -> Option<Type> {
+        let Some(index) = &self.tail().subclass_index else {
+            return inherited;
+        };
+        let mut parts: Vec<Type> = Vec::new();
+        let mut pending: Vec<&SharedName> = index
+            .get(class_name.trim_scope_prefix())
+            .map(|subclasses| subclasses.iter().collect())
+            .unwrap_or_default();
+        let mut visited = FxHashSet::default();
+        while let Some(candidate) = pending.pop() {
+            if !visited.insert(candidate.as_ref()) {
+                continue;
+            }
+            if let Some(ty) = self.lookup_ivar_type(candidate, ivar_name) {
+                parts.push(ty);
+            }
+            if let Some(subclasses) = index.get(candidate.as_ref()) {
+                pending.extend(subclasses);
+            }
+        }
+        // Only known values join; an unresolved subclass write keeps the inherited value.
+        parts.retain(Self::is_concrete_for_global_resolve);
+        match inherited {
+            Some(ty) if !parts.is_empty() && Self::is_concrete_for_global_resolve(&ty) => {
+                parts.insert(0, ty);
+                Some(Type::from_type_vec(parts))
+            }
+            other => other,
+        }
+    }
+
     /// untyped ivar: uses the call-site type of the same-named `initialize` param.
     pub(crate) fn infer_attr_type_from_initialize(
         &self,
@@ -7995,8 +8110,8 @@ impl TypeRegistry {
                     self.collect_deferred_receiver_classes(&field.value, classes);
                 }
             }
-            Type::Proc { return_type, .. } => {
-                self.collect_deferred_receiver_classes(return_type, classes);
+            Type::Proc(proc_type) => {
+                self.collect_deferred_receiver_classes(&proc_type.return_type, classes);
             }
             Type::DeferredSafeNavigation(receiver, result) => {
                 self.collect_deferred_receiver_classes(receiver, classes);
@@ -8218,7 +8333,7 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_contains_untyped_member(&field.value)),
-            Type::Proc { return_type, .. } => Self::type_contains_untyped_member(return_type),
+            Type::Proc(proc_type) => Self::type_contains_untyped_member(&proc_type.return_type),
             Type::DeferredSafeNavigation(receiver, result) => {
                 Self::type_contains_untyped_member(receiver)
                     || Self::type_contains_untyped_member(result)
@@ -8243,7 +8358,8 @@ impl TypeRegistry {
                 .iter()
                 .any(|field| Self::type_contains_param_ref_static(&field.value)),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref_static),
-            Type::Proc { return_type, .. } => Self::type_contains_param_ref_static(return_type),
+            Type::Generic { args, .. } => args.iter().any(Self::type_contains_param_ref_static),
+            Type::Proc(proc_type) => Self::type_contains_param_ref_static(&proc_type.return_type),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
@@ -8269,9 +8385,9 @@ impl TypeRegistry {
             return;
         }
         for p in pending {
-            let (resolved, any_resolved, any_unresolved) =
-                self.resolve_scoped_refs_in_type(&p.declaration_scope, &p.raw_type);
-            if any_resolved {
+            let (resolved, any_unresolved) =
+                self.resolve_scoped_annotation_type(&p.declaration_scope, &p.raw_type);
+            if resolved != p.raw_type {
                 self.update_method_return_type_variant(
                     &p.owner_class,
                     &p.method_name,
@@ -8286,164 +8402,88 @@ impl TypeRegistry {
         }
     }
 
-    fn resolve_scoped_refs_in_type(&self, scope_class: &str, ty: &Type) -> (Type, bool, bool) {
-        // recursive helper for `Option<Box<Type>>` slots.
-        fn resolve_opt(
-            this: &TypeRegistry,
-            scope: &str,
-            slot: &Option<Box<Type>>,
-            any_resolved: &mut bool,
-            any_unresolved: &mut bool,
-        ) -> Option<Box<Type>> {
-            slot.as_ref().map(|inner| {
-                let (ty, resolved, unresolved) = this.resolve_scoped_refs_in_type(scope, inner);
-                *any_resolved |= resolved;
-                *any_unresolved |= unresolved;
-                Box::new(ty)
-            })
+    /// The inverse of `resolve_scoped_annotation_type`: a name the annotations wrote short is
+    /// written `Name` again when lexical lookup from `scope_class` finds no other `Name` first.
+    pub(crate) fn relative_scoped_refs_in_type(&self, scope_class: &str, ty: &Type) -> Type {
+        let short_names = self.scoped_annotation_names(scope_class);
+        if short_names.is_empty() {
+            return ty.clone();
         }
-        fn resolve_vec(
-            this: &TypeRegistry,
-            scope: &str,
-            parts: &[Type],
-            any_resolved: &mut bool,
-            any_unresolved: &mut bool,
-        ) -> Vec<Type> {
+        Self::map_nominal_names(ty, &mut |name| {
+            if !short_names.iter().any(|short| short.as_str() == name) {
+                return None;
+            }
+            let (outer, tail) = name.rsplit_once("::")?;
+            let encloses = scope_class == outer
+                || scope_class
+                    .strip_prefix(outer)
+                    .is_some_and(|rest| rest.starts_with("::"));
+            if !encloses {
+                return None;
+            }
+            let found = self.resolve_scoped_class_ref_borrow(scope_class, tail);
+            (found == name || !self.class_data.contains_key(found)).then(|| tail.to_string())
+        })
+    }
+
+    pub(crate) fn scoped_annotation_names(&self, class_name: &str) -> &[Sym] {
+        self.class_data
+            .get(class_name)
+            .map_or(&[], |data| data.cold().scoped_annotation_names.as_slice())
+    }
+
+    /// Rewrites each nominal name (`Class` / `Singleton` / `Generic` base) that `rename` maps
+    /// to a new name. Other types carry no nominal reference and stay as they are.
+    fn map_nominal_names(ty: &Type, rename: &mut impl FnMut(&str) -> Option<String>) -> Type {
+        fn map_opt(
+            slot: &Option<Box<Type>>,
+            rename: &mut impl FnMut(&str) -> Option<String>,
+        ) -> Option<Box<Type>> {
+            slot.as_ref()
+                .map(|inner| Box::new(TypeRegistry::map_nominal_names(inner, rename)))
+        }
+        fn map_vec(parts: &[Type], rename: &mut impl FnMut(&str) -> Option<String>) -> Vec<Type> {
             parts
                 .iter()
-                .map(|part| {
-                    let (ty, resolved, unresolved) = this.resolve_scoped_refs_in_type(scope, part);
-                    *any_resolved |= resolved;
-                    *any_unresolved |= unresolved;
-                    ty
-                })
+                .map(|part| TypeRegistry::map_nominal_names(part, rename))
                 .collect()
         }
-
-        let mut any_resolved = false;
-        let mut any_unresolved = false;
-        let resolved_type = match ty {
-            Type::Class(name) => match self.resolve_scoped_nominal_name(scope_class, name.as_str())
-            {
-                Some(canonical) => {
-                    any_resolved = true;
-                    Type::Class(Sym::new(&canonical))
-                }
-                None => {
-                    any_unresolved = true;
-                    ty.clone()
-                }
-            },
-            Type::Singleton(name) => {
-                match self.resolve_scoped_nominal_name(scope_class, name.as_str()) {
-                    Some(canonical) => {
-                        any_resolved = true;
-                        Type::Singleton(Sym::new(&canonical))
-                    }
-                    None => {
-                        any_unresolved = true;
-                        ty.clone()
-                    }
-                }
+        match ty {
+            Type::Class(name) => {
+                rename(name.as_str()).map_or_else(|| ty.clone(), |n| Type::Class(Sym::new(&n)))
             }
-            Type::Array(inner) => Type::Array(resolve_opt(
-                self,
-                scope_class,
-                inner,
-                &mut any_resolved,
-                &mut any_unresolved,
-            )),
-            Type::Hash(key, value) => Type::Hash(
-                resolve_opt(
-                    self,
-                    scope_class,
-                    key,
-                    &mut any_resolved,
-                    &mut any_unresolved,
-                ),
-                resolve_opt(
-                    self,
-                    scope_class,
-                    value,
-                    &mut any_resolved,
-                    &mut any_unresolved,
-                ),
-            ),
-            Type::Union(parts) => Type::Union(resolve_vec(
-                self,
-                scope_class,
-                parts,
-                &mut any_resolved,
-                &mut any_unresolved,
-            )),
-            Type::Intersection(parts) => Type::Intersection(resolve_vec(
-                self,
-                scope_class,
-                parts,
-                &mut any_resolved,
-                &mut any_unresolved,
-            )),
-            Type::Tuple(elems) => Type::Tuple(resolve_vec(
-                self,
-                scope_class,
-                elems,
-                &mut any_resolved,
-                &mut any_unresolved,
-            )),
+            Type::Singleton(name) => {
+                rename(name.as_str()).map_or_else(|| ty.clone(), |n| Type::Singleton(Sym::new(&n)))
+            }
+            Type::Array(inner) => Type::Array(map_opt(inner, rename)),
+            Type::Hash(key, value) => {
+                let key = map_opt(key, rename);
+                Type::Hash(key, map_opt(value, rename))
+            }
+            Type::Union(parts) => Type::Union(map_vec(parts, rename)),
+            Type::Intersection(parts) => Type::Intersection(map_vec(parts, rename)),
+            Type::Tuple(elems) => Type::Tuple(map_vec(elems, rename)),
             Type::Generic { base, args } => {
-                let base = match self.resolve_scoped_nominal_name(scope_class, base.as_str()) {
-                    Some(canonical) => {
-                        any_resolved = true;
-                        Sym::new(&canonical)
-                    }
-                    None => {
-                        any_unresolved = true;
-                        *base
-                    }
-                };
+                let base = rename(base.as_str()).map_or(*base, |n| Sym::new(&n));
                 Type::Generic {
                     base,
-                    args: resolve_vec(
-                        self,
-                        scope_class,
-                        args,
-                        &mut any_resolved,
-                        &mut any_unresolved,
-                    )
-                    .into(),
+                    args: map_vec(args, rename).into(),
                 }
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => {
-                let (ret, resolved, unresolved) =
-                    self.resolve_scoped_refs_in_type(scope_class, return_type);
-                any_resolved |= resolved;
-                any_unresolved |= unresolved;
-                Type::Proc {
-                    return_type: Box::new(ret),
-                    param_count: *param_count,
-                    exact_params: *exact_params,
-                    literal: *literal,
-                }
+            Type::Proc(proc_type) => {
+                Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                    Self::map_nominal_names(return_type, rename)
+                })))
             }
             Type::DeferredSafeNavigation(receiver, result) => {
-                let (receiver, receiver_resolved, receiver_unresolved) =
-                    self.resolve_scoped_refs_in_type(scope_class, receiver);
-                let (result, result_resolved, result_unresolved) =
-                    self.resolve_scoped_refs_in_type(scope_class, result);
-                any_resolved |= receiver_resolved || result_resolved;
-                any_unresolved |= receiver_unresolved || result_unresolved;
-                Type::resolve_deferred_safe_navigation(receiver, result)
+                let receiver = Self::map_nominal_names(receiver, rename);
+                Type::resolve_deferred_safe_navigation(
+                    receiver,
+                    Self::map_nominal_names(result, rename),
+                )
             }
-            // everything else (builtin / literal / various refs) is treated as having no nominal
-            // reference and is returned as-is.
             _ => ty.clone(),
-        };
-        (resolved_type, any_resolved, any_unresolved)
+        }
     }
 
     /// resolve a raw nominal name in lexical scope and return the canonical key that actually
@@ -8472,7 +8512,7 @@ impl TypeRegistry {
             Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
                 parts.iter().any(Self::type_contains_scoped_nominal_ref)
             }
-            Type::Proc { return_type, .. } => Self::type_contains_scoped_nominal_ref(return_type),
+            Type::Proc(proc_type) => Self::type_contains_scoped_nominal_ref(&proc_type.return_type),
             Type::DeferredSafeNavigation(receiver, result) => {
                 Self::type_contains_scoped_nominal_ref(receiver)
                     || Self::type_contains_scoped_nominal_ref(result)
@@ -8543,8 +8583,8 @@ impl TypeRegistry {
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner)
             | Type::SplatRef(inner) => Self::type_contains_subclass_ref_candidate(inner),
-            Type::Proc { return_type, .. } => {
-                Self::type_contains_subclass_ref_candidate(return_type)
+            Type::Proc(proc_type) => {
+                Self::type_contains_subclass_ref_candidate(&proc_type.return_type)
             }
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_subclass_ref_candidate),
             Type::Hash(Some(key), Some(value)) => {
@@ -8665,17 +8705,11 @@ impl TypeRegistry {
                     .map(|t| self.resolve_subclass_refs_in_type(t))
                     .collect(),
             ),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_subclass_refs_in_type(return_type)),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => {
+                Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                    self.resolve_subclass_refs_in_type(return_type)
+                })))
+            }
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_subclass_refs_in_type(subject);
                 if Self::type_contains_subclass_ref_candidate(&resolved_subject) {
@@ -8984,7 +9018,7 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::global_type_contains_ref(&field.value)),
-            Type::Proc { return_type, .. } => Self::global_type_contains_ref(return_type),
+            Type::Proc(proc_type) => Self::global_type_contains_ref(&proc_type.return_type),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
@@ -9050,7 +9084,11 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .all(|field| Self::is_concrete_for_global_resolve(&field.value)),
-            Type::Proc { return_type, .. } => Self::is_concrete_for_global_resolve(return_type),
+            // A proc whose result is unknown is still a known `Proc` value.
+            Type::Proc(proc_type) => {
+                proc_type.return_type == Type::Untyped
+                    || Self::is_concrete_for_global_resolve(&proc_type.return_type)
+            }
             _ => false,
         }
     }
@@ -9070,7 +9108,7 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .all(|field| Self::is_resolved_attr_return_type(&field.value)),
-            Type::Proc { return_type, .. } => Self::is_resolved_attr_return_type(return_type),
+            Type::Proc(proc_type) => Self::is_resolved_attr_return_type(&proc_type.return_type),
             _ => Self::is_concrete_for_global_resolve(ty),
         }
     }
@@ -9161,8 +9199,7 @@ impl TypeRegistry {
                     ty.clone()
                 } else {
                     visiting.insert(key);
-                    let ivar_type =
-                        self.lookup_ivar_type_through_ancestors(context_class, ivar_name);
+                    let ivar_type = self.lookup_ivar_type_for_reader(context_class, ivar_name);
                     let result = match ivar_type {
                         Some(Type::Untyped)
                         | None
@@ -9220,7 +9257,11 @@ impl TypeRegistry {
                         );
                         visiting.remove(&(*class_name, *method_name));
                         if Self::is_concrete_for_global_resolve(&resolved) {
-                            resolved
+                            self.bind_instance_outside_ref_class(
+                                context_class,
+                                class_name,
+                                resolved,
+                            )
                         } else {
                             ty.clone()
                         }
@@ -9547,24 +9588,16 @@ impl TypeRegistry {
                     Type::Tuple(resolved)
                 }
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_global_refs(
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_global_refs(
                     context_class,
                     return_type,
                     visiting,
                     memo,
                     depth + 1,
                     budget,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+                )
+            }))),
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = self.resolve_global_refs(
                     context_class,
@@ -9804,6 +9837,13 @@ impl TypeRegistry {
                     .map(|t| self.resolve_param_refs_from_resolved(t, params))
                     .collect(),
             ),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args
+                    .iter()
+                    .map(|t| self.resolve_param_refs_from_resolved(t, params))
+                    .collect(),
+            },
             Type::Record(fields) => Type::Record(
                 fields
                     .iter()
@@ -9814,17 +9854,9 @@ impl TypeRegistry {
                     })
                     .collect(),
             ),
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_param_refs_from_resolved(return_type, params)),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_param_refs_from_resolved(return_type, params)
+            }))),
             Type::TruthyProjection(inner) | Type::FalsyProjection(inner) => {
                 let resolved_inner = self.resolve_param_refs_from_resolved(inner, params);
                 let projection = if matches!(ty, Type::TruthyProjection(_)) {
@@ -9898,8 +9930,8 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_needs_deferred_resolution_depth(&field.value, depth + 1)),
-            Type::Proc { return_type, .. } => {
-                Self::type_needs_deferred_resolution_depth(return_type, depth + 1)
+            Type::Proc(proc_type) => {
+                Self::type_needs_deferred_resolution_depth(&proc_type.return_type, depth + 1)
             }
             Type::Tuple(elems) => elems
                 .iter()
@@ -9996,7 +10028,7 @@ impl TypeRegistry {
             Type::Record(fields) => fields
                 .iter()
                 .all(|field| Self::type_is_memo_small(&field.value, budget)),
-            Type::Proc { return_type, .. } => Self::type_is_memo_small(return_type, budget),
+            Type::Proc(proc_type) => Self::type_is_memo_small(&proc_type.return_type, budget),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
@@ -10088,7 +10120,7 @@ impl TypeRegistry {
                 let ivar_type = if singleton_context {
                     self.lookup_singleton_ivar_type(class_name, ivar_name)
                 } else {
-                    self.lookup_ivar_type_through_ancestors(class_name, ivar_name)
+                    self.lookup_ivar_type_for_reader(class_name, ivar_name)
                 };
                 match ivar_type {
                     Some(Type::Untyped)
@@ -10151,7 +10183,8 @@ impl TypeRegistry {
                         };
                         let resolved = self.resolve_param_refs_from_resolved(&raw, &params);
                         if resolved != Type::Untyped {
-                            return resolved;
+                            return self
+                                .bind_instance_outside_ref_class(class_name, ref_class, resolved);
                         }
                         if let Some(ivar_ty) = self.resolve_attr_reader_return_type(
                             owner.as_ref(),
@@ -10464,24 +10497,16 @@ impl TypeRegistry {
                     .collect();
                 Type::Record(resolved)
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_deferred_refs_depth(
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_deferred_refs_depth(
                     class_name,
                     singleton_context,
                     return_type,
                     depth + 1,
                     memo,
                     visiting,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+                )
+            }))),
             Type::Tuple(elems) => Type::Tuple(
                 elems
                     .iter()
@@ -10504,6 +10529,26 @@ impl TypeRegistry {
     /// `x = C | x` has least solution `C`, so a cycle back to `self_ref` in return position adds
     /// nothing. A body made only of that cycle gives no evidence and stays `untyped`. Nested
     /// occurrences (`[x]`) are left for the caller to degrade.
+    /// `instance` in a self call's result names the receiver's class. Read from a class that
+    /// does not inherit the method (a value yielded to another class's block), that receiver is
+    /// `ref_class`, not the reading class.
+    pub(crate) fn bind_instance_outside_ref_class(
+        &self,
+        class_name: &str,
+        ref_class: &str,
+        ty: Type,
+    ) -> Type {
+        if class_name == ref_class
+            || !ty.contains_instance_type()
+            || self
+                .ordered_ancestor_names(class_name)
+                .is_some_and(|ancestors| ancestors.iter().any(|name| name.as_ref() == ref_class))
+        {
+            return ty;
+        }
+        ty.replace_instance_type(&Type::Class(Sym::new(ref_class)))
+    }
+
     fn without_return_position_self_ref(resolved: Type, self_ref: &Type) -> Type {
         // A truthiness projection of `x` (from `x || y`, `x&.m`) is still a back edge to `x`.
         let is_self = |part: &Type| match part {
@@ -10967,8 +11012,8 @@ impl TypeRegistry {
             | Type::SplatRef(subject) => {
                 Self::call_site_walk_is_identity(subject, resolve_method_return_refs)
             }
-            Type::Proc { return_type, .. } => {
-                Self::call_site_walk_is_identity(return_type, resolve_method_return_refs)
+            Type::Proc(proc_type) => {
+                Self::call_site_walk_is_identity(&proc_type.return_type, resolve_method_return_refs)
             }
             _ => true,
         }
@@ -11007,8 +11052,8 @@ impl TypeRegistry {
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner)
             | Type::SplatRef(inner) => Self::type_contains_receiver_method_ref(inner, method_name),
-            Type::Proc { return_type, .. } => {
-                Self::type_contains_receiver_method_ref(return_type, method_name)
+            Type::Proc(proc_type) => {
+                Self::type_contains_receiver_method_ref(&proc_type.return_type, method_name)
             }
             Type::Generic { args, .. } => args
                 .iter()
@@ -11246,21 +11291,9 @@ impl TypeRegistry {
                 );
                 Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(self.resolve_call_site_type_from_caller_context(
-                    call_site,
-                    return_type,
-                    visiting,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                self.resolve_call_site_type_from_caller_context(call_site, return_type, visiting)
+            }))),
             Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
             | Type::NonNilProjection(inner) => {
@@ -12097,6 +12130,7 @@ impl TypeRegistry {
         is_singleton: bool,
         flows: Vec<(usize, ParamFlow)>,
         return_type: &Type,
+        proc_calls: Vec<(usize, Box<[Type]>)>,
     ) {
         let key = (Sym::new(method_name), is_singleton);
         let existing = self
@@ -12116,9 +12150,32 @@ impl TypeRegistry {
                 ParamFlows {
                     params: flows.into_boxed_slice(),
                     return_type: return_type.clone(),
+                    proc_calls: proc_calls.into_boxed_slice(),
                 },
             ));
         }
+    }
+
+    /// Replaces the body's return of a method without positional parameters after a replay.
+    pub fn refresh_param_flows_return(
+        &mut self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        return_type: &Type,
+    ) {
+        let (flows, proc_calls) = self
+            .param_flows(class_name, method_name, is_singleton)
+            .map(|flows| (flows.params.to_vec(), flows.proc_calls.to_vec()))
+            .unwrap_or_default();
+        self.set_param_flows(
+            class_name,
+            method_name,
+            is_singleton,
+            flows,
+            return_type,
+            proc_calls,
+        );
     }
 
     pub fn param_flows(
@@ -12138,6 +12195,40 @@ impl TypeRegistry {
                     })
             })
             .map(|(_, flows)| flows)
+    }
+
+    /// Resolves an annotation type in the class scope and remembers which names it wrote
+    /// short. Also returns whether a name is not known yet.
+    pub(crate) fn resolve_scoped_annotation_type(
+        &mut self,
+        class_name: &str,
+        ty: &Type,
+    ) -> (Type, bool) {
+        let mut short_names = Vec::new();
+        let mut any_unresolved = false;
+        let resolved = Self::map_nominal_names(ty, &mut |name| match self
+            .resolve_scoped_nominal_name(class_name, name)
+        {
+            Some(canonical) => {
+                if canonical != name.trim_scope_prefix() && !name.starts_with("::") {
+                    short_names.push(Sym::new(&canonical));
+                }
+                Some(canonical)
+            }
+            None => {
+                any_unresolved = true;
+                None
+            }
+        });
+        if !short_names.is_empty() {
+            let cold = self.class_data_mut(class_name).cold_mut();
+            for name in short_names {
+                if !cold.scoped_annotation_names.contains(&name) {
+                    cold.scoped_annotation_names.push(name);
+                }
+            }
+        }
+        (resolved, any_unresolved)
     }
 
     pub fn add_embedded_rbs(&mut self, class_name: &str, text: String) {
@@ -13132,6 +13223,7 @@ impl TypeRegistry {
             Type::Hash(Some(key), None) => Self::type_contains_param_ref(key),
             Type::Hash(None, Some(value)) => Self::type_contains_param_ref(value),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref),
+            Type::Generic { args, .. } => args.iter().any(Self::type_contains_param_ref),
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_contains_param_ref(&field.value)),
@@ -13152,7 +13244,7 @@ impl TypeRegistry {
                 Self::type_contains_param_ref(inner)
             }
             Type::NonNilProjection(inner) => Self::type_contains_param_ref(inner),
-            Type::Proc { return_type, .. } => Self::type_contains_param_ref(return_type),
+            Type::Proc(proc_type) => Self::type_contains_param_ref(&proc_type.return_type),
             _ => false,
         }
     }
@@ -13443,6 +13535,10 @@ impl TypeRegistry {
                 Type::Record(resolved)
             }
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(&recur).collect()),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(&recur).collect(),
+            },
             Type::ReceiverMethodRef(receiver_type, method_name) => {
                 let resolved_receiver = recur(receiver_type);
                 Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
@@ -13452,17 +13548,9 @@ impl TypeRegistry {
                 let resolved_result = recur(result);
                 Type::resolve_deferred_safe_navigation(resolved_receiver, resolved_result)
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(recur(return_type)),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(
+                proc_type.map_types(|return_type| recur(return_type)),
+            )),
             // don't eagerly resolve while a param marker remains (`_ => Untyped` would destroy the marker -> leave it for call-site substitution).
             Type::PatternIndexRef(subject, index) => {
                 let resolved_subject = recur(subject);
@@ -14966,12 +15054,12 @@ mod tests {
             "Box",
             test_method(
                 "callback",
-                Type::Proc {
-                    return_type: Box::new(Type::MethodReturnRef("Box".into(), "value".into())),
-                    param_count: 0,
-                    exact_params: false,
-                    literal: None,
-                },
+                Type::proc_untyped_params(
+                    Type::MethodReturnRef("Box".into(), "value".into()),
+                    0,
+                    false,
+                    None,
+                ),
             ),
         );
         registry.add_method_def(
@@ -15006,12 +15094,7 @@ mod tests {
             .expect("callback method");
         assert_eq!(
             callback.raw_return_type,
-            Type::Proc {
-                return_type: Box::new(Type::Integer),
-                param_count: 0,
-                exact_params: false,
-                literal: None,
-            }
+            Type::proc_untyped_params(Type::Integer, 0, false, None)
         );
         let hash = registry
             .lookup_method_def("Box", "hash", false)

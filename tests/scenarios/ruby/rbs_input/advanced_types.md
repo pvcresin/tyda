@@ -328,11 +328,12 @@ class App
 end
 ```
 
-## Proc return type
+## Proc return type keeps required parameter types
 
 ```rbs
 class Factory
   def create_handler: () -> ^(String) -> Integer
+  def create_flexible: () -> ^(String, ?Integer) -> Integer
 end
 ```
 
@@ -342,6 +343,8 @@ class App
     f = Factory.new
     f.create_handler
   end
+
+  def make_flexible = Factory.new.create_flexible
 end
 ```
 
@@ -349,7 +352,8 @@ end
 
 ```rbs
 class App
-  def make: -> (^(?) -> Integer)
+  def make: -> (^(String) -> Integer)
+  def make_flexible: -> (^(?) -> Integer)
 end
 ```
 

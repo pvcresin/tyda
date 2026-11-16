@@ -1525,12 +1525,11 @@ impl<'a> InferenceEngine<'a> {
             return Type::Untyped;
         };
         match self.infer_node_type(class_name, &normalizer, parse_result, &Scope::default()) {
-            Type::Proc {
-                return_type,
-                param_count,
-                ..
-            } if param_count >= 1 => {
-                TypeRegistry::substitute_param_refs_static(&return_type, &[Type::ParamRef(1)])
+            Type::Proc(proc_type) if proc_type.param_count() >= 1 => {
+                TypeRegistry::substitute_param_refs_static(
+                    &proc_type.return_type,
+                    &[Type::ParamRef(1)],
+                )
             }
             _ => Type::Untyped,
         }

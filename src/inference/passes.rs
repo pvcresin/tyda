@@ -485,7 +485,11 @@ impl<'a> InferenceEngine<'a> {
                     return ty.clone();
                 }
                 visiting.insert(key.clone());
-                let ivar_type = registry.lookup_ivar_type(context_class, ivar_name);
+                let ivar_type = registry.join_subclass_ivar_writes(
+                    context_class,
+                    ivar_name,
+                    registry.lookup_ivar_type(context_class, ivar_name),
+                );
                 let result = match ivar_type {
                     Some(Type::Untyped)
                     | None
@@ -526,7 +530,11 @@ impl<'a> InferenceEngine<'a> {
                         depth + 1,
                     );
                     visiting.remove(&(class_name.to_string(), *method_name));
-                    return resolved;
+                    return registry.bind_instance_outside_ref_class(
+                        context_class,
+                        class_name,
+                        resolved,
+                    );
                 }
                 registry
                     .resolve_attr_reader_return_type(class_name, method_name, false)
@@ -789,7 +797,9 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .all(|f| Self::is_concrete_for_method_ref_resolve(&f.value)),
-            Type::Proc { return_type, .. } => Self::is_concrete_for_method_ref_resolve(return_type),
+            Type::Proc(proc_type) => {
+                Self::is_concrete_for_method_ref_resolve(&proc_type.return_type)
+            }
             _ => false,
         }
     }
@@ -925,8 +935,8 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .any(|field| Self::type_contains_subclass_ref_candidate(&field.value)),
-            Type::Proc { return_type, .. } => {
-                Self::type_contains_subclass_ref_candidate(return_type)
+            Type::Proc(proc_type) => {
+                Self::type_contains_subclass_ref_candidate(&proc_type.return_type)
             }
             _ => false,
         }
@@ -1072,8 +1082,9 @@ impl<'a> InferenceEngine<'a> {
             Type::DeferredSafeNavigation(receiver, result) => {
                 Self::type_contains_param_ref(receiver) || Self::type_contains_param_ref(result)
             }
-            Type::Proc { return_type, .. } => Self::type_contains_param_ref(return_type),
+            Type::Proc(proc_type) => Self::type_contains_param_ref(&proc_type.return_type),
             Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref),
+            Type::Generic { args, .. } => args.iter().any(Self::type_contains_param_ref),
             _ => false,
         }
     }
@@ -1920,21 +1931,9 @@ impl<'a> InferenceEngine<'a> {
                     Self::resolve_pattern_key_rest_ref(&resolved_subject, matched_keys)
                 }
             }
-            Type::Proc {
-                return_type,
-                param_count,
-                exact_params,
-                literal,
-            } => Type::Proc {
-                return_type: Box::new(Self::substitute_param_refs_with_keywords(
-                    return_type,
-                    param_types,
-                    keyword_types,
-                )),
-                param_count: *param_count,
-                exact_params: *exact_params,
-                literal: *literal,
-            },
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(|return_type| {
+                Self::substitute_param_refs_with_keywords(return_type, param_types, keyword_types)
+            }))),
             Type::Tuple(elems) => Type::Tuple(
                 elems
                     .iter()
@@ -1943,6 +1942,15 @@ impl<'a> InferenceEngine<'a> {
                     })
                     .collect(),
             ),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args
+                    .iter()
+                    .map(|t| {
+                        Self::substitute_param_refs_with_keywords(t, param_types, keyword_types)
+                    })
+                    .collect(),
+            },
             _ => ty.clone(),
         }
     }

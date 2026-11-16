@@ -322,12 +322,9 @@ pub fn parse_rbs_param_annotation_with_aliases(
             .collect::<Vec<_>>();
         let return_type =
             convert_imported_rbs_type(&function_type.return_type, type_aliases, current_scope);
-        let ty = Type::Proc {
-            return_type: Box::new(return_type.clone()),
-            param_count: rbs_function_type_param_count(function_type),
-            exact_params: false,
-            literal: None,
-        };
+        let ty = crate::rbs::convert::rbs_proc_type(function_type, return_type.clone(), |param| {
+            convert_imported_rbs_type(param, type_aliases, current_scope)
+        });
         return Some(RbsParamAnnotation {
             name,
             ty,
@@ -378,12 +375,7 @@ pub fn parse_rbs_shorthand_with_aliases(
             + function_type.optional_keywords.len();
         let ret =
             convert_imported_rbs_type(&function_type.return_type, type_aliases, current_scope);
-        Type::Proc {
-            return_type: Box::new(ret),
-            param_count,
-            exact_params: false,
-            literal: None,
-        }
+        Type::proc_untyped_params(ret, param_count, false, None)
     });
 
     Some(RbsShorthandResult {
@@ -484,16 +476,6 @@ fn parse_rbs_param_annotation_name(raw_name: &str) -> Option<(String, bool)> {
         return None;
     }
     Some((name.to_string(), is_block))
-}
-
-fn rbs_function_type_param_count(ft: &rbs_ir::FunctionType) -> usize {
-    ft.required_positionals.len()
-        + ft.optional_positionals.len()
-        + usize::from(ft.rest_positionals.is_some())
-        + ft.trailing_positionals.len()
-        + ft.required_keywords.len()
-        + ft.optional_keywords.len()
-        + usize::from(ft.rest_keywords.is_some())
 }
 
 #[cfg(test)]

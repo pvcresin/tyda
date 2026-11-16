@@ -48,13 +48,13 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] 大規模 Rails での `--diagnostics` context scan を高速化する
 - [ ] block callback の副作用解析を一般化し、外側で nil check 済みのivarがcallback内で誤って `nil` と診断されるケースを見直す（Redmine `Attachment#files_to_final_location` の `sha.update(@temp_file)`）。実際のmutationは引き続きnarrowingを無効化し、クラス・メソッド固有の例外は追加しない
 - [ ] CLI のファイル単位推論で、後のファイルに依存する型を遅延参照として保ち、全体の集約後に解決する。別ファイルの model への `find(1)` が `untyped` になる、後のファイルで定義されるクラスの `when` が引数を `untyped` にする、concern の `included` で定義した scope を別ファイルの model から呼ぶと `ActiveRecord::Relation[self]` が残る、の3件（`known_issue_concern_scope_keeps_self_across_files`）（`tests/cli.rs` の `when_with_class_from_later_file_does_not_leak_other_arguments`）。シナリオ runner は他ファイルを先に解析するため、CLI でのみ再現する
-- [ ] CLI と scenario runner の結果をそろえる。単一ファイルでも、呼び出し側から型が決まる parameter への演算（`def foo(x) = x + 1` を `foo(1)` で呼ぶ）、parameter をレシーバにした block 内の `yield` の型（`def map_all(xs) = xs.map { |e| yield e }`）、`*args` の要素、class 内の再帰が CLI だけ `untyped` になり、block 付き `Range#each` の戻り値が CLI だけ `Range[Integer]` でなく `Range` になり（`tests/cli.rs` の `known_issue_range_each_drops_element_type_in_a_single_file`）、別ファイルの定数参照もディレクトリ指定の CLI で `untyped` になる。scenario は CLI 経路を確かめないため、両経路を比べる仕組みも用意する
+- [ ] CLI と scenario runner の結果をそろえる。単一ファイルでも、呼び出し側から型が決まる parameter への演算（`def foo(x) = x + 1` を `foo(1)` で呼ぶ）、`*args` の要素、class 内の再帰が CLI だけ `untyped` になり、別ファイルの定数参照もディレクトリ指定の CLI で `untyped` になる（別ファイルの `Core::Ctx` を `module Core` 内から `Ctx` で読む呼び出しも失われる。`tests/cli.rs` の `known_issue_namespace_constant_from_another_file`）。scenario は CLI 経路を確かめないため、両経路を比べる仕組みも用意する
 - [ ] Ruby の意味論どおり、未初期化の ivar の値に `nil` を含める。`initialize` のすべての経路（class instance variable は class body）で代入される ivar だけを非 nil とし、それ以外の reader と参照は `T?` にする。この `nil` による `missing_method` は除外せずに報告する。意図して使う箇所は `# tyda: ignore[missing_method]` で抑制する。既存 scenario の期待値も合わせて直す（`known-issues/ruby_methods.md`、`ruby/variable/instance.md` の known issue）
 - [ ] TODO: 未初期化の ivar に由来する `nil` 診断の重さを検討する（他の `nil` と severity を分けて warning にするか、など）
 - [ ] 保存前の ActiveRecord model を推論で区別する。既定は tapioca・rbs_rails と同じく保存済みで valid な model の契約とし、`null: false` のカラムと必須の `belongs_to` は非 nil にする。そのうえで `find` / `where` / association から来た値は非 nil のまま、`new` / `build` から来てまだ保存していない値だけカラムと association を `nil` を含む型にする。値の出どころを追えない RBI 生成ツールは全体を nilable にする設定（tapioca の `ActiveRecordColumnTypes`）しか持てないが、Tyda は推論で実際に危ない箇所だけを捉える。全体を切り替える設定は、要望が出るまで追加しない
 - [ ] 制御フロー上の値を保つ。単一ファイルの CLI では `File` を渡す呼び出しがあっても `break unless part` の後の `yield part` が `String` にならず、parameter 経由の `IO#read(len)` が `String?` でなく `String` になる。CLI は parameter レシーバへの `file.read(len)` を引数なしの呼び出しとして集約後に解決し、最初の overload（`-> String`）を選ぶ。全体を解析する scenario runner と LSP では正しく推論する（`tests/cli.rs` の `known_issue_io_read_through_parameters_in_a_single_file`）
 - [ ] nil の誤検出を減らす。メソッド内で代入した ivar が self 呼び出しの後に nil になる、ivar の truthy ガードが入れ子の修飾子 `if` に届かない、reader の nil ガードが同じメソッドの block に届かない、ivar の nil ガードがそれを書かない self 呼び出しの後で消える、の4件（`tests/flow_diagnostics.rs` の `known_issue_nil_false_positives_still_reported`）
-- [ ] PR 154 の subject 差分で見つけたが、最小再現ができていない後退を調べる。Redmine `link_to_project` の引数が `(Project | untyped)?` から `untyped?` になる。`respond_to?` を確かめる述語メソッドや `before_action` など、別メソッドのガードを越えた nil・missing method の誤検出
+- [ ] PR 154 の subject 差分で見つけたが、最小再現ができていない後退を調べる。Redmine `link_to_project` の引数が `(Project | untyped)?` から `untyped?` になる。`respond_to?` を確かめる述語メソッドなど、別メソッドのガードを越えた nil・missing method の誤検出（条件なしの `before_action` が self メソッドの nil で止める場合は action 内で非 nil にする）
 - [ ] Ruby / Rails version、framework DSL、scenario coverage を継続する
 
 ### ジェネリクス
@@ -62,8 +62,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 推論したジェネリクスを RBS に出す。本体だけから決まる型のほうがコードとして正しいため、呼び出し元の型の union より型変数を優先する。出力を切り替えるオプションは作らない（推論が複雑になりバグの元になるため）。RBS 3.6 以降の構文（union の bound など）を前提にし、古い RBS や Steep の対応は各ツール側の課題とする。RBS 入力の読み込みを固めてから出力に進む。
 
 - [ ] インライン RBS / Sorbet `sig` の型名を、書いたクラスの中から内側の名前空間順に解決する（RBS と同じ規則）。今は `class Outer` の中の `#: -> Inner` が推論で `Outer::Inner` にならない（`known-issues/ruby_methods.md`）。`.rbs` の `class Outer` の中の `-> Inner` も同じで、RBS 入力全体の名前解決として直す。出力は書いたとおりの名前を保つ
-- [ ] Proc / lambda の引数の型を推論して `^(A) -> R` で出す。今は戻り値の型だけを `(^(?) -> R)`（引数がなければ `(^() -> R)`）で出す。必須位置引数だけの lambda は引数の数を `untyped` で保つが、任意の数の引数を受け取る proc は `?` のままにする（以下の出力の項目は `known-issues/generics_output.md`）
-- [ ] proc を受け取る引数のジェネリクスを出す（`def apply(f, x) = f.call(x)` → `[T, U] (^(T) -> U f, T x) -> U`、`known-issues/generics_output.md`）。`Type::Proc` が引数の型を持つ必要があり、`Type` の大きさを増やさない表現を先に決める。yield と block のジェネリクスは出力済み
+- [ ] Proc / lambda リテラルの引数の型を推論して `^(A) -> R` で出す。`Type::Proc` は引数の型を持ち、RBS の必須位置引数だけの proc（`^(Integer) -> String`）はその型で出す。リテラルの引数は呼び出しごとに束縛するため `untyped` のまま、任意の数の引数を受け取る proc は `(^(?) -> R)` のまま
 - [ ] interface の bound は使わない。任意のメソッドの組み合わせを表せないため、union の bound を基本にする
 - [ ] ユーザー定義クラスのジェネリクス（`class Box[T]`）の推論は最後に検討する。ivar の数だけ型変数が増えないよう、ivar への書き込みがすべてコンストラクタ引数の受け渡しだけの場合などに限る
 - [ ] 呼び出し元が1種類だけのときに具体的な型で出すかは、使い勝手を見て決める

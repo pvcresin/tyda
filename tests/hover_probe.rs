@@ -804,8 +804,8 @@ fn attr_reader_of_a_class_from_another_file_resolves_its_deferred_ivar() {
 }
 
 // Known issue: the hover on a `Range#each` call with a block shows the block as
-// `(untyped arg0) -> untyped` and the return as a bare `Range`, while the block parameter and the
-// method return keep `Integer` and `Range[Integer]`. When the check fails, assert the expected
+// `(untyped arg0) -> untyped` and the return as `Range[untyped]`, while the block parameter and
+// the method return keep `Integer` and `Range[Integer]`. When the check fails, assert the expected
 // `() { (Integer) -> void } -> Range[Integer]` instead.
 #[test]
 fn known_issue_range_each_call_hover_loses_element_type() {
@@ -813,7 +813,7 @@ fn known_issue_range_each_call_hover_loses_element_type() {
     let (_, _, display) = hover_with_display(source, 1, 30).expect("hover on `each`");
     assert_eq!(
         display.as_deref(),
-        Some("each: () { (untyped arg0) -> untyped } -> Range"),
+        Some("each: () { (untyped arg0) -> untyped } -> Range[untyped]"),
         "known issue fixed (Range#each call hover); update this check"
     );
 }

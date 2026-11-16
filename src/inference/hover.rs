@@ -1282,8 +1282,8 @@ impl<'a> InferenceEngine<'a> {
                     Self::collect_diagnostic_type_classes(arg, out);
                 }
             }
-            Type::Proc { return_type, .. } => {
-                Self::collect_diagnostic_type_classes(return_type, out)
+            Type::Proc(proc_type) => {
+                Self::collect_diagnostic_type_classes(&proc_type.return_type, out)
             }
             _ => {}
         }
@@ -5082,7 +5082,7 @@ impl<'a> InferenceEngine<'a> {
             Type::Record(fields) => fields
                 .iter()
                 .all(|field| Self::is_resolved_hover_type(&field.value)),
-            Type::Proc { return_type, .. } => Self::is_resolved_hover_type(return_type),
+            Type::Proc(proc_type) => Self::is_resolved_hover_type(&proc_type.return_type),
             Type::Generic { args, .. } => args.iter().all(Self::is_resolved_hover_type),
             Type::PatternIndexRef(..)
             | Type::PatternRestRef(..)

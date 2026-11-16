@@ -331,6 +331,11 @@ impl TypeRegistry {
                 data.cold_mut().embedded_rbs.push(text.clone());
             }
         }
+        for name in &rbs_data.cold().scoped_annotation_names {
+            if !data.cold().scoped_annotation_names.contains(name) {
+                data.cold_mut().scoped_annotation_names.push(*name);
+            }
+        }
         for key in &rbs_data.cold().user_rbs_generic_methods {
             if !data.cold().user_rbs_generic_methods.contains(key) {
                 data.cold_mut().user_rbs_generic_methods.push(*key);

@@ -30,17 +30,7 @@ pub fn user_facing_type(ty: &Type) -> Type {
                 })
                 .collect(),
         ),
-        Type::Proc {
-            return_type,
-            param_count,
-            exact_params,
-            literal,
-        } => Type::Proc {
-            return_type: Box::new(user_facing_type(return_type)),
-            param_count: *param_count,
-            exact_params: *exact_params,
-            literal: *literal,
-        },
+        Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(user_facing_type))),
         _ => ty.clone(),
     }
 }

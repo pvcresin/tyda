@@ -1300,10 +1300,6 @@ end
 
 ## Hash index truthiness guard narrows the same index read
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1378,5 +1374,28 @@ class RepeatedEnvRead
   def deleted: -> Integer?
   def consume: (String value) -> String
   def measure: (String? value) -> Integer?
+end
+```
+
+## A hash index guard ends when the hash changes
+
+### update
+
+```ruby
+class Options
+  # @rbs opts: Hash[Symbol, String?]
+  def changed(opts)
+    return "" unless opts[:name]
+    opts.delete(:name)
+    opts[:name]
+  end
+end
+```
+
+### result
+
+```rbs
+class Options
+  def changed: (Hash[Symbol, String?] opts) -> String?
 end
 ```
