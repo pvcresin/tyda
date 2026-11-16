@@ -345,6 +345,10 @@ pub struct ParamDependentBody {
     pub method: Sym,
     pub is_singleton: bool,
     pub def_offset: usize,
+    /// The positional parameters whose calls lost their arguments or block.
+    pub positional: Vec<usize>,
+    /// The keyword parameters whose calls lost their arguments or block.
+    pub keywords: Vec<Sym>,
 }
 
 /// A parameter-dependent body to type again with its callers' merged argument types.
@@ -5440,6 +5444,16 @@ impl TypeRegistry {
         if method.origin.is_synthetic_dsl() {
             return None;
         }
+        // Only an unsettled return or yield can take the replay's result.
+        let settled = |ty: &Type| {
+            Self::is_concrete_for_global_resolve(ty) && !Self::type_contains_untyped_member(ty)
+        };
+        let yields_settled = self
+            .lookup_method_block_meta(body.owner.as_str(), body.method.as_str(), body.is_singleton)
+            .is_none_or(|meta| meta.yield_param_types.iter().all(settled));
+        if settled(&method.raw_return_type) && yields_settled {
+            return None;
+        }
         let mut sites: Vec<&CallSite> = data
             .call_sites
             .iter()
@@ -5462,10 +5476,11 @@ impl TypeRegistry {
         // A parameter whose callers pass a type that still holds references keeps its own
         // reference, so the replay types that part as the first pass did. Resolving those
         // references here, before returns resolve, would repeat that work for every body.
+        // The replay helps only when a parameter whose call lost its shape gets a type.
         let mut known = false;
-        let mut settle = |ty: Type, unsettled: Type| {
+        let mut settle = |ty: Type, unsettled: Type, lost_shape: bool| {
             if ty != Type::Untyped && Self::is_concrete_for_global_resolve(&ty) {
-                known = true;
+                known |= lost_shape;
                 ty
             } else {
                 unsettled
@@ -5474,13 +5489,15 @@ impl TypeRegistry {
         let positional: Vec<Type> = positional
             .into_iter()
             .enumerate()
-            .map(|(index, ty)| settle(ty, Type::ParamRef(index)))
+            .map(|(index, ty)| settle(ty, Type::ParamRef(index), body.positional.contains(&index)))
             .collect();
         let keywords: Vec<(SharedName, Type)> = keywords
             .into_iter()
             .map(|(name, ty)| {
-                let unsettled = Type::KeywordParamRef(Sym::new(&name));
-                (SharedName::from(name.as_str()), settle(ty, unsettled))
+                let name = Sym::new(&name);
+                let lost_shape = body.keywords.contains(&name);
+                let settled = settle(ty, Type::KeywordParamRef(name), lost_shape);
+                (SharedName::from(name.as_str()), settled)
             })
             .collect();
         known.then(|| ParamReplayRequest {

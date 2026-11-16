@@ -1120,9 +1120,10 @@ enum BlockPassChain {
 
 #[derive(Default)]
 struct ActiveMethodBody {
-    /// A call on a parameter-derived receiver kept no arguments or block, so only a replay
-    /// with the callers' types can type it.
-    drops_param_call_shape: bool,
+    /// Parameters whose derived receivers had a call keep no arguments or block, so only a
+    /// replay with the callers' types can type those calls.
+    shape_lost_params: Vec<usize>,
+    shape_lost_keywords: Vec<Sym>,
     unresolved_block_receivers: DeferredBlockReceiverCandidates,
     has_case_class_dispatch: bool,
     has_super_call: bool,
@@ -19546,7 +19547,7 @@ impl<'a> InferenceEngine<'a> {
         });
         self.active_loop_entry_scopes = saved_active_loop_entry_scopes;
         let (
-            drops_param_call_shape,
+            (shape_lost_params, shape_lost_keywords),
             unresolved_block_receivers,
             has_case_class_dispatch,
             has_super_call,
@@ -19557,7 +19558,7 @@ impl<'a> InferenceEngine<'a> {
             .take()
             .map(|body| {
                 (
-                    body.drops_param_call_shape,
+                    (body.shape_lost_params, body.shape_lost_keywords),
                     body.unresolved_block_receivers,
                     body.has_case_class_dispatch,
                     body.has_super_call,
@@ -19567,12 +19568,16 @@ impl<'a> InferenceEngine<'a> {
             })
             .unwrap_or_default();
         self.active_method_body = saved_active_method_body;
-        if drops_param_call_shape && self.track_deferred_block_receiver_bodies {
+        if (!shape_lost_params.is_empty() || !shape_lost_keywords.is_empty())
+            && self.track_deferred_block_receiver_bodies
+        {
             self.param_dependent_bodies.push(ParamDependentBody {
                 owner: Sym::new(class_name),
                 method: Sym::new(&method_name),
                 is_singleton,
                 def_offset: def_node.location().start_offset(),
+                positional: shape_lost_params,
+                keywords: shape_lost_keywords,
             });
         }
         if let Some(summary) = &body_scan_summary {
@@ -57327,22 +57332,51 @@ impl<'a> InferenceEngine<'a> {
         receiver_type: &Type,
         result: &Type,
     ) {
+        if self.replaying_method_body {
+            return;
+        }
         let Some(body) = self.active_method_body.as_mut() else {
             return;
         };
-        if body.drops_param_call_shape || self.replaying_method_body {
-            return;
-        }
         let has_shape = call_node.block().is_some()
             || call_node
                 .arguments()
                 .is_some_and(|arguments| arguments.arguments().iter().next().is_some());
-        if has_shape
-            && (!Self::is_concrete(result) || Self::type_contains_untyped(result))
-            && TypeRegistry::type_contains_param_ref_static(receiver_type)
-        {
-            body.drops_param_call_shape = true;
+        if !has_shape || (Self::is_concrete(result) && !Self::type_contains_untyped(result)) {
+            return;
         }
+        fn collect_params(ty: &Type, positional: &mut Vec<usize>, keywords: &mut Vec<Sym>) {
+            match ty {
+                Type::ParamRef(index) if !positional.contains(index) => positional.push(*index),
+                Type::KeywordParamRef(name) if !keywords.contains(name) => keywords.push(*name),
+                Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+                    for part in parts {
+                        collect_params(part, positional, keywords);
+                    }
+                }
+                Type::Array(Some(inner))
+                | Type::SplatRef(inner)
+                | Type::PatternRestRef(inner)
+                | Type::PatternIndexRef(inner, _)
+                | Type::PatternTrailingRef(inner, _)
+                | Type::PatternKeyRef(inner, _)
+                | Type::PatternKeyRestRef(inner, _)
+                | Type::ReceiverMethodRef(inner, _)
+                | Type::TruthyProjection(inner)
+                | Type::FalsyProjection(inner)
+                | Type::NonNilProjection(inner) => collect_params(inner, positional, keywords),
+                Type::DeferredSafeNavigation(receiver, result) => {
+                    collect_params(receiver, positional, keywords);
+                    collect_params(result, positional, keywords);
+                }
+                _ => {}
+            }
+        }
+        collect_params(
+            receiver_type,
+            &mut body.shape_lost_params,
+            &mut body.shape_lost_keywords,
+        );
     }
 
     fn receiver_union_flags(ty: &Type) -> (bool, bool) {
