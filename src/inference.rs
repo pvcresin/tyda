@@ -58326,6 +58326,17 @@ impl<'a> InferenceEngine<'a> {
                         .collect();
                     return Type::from_type_vec_preserve_untyped(arms);
                 }
+                // The reference does not record whether the call had a block, so a method
+                // that returns something else with one (`map`) keeps the reference.
+                if let Some(class_name) = self.type_to_class_name(&resolved_receiver)
+                    && self.registry.block_overload_returns_disagree(
+                        &class_name,
+                        method_name.as_str(),
+                        matches!(resolved_receiver, Type::Singleton(_)),
+                    )
+                {
+                    return Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name);
+                }
                 if let Some(result) =
                     self.resolve_receiver_ref_overloaded_return(&resolved_receiver, method_name)
                 {
