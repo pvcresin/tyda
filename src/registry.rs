@@ -5591,6 +5591,9 @@ impl TypeRegistry {
     }
 
     pub fn add_ivar_type(&mut self, class_name: &str, ivar_name: &str, ty: Type) {
+        let Some(ty) = Self::without_ivar_back_edges(ty, ivar_name) else {
+            return;
+        };
         if crate::trace::enabled() {
             crate::trace::record_ivar_write(class_name, ivar_name, false, &ty);
         }
@@ -5598,6 +5601,42 @@ impl TypeRegistry {
         let data = self.class_data_mut(class_name);
         let types = data.ivars.entry(Sym::new(ivar_name)).or_default();
         Type::merge_into_vec(types, ty);
+    }
+
+    /// A written value that reads the ivar itself under a guard (`@x ||= v` after
+    /// `return if @x.nil?`) adds only its other parts. `None` when nothing else is left.
+    pub(crate) fn without_ivar_back_edges(ty: Type, ivar_name: &str) -> Option<Type> {
+        let is_back_edge = |part: &Type| {
+            let mut part = part;
+            while let Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) = part
+            {
+                part = inner;
+            }
+            matches!(part, Type::IvarRef(name) if name.as_str() == ivar_name)
+        };
+        let has_projection = |part: &Type| {
+            matches!(
+                part,
+                Type::TruthyProjection(_) | Type::FalsyProjection(_) | Type::NonNilProjection(_)
+            )
+        };
+        match ty {
+            Type::Union(parts)
+                if parts
+                    .iter()
+                    .any(|part| has_projection(part) && is_back_edge(part)) =>
+            {
+                let rest: Vec<Type> = parts
+                    .into_iter()
+                    .filter(|part| !(has_projection(part) && is_back_edge(part)))
+                    .collect();
+                (!rest.is_empty()).then(|| Type::from_type_vec_preserve_untyped(rest))
+            }
+            ty if has_projection(&ty) && is_back_edge(&ty) => None,
+            ty => Some(ty),
+        }
     }
 
     /// A call on a constant not seen yet leaves a `class_data` entry that holds only the call.
@@ -5650,6 +5689,9 @@ impl TypeRegistry {
     }
 
     pub fn replace_ivar_type(&mut self, class_name: &str, ivar_name: &str, ty: Type) {
+        let Some(ty) = Self::without_ivar_back_edges(ty, ivar_name) else {
+            return;
+        };
         self.mark_class_has_method_body_facts(class_name);
         let data = self.class_data_mut(class_name);
         data.ivars.insert(Sym::new(ivar_name), vec![ty]);
@@ -10122,6 +10164,9 @@ impl TypeRegistry {
                 } else {
                     self.lookup_ivar_type_for_reader(class_name, ivar_name)
                 };
+                // A write guarded on the ivar itself (`@x[k] = v if @x`) adds no other value.
+                let ivar_type =
+                    ivar_type.and_then(|ty| Self::without_ivar_back_edges(ty, ivar_name.as_str()));
                 match ivar_type {
                     Some(Type::Untyped)
                     | None
@@ -10302,6 +10347,22 @@ impl TypeRegistry {
                     Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
                     _ => unreachable!(),
                 };
+                // An ivar resolves to its stored value, which can itself be a reference; the
+                // projection of that reference resolves one step further.
+                let projected = projected.map(|projected| {
+                    if projected != *ty && !Self::is_concrete_for_global_resolve(&projected) {
+                        self.resolve_deferred_refs_depth(
+                            class_name,
+                            singleton_context,
+                            &projected,
+                            depth + 1,
+                            memo,
+                            visiting,
+                        )
+                    } else {
+                        projected
+                    }
+                });
                 projected.unwrap_or(Type::Bot)
             }
             Type::PatternIndexRef(subject, index) => {
@@ -10551,11 +10612,15 @@ impl TypeRegistry {
 
     fn without_return_position_self_ref(resolved: Type, self_ref: &Type) -> Type {
         // A truthiness projection of `x` (from `x || y`, `x&.m`) is still a back edge to `x`.
-        let is_self = |part: &Type| match part {
-            Type::TruthyProjection(inner)
+        let is_self = |part: &Type| {
+            let mut part = part;
+            while let Type::TruthyProjection(inner)
             | Type::FalsyProjection(inner)
-            | Type::NonNilProjection(inner) => **inner == *self_ref,
-            part => part == self_ref,
+            | Type::NonNilProjection(inner) = part
+            {
+                part = inner;
+            }
+            part == self_ref
         };
         match resolved {
             Type::Union(parts) if parts.iter().any(is_self) => {

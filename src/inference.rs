@@ -64248,11 +64248,14 @@ impl<'a> InferenceEngine<'a> {
             NarrowSubject::Local(name) => {
                 Some(self.resolve_narrowing_input_type(class_name, scope, scope.get(name)?))
             }
+            // An ivar that later methods write reads as a deferred reference, which a guard
+            // narrows like any value.
             NarrowSubject::Ivar(name) => scope
                 .self_facts
                 .get(name)
                 .cloned()
-                .or_else(|| self.current_ivar_type(class_name, scope, name)),
+                .or_else(|| self.current_ivar_type(class_name, scope, name))
+                .or_else(|| (!scope.singleton_dispatch).then(|| Type::IvarRef(Sym::new(name)))),
             NarrowSubject::SelfMethod(name) => scope.self_facts.get(name).cloned().or_else(|| {
                 if scope.singleton_dispatch {
                     return None;
