@@ -9260,7 +9260,7 @@ impl TypeRegistry {
         )
     }
 
-    fn is_concrete_for_global_resolve(ty: &Type) -> bool {
+    pub(crate) fn is_concrete_for_global_resolve(ty: &Type) -> bool {
         match ty {
             Type::Integer
             | Type::Float

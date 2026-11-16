@@ -12,6 +12,7 @@ use crate::dep_graph::{DependencyGraph, FileDeps};
 use crate::inference::FileAnalysisSnapshot;
 use crate::rbs::stdlib_loader::LazyRbsLoader;
 use crate::registry::{ParamDependentBody, ParamReplayRequest, ParamReplayResult, TypeRegistry};
+use crate::types::Type;
 
 type FileId = u32;
 use self::display_scope::DisplayBaseRegistryCache;
@@ -761,30 +762,38 @@ impl BatchProjectionBuilder {
                 }
                 for result in results {
                     let body = &result.body;
-                    // The replay reads other methods of its file eagerly, with less than the
-                    // merged registry knows. An untyped part where the first pass kept only
-                    // references would undo what resolving those references gives.
-                    let first_pass_is_settled_later = registry
+                    // The replay reads its file eagerly, with less than the merged registry
+                    // knows (`self.class.x` answers from the base class). Its return replaces
+                    // the first pass only when it settles fully where the first pass did not.
+                    let first_pass = registry
                         .lookup_method_def(
                             body.owner.as_str(),
                             body.method.as_str(),
                             body.is_singleton,
                         )
-                        .is_some_and(|method| {
-                            !TypeRegistry::type_contains_untyped_member(&method.raw_return_type)
-                        });
-                    if first_pass_is_settled_later
-                        && TypeRegistry::type_contains_untyped_member(&result.return_type)
-                    {
+                        .map(|method| method.raw_return_type.clone());
+                    let settled = |ty: &Type| {
+                        TypeRegistry::is_concrete_for_global_resolve(ty)
+                            && !TypeRegistry::type_contains_untyped_member(ty)
+                    };
+                    let replaces_return = settled(&result.return_type)
+                        && first_pass.as_ref().is_none_or(|ty| !settled(ty));
+                    let replaces_block = result.block_meta.as_ref().is_some_and(|meta| {
+                        !meta.yield_param_types.is_empty()
+                            && meta.yield_param_types.iter().all(settled)
+                    });
+                    if !replaces_return && !replaces_block {
                         continue;
                     }
-                    registry.update_method_return_type_variant(
-                        body.owner.as_str(),
-                        body.method.as_str(),
-                        body.is_singleton,
-                        result.return_type,
-                    );
-                    if let Some(meta) = result.block_meta {
+                    if replaces_return {
+                        registry.update_method_return_type_variant(
+                            body.owner.as_str(),
+                            body.method.as_str(),
+                            body.is_singleton,
+                            result.return_type,
+                        );
+                    }
+                    if replaces_block && let Some(meta) = result.block_meta {
                         registry.set_method_block_meta(
                             body.owner.as_str(),
                             body.method.as_str(),
