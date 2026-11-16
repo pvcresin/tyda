@@ -8134,39 +8134,6 @@ impl TypeRegistry {
         })
     }
 
-    /// Whether the method returns something else with a block than without one (`map` gives
-    /// `Array[U]` or an `Enumerator`), so a call that kept neither cannot pick a return.
-    pub(crate) fn block_overload_returns_disagree(
-        &self,
-        class_name: &str,
-        method_name: &str,
-        prefer_singleton: bool,
-    ) -> bool {
-        let Some((_, owners)) = self.owner_list_entry(class_name, method_name, prefer_singleton)
-        else {
-            return false;
-        };
-        owners.iter().any(|&(owner, is_singleton)| {
-            self.class_data
-                .get(&owner)
-                .and_then(|data| {
-                    Self::method_for_lookup_kind(data, method_name, Some(is_singleton))
-                })
-                .is_some_and(|method| {
-                    let types = &method.rbs_method_types;
-                    let returns = |with_block: bool| {
-                        types
-                            .iter()
-                            .filter(move |mt| mt.block.is_some() == with_block)
-                            .map(|mt| Self::rbs_return_without_nil(&mt.function_type.return_type))
-                    };
-                    returns(true).any(|block_return| {
-                        returns(false).any(|plain_return| plain_return != block_return)
-                    })
-                })
-        })
-    }
-
     fn rbs_overload_returns_disagree(overloads: &[rbs_ir::MethodType]) -> bool {
         let Some((first, rest)) = overloads.split_first() else {
             return false;

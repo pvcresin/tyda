@@ -44686,24 +44686,40 @@ impl<'a> InferenceEngine<'a> {
         // runtime value; the block-less overload (an Enumerator) is not the answer.
         if let Type::Union(members) = receiver_type
             && members.len() > 1
-            && members.iter().all(|member| {
-                !matches!(member, Type::Nil | Type::Untyped)
-                    && self.type_to_class_name(member).is_some()
-            })
+            && let Some(member_classes) = members
+                .iter()
+                .map(|member| {
+                    (!matches!(member, Type::Nil | Type::Untyped))
+                        .then(|| self.type_to_class_name(member))
+                        .flatten()
+                })
+                .collect::<Option<HashSet<String>>>()
+            && member_classes.len() > 1
         {
+            // Each class's walk only computes its return. The block runs once at runtime, so
+            // diagnostics and hovers come from the walk with the whole union.
             let members = members.clone();
-            let mut results = Vec::with_capacity(members.len());
-            for member in &members {
-                results.push(self.resolve_block_call_generic(
-                    class_name,
-                    call_node,
-                    member,
-                    method_name,
-                    parse_result,
-                    scope,
-                )?);
+            let block_offset = block.location().start_offset();
+            let block_was_walked = self.value_walked_blocks.contains(&block_offset);
+            let observations = self.suspend_source_observations();
+            let results: Option<Vec<Type>> = members
+                .iter()
+                .map(|member| {
+                    self.resolve_block_call_generic(
+                        class_name,
+                        call_node,
+                        member,
+                        method_name,
+                        parse_result,
+                        scope,
+                    )
+                })
+                .collect();
+            self.resume_source_observations(observations);
+            if !block_was_walked {
+                self.value_walked_blocks.remove(&block_offset);
             }
-            return Some(Type::from_type_vec(results));
+            return results.map(Type::from_type_vec);
         }
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
@@ -58326,30 +58342,31 @@ impl<'a> InferenceEngine<'a> {
                         .collect();
                     return Type::from_type_vec_preserve_untyped(arms);
                 }
-                // The reference does not record whether the call had a block, so a method
-                // that returns something else with one (`map`) keeps the reference.
-                if let Some(class_name) = self.type_to_class_name(&resolved_receiver)
-                    && self.registry.block_overload_returns_disagree(
-                        &class_name,
-                        method_name.as_str(),
-                        matches!(resolved_receiver, Type::Singleton(_)),
-                    )
-                {
-                    return Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name);
-                }
                 if let Some(result) =
                     self.resolve_receiver_ref_overloaded_return(&resolved_receiver, method_name)
                 {
                     return result;
                 }
+                // A reference does not record whether the call had a block. Calls on a
+                // reference mostly pass one, so a block-less `Enumerator` return reads the
+                // block overload instead (`map` gives `Array`, not an `Enumerator`).
                 if let Some(result) = self.resolve_rbs_no_arg_method_return_on_type(
                     &resolved_receiver,
                     method_name,
                     true,
                 ) {
-                    return result;
+                    return self.block_overload_return_for_enumerator(
+                        &resolved_receiver,
+                        method_name.as_str(),
+                        result,
+                    );
                 }
                 let result = self.resolve_method_on_type(&resolved_receiver, method_name);
+                let result = self.block_overload_return_for_enumerator(
+                    &resolved_receiver,
+                    method_name.as_str(),
+                    result,
+                );
                 if result != Type::Untyped && Self::is_concrete(&result) {
                     result
                 } else {
