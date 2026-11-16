@@ -1288,6 +1288,19 @@ impl<'a> InferenceEngine<'a> {
             } else {
                 Type::Nil
             };
+            // Like a `def`, the body runs again with its callers' argument types.
+            if !param_infos.is_empty() && block.body().is_some() {
+                self.deferred_method_bodies.push(DeferredMethodBody {
+                    class_name: class_name.to_string(),
+                    is_singleton,
+                    start_offset: call_node.location().start_offset(),
+                    has_existing_defer_reason: true,
+                    late_block_forwards: Vec::new(),
+                    has_case_class_dispatch: false,
+                    has_super_call: false,
+                    unresolved_block_receivers: None,
+                });
+            }
 
             self.registry.add_method_def(
                 class_name,

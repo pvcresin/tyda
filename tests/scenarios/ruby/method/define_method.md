@@ -726,10 +726,6 @@ end
 
 ## define_method block body uses the call-site argument type
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

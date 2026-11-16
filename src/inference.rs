@@ -65244,6 +65244,18 @@ impl<'a> InferenceEngine<'a> {
     ) {
         for node in statements.body().iter() {
             match &node {
+                Node::CallNode { .. } => {
+                    if let Some(replay) = deferred_offsets.get(&node.location().start_offset())
+                        && let Some(call_node) = node.as_call_node()
+                    {
+                        self.reinfer_define_method_block(
+                            class_name,
+                            &call_node,
+                            parse_result,
+                            replay.is_singleton || in_singleton_class,
+                        );
+                    }
+                }
                 Node::ClassNode { .. } => {
                     let class_node = node.as_class_node().expect("must be ClassNode");
                     let name_node = class_node.constant_path();
@@ -65821,6 +65833,107 @@ impl<'a> InferenceEngine<'a> {
                 }
             }
         }
+    }
+
+    /// Types a `define_method(:name) { |params| ... }` block again with its callers' argument
+    /// types, as a replay does for a `def`.
+    fn reinfer_define_method_block(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        is_singleton: bool,
+    ) {
+        let Some(method_name) = call_node
+            .arguments()
+            .and_then(|arguments| arguments.arguments().iter().next())
+            .and_then(|first| Self::extract_symbol_literal_name(&first))
+        else {
+            return;
+        };
+        let Some(block) = call_node.block().and_then(|block| block.as_block_node()) else {
+            return;
+        };
+        let Some(body) = block.body() else {
+            return;
+        };
+        let Some(method_info) = self
+            .registry
+            .lookup_method_def(class_name, &method_name, is_singleton)
+            .cloned()
+        else {
+            return;
+        };
+        let param_types: Vec<Type> = {
+            let call_sites = self.registry.get_call_sites(class_name);
+            let method_call_sites: Vec<&CallSite> = call_sites
+                .iter()
+                .filter(|site| {
+                    site.method_name.as_ref() == method_name
+                        && site.method_is_singleton == is_singleton
+                })
+                .collect();
+            Self::resolve_param_types_from_grouped_call_sites(
+                &method_info.param_infos,
+                &method_call_sites,
+            )
+            .into_iter()
+            .map(Type::widen_arg_for_param)
+            .collect()
+        };
+        if param_types.iter().all(|ty| matches!(ty, Type::Untyped)) {
+            return;
+        }
+        let mut scope = Scope {
+            method_name: Some(method_name.clone()),
+            singleton_dispatch: is_singleton,
+            method_context_singleton_dispatch: Some(is_singleton),
+            ..Default::default()
+        };
+        let mut position = 0;
+        for param in &method_info.param_infos {
+            match param.kind {
+                ParamKind::Required | ParamKind::Optional => {
+                    let mut ty = param_types.get(position).cloned().unwrap_or(Type::Untyped);
+                    if let Some(default_type) = &param.default_type {
+                        ty = if ty == Type::Untyped {
+                            default_type.clone()
+                        } else {
+                            ty.union_with(default_type.clone())
+                        };
+                    }
+                    scope.set(&param.name, ty);
+                    position += 1;
+                }
+                ParamKind::Rest => {
+                    let element = param_types.get(position).cloned().unwrap_or(Type::Untyped);
+                    scope.set(&param.name, Type::Array(Some(Box::new(element))));
+                    position += 1;
+                }
+                // Keywords and blocks keep what the first walk gave them.
+                _ => return,
+            }
+        }
+        let saved_replaying = std::mem::replace(&mut self.replaying_method_body, true);
+        let implicit_return =
+            self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
+        self.replaying_method_body = saved_replaying;
+        let new_return_type = if scope.return_types.is_empty() {
+            implicit_return
+        } else {
+            let mut all_types = scope.return_types.clone();
+            all_types.push(implicit_return);
+            Self::merge_reachable_types(all_types)
+        };
+        if Self::return_reinfer_is_degraded(&method_info.raw_return_type, &new_return_type) {
+            return;
+        }
+        self.registry.update_method_return_type_variant(
+            class_name,
+            &method_name,
+            is_singleton,
+            new_return_type,
+        );
     }
 
     fn reinfer_method_body<'b>(
