@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::dep_graph::{DependencyGraph, FileDeps};
@@ -724,18 +725,41 @@ impl BatchProjectionBuilder {
         let bodies = std::mem::take(&mut self.param_dependent_bodies);
         let run = |registry: &mut TypeRegistry| {
             registry.apply_cli_call_site_resolution();
+            let requests_started = std::time::Instant::now();
+            let shared: &TypeRegistry = registry;
             let requests: Vec<(String, Vec<ParamReplayRequest>)> = bodies
-                .iter()
+                .par_iter()
                 .filter_map(|(file_path, bodies)| {
                     let requests: Vec<ParamReplayRequest> = bodies
                         .iter()
-                        .filter_map(|body| registry.param_replay_request(body))
+                        .filter_map(|body| shared.param_replay_request(body))
                         .collect();
                     (!requests.is_empty()).then(|| (file_path.clone(), requests))
                 })
                 .collect();
+            if std::env::var_os("TYDA_RESOLUTION_TIMING").is_some() {
+                eprintln!(
+                    "cli-resolution param-replay-requests: {:.3}s ({} candidate files)",
+                    requests_started.elapsed().as_secs_f64(),
+                    bodies.len(),
+                );
+            }
             if !requests.is_empty() {
-                for result in replay(registry, &requests) {
+                let timing = std::env::var_os("TYDA_RESOLUTION_TIMING").is_some();
+                let started = std::time::Instant::now();
+                let results = replay(registry, &requests);
+                if timing {
+                    eprintln!(
+                        "cli-resolution param-replay: {:.3}s ({} files, {} bodies)",
+                        started.elapsed().as_secs_f64(),
+                        requests.len(),
+                        requests
+                            .iter()
+                            .map(|(_, requests)| requests.len())
+                            .sum::<usize>(),
+                    );
+                }
+                for result in results {
                     let body = &result.body;
                     registry.update_method_return_type_variant(
                         body.owner.as_str(),

@@ -5456,19 +5456,17 @@ impl TypeRegistry {
         if sites.is_empty() {
             return None;
         }
+        let _caller_ctx_memo_scope = CallerCtxMemoScope::enter();
+        let _hop_memo = DeferredHopMemoScope::enter();
         let (positional, keywords) = self.merged_call_site_param_types(method, &sites);
-        // A parameter whose callers' types are not settled keeps its reference, so the replay
-        // types that part as the first pass did.
+        // A parameter whose callers pass a type that still holds references keeps its own
+        // reference, so the replay types that part as the first pass did. Resolving those
+        // references here, before returns resolve, would repeat that work for every body.
         let mut known = false;
         let mut settle = |ty: Type, unsettled: Type| {
-            let resolved = self.resolve_deferred_refs_for_context_owned(
-                body.owner.as_str(),
-                body.is_singleton,
-                ty,
-            );
-            if resolved != Type::Untyped && Self::is_concrete_for_global_resolve(&resolved) {
+            if ty != Type::Untyped && Self::is_concrete_for_global_resolve(&ty) {
                 known = true;
-                resolved
+                ty
             } else {
                 unsettled
             }
@@ -13292,7 +13290,17 @@ impl TypeRegistry {
             return None;
         }
 
-        if Self::method_for_lookup_kind(data, method_name, Some(method_is_singleton)).is_some() {
+        // RBS declares the class factory `Struct.new` / `Data.new` on the base class, but a
+        // class they build defines its own `new` that constructs an instance, as `Class#new`.
+        let factory_from_subclass = method_is_singleton
+            && method_name == "new"
+            && matches!(class_name, "Struct" | "Data")
+            && seen
+                .first()
+                .is_some_and(|(origin, _)| *origin != class_name);
+        if !factory_from_subclass
+            && Self::method_for_lookup_kind(data, method_name, Some(method_is_singleton)).is_some()
+        {
             return Some((class_name, method_is_singleton));
         }
 
