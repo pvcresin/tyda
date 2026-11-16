@@ -5048,12 +5048,11 @@ fn normalize_value_for_binds_value_from_another_file() {
     );
 }
 
-// Known issue: the scenario runner and the LSP analyze the current file at full depth and infer
-// these (`ruby/control/loops.md`, `ruby/method/call_return.md`). The CLI keeps `file.read(len)`
-// as a call without arguments and resolves it after the merge, where the first `IO#read`
-// overload (`-> String`) wins. When a check fails, drop it.
+// The CLI keeps `file.read(len)` on a parameter as a call without arguments in its first pass.
+// It types such bodies again with the callers' types, so these match the full path
+// (`ruby/control/loops.md`, `ruby/method/call_return.md`).
 #[test]
-fn known_issue_io_read_through_parameters_in_a_single_file() {
+fn io_read_through_parameters_matches_the_full_path() {
     let render = |source: &str| {
         let dir = tempfile::tempdir().expect("failed to create tempdir");
         fs::write(dir.path().join("source.rb"), source).expect("failed to write source");
@@ -5082,8 +5081,8 @@ fn known_issue_io_read_through_parameters_in_a_single_file() {
         "end\n",
     ));
     assert!(
-        yielded.contains("def each_part: (File file, Integer len) { (untyped) -> untyped } -> nil"),
-        "known issue fixed (yield after break unless); drop this check: {yielded}"
+        yielded.contains("def each_part: (File file, Integer len) { (String) -> untyped } -> nil"),
+        "yield after break unless: {yielded}"
     );
 
     let read = render(concat!(
@@ -5098,45 +5097,50 @@ fn known_issue_io_read_through_parameters_in_a_single_file() {
         "end\n",
     ));
     assert!(
-        read.contains("def read_part: (File file, Integer len) -> String\n"),
-        "known issue fixed (IO#read through a parameter); drop this check: {read}"
+        read.contains("def read_part: (File file, Integer len) -> String?\n"),
+        "IO#read through a parameter: {read}"
     );
 }
 
-// Known issue: the scenario runner and the LSP replay the method body with the callers'
-// argument types and infer these (`ruby/method/param_receiver_method_ref.md`). The CLI keeps
-// a call on a parameter as a deferred method reference, which has no block, so the block's
-// value is lost. When a check fails, drop it.
+// The CLI keeps a call on a parameter without its block in its first pass. It types such bodies
+// again with the callers' types, so these match the full path
+// (`ruby/method/param_receiver_method_ref.md`), also when the callers are in another file.
 #[test]
-fn known_issue_block_calls_on_parameters_in_a_single_file() {
+fn block_calls_on_parameters_match_the_full_path() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
-        dir.path().join("source.rb"),
+        dir.path().join("block_on_param.rb"),
         concat!(
             "class BlockOnParam\n",
             "  def bump(xs) = xs.map { |x| x + 1 }\n",
             "  def visit(xs) = xs.each { |x| x }\n",
+            "  def add(a, b) = a + b\n",
             "end\n",
-            "\n",
-            "BlockOnParam.new.bump([1])\n",
-            "BlockOnParam.new.visit([1])\n",
         ),
     )
     .expect("failed to write source");
+    fs::write(
+        dir.path().join("caller.rb"),
+        concat!(
+            "BlockOnParam.new.bump([1])\n",
+            "BlockOnParam.new.visit([1])\n",
+            "BlockOnParam.new.add(1, 2)\n",
+        ),
+    )
+    .expect("failed to write caller");
     let output = tyda_bin()
         .arg(dir.path().to_str().unwrap())
         .output()
         .expect("failed to run");
     assert!(output.status.success());
     let rbs = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        rbs.contains("def bump: (Array[Integer] xs) -> untyped\n"),
-        "known issue fixed (map with a block on a parameter); drop this check: {rbs}"
-    );
-    assert!(
-        rbs.contains("def visit: (Array[Integer] xs) -> untyped\n"),
-        "known issue fixed (each with a block on a parameter); drop this check: {rbs}"
-    );
+    for expected in [
+        "def bump: (Array[Integer] xs) -> Array[Integer]\n",
+        "def visit: (Array[Integer] xs) -> Array[Integer]\n",
+        "def add: (Integer a, Integer b) -> Integer\n",
+    ] {
+        assert!(rbs.contains(expected), "missing {expected:?}: {rbs}");
+    }
 }
 
 /// Cross-file relation chains resolve in the merged registry after the engines finish, so

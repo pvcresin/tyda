@@ -1036,8 +1036,6 @@ fn run_cli(
             batch_builder.apply_chunk(compact_analyses);
             merge_elapsed += merge_chunk_start.elapsed();
         }
-        // Context copy no longer needed; drop it before resolution grows the registry.
-        drop(base_user_rbs);
 
         if memory_breakdown {
             eprintln!(
@@ -1050,7 +1048,36 @@ fn run_cli(
         }
 
         let resolve_start = Instant::now();
-        let workspace_rbs = batch_builder.finish(Some(&stdlib_loader), Some(&pool));
+        let replay_lazy_rbi_loader = lazy_rbi_loader.as_ref();
+        // The replay types bodies against the same context as the first pass, with the
+        // parameters known; the merged registry resolves what they read from other files.
+        let replay_user_rbs = &base_user_rbs;
+        let replay =
+            |merged: &tyda::registry::TypeRegistry,
+             files: &[(String, Vec<tyda::registry::ParamReplayRequest>)]| {
+                files
+                    .par_iter()
+                    .flat_map_iter(|(path, requests)| {
+                        let Ok(source) = fs::read_to_string(path) else {
+                            return Vec::new();
+                        };
+                        tyda::analysis::replay_param_dependent_bodies(
+                            &source,
+                            Some(replay_user_rbs),
+                            merged,
+                            &stdlib_loader,
+                            replay_lazy_rbi_loader,
+                            path,
+                            opts.clone(),
+                            requests,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+        let workspace_rbs =
+            batch_builder.finish_with_param_replay(Some(&stdlib_loader), Some(&pool), &replay);
+        // Context copy no longer needed once the replay has run.
+        drop(base_user_rbs);
         tyda::reclaim_freed_memory(Some(&pool));
         merge_elapsed += resolve_start.elapsed();
         workspace_rbs

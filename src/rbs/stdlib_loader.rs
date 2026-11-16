@@ -521,6 +521,11 @@ impl LazyRbsLoader {
     }
 
     /// stdlib namespaces safe for lazy loading (excludes `CORE_OWNED_CLASSES`, since re-merging them would reopen `Object` as a side effect).
+    /// Whether a stdlib RBS file declares this class or module.
+    pub fn declares_class(&self, class_name: &str) -> bool {
+        first_class_file(&self.class_to_files, class_name.trim_start_matches("::")).is_some()
+    }
+
     pub fn is_loadable_namespace_head(&self, head: &str) -> bool {
         !CORE_OWNED_CLASSES.contains(&head) && self.class_to_files.contains_key(head)
     }

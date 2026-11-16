@@ -23,7 +23,8 @@ use crate::registry::argument_binding::{self, ArgumentRules, ProcKind};
 use crate::registry::{
     BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, ConstantAlias, DefineMethodMacro,
     KeywordArgTypes, LiteralBranchedDef, MacroNamePart, MethodBlockMeta, MethodBodySummary,
-    MethodDef, MixinKind, ParamFlow, ParamInfo, PendingScopedTypeRef, TypeRegistry, Visibility,
+    MethodDef, MixinKind, ParamDependentBody, ParamFlow, ParamInfo, ParamReplayRequest,
+    ParamReplayResult, PendingScopedTypeRef, TypeRegistry, Visibility,
 };
 use crate::sorbet::annotations::{
     extract_sig_source, find_method_annotations, sig_source_return_type, sig_sources_to_rbs_lines,
@@ -1119,6 +1120,9 @@ enum BlockPassChain {
 
 #[derive(Default)]
 struct ActiveMethodBody {
+    /// A call on a parameter-derived receiver kept no arguments or block, so only a replay
+    /// with the callers' types can type it.
+    drops_param_call_shape: bool,
     unresolved_block_receivers: DeferredBlockReceiverCandidates,
     has_case_class_dispatch: bool,
     has_super_call: bool,
@@ -1193,6 +1197,7 @@ pub struct InferenceEngine<'a> {
     /// Block parameter offsets whose block gets each step's yielded values as separate
     /// arguments (`each_with_index.map { |x| }`).
     separate_yield_block_params: HashSet<usize>,
+    param_dependent_bodies: Vec<ParamDependentBody>,
     /// Per controller, the unconditional `before_action` callbacks that halt unless a self
     /// method is truthy, and those methods.
     action_guards: HashMap<String, ActionGuards>,
@@ -1436,6 +1441,7 @@ pub struct FileAnalysisSnapshot {
     pub facts: FileFacts,
     pub method_body_summary: MethodBodySummary,
     pub hover_index: HoverIndex,
+    pub param_dependent_bodies: Vec<ParamDependentBody>,
     pub(crate) coverage: Option<crate::coverage::CoverageFile>,
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
@@ -1453,6 +1459,7 @@ impl FileAnalysisSnapshot {
         Self {
             facts: FileFacts::new(),
             method_body_summary: MethodBodySummary::default(),
+            param_dependent_bodies: Vec::new(),
             hover_index: HoverIndex::new(),
             coverage: None,
             file_path: None,
@@ -1471,6 +1478,7 @@ impl FileAnalysisSnapshot {
         Self {
             facts: FileFacts { registry },
             method_body_summary: MethodBodySummary::default(),
+            param_dependent_bodies: Vec::new(),
             hover_index: HoverIndex::new(),
             coverage: None,
             file_path: None,
@@ -1495,6 +1503,7 @@ impl FileAnalysisSnapshot {
         Self {
             facts: FileFacts::new(),
             method_body_summary: MethodBodySummary::default(),
+            param_dependent_bodies: Vec::new(),
             hover_index: std::mem::take(&mut self.hover_index),
             coverage: None,
             file_path: self.file_path.clone(),
@@ -2891,6 +2900,7 @@ impl<'a> InferenceEngine<'a> {
             inferring_macro_template: false,
             macro_define_method_offsets: Vec::new(),
             separate_yield_block_params: HashSet::new(),
+            param_dependent_bodies: Vec::new(),
             action_guards: HashMap::new(),
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
@@ -2999,6 +3009,7 @@ impl<'a> InferenceEngine<'a> {
             inferring_macro_template: false,
             macro_define_method_offsets: Vec::new(),
             separate_yield_block_params: HashSet::new(),
+            param_dependent_bodies: Vec::new(),
             action_guards: HashMap::new(),
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
@@ -13929,6 +13940,7 @@ impl<'a> InferenceEngine<'a> {
                 registry: self.registry,
             },
             method_body_summary: MethodBodySummary::default(),
+            param_dependent_bodies: self.param_dependent_bodies,
             hover_index: HoverIndex {
                 snapshots,
                 first_walk_call_snapshots,
@@ -14015,6 +14027,7 @@ impl<'a> InferenceEngine<'a> {
                 registry: self.registry,
             },
             method_body_summary: MethodBodySummary::default(),
+            param_dependent_bodies: self.param_dependent_bodies,
             hover_index: HoverIndex {
                 snapshots,
                 first_walk_call_snapshots,
@@ -19533,6 +19546,7 @@ impl<'a> InferenceEngine<'a> {
         });
         self.active_loop_entry_scopes = saved_active_loop_entry_scopes;
         let (
+            drops_param_call_shape,
             unresolved_block_receivers,
             has_case_class_dispatch,
             has_super_call,
@@ -19543,6 +19557,7 @@ impl<'a> InferenceEngine<'a> {
             .take()
             .map(|body| {
                 (
+                    body.drops_param_call_shape,
                     body.unresolved_block_receivers,
                     body.has_case_class_dispatch,
                     body.has_super_call,
@@ -19552,6 +19567,14 @@ impl<'a> InferenceEngine<'a> {
             })
             .unwrap_or_default();
         self.active_method_body = saved_active_method_body;
+        if drops_param_call_shape && self.track_deferred_block_receiver_bodies {
+            self.param_dependent_bodies.push(ParamDependentBody {
+                owner: Sym::new(class_name),
+                method: Sym::new(&method_name),
+                is_singleton,
+                def_offset: def_node.location().start_offset(),
+            });
+        }
         if let Some(summary) = &body_scan_summary {
             let yield_param_types: Vec<Type> = summary
                 .yield_param_types
@@ -34614,6 +34637,7 @@ impl<'a> InferenceEngine<'a> {
                         wrap(result)
                     };
                     let result = Self::include_optional_control_type(result, &block_break_type);
+                    self.note_param_call_shape_drop(&call_node, &safe_nav_receiver_type, &result);
                     // The call is still walked so its arguments reach a definition in another file.
                     let result = match self.explicit_receiver_private_reach(
                         &receiver,
@@ -44658,6 +44682,29 @@ impl<'a> InferenceEngine<'a> {
         // Block-iterating methods (`map`/`select`/...) need the receiver's concrete element type to thread through the block.
         // A deferred instance-variable or method-return receiver (e.g.
         let receiver_type = &self.try_resolve_receiver_inline(class_name, &normalized);
+        // A union of different classes runs the block call on each, as Ruby dispatches on the
+        // runtime value; the block-less overload (an Enumerator) is not the answer.
+        if let Type::Union(members) = receiver_type
+            && members.len() > 1
+            && members.iter().all(|member| {
+                !matches!(member, Type::Nil | Type::Untyped)
+                    && self.type_to_class_name(member).is_some()
+            })
+        {
+            let members = members.clone();
+            let mut results = Vec::with_capacity(members.len());
+            for member in &members {
+                results.push(self.resolve_block_call_generic(
+                    class_name,
+                    call_node,
+                    member,
+                    method_name,
+                    parse_result,
+                    scope,
+                )?);
+            }
+            return Some(Type::from_type_vec(results));
+        }
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
         self.ensure_class_available("Enumerable");
@@ -57258,6 +57305,30 @@ impl<'a> InferenceEngine<'a> {
             && !self.source_method_name_is_defined(method_name)
     }
 
+    fn note_param_call_shape_drop(
+        &mut self,
+        call_node: &ruby_prism::CallNode<'_>,
+        receiver_type: &Type,
+        result: &Type,
+    ) {
+        let Some(body) = self.active_method_body.as_mut() else {
+            return;
+        };
+        if body.drops_param_call_shape || self.replaying_method_body {
+            return;
+        }
+        let has_shape = call_node.block().is_some()
+            || call_node
+                .arguments()
+                .is_some_and(|arguments| arguments.arguments().iter().next().is_some());
+        if has_shape
+            && (!Self::is_concrete(result) || Self::type_contains_untyped(result))
+            && TypeRegistry::type_contains_param_ref_static(receiver_type)
+        {
+            body.drops_param_call_shape = true;
+        }
+    }
+
     fn receiver_union_flags(ty: &Type) -> (bool, bool) {
         let Type::Union(parts) = ty else {
             return (false, false);
@@ -65497,6 +65568,78 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// Types the requested bodies again with the given argument types, which come from every
+    /// caller in the workspace, and returns their new raw returns.
+    pub(crate) fn replay_param_dependent_bodies<'b>(
+        &mut self,
+        program: &ruby_prism::ProgramNode<'b>,
+        parse_result: &ParseResult<'b>,
+        requests: &[ParamReplayRequest],
+    ) -> Vec<ParamReplayResult> {
+        let mut offsets = HashMap::with_capacity(requests.len());
+        for request in requests {
+            let body = &request.body;
+            self.registry.replace_method_call_sites(
+                body.owner.as_str(),
+                CallSite {
+                    method_name: body.method.as_str().into(),
+                    method_is_singleton: body.is_singleton,
+                    arg_types: request.positional.clone(),
+                    keyword_arg_types: request.keywords.iter().cloned().collect(),
+                    keyword_rest_shape: None,
+                    block: None,
+                    caller_context: None,
+                    open_splat: None,
+                    self_call: false,
+                },
+            );
+            offsets.insert(
+                body.def_offset,
+                DeferredMethodReplay {
+                    is_singleton: body.is_singleton,
+                    receiver_dependency_resolved: false,
+                    case_dispatch_needs_replay: false,
+                    source_return_dependency_resolved: false,
+                    block_forward_resolved: false,
+                },
+            );
+        }
+        self.suppress_external_merge = true;
+        let mut changed_method_returns = FxHashSet::default();
+        self.backward_propagate_in_statements(
+            "Object",
+            &program.statements(),
+            parse_result,
+            &offsets,
+            false,
+            &mut changed_method_returns,
+        );
+        self.suppress_external_merge = false;
+        requests
+            .iter()
+            .filter_map(|request| {
+                let body = &request.body;
+                let method = self.registry.lookup_method_def(
+                    body.owner.as_str(),
+                    body.method.as_str(),
+                    body.is_singleton,
+                )?;
+                Some(ParamReplayResult {
+                    body: body.clone(),
+                    return_type: method.raw_return_type.clone(),
+                    block_meta: self
+                        .registry
+                        .lookup_method_block_meta(
+                            body.owner.as_str(),
+                            body.method.as_str(),
+                            body.is_singleton,
+                        )
+                        .cloned(),
+                })
+            })
+            .collect()
+    }
+
     pub fn backward_propagate<'b>(
         &mut self,
         program: &ruby_prism::ProgramNode<'b>,
@@ -66882,6 +67025,24 @@ impl<'a> InferenceEngine<'a> {
 
     /// A replay binds parameters to caller types, so a yield argument that came from a block on
     /// a parameter receiver can now be typed.
+    /// A yield slot the replay can type: untyped, or the result of a call on a parameter.
+    /// A bare parameter stays, since it renders as a type parameter.
+    fn yield_slot_waits_on_replay(slot: &Type) -> bool {
+        fn calls_on_param(ty: &Type) -> bool {
+            match ty {
+                Type::ReceiverMethodRef(receiver, _) => {
+                    TypeRegistry::type_contains_param_ref_static(receiver)
+                }
+                Type::TruthyProjection(inner)
+                | Type::FalsyProjection(inner)
+                | Type::NonNilProjection(inner) => calls_on_param(inner),
+                Type::Union(parts) => parts.iter().any(calls_on_param),
+                _ => false,
+            }
+        }
+        matches!(slot, Type::Untyped) || calls_on_param(slot)
+    }
+
     fn refresh_unresolved_yield_param_types(
         &mut self,
         class_name: &str,
@@ -66901,7 +67062,7 @@ impl<'a> InferenceEngine<'a> {
             || !meta
                 .yield_param_types
                 .iter()
-                .any(|ty| matches!(ty, Type::Untyped))
+                .any(Self::yield_slot_waits_on_replay)
         {
             return;
         }
@@ -66917,7 +67078,7 @@ impl<'a> InferenceEngine<'a> {
             .iter_mut()
             .zip(&summary.yield_param_types)
         {
-            if !matches!(slot, Type::Untyped) || types.is_empty() {
+            if !Self::yield_slot_waits_on_replay(slot) || types.is_empty() {
                 continue;
             }
             let ty = Type::from_type_vec(types.clone());

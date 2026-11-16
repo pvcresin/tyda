@@ -336,6 +336,48 @@ use crate::types::{
     SplatToA, Type,
 };
 
+/// A source method whose body called a method on a parameter-derived receiver with arguments
+/// or a block. The CLI keeps such a call without them, so it replays the body once the
+/// callers' types are known.
+#[derive(Clone, Debug)]
+pub struct ParamDependentBody {
+    pub owner: Sym,
+    pub method: Sym,
+    pub is_singleton: bool,
+    pub def_offset: usize,
+}
+
+/// A parameter-dependent body to type again with its callers' merged argument types.
+#[derive(Clone, Debug)]
+pub struct ParamReplayRequest {
+    pub body: ParamDependentBody,
+    pub positional: Vec<Type>,
+    pub keywords: Vec<(SharedName, Type)>,
+}
+
+/// The new return and block contract of a replayed parameter-dependent body.
+#[derive(Clone, Debug)]
+pub struct ParamReplayResult {
+    pub body: ParamDependentBody,
+    pub return_type: Type,
+    pub block_meta: Option<MethodBlockMeta>,
+}
+
+/// Prints each CLI resolution step's time under `TYDA_RESOLUTION_TIMING`.
+fn cli_resolution_reporter() -> impl FnMut(&str) {
+    let timing = std::env::var_os("TYDA_RESOLUTION_TIMING").is_some();
+    let mut stamp = std::time::Instant::now();
+    move |label: &str| {
+        if timing {
+            eprintln!(
+                "cli-resolution {label}: {:.3}s",
+                stamp.elapsed().as_secs_f64()
+            );
+        }
+        stamp = std::time::Instant::now();
+    }
+}
+
 /// A part of a method name that a class method passes to `define_method`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MacroNamePart {
@@ -4481,6 +4523,32 @@ impl TypeRegistry {
         data.call_sites_revision = data.call_sites_revision.wrapping_add(1);
     }
 
+    /// Makes `call_site` the only call site of its method.
+    pub(crate) fn replace_method_call_sites(&mut self, class_name: &str, call_site: CallSite) {
+        let mut call_site = call_site;
+        self.intern_call_site(&mut call_site);
+        self.mark_class_has_method_body_facts(class_name);
+        let data = self.class_data_mut(class_name);
+        let kept: Vec<CallSite> = data
+            .call_sites
+            .take_all()
+            .into_iter()
+            .filter(|existing| {
+                existing.method_name != call_site.method_name
+                    || existing.method_is_singleton != call_site.method_is_singleton
+            })
+            .collect();
+        for site in kept {
+            data.call_sites.push(site);
+        }
+        data.call_site_fingerprints
+            .get_or_insert_default()
+            .insert(call_site_fingerprint(&call_site));
+        data.has_pending_call_site_summary = true;
+        data.call_sites.push(call_site);
+        data.call_sites_revision = data.call_sites_revision.wrapping_add(1);
+    }
+
     pub fn add_call_site(&mut self, class_name: &str, call_site: CallSite) {
         if crate::trace::enabled() {
             crate::trace::record_call_site(class_name, &call_site);
@@ -5322,42 +5390,106 @@ impl TypeRegistry {
     /// CLI rendering keeps propagated user-defined call sites so rendered
     /// signatures can still show project-derived parameter types.
     pub fn apply_cli_resolution(&mut self) {
+        self.apply_cli_call_site_resolution();
+        self.apply_cli_return_resolution();
+    }
+
+    /// The part of `apply_cli_resolution` up to the point where every call site is in place,
+    /// so the callers' argument types for a method are known.
+    pub fn apply_cli_call_site_resolution(&mut self) {
         if crate::trace::enabled() {
             self.record_trace_bodies();
         }
-        let timing = std::env::var_os("TYDA_RESOLUTION_TIMING").is_some();
-        let mut stamp = std::time::Instant::now();
-        let report = |label: &str, stamp: &mut std::time::Instant| {
-            if timing {
-                eprintln!(
-                    "cli-resolution {label}: {:.3}s",
-                    stamp.elapsed().as_secs_f64()
-                );
-            }
-            *stamp = std::time::Instant::now();
-        };
+        let mut report = cli_resolution_reporter();
         self.apply_mixin_hook_mixins();
         self.expand_define_method_macro_call_sites();
-        report("mixin-hooks", &mut stamp);
+        report("mixin-hooks");
         self.build_subclass_index();
         self.finalize_pending_scoped_type_refs();
         self.enable_owner_lookup_cache();
-        report("subclass-index", &mut stamp);
+        report("subclass-index");
         self.resolve_subclass_method_refs_global();
-        report("subclass-method-refs", &mut stamp);
+        report("subclass-method-refs");
         let target_classes: HashSet<String> = self
             .user_defined_class_names_unsorted()
             .into_iter()
             .map(|name| name.to_string())
             .collect();
         self.propagate_call_sites_for_target_classes(&target_classes);
-        report("call-site-propagation", &mut stamp);
+        report("call-site-propagation");
+    }
+
+    /// The rest of `apply_cli_resolution`: parameter types from the call sites, then returns.
+    pub fn apply_cli_return_resolution(&mut self) {
+        let mut report = cli_resolution_reporter();
         self.resolve_method_param_refs_from_call_sites();
-        report("method-param-refs", &mut stamp);
+        report("method-param-refs");
         self.resolve_param_refs_global();
-        report("param-refs", &mut stamp);
+        report("param-refs");
         self.resolve_method_return_refs_global();
-        report("method-return-refs", &mut stamp);
+        report("method-return-refs");
+    }
+
+    /// The callers' merged argument types for a parameter-dependent body, with their
+    /// references resolved, or `None` when no caller passes a known type.
+    pub fn param_replay_request(&self, body: &ParamDependentBody) -> Option<ParamReplayRequest> {
+        let data = self.class_data.get(&body.owner)?;
+        let method = data.methods.iter().find(|method| {
+            method.name == body.method && method.is_singleton == body.is_singleton
+        })?;
+        if method.origin.is_synthetic_dsl() {
+            return None;
+        }
+        let mut sites: Vec<&CallSite> = data
+            .call_sites
+            .iter()
+            .filter(|site| {
+                site.method_name.as_ref() == body.method.as_str()
+                    && site.method_is_singleton == body.is_singleton
+            })
+            .collect();
+        sites.extend(self.ancestor_self_call_sites(
+            &body.owner,
+            body.method.as_str(),
+            body.is_singleton,
+        ));
+        if sites.is_empty() {
+            return None;
+        }
+        let (positional, keywords) = self.merged_call_site_param_types(method, &sites);
+        // A parameter whose callers' types are not settled keeps its reference, so the replay
+        // types that part as the first pass did.
+        let mut known = false;
+        let mut settle = |ty: Type, unsettled: Type| {
+            let resolved = self.resolve_deferred_refs_for_context_owned(
+                body.owner.as_str(),
+                body.is_singleton,
+                ty,
+            );
+            if resolved != Type::Untyped && Self::is_concrete_for_global_resolve(&resolved) {
+                known = true;
+                resolved
+            } else {
+                unsettled
+            }
+        };
+        let positional: Vec<Type> = positional
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| settle(ty, Type::ParamRef(index)))
+            .collect();
+        let keywords: Vec<(SharedName, Type)> = keywords
+            .into_iter()
+            .map(|(name, ty)| {
+                let unsettled = Type::KeywordParamRef(Sym::new(&name));
+                (SharedName::from(name.as_str()), settle(ty, unsettled))
+            })
+            .collect();
+        known.then(|| ParamReplayRequest {
+            body: body.clone(),
+            positional,
+            keywords,
+        })
     }
 
     pub fn propagate_call_sites_for_hover(&mut self) {
@@ -7731,6 +7863,64 @@ impl TypeRegistry {
         self.resolve_method_param_refs_from_call_sites_for_classes(&class_names);
     }
 
+    /// Parameter types merged over the call sites of a method. A position with an untyped
+    /// argument is untyped as a whole: a partly untyped union would narrow wrongly later.
+    fn merged_call_site_param_types(
+        &self,
+        method: &MethodDef,
+        sites: &[&CallSite],
+    ) -> (Vec<Type>, HashMap<String, Type>) {
+        let positional_count = Self::positional_param_count(&method.param_infos);
+        let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
+        for site in sites {
+            let forwarded = self.call_site_with_forwarded_args(site);
+            Self::merge_call_site_positional_types(
+                &mut param_types,
+                forwarded.as_ref().unwrap_or(site),
+                &method.param_infos,
+            );
+        }
+        let finalize = |ty: Type| -> Type {
+            let unknown_member = match &ty {
+                Type::Untyped => true,
+                Type::Union(parts) => parts.contains(&Type::Untyped),
+                _ => false,
+            };
+            if unknown_member { Type::Untyped } else { ty }
+        };
+        let resolved_params: Vec<Type> = param_types
+            .into_iter()
+            .map(|types| {
+                if types.is_empty() {
+                    Type::Untyped
+                } else {
+                    finalize(Self::erase_forwarded_markers(
+                        Type::from_type_vec(types).widen_arg_for_param(),
+                    ))
+                }
+            })
+            .collect();
+        let mut keyword_merged: FxHashMap<String, Vec<Type>> = FxHashMap::default();
+        for site in sites {
+            for (name, ty) in &site.keyword_arg_types {
+                keyword_merged
+                    .entry(name.as_ref().to_string())
+                    .or_default()
+                    .push(ty.clone());
+            }
+        }
+        let keyword_types: HashMap<String, Type> = keyword_merged
+            .into_iter()
+            .map(|(name, types)| {
+                (
+                    name,
+                    finalize(Type::from_type_vec(types).widen_arg_for_param()),
+                )
+            })
+            .collect();
+        (resolved_params, keyword_types)
+    }
+
     fn resolve_method_param_refs_from_call_sites_for_classes(&mut self, class_names: &[Sym]) {
         for class_name in class_names {
             let _caller_ctx_memo_scope = CallerCtxMemoScope::enter();
@@ -7775,55 +7965,8 @@ impl TypeRegistry {
                     if sites.is_empty() {
                         return None;
                     }
-                    let positional_count = Self::positional_param_count(&method.param_infos);
-                    let mut param_types: Vec<Vec<Type>> = vec![Vec::new(); positional_count];
-                    for site in &sites {
-                        let forwarded = self.call_site_with_forwarded_args(site);
-                        Self::merge_call_site_positional_types(
-                            &mut param_types,
-                            forwarded.as_ref().unwrap_or(site),
-                            &method.param_infos,
-                        );
-                    }
-                    // if any argument position is untyped, treat the whole thing as Untyped (a partially-untyped union would get incorrectly narrowed to e.g. `nil` downstream).
-                    let finalize = |ty: Type| -> Type {
-                        let unknown_member = match &ty {
-                            Type::Untyped => true,
-                            Type::Union(parts) => parts.contains(&Type::Untyped),
-                            _ => false,
-                        };
-                        if unknown_member { Type::Untyped } else { ty }
-                    };
-                    let resolved_params: Vec<Type> = param_types
-                        .into_iter()
-                        .map(|types| {
-                            if types.is_empty() {
-                                Type::Untyped
-                            } else {
-                                finalize(Self::erase_forwarded_markers(
-                                    Type::from_type_vec(types).widen_arg_for_param(),
-                                ))
-                            }
-                        })
-                        .collect();
-                    let mut keyword_merged: FxHashMap<String, Vec<Type>> = FxHashMap::default();
-                    for site in &sites {
-                        for (name, ty) in &site.keyword_arg_types {
-                            keyword_merged
-                                .entry(name.as_ref().to_string())
-                                .or_default()
-                                .push(ty.clone());
-                        }
-                    }
-                    let keyword_types: HashMap<String, Type> = keyword_merged
-                        .into_iter()
-                        .map(|(name, types)| {
-                            (
-                                name,
-                                finalize(Type::from_type_vec(types).widen_arg_for_param()),
-                            )
-                        })
-                        .collect();
+                    let (resolved_params, keyword_types) =
+                        self.merged_call_site_param_types(method, &sites);
                     let resolved = Self::substitute_param_refs_static_with_keywords(
                         &method.raw_return_type,
                         &resolved_params,

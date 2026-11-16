@@ -11,6 +11,7 @@ use crate::rbs::display::user_facing_type;
 use crate::rbs::inline::extract_inline_assertion_comments;
 use crate::rbs::stdlib_loader::LazyRbsLoader;
 use crate::registry::TypeRegistry;
+use crate::registry::{ParamReplayRequest, ParamReplayResult};
 
 pub(crate) struct AnalysisQueryLocation<'a> {
     pub(crate) file_path: &'a str,
@@ -515,6 +516,110 @@ pub fn analyze_compact_file_snapshot_timed(
         lazy_rbs_merge,
         HoverSnapshotMode::Skip,
     )
+}
+
+/// Types the parameter-dependent bodies of one file again with their callers' merged
+/// argument types (see `ParamDependentBody`). `rbs_registry` is the first pass's context;
+/// `workspace` is the merged registry.
+#[allow(clippy::too_many_arguments)]
+pub fn replay_param_dependent_bodies(
+    source: &str,
+    rbs_registry: Option<&TypeRegistry>,
+    workspace: &TypeRegistry,
+    lazy_loader: &LazyRbsLoader,
+    lazy_rbi_loader: Option<&LazyRbiLoader>,
+    file_path: &str,
+    options: AnalysisOptions,
+    requests: &[ParamReplayRequest],
+) -> Vec<ParamReplayResult> {
+    // The replay reads RBS but not the workspace's sources. A class that both declare would
+    // answer from its RBS here and from its source in the first pass, so such a parameter
+    // keeps its reference.
+    let shadowed = |class_name: &str| {
+        workspace.is_user_defined_class(class_name)
+            && (rbs_registry.is_some_and(|registry| registry.has_class(class_name))
+                || lazy_loader.declares_class(class_name))
+    };
+    let requests: Vec<ParamReplayRequest> = requests
+        .iter()
+        .filter_map(|request| {
+            let mut settled = false;
+            let mut keep = |ty: &Type, unsettled: Type| {
+                if matches!(ty, Type::ParamRef(_) | Type::KeywordParamRef(_))
+                    || type_mentions_class(ty, &shadowed)
+                {
+                    unsettled
+                } else {
+                    settled = true;
+                    ty.clone()
+                }
+            };
+            let positional = request
+                .positional
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| keep(ty, Type::ParamRef(index)))
+                .collect();
+            let keywords = request
+                .keywords
+                .iter()
+                .map(|(name, ty)| {
+                    (
+                        name.clone(),
+                        keep(ty, Type::KeywordParamRef(crate::types::Sym::new(name))),
+                    )
+                })
+                .collect();
+            settled.then(|| ParamReplayRequest {
+                body: request.body.clone(),
+                positional,
+                keywords,
+            })
+        })
+        .collect();
+    if requests.is_empty() {
+        return Vec::new();
+    }
+    let (mut engine, _timings) = build_compact_scan_engine(
+        source,
+        rbs_registry,
+        lazy_loader,
+        lazy_rbi_loader,
+        file_path,
+        &options,
+        true,
+        HoverSnapshotMode::Skip,
+    );
+    let parse_result = prism::parse(source.as_bytes());
+    let root = parse_result.node();
+    let Some(program) = root.as_program_node() else {
+        return Vec::new();
+    };
+    engine.replay_param_dependent_bodies(&program, &parse_result, &requests)
+}
+
+fn type_mentions_class(ty: &Type, matches: &impl Fn(&str) -> bool) -> bool {
+    match ty {
+        Type::Class(name) | Type::Singleton(name) => matches(name.as_str()),
+        Type::Generic { base, args } => {
+            matches(base.as_str()) || args.iter().any(|arg| type_mentions_class(arg, matches))
+        }
+        Type::Array(Some(inner)) => type_mentions_class(inner, matches),
+        Type::Hash(key, value) => {
+            key.as_deref()
+                .is_some_and(|key| type_mentions_class(key, matches))
+                || value
+                    .as_deref()
+                    .is_some_and(|value| type_mentions_class(value, matches))
+        }
+        Type::Union(parts) | Type::Tuple(parts) | Type::Intersection(parts) => {
+            parts.iter().any(|part| type_mentions_class(part, matches))
+        }
+        Type::Record(fields) => fields
+            .iter()
+            .any(|field| type_mentions_class(&field.value, matches)),
+        _ => false,
+    }
 }
 
 /// Compact scan variant that records the inference sites used by the opt-in

@@ -10,7 +10,7 @@ use rustc_hash::FxHashMap;
 use crate::dep_graph::{DependencyGraph, FileDeps};
 use crate::inference::FileAnalysisSnapshot;
 use crate::rbs::stdlib_loader::LazyRbsLoader;
-use crate::registry::TypeRegistry;
+use crate::registry::{ParamDependentBody, ParamReplayRequest, ParamReplayResult, TypeRegistry};
 
 type FileId = u32;
 use self::display_scope::DisplayBaseRegistryCache;
@@ -598,11 +598,7 @@ impl WorkspaceState {
             ResolutionProfile::Batch => {
                 let run = |registry: &mut TypeRegistry| {
                     registry.apply_cli_resolution();
-                    if let Some(loader) = stdlib_loader {
-                        Self::resolve_with_stdlib_declarations(registry, loader);
-                    }
-                    registry.prewarm_and_freeze_resolve_params();
-                    registry.compact_after_batch_freeze();
+                    Self::finish_batch_resolution(registry, stdlib_loader);
                 };
                 match pool {
                     Some(pool) => pool.install(|| run(registry)),
@@ -621,6 +617,14 @@ impl WorkspaceState {
                 }
             }
         }
+    }
+
+    fn finish_batch_resolution(registry: &mut TypeRegistry, stdlib_loader: Option<&LazyRbsLoader>) {
+        if let Some(loader) = stdlib_loader {
+            Self::resolve_with_stdlib_declarations(registry, loader);
+        }
+        registry.prewarm_and_freeze_resolve_params();
+        registry.compact_after_batch_freeze();
     }
 
     pub fn invalidate_dependents_of(&mut self, symbols: &HashSet<String>) -> HashSet<String> {
@@ -669,7 +673,14 @@ pub struct BatchProjectionBuilder {
     registry: TypeRegistry,
     applied: usize,
     invalidate_resolved_params: bool,
+    param_dependent_bodies: Vec<(String, Vec<ParamDependentBody>)>,
 }
+
+/// Types parameter-dependent bodies again, per file, with the requested argument types, and
+/// returns their new returns and block contracts. It also gets the merged registry.
+pub type ParamBodyReplay<'a> = &'a (
+        dyn Fn(&TypeRegistry, &[(String, Vec<ParamReplayRequest>)]) -> Vec<ParamReplayResult> + Sync
+    );
 
 impl BatchProjectionBuilder {
     pub fn new(base: TypeRegistry) -> Self {
@@ -677,6 +688,7 @@ impl BatchProjectionBuilder {
             registry: base,
             applied: 0,
             invalidate_resolved_params: false,
+            param_dependent_bodies: Vec::new(),
         }
     }
 
@@ -685,11 +697,71 @@ impl BatchProjectionBuilder {
     where
         I: IntoIterator<Item = (String, FileAnalysisSnapshot)>,
     {
-        for (_file_path, analysis) in chunk {
+        for (file_path, mut analysis) in chunk {
+            if !analysis.param_dependent_bodies.is_empty() {
+                self.param_dependent_bodies.push((
+                    file_path,
+                    std::mem::take(&mut analysis.param_dependent_bodies),
+                ));
+            }
             self.invalidate_resolved_params |=
                 analysis.apply_to_registry_deferred(&mut self.registry);
             self.applied += 1;
         }
+    }
+
+    /// `finish`, but bodies that called methods on their parameters with arguments or a
+    /// block are typed again with the callers' types before returns resolve.
+    pub fn finish_with_param_replay(
+        mut self,
+        stdlib_loader: Option<&LazyRbsLoader>,
+        pool: Option<&rayon::ThreadPool>,
+        replay: ParamBodyReplay<'_>,
+    ) -> Arc<TypeRegistry> {
+        if self.invalidate_resolved_params {
+            self.registry.invalidate_resolve_cache();
+        }
+        let bodies = std::mem::take(&mut self.param_dependent_bodies);
+        let run = |registry: &mut TypeRegistry| {
+            registry.apply_cli_call_site_resolution();
+            let requests: Vec<(String, Vec<ParamReplayRequest>)> = bodies
+                .iter()
+                .filter_map(|(file_path, bodies)| {
+                    let requests: Vec<ParamReplayRequest> = bodies
+                        .iter()
+                        .filter_map(|body| registry.param_replay_request(body))
+                        .collect();
+                    (!requests.is_empty()).then(|| (file_path.clone(), requests))
+                })
+                .collect();
+            if !requests.is_empty() {
+                for result in replay(registry, &requests) {
+                    let body = &result.body;
+                    registry.update_method_return_type_variant(
+                        body.owner.as_str(),
+                        body.method.as_str(),
+                        body.is_singleton,
+                        result.return_type,
+                    );
+                    if let Some(meta) = result.block_meta {
+                        registry.set_method_block_meta(
+                            body.owner.as_str(),
+                            body.method.as_str(),
+                            body.is_singleton,
+                            meta,
+                        );
+                    }
+                }
+                registry.invalidate_resolve_cache();
+            }
+            registry.apply_cli_return_resolution();
+            WorkspaceState::finish_batch_resolution(registry, stdlib_loader);
+        };
+        match pool {
+            Some(pool) => pool.install(|| run(&mut self.registry)),
+            None => run(&mut self.registry),
+        }
+        Arc::new(self.registry)
     }
 
     pub fn applied_file_count(&self) -> usize {
