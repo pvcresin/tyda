@@ -424,10 +424,6 @@ end
 
 ## each_slice keeps a shorter last slice without nil slots
 
-`[1, 2, 3].each_slice(2)` yields `[1, 2]` and `[3]`. The last slice is shorter; it
-has no `nil` slot, so `sum` stays `Integer`. Destructured block parameters still
-see `nil` for the missing position.
-
 ### update
 
 ```ruby
