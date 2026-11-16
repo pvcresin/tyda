@@ -186,7 +186,7 @@ impl TypeRegistry {
                     .values()
                     // lazy stdlib constants are lookup-only and are never emitted in the output.
                     .filter(|constant| !constant.external_source)
-                    .map(|constant| self.output_constant_sig(constant))
+                    .map(|constant| self.output_constant_sig("Object", constant))
                     .collect()
             })
             .unwrap_or_default();
@@ -199,10 +199,10 @@ impl TypeRegistry {
         constants
     }
 
-    fn output_constant_sig(&self, constant: &ConstantDef) -> ConstantSig {
+    fn output_constant_sig(&self, class_name: &str, constant: &ConstantDef) -> ConstantSig {
         ConstantSig {
             name: constant.name.to_string(),
-            const_type: constant.const_type.clone(),
+            const_type: self.proc_with_called_param_types(class_name, &constant.const_type),
             alias_kind: self.namespace_alias_kind(constant),
             loc: constant.loc,
             file_path: constant.file_path.as_deref().map(str::to_string),
@@ -349,7 +349,7 @@ impl TypeRegistry {
             .filter(|constant| {
                 file_filter.is_none_or(|file_path| constant.file_path.as_deref() == Some(file_path))
             })
-            .map(|constant| self.output_constant_sig(constant))
+            .map(|constant| self.output_constant_sig(name, constant))
             .collect();
         constants.sort_by(|a, b| {
             a.loc

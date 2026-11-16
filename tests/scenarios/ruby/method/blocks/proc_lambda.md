@@ -438,3 +438,47 @@ class Labeler
   def keyword: -> (^(?) -> :ok)
 end
 ```
+
+## A lambda in a constant shows the argument types of its calls
+
+### update
+
+```ruby
+class Fmt
+  DOUBLE = ->(x) { x * 2 }
+  def run = DOUBLE.call(3)
+end
+```
+
+### result
+
+```rbs
+class Fmt
+  DOUBLE: (^(Integer) -> Integer)
+
+  def run: -> Integer
+end
+```
+
+## A lambda in an ivar answers call with its own return
+
+### update
+
+```ruby
+class Handler
+  def initialize
+    @handler = ->(v) { v.to_s }
+  end
+
+  def handle = @handler.call(1)
+end
+```
+
+### result
+
+```rbs
+class Handler
+  def initialize: -> void
+  def handle: -> String
+end
+```

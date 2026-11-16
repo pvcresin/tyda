@@ -331,6 +331,23 @@ impl TypeRegistry {
                 data.cold_mut().embedded_rbs.push(text.clone());
             }
         }
+        for template in &rbs_data.cold().define_method_macros {
+            if !data.cold().define_method_macros.contains(template) {
+                data.cold_mut().define_method_macros.push(template.clone());
+            }
+        }
+        for (id, arg_types, result) in &rbs_data.cold().proc_literal_calls {
+            if !data
+                .cold()
+                .proc_literal_calls
+                .iter()
+                .any(|(existing, _, _)| existing == id)
+            {
+                data.cold_mut()
+                    .proc_literal_calls
+                    .push((*id, arg_types.clone(), result.clone()));
+            }
+        }
         for name in &rbs_data.cold().scoped_annotation_names {
             if !data.cold().scoped_annotation_names.contains(name) {
                 data.cold_mut().scoped_annotation_names.push(*name);

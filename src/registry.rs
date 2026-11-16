@@ -336,6 +336,28 @@ use crate::types::{
     SplatToA, Type,
 };
 
+/// A part of a method name that a class method passes to `define_method`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacroNamePart {
+    Literal(String),
+    /// The positional argument at this index, as `to_s` writes it.
+    Arg(usize),
+}
+
+/// A `define_method` in a class method body, kept so each call of that class method in a class
+/// body defines the method there. The block's return reads the block's own parameters as
+/// `ParamRef(j)` and the class method's argument `i` as `ParamRef(params.len() + i)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefineMethodMacro {
+    /// The class that defines the class method; its implicit self calls in the block stay
+    /// references to this class and move to the class that calls the macro.
+    pub owner: Sym,
+    pub class_method: Sym,
+    pub name: Vec<MacroNamePart>,
+    pub params: Vec<ParamInfo>,
+    pub return_type: Type,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamInfo {
     pub name: String,
@@ -2027,6 +2049,11 @@ pub struct ClassDataCold {
     pub scoped_annotation_names: Vec<Sym>,
     /// How each source method's required positional parameters flow to its return.
     pub param_flows: Vec<((Sym, bool), ParamFlows)>,
+    /// `define_method` calls in this class's class methods, expanded where they are called.
+    pub define_method_macros: Vec<DefineMethodMacro>,
+    /// The calls on each lambda literal this class holds: argument types joined per
+    /// position, and the joined result.
+    pub proc_literal_calls: Vec<(crate::types::ProcLiteralId, Vec<Type>, Type)>,
     pub class_type_param_defaults: Vec<(String, Type)>,
     // dirty-family skeleton pattern (`ClassDataCold`).
     pub dirty_method_pattern: Option<DirtyPattern>,
@@ -5232,6 +5259,7 @@ impl TypeRegistry {
 
     pub fn apply_global_resolution(&mut self) {
         self.apply_mixin_hook_mixins();
+        self.expand_define_method_macro_call_sites();
         self.propagate_call_sites_for_hover();
         self.build_subclass_index();
         self.finalize_pending_scoped_type_refs();
@@ -5309,6 +5337,7 @@ impl TypeRegistry {
             *stamp = std::time::Instant::now();
         };
         self.apply_mixin_hook_mixins();
+        self.expand_define_method_macro_call_sites();
         report("mixin-hooks", &mut stamp);
         self.build_subclass_index();
         self.finalize_pending_scoped_type_refs();
@@ -12241,6 +12270,215 @@ impl TypeRegistry {
             return_type,
             proc_calls,
         );
+    }
+
+    pub fn record_define_method_macro(&mut self, class_name: &str, template: DefineMethodMacro) {
+        let cold = self.class_data_mut(class_name).cold_mut();
+        if let Some(existing) = cold.define_method_macros.iter_mut().find(|existing| {
+            existing.class_method == template.class_method && existing.name == template.name
+        }) {
+            *existing = template;
+        } else {
+            cold.define_method_macros.push(template);
+        }
+    }
+
+    /// The `define_method` templates of the class method `class_method` as `class_name` calls
+    /// it, found on the class that defines it.
+    pub fn define_method_macros_for(
+        &self,
+        class_name: &str,
+        class_method: &str,
+    ) -> Vec<DefineMethodMacro> {
+        self.resolve_method_call_owners(class_name, class_method, true)
+            .into_iter()
+            .filter(|(_, is_singleton)| *is_singleton)
+            .filter_map(|(owner, _)| self.class_data.get(owner.as_str()))
+            .flat_map(|data| data.cold().define_method_macros.iter())
+            .filter(|template| template.class_method.as_str() == class_method)
+            .cloned()
+            .collect()
+    }
+
+    /// Once all files are merged, a class-method call with literal arguments defines the
+    /// methods of that class method's `define_method` templates on the receiving class, when
+    /// the file of the call did not see the templates.
+    fn expand_define_method_macro_call_sites(&mut self) {
+        let macro_methods: HashSet<Sym> = self
+            .class_data
+            .values()
+            .flat_map(|data| data.cold().define_method_macros.iter())
+            .map(|template| template.class_method)
+            .collect();
+        if macro_methods.is_empty() {
+            return;
+        }
+        let mut additions: Vec<(Sym, MethodDef)> = Vec::new();
+        for (class_name, data) in &self.class_data {
+            for site in data.call_sites.iter() {
+                if !site.method_is_singleton
+                    || !macro_methods.contains(&Sym::new(site.method_name.as_ref()))
+                {
+                    continue;
+                }
+                for template in self.define_method_macros_for(class_name, &site.method_name) {
+                    if let Some(method) =
+                        Self::expand_define_method_macro(&template, class_name, &site.arg_types)
+                    {
+                        additions.push((*class_name, method));
+                    }
+                }
+            }
+        }
+        for (class_name, method) in additions {
+            if self
+                .lookup_method_def(class_name.as_str(), method.name.as_str(), false)
+                .is_none()
+            {
+                self.add_method_def(class_name.as_str(), method);
+            }
+        }
+    }
+
+    /// The method a `define_method` template defines for these call arguments, when every
+    /// argument its name reads is a literal.
+    pub fn expand_define_method_macro(
+        template: &DefineMethodMacro,
+        class_name: &str,
+        arg_types: &[Type],
+    ) -> Option<MethodDef> {
+        let name: String = template
+            .name
+            .iter()
+            .map(|part| match part {
+                MacroNamePart::Literal(text) => Some(text.clone()),
+                MacroNamePart::Arg(index) => {
+                    arg_types.get(*index).and_then(Self::literal_name_text)
+                }
+            })
+            .collect::<Option<String>>()?;
+        if name.is_empty() {
+            return None;
+        }
+        let bindings: Vec<Type> = (0..template.params.len())
+            .map(Type::ParamRef)
+            .chain(arg_types.iter().cloned())
+            .collect();
+        Some(MethodDef {
+            name: Sym::new(&name),
+            param_infos: template.params.clone(),
+            raw_return_type: Self::move_self_method_refs(
+                &Self::substitute_param_refs_static(&template.return_type, &bindings),
+                template.owner,
+                Sym::new(class_name),
+            ),
+            sorbet_modifier_comments: Vec::new(),
+            rbs_annotated: false,
+            origin: MethodOrigin::RubySource,
+            attr_ivar: None,
+            is_singleton: false,
+            rbs_method_types: Default::default(),
+            extra_overloads: Vec::new(),
+            loc: None,
+        })
+    }
+
+    /// Moves the self calls a macro template left as references to its owner over to the class
+    /// that calls the macro, so that class's own methods answer them.
+    fn move_self_method_refs(ty: &Type, owner: Sym, class_name: Sym) -> Type {
+        let recurse = |ty: &Type| Self::move_self_method_refs(ty, owner, class_name);
+        match ty {
+            Type::MethodReturnRef(ref_class, method) if *ref_class == owner => {
+                Type::MethodReturnRef(class_name, *method)
+            }
+            Type::Union(parts) => {
+                Type::from_type_vec_preserve_untyped(parts.iter().map(recurse).collect())
+            }
+            Type::ReceiverMethodRef(receiver, method) => {
+                Type::ReceiverMethodRef(Box::new(recurse(receiver)), *method)
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Type::DeferredSafeNavigation(Box::new(recurse(receiver)), Box::new(recurse(result)))
+            }
+            Type::TruthyProjection(inner) => Type::TruthyProjection(Box::new(recurse(inner))),
+            Type::FalsyProjection(inner) => Type::FalsyProjection(Box::new(recurse(inner))),
+            Type::NonNilProjection(inner) => Type::NonNilProjection(Box::new(recurse(inner))),
+            Type::Array(Some(inner)) => Type::Array(Some(Box::new(recurse(inner)))),
+            Type::Proc(proc_type) => Type::Proc(Box::new(proc_type.map_types(recurse))),
+            other => other.map_children(recurse),
+        }
+    }
+
+    pub fn literal_name_text(ty: &Type) -> Option<String> {
+        match ty {
+            Type::LiteralSymbol(name) => Some(name.to_string()),
+            Type::LiteralString(text) => Some(text.to_string()),
+            Type::LiteralInteger(value) => Some(value.to_string()),
+            _ => None,
+        }
+    }
+
+    pub fn record_proc_literal_call(
+        &mut self,
+        class_name: &str,
+        id: crate::types::ProcLiteralId,
+        arg_types: Vec<Type>,
+        result: Type,
+    ) {
+        let cold = self.class_data_mut(class_name).cold_mut();
+        match cold
+            .proc_literal_calls
+            .iter_mut()
+            .find(|(existing, _, _)| *existing == id)
+        {
+            Some((_, joined, joined_result)) if joined.len() == arg_types.len() => {
+                for (slot, ty) in joined.iter_mut().zip(arg_types) {
+                    let current = std::mem::replace(slot, Type::Untyped);
+                    *slot = current.union_with(ty);
+                }
+                let current = std::mem::replace(joined_result, Type::Untyped);
+                *joined_result = current.union_with(result);
+            }
+            Some(_) => {}
+            None => cold.proc_literal_calls.push((id, arg_types, result)),
+        }
+    }
+
+    /// A lambda literal that this class's calls passed arguments to shows their types as its
+    /// parameter types, and its return for them.
+    pub(crate) fn proc_with_called_param_types(&self, class_name: &str, ty: &Type) -> Type {
+        match ty {
+            Type::Proc(proc_type) => {
+                let Some(id) = proc_type.literal else {
+                    return ty.clone();
+                };
+                let Some((_, arg_types, result)) =
+                    self.class_data.get(class_name).and_then(|data| {
+                        data.cold()
+                            .proc_literal_calls
+                            .iter()
+                            .find(|(existing, _, _)| *existing == id)
+                    })
+                else {
+                    return ty.clone();
+                };
+                if !proc_type.exact_params
+                    || arg_types.len() != proc_type.param_count()
+                    || proc_type.params.iter().any(|param| *param != Type::Untyped)
+                {
+                    return ty.clone();
+                }
+                let return_type = self.resolve_deferred_refs(class_name, result);
+                Type::proc(arg_types.clone(), return_type, true, proc_type.literal)
+            }
+            Type::Union(parts) => Type::Union(
+                parts
+                    .iter()
+                    .map(|part| self.proc_with_called_param_types(class_name, part))
+                    .collect(),
+            ),
+            _ => ty.clone(),
+        }
     }
 
     pub fn param_flows(

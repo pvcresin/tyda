@@ -744,3 +744,76 @@ class Doubler
   def run: -> Integer
 end
 ```
+
+## A class method that calls define_method defines methods where it is called
+
+### update
+
+### file: app/base.rb
+
+```ruby
+class Base
+  def self.flag(name)
+    define_method("#{name}?") { true }
+  end
+
+  def self.counter(name, start)
+    define_method(name) { |step| start + step }
+  end
+end
+```
+
+```ruby
+class User < Base
+  flag :admin
+  counter :visits, 0
+
+  def check = admin?
+end
+```
+
+### result
+
+```rbs
+class User < Base
+  def admin?: -> true
+  def visits: (untyped step) -> untyped
+  def check: -> true
+end
+```
+
+## A defined method's self calls dispatch on the class that calls the macro
+
+### update
+
+```ruby
+class Policy
+  def self.has_association(name)
+    define_method(:"view_#{name}?") { avo_show? }
+  end
+
+  def avo_show? = false
+end
+
+class AdminPolicy < Policy
+  has_association :provider
+
+  def avo_show? = admin?
+  def admin? = [true, false].sample
+end
+```
+
+### result
+
+```rbs
+class AdminPolicy < Policy
+  def view_provider?: -> bool
+  def avo_show?: -> bool
+  def admin?: -> bool
+end
+
+class Policy
+  def self.has_association: (untyped name) -> Symbol
+  def avo_show?: -> false
+end
+```

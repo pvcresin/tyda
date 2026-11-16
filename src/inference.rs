@@ -21,9 +21,9 @@ use crate::rbs::inline::{
 use crate::rbs::stdlib_loader::LazyRbsLoader;
 use crate::registry::argument_binding::{self, ArgumentRules, ProcKind};
 use crate::registry::{
-    BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, ConstantAlias, KeywordArgTypes,
-    LiteralBranchedDef, MethodBlockMeta, MethodBodySummary, MethodDef, MixinKind, ParamFlow,
-    ParamInfo, PendingScopedTypeRef, TypeRegistry, Visibility,
+    BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, ConstantAlias, DefineMethodMacro,
+    KeywordArgTypes, LiteralBranchedDef, MacroNamePart, MethodBlockMeta, MethodBodySummary,
+    MethodDef, MixinKind, ParamFlow, ParamInfo, PendingScopedTypeRef, TypeRegistry, Visibility,
 };
 use crate::sorbet::annotations::{
     extract_sig_source, find_method_annotations, sig_source_return_type, sig_sources_to_rbs_lines,
@@ -1184,6 +1184,12 @@ pub struct InferenceEngine<'a> {
     /// replay starts from the value before them instead of applying them twice.
     ivar_mutations_by_method: HashMap<(String, String), Vec<IvarMutation>>,
     replaying_method_body: bool,
+    /// Typing the block of a `define_method` template: implicit self calls stay references to
+    /// the owner, since the class that calls the macro answers them.
+    inferring_macro_template: bool,
+    /// Start offsets of the `define_method` calls that the class method being typed always
+    /// runs: top-level statements of its body.
+    macro_define_method_offsets: Vec<usize>,
     /// Per controller, the unconditional `before_action` callbacks that halt unless a self
     /// method is truthy, and those methods.
     action_guards: HashMap<String, ActionGuards>,
@@ -1911,6 +1917,8 @@ fn next_proc_literal_nonce() -> std::num::NonZeroU32 {
 /// A source proc literal's parameters, kept beside its `Type::Proc` so equal types still dedupe.
 #[derive(Debug)]
 struct ProcSignature {
+    /// The class whose body or method holds the literal.
+    owner: Sym,
     kind: ProcKind,
     params: Box<[ParamInfo]>,
     captured_writes: Option<CapturedLocalWrites>,
@@ -2877,6 +2885,8 @@ impl<'a> InferenceEngine<'a> {
             late_block_forwards: Vec::new(),
             ivar_mutations_by_method: HashMap::new(),
             replaying_method_body: false,
+            inferring_macro_template: false,
+            macro_define_method_offsets: Vec::new(),
             action_guards: HashMap::new(),
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
@@ -2982,6 +2992,8 @@ impl<'a> InferenceEngine<'a> {
             late_block_forwards: Vec::new(),
             ivar_mutations_by_method: HashMap::new(),
             replaying_method_body: false,
+            inferring_macro_template: false,
+            macro_define_method_offsets: Vec::new(),
             action_guards: HashMap::new(),
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
@@ -16613,6 +16625,14 @@ impl<'a> InferenceEngine<'a> {
                             }
                             _ => {
                                 pending_sigs.clear();
+                                if call_node.receiver().is_none() && !in_singleton_class {
+                                    self.expand_define_method_macros(
+                                        class_name,
+                                        &call_node,
+                                        parse_result,
+                                        &class_body_scope,
+                                    );
+                                }
                                 let static_mixin_collected = self.collect_static_mixin_dispatch(
                                     class_name,
                                     &call_node,
@@ -19378,6 +19398,15 @@ impl<'a> InferenceEngine<'a> {
         );
         self.registry.begin_method_body(class_name, &method_name);
         let saved_proc_param_calls = self.proc_param_calls.replace(Vec::new());
+        let unconditional_define_methods = if is_singleton {
+            Self::top_level_define_method_offsets(&def_node)
+        } else {
+            Vec::new()
+        };
+        let saved_macro_offsets = std::mem::replace(
+            &mut self.macro_define_method_offsets,
+            unconditional_define_methods,
+        );
         let saved_late_block_forwards = std::mem::take(&mut self.late_block_forwards);
         let mut blockless_return = None;
         let mut return_type = if method_name == "initialize" {
@@ -19411,6 +19440,7 @@ impl<'a> InferenceEngine<'a> {
                 .unwrap_or_default();
         let late_block_forwards =
             std::mem::replace(&mut self.late_block_forwards, saved_late_block_forwards);
+        self.macro_define_method_offsets = saved_macro_offsets;
         self.suppress_body_call_sites = saved_suppress_call_sites;
         if method_name != "initialize"
             && let Some(body) = def_node.body()
@@ -24736,6 +24766,211 @@ impl<'a> InferenceEngine<'a> {
             keyword_arg_types,
         )?;
         Self::refined_enumerator_return_from_type(&method.raw_return_type, &yield_type)
+    }
+
+    /// Keeps `define_method(name) { |x| ... }` in a class method body as a template, when the
+    /// name is built from literals and the class method's arguments.
+    fn record_define_method_macro(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) {
+        if call_node.name().as_slice() != b"define_method"
+            || !scope.singleton_dispatch
+            || self.replaying_method_body
+            || !self
+                .macro_define_method_offsets
+                .contains(&call_node.location().start_offset())
+        {
+            return;
+        }
+        let Some(class_method) = scope.method_name.as_deref() else {
+            return;
+        };
+        let Some(name_node) = call_node
+            .arguments()
+            .and_then(|arguments| arguments.arguments().iter().next())
+        else {
+            return;
+        };
+        let Some(name) = Self::macro_name_parts(&name_node, scope) else {
+            return;
+        };
+        let Some(block) = call_node.block().and_then(|block| block.as_block_node()) else {
+            return;
+        };
+        let mut param_names = Vec::new();
+        if let Some(params) = block.parameters() {
+            let Some(inner) = params
+                .as_block_parameters_node()
+                .and_then(|params| params.parameters())
+            else {
+                return;
+            };
+            if inner.optionals().iter().next().is_some()
+                || inner.rest().is_some()
+                || inner.posts().iter().next().is_some()
+                || inner.keywords().iter().next().is_some()
+                || inner.keyword_rest().is_some()
+                || inner.block().is_some()
+            {
+                return;
+            }
+            for required in inner.requireds().iter() {
+                let Some(param_name) = Self::extract_param_name(&required) else {
+                    return;
+                };
+                param_names.push(param_name);
+            }
+        }
+        // The class method's arguments move after the block's own parameters.
+        let shift = param_names.len();
+        let mut outer_refs = Vec::new();
+        for ty in scope.locals.values() {
+            Self::collect_positional_param_refs(ty, &mut outer_refs);
+        }
+        let shifted: Vec<Type> = (0..=outer_refs.iter().copied().max().unwrap_or(0))
+            .map(|index| Type::ParamRef(shift + index))
+            .collect();
+        let mut block_scope = scope.fork_for_block();
+        block_scope.return_types.clear();
+        block_scope.singleton_dispatch = false;
+        block_scope.method_name = None;
+        for (name, ty) in scope.locals.iter() {
+            block_scope.set(name, Self::substitute_param_refs(ty, &shifted));
+        }
+        for (index, param_name) in param_names.iter().enumerate() {
+            block_scope.set(param_name, Type::ParamRef(index));
+        }
+        let saved = self.suspend_source_observations();
+        let saved_template = std::mem::replace(&mut self.inferring_macro_template, true);
+        let return_type = match block.body() {
+            Some(body) => {
+                let value =
+                    self.infer_body_return_type(class_name, &body, parse_result, &mut block_scope);
+                let mut exits = std::mem::take(&mut block_scope.return_types);
+                exits.push(value);
+                Self::merge_reachable_types(exits)
+            }
+            None => Type::Nil,
+        };
+        self.inferring_macro_template = saved_template;
+        self.resume_source_observations(saved);
+        let params = param_names
+            .into_iter()
+            .map(|name| ParamInfo {
+                name,
+                kind: ParamKind::Required,
+                default_type: None,
+            })
+            .collect();
+        self.registry.record_define_method_macro(
+            class_name,
+            DefineMethodMacro {
+                owner: Sym::new(class_name),
+                class_method: Sym::new(class_method),
+                name,
+                params,
+                return_type,
+            },
+        );
+    }
+
+    fn top_level_define_method_offsets(def_node: &ruby_prism::DefNode<'_>) -> Vec<usize> {
+        def_node
+            .body()
+            .and_then(|body| body.as_statements_node())
+            .map(|statements| {
+                statements
+                    .body()
+                    .iter()
+                    .filter_map(|statement| statement.as_call_node())
+                    .filter(|call| {
+                        call.receiver().is_none() && call.name().as_slice() == b"define_method"
+                    })
+                    .map(|call| call.location().start_offset())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn macro_name_parts(node: &Node<'_>, scope: &Scope) -> Option<Vec<MacroNamePart>> {
+        let from_value = |node: &Node<'_>| -> Option<MacroNamePart> {
+            if let Some(name) = Self::extract_symbol_literal_name(node) {
+                return Some(MacroNamePart::Literal(name));
+            }
+            let read = node.as_local_variable_read_node()?;
+            match scope.get(&String::from_utf8_lossy(read.name().as_slice()))? {
+                Type::ParamRef(index) => Some(MacroNamePart::Arg(*index)),
+                ty => TypeRegistry::literal_name_text(ty).map(MacroNamePart::Literal),
+            }
+        };
+        let parts = match node {
+            Node::InterpolatedStringNode { .. } => node.as_interpolated_string_node()?.parts(),
+            Node::InterpolatedSymbolNode { .. } => node.as_interpolated_symbol_node()?.parts(),
+            _ => return from_value(node).map(|part| vec![part]),
+        };
+        parts
+            .iter()
+            .map(|part| {
+                if let Some(text) = part.as_string_node() {
+                    return Some(MacroNamePart::Literal(
+                        String::from_utf8_lossy(text.unescaped()).to_string(),
+                    ));
+                }
+                let embedded = part.as_embedded_statements_node()?;
+                let mut statements = embedded.statements()?.body().iter();
+                match (statements.next(), statements.next()) {
+                    (Some(value), None) => from_value(&value),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// A class-body call of a class method with `define_method` templates defines each
+    /// method on this class, named from the literal arguments.
+    fn expand_define_method_macros(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) {
+        if scope.method_name.is_some() || call_node.block().is_some() {
+            return;
+        }
+        let class_method = String::from_utf8_lossy(call_node.name().as_slice()).to_string();
+        let templates = self
+            .registry
+            .define_method_macros_for(class_name, &class_method);
+        if templates.is_empty() {
+            return;
+        }
+        let (arg_types, keyword_types) =
+            self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
+        if !keyword_types.is_empty() {
+            return;
+        }
+        let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
+        for template in templates {
+            let Some(mut method) =
+                TypeRegistry::expand_define_method_macro(&template, class_name, &arg_types)
+            else {
+                continue;
+            };
+            if self
+                .registry
+                .lookup_method_def(class_name, method.name.as_str(), false)
+                .is_some()
+            {
+                continue;
+            }
+            method.loc = Some(loc);
+            self.registry.add_method_def(class_name, method);
+        }
     }
 
     /// Records the argument types of `f.call(args)` on a proc parameter `f` of the method body
@@ -31006,6 +31241,9 @@ impl<'a> InferenceEngine<'a> {
                     String::from_utf8_lossy(call_node.name().as_slice()).to_string();
                 self.record_regexp_block_captures(&call_node);
                 self.record_proc_param_call(class_name, &call_node, parse_result, scope);
+                if call_node.receiver().is_none() {
+                    self.record_define_method_macro(class_name, &call_node, parse_result, scope);
+                }
 
                 if let Some(sorbet_type) = self.try_resolve_sorbet_assertion(
                     class_name,
@@ -31030,6 +31268,12 @@ impl<'a> InferenceEngine<'a> {
                     self.ensure_class_available("Object");
                     let mut block_break_type: Option<Type> = None;
                     let result = 'no_recv: {
+                        if self.inferring_macro_template && !self_overridden {
+                            break 'no_recv Type::MethodReturnRef(
+                                class_name.into(),
+                                method_name.clone().into(),
+                            );
+                        }
                         if !self_overridden
                             && call_node.arguments().is_none()
                             && call_node.block().is_none()
@@ -32878,7 +33122,21 @@ impl<'a> InferenceEngine<'a> {
                             }
                         }
 
-                        if let Type::Proc(proc_value) = &safe_nav_receiver_type {
+                        // A lambda an earlier method stored in an ivar answers `call` itself.
+                        let ivar_proc = match &safe_nav_receiver_type {
+                            Type::IvarRef(ivar_name)
+                                if !scope.singleton_dispatch
+                                    && matches!(method_name.as_str(), "call" | "[]" | "yield") =>
+                            {
+                                self.registry
+                                    .lookup_ivar_type(class_name, ivar_name.as_str())
+                                    .filter(|ty| matches!(ty, Type::Proc(_)))
+                            }
+                            _ => None,
+                        };
+                        if let Type::Proc(proc_value) =
+                            ivar_proc.as_ref().unwrap_or(&safe_nav_receiver_type)
+                        {
                             let return_type = &proc_value.return_type;
                             let literal = &proc_value.literal;
                             if method_name == "to_proc" && call_node.arguments().is_none() {
@@ -32977,14 +33235,25 @@ impl<'a> InferenceEngine<'a> {
                                 let signature =
                                     literal.and_then(|id| self.proc_literals.get(&id)).cloned();
                                 let result = if let Some(signature) = signature {
-                                    self.call_proc_literal(
+                                    let result = self.call_proc_literal(
                                         class_name,
                                         &call_node,
                                         return_type,
                                         &signature,
                                         parse_result,
                                         scope,
-                                    )
+                                    );
+                                    if let Some(id) = *literal {
+                                        self.record_proc_literal_call(
+                                            &signature,
+                                            (id, &result),
+                                            &call_node,
+                                            parse_result,
+                                            class_name,
+                                            scope,
+                                        );
+                                    }
+                                    result
                                 } else if proc_value.param_count() > 0 {
                                     let mut arg_types = Vec::new();
                                     if let Some(args) = call_node.arguments() {
@@ -37316,6 +37585,7 @@ impl<'a> InferenceEngine<'a> {
             && params.iter().all(|param| param.kind == ParamKind::Required);
         let id = ProcLiteralId::new(self.proc_literal_nonce, literal.start);
         let signature = ProcSignature {
+            owner: Sym::new(class_name),
             kind: literal.kind,
             captured_writes: Self::captured_local_writes(class_name, &literal, scope, &block_scope),
             params: params.into(),
@@ -37376,6 +37646,41 @@ impl<'a> InferenceEngine<'a> {
                 scope.set(&name, merged);
             }
         }
+    }
+
+    /// Keeps the positional argument types of a call on a lambda literal, so its declaration
+    /// can show them as parameter types.
+    fn record_proc_literal_call(
+        &mut self,
+        signature: &ProcSignature,
+        (id, result): (ProcLiteralId, &Type),
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        class_name: &str,
+        scope: &Scope,
+    ) {
+        let only_required = signature
+            .params
+            .iter()
+            .all(|param| param.kind == ParamKind::Required);
+        if signature.kind != ProcKind::Lambda || !only_required {
+            return;
+        }
+        let (positional, keywords) =
+            self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
+        if !keywords.is_empty() || positional.len() != signature.params.len() {
+            return;
+        }
+        let arg_types = positional
+            .into_iter()
+            .map(Type::widen_arg_for_param)
+            .collect();
+        self.registry.record_proc_literal_call(
+            signature.owner.as_str(),
+            id,
+            arg_types,
+            result.clone().widen_arg_for_param(),
+        );
     }
 
     fn call_proc_literal(
