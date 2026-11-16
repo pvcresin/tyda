@@ -1190,6 +1190,9 @@ pub struct InferenceEngine<'a> {
     /// Start offsets of the `define_method` calls that the class method being typed always
     /// runs: top-level statements of its body.
     macro_define_method_offsets: Vec<usize>,
+    /// Block parameter offsets whose block gets each step's yielded values as separate
+    /// arguments (`each_with_index.map { |x| }`).
+    separate_yield_block_params: HashSet<usize>,
     /// Per controller, the unconditional `before_action` callbacks that halt unless a self
     /// method is truthy, and those methods.
     action_guards: HashMap<String, ActionGuards>,
@@ -2887,6 +2890,7 @@ impl<'a> InferenceEngine<'a> {
             replaying_method_body: false,
             inferring_macro_template: false,
             macro_define_method_offsets: Vec::new(),
+            separate_yield_block_params: HashSet::new(),
             action_guards: HashMap::new(),
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
@@ -2994,6 +2998,7 @@ impl<'a> InferenceEngine<'a> {
             replaying_method_body: false,
             inferring_macro_template: false,
             macro_define_method_offsets: Vec::new(),
+            separate_yield_block_params: HashSet::new(),
             action_guards: HashMap::new(),
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
@@ -3183,6 +3188,29 @@ impl<'a> InferenceEngine<'a> {
                 .registry
                 .lookup_method_def(owner, method_name, owner_is_singleton)
                 .is_some_and(|method| method.origin.is_rbs_file_source())
+    }
+
+    pub(crate) fn collect_separate_yield_block_params(&mut self, root: &Node<'_>) {
+        self.separate_yield_block_params = block_flow::separate_yield_block_params(root);
+    }
+
+    /// An Enumerator that yields several values per step reaches the block as one packed
+    /// tuple; a block that takes them as separate arguments sees its parts instead.
+    fn separately_yielded_param_types<'t>(
+        &self,
+        params_node: &Node<'_>,
+        param_types: &'t [Type],
+    ) -> std::borrow::Cow<'t, [Type]> {
+        if let [Type::Tuple(parts)] = param_types
+            && parts.len() > 1
+            && self
+                .separate_yield_block_params
+                .contains(&params_node.location().start_offset())
+        {
+            std::borrow::Cow::Owned(parts.clone())
+        } else {
+            std::borrow::Cow::Borrowed(param_types)
+        }
     }
 
     pub(crate) fn set_required_stdlib_feature_loads(&mut self, loads: Vec<(String, usize)>) {
@@ -6038,6 +6066,8 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
+        let param_types = self.separately_yielded_param_types(params_node, param_types);
+        let param_types = param_types.as_ref();
         if let Some(bp) = params_node.as_block_parameters_node()
             && let Some(inner) = bp.parameters()
         {
@@ -6049,9 +6079,10 @@ impl<'a> InferenceEngine<'a> {
                     .rest()
                     .is_none_or(|rest| !matches!(rest, Node::ImplicitRestNode { .. }));
             let leading_count = required_count + optional_count;
+            // A lone `*rest` takes one yielded value whole; it splats only beside other params.
             let needs_single_expand = param_types.len() == 1
                 && (leading_count + post_count > 1
-                    || has_rest
+                    || (has_rest && leading_count + post_count > 0)
                     || inner
                         .requireds()
                         .iter()
@@ -6131,6 +6162,8 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
+        let param_types = self.separately_yielded_param_types(params_node, param_types);
+        let param_types = param_types.as_ref();
         if let Some(np) = params_node.as_numbered_parameters_node() {
             for i in 0..(np.maximum() as usize) {
                 let ty = param_types.get(i).cloned().unwrap_or(Type::Untyped);
@@ -44798,6 +44831,12 @@ impl<'a> InferenceEngine<'a> {
                 )
             })
             .unwrap_or(effective_block_param_types);
+        let effective_block_param_types = match block.parameters() {
+            Some(params) => self
+                .separately_yielded_param_types(&params, &effective_block_param_types)
+                .into_owned(),
+            None => effective_block_param_types,
+        };
         let init_type = self.get_init_arg_type(call_node, class_name, parse_result, scope);
         let mutable_init_type = if Self::uses_mutable_seed_arg(method_name) {
             self.get_mutable_init_arg_type(call_node, class_name, parse_result, scope)
@@ -45181,8 +45220,17 @@ impl<'a> InferenceEngine<'a> {
         );
 
         if method_name == "each" {
+            // `Enumerator#each` with a block returns what the underlying iteration returns
+            // (`R`), not the enumerator; the other `each` methods return their receiver.
+            let result = if Self::nominal_base_name(receiver_type) == Some("Enumerator")
+                && method_return != Type::Untyped
+            {
+                method_return
+            } else {
+                receiver_type.clone()
+            };
             return Some(Self::include_optional_control_type(
-                receiver_type.clone(),
+                result,
                 &block_break_type,
             ));
         }
@@ -54346,6 +54394,11 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> (Type, Option<Type>, Scope) {
+        let param_types = match block.parameters() {
+            Some(params) => self.separately_yielded_param_types(&params, param_types),
+            None => std::borrow::Cow::Borrowed(param_types),
+        };
+        let param_types = param_types.as_ref();
         let mut block_scope = scope.fork_for_block();
         let named_requireds =
             Self::extract_block_required_param_infos_from_source(block, parse_result);

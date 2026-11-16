@@ -2672,6 +2672,10 @@ fn build_engine_with_timings<'a>(
         engine.set_lazy_rbi_loader(loader);
     }
 
+    if source.contains("with_index") || source.contains("with_object") {
+        engine.collect_separate_yield_block_params(&root);
+    }
+
     let sorbet_mode = sorbet_comment_mode(options.project_root.as_deref(), file_path);
     if sorbet_mode {
         let type_aliases =

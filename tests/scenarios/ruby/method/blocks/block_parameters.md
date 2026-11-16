@@ -921,16 +921,13 @@ end
 
 ## A lone splat block parameter keeps a yielded array whole
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
 class LoneSplat
   def rows = [[1, "a"]].map { |*xs| xs }
   def pairs = { a: 1 }.map { |*xs| xs }
+  def leading = [[1, "a"]].map { |n, *rest| rest }
 end
 ```
 
@@ -940,5 +937,90 @@ end
 class LoneSplat
   def rows: -> Array[[[1, "a"]]]
   def pairs: -> Array[[[:a, 1]]]
+  def leading: -> Array[["a"]]
+end
+```
+
+## Blocks that take an index enumerator's values separately
+
+### update
+
+```ruby
+class IndexValues
+  def mapped = %w[a].each_with_index.map { |s| s }
+  def splatted = %w[a].each_with_index.map { |*values| values }
+  def flat = %w[a].each_with_index.flat_map { |s| [s] }
+  def counted = %w[a].each_with_index.count { |s| s.empty? }
+  def keyed = %w[a].each_with_index.to_h { |s| [s, 1] }
+  def with_offset = %w[a].each.with_index(1).map { |s| s }
+  def lazy_mapped = %w[a].each_with_index.lazy.map { |s| s }.to_a
+  def hash_pairs = { a: 1 }.each_with_index.map { |pair| pair }
+
+  def stored
+    pairs = %w[a].each_with_index
+    pairs.map { |s| s }
+  end
+end
+```
+
+### result
+
+```rbs
+class IndexValues
+  def mapped: -> Array["a"]
+  def splatted: -> Array[["a", Integer]]
+  def flat: -> Array["a"]
+  def counted: -> Integer
+  def keyed: -> Hash["a", 1]
+  def with_offset: -> Array["a"]
+  def lazy_mapped: -> Array["a"]
+  def hash_pairs: -> Array[[:a, 1]]
+  def stored: -> Array["a"]
+end
+```
+
+## Blocks that take an index enumerator's values packed
+
+### update
+
+```ruby
+class PackedIndexValues
+  def selected = %w[a].each_with_index.select { |pair| pair }
+  def found = %w[a].each_with_index.find { |pair| pair }
+  def sorted = %w[a].each_with_index.sort_by { |pair| pair.last }
+  def splatted = %w[a].each_with_index.select { |*values| values }
+end
+```
+
+### result
+
+```rbs
+class PackedIndexValues
+  def selected: -> Array[["a", Integer]]
+  def found: -> ["a", Integer]?
+  def sorted: -> Array[["a", Integer]]
+  def splatted: -> Array[["a", Integer]]
+end
+```
+
+## Enumerator each with a block returns the iteration result
+
+### update
+
+```ruby
+class EnumeratorEach
+  def indexed = %w[a].each_with_index.each { |s, i| s }
+  def plain = %w[a].each.each { |s| s }
+  def counted = 3.times.each { |i| i }
+end
+```
+
+### result
+
+```rbs
+class EnumeratorEach
+  def indexed: -> ["a"]
+  def plain: -> ["a"]
+  def counted: -> 3
 end
 ```
