@@ -532,14 +532,10 @@ pub fn replay_param_dependent_bodies(
     options: AnalysisOptions,
     requests: &[ParamReplayRequest],
 ) -> Vec<ParamReplayResult> {
-    // The replay reads RBS but not the workspace's sources. A class that both declare would
-    // answer from its RBS here and from its source in the first pass, so such a parameter
-    // keeps its reference.
-    let shadowed = |class_name: &str| {
-        workspace.is_user_defined_class(class_name)
-            && (rbs_registry.is_some_and(|registry| registry.has_class(class_name))
-                || lazy_loader.declares_class(class_name))
-    };
+    // The replay reads RBS but not the workspace's sources, so a workspace class answers
+    // there with less than the merged registry knows (`is_a?` on it cannot narrow). Such a
+    // parameter keeps its reference and resolves as in the first pass.
+    let shadowed = |class_name: &str| workspace.is_user_defined_class(class_name);
     let requests: Vec<ParamReplayRequest> = requests
         .iter()
         .filter_map(|request| {

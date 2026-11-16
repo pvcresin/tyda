@@ -189,8 +189,9 @@ workspace context を分ける。
    参照として残る。そうした method（`ParamDependentBody`）だけを、全呼び出し側から合わせた引数型で
    compact engine により再推論し、戻り値と block の契約を差し替えてから戻り値の解決を続ける。
    engine の文脈は最初の解析と同じ外部 RBS で、ほかのファイルの定義は従来どおり参照として残り
-   merge 済み registry が解決する。型の決まらない引数と、ソースと RBS の両方が定義するクラスを含む
-   引数は parameter 参照のまま渡す。再推論はそうした method を含むファイルだけを読み直す。
+   merge 済み registry が解決する。型の決まらない引数と、workspace のクラスを含む引数は parameter 参照
+   のまま渡す（再推論の文脈は workspace のソースを読まないため）。再推論の戻り値が `untyped` を含み、
+   最初の解析の戻り値が含まない場合は最初の解析を残す。再推論はそうした method を含むファイルだけを読み直す。
 
 この分離で、診断のために workspace 全体の詳細 body / call site を常駐させない。
 
