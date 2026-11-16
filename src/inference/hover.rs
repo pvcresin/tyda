@@ -4005,7 +4005,20 @@ impl<'a> InferenceEngine<'a> {
                     Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
                     _ => unreachable!(),
                 };
-                projected.unwrap_or(Type::Bot)
+                // An ivar resolves to its stored value, which can itself be a reference; the
+                // projection of that reference resolves one step further.
+                match projected {
+                    Some(projected)
+                        if projected != *ty && Self::type_contains_hover_ref(&projected) =>
+                    {
+                        self.registry.resolve_deferred_refs_for_context(
+                            class_context,
+                            singleton_dispatch,
+                            &projected,
+                        )
+                    }
+                    projected => projected.unwrap_or(Type::Bot),
+                }
             }
             Type::Tuple(_)
             | Type::Intersection(_)

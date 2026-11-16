@@ -33122,7 +33122,9 @@ impl<'a> InferenceEngine<'a> {
                             }
                         }
 
-                        // A lambda an earlier method stored in an ivar answers `call` itself.
+                        // A proc literal an earlier method stored in an ivar answers `call`
+                        // itself. A stored block (`@block = block`) stays as it was: its value
+                        // belongs to the method that received it.
                         let ivar_proc = match &safe_nav_receiver_type {
                             Type::IvarRef(ivar_name)
                                 if !scope.singleton_dispatch
@@ -33130,7 +33132,9 @@ impl<'a> InferenceEngine<'a> {
                             {
                                 self.registry
                                     .lookup_ivar_type(class_name, ivar_name.as_str())
-                                    .filter(|ty| matches!(ty, Type::Proc(_)))
+                                    .filter(|ty| {
+                                        matches!(ty, Type::Proc(proc_type) if proc_type.literal.is_some())
+                                    })
                             }
                             _ => None,
                         };

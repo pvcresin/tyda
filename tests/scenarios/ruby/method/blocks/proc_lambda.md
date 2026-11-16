@@ -482,3 +482,26 @@ class Handler
   def handle: -> String
 end
 ```
+
+## A block stored in an ivar keeps its call unknown in another method
+
+### update
+
+```ruby
+class Config
+  def initialize(&block)
+    @block = block
+  end
+
+  def run(env) = @block.call(env)
+end
+```
+
+### result
+
+```rbs
+class Config
+  def initialize: () ?{ (?) -> untyped } -> void
+  def run: (untyped env) -> untyped
+end
+```
