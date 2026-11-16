@@ -8531,7 +8531,7 @@ impl TypeRegistry {
     }
 
     /// checks whether a literal Untyped is present: decides if a call-site type can be written to the method (an untyped union would be incorrectly narrowed downstream).
-    fn type_contains_untyped_member(ty: &Type) -> bool {
+    pub(crate) fn type_contains_untyped_member(ty: &Type) -> bool {
         match ty {
             Type::Untyped => true,
             Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {

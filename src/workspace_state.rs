@@ -761,6 +761,23 @@ impl BatchProjectionBuilder {
                 }
                 for result in results {
                     let body = &result.body;
+                    // The replay reads other methods of its file eagerly, with less than the
+                    // merged registry knows. An untyped part where the first pass kept only
+                    // references would undo what resolving those references gives.
+                    let first_pass_is_settled_later = registry
+                        .lookup_method_def(
+                            body.owner.as_str(),
+                            body.method.as_str(),
+                            body.is_singleton,
+                        )
+                        .is_some_and(|method| {
+                            !TypeRegistry::type_contains_untyped_member(&method.raw_return_type)
+                        });
+                    if first_pass_is_settled_later
+                        && TypeRegistry::type_contains_untyped_member(&result.return_type)
+                    {
+                        continue;
+                    }
                     registry.update_method_return_type_variant(
                         body.owner.as_str(),
                         body.method.as_str(),
