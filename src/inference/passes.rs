@@ -485,11 +485,13 @@ impl<'a> InferenceEngine<'a> {
                     return ty.clone();
                 }
                 visiting.insert(key.clone());
-                let ivar_type = registry.join_subclass_ivar_writes(
-                    context_class,
-                    ivar_name,
-                    registry.lookup_ivar_type(context_class, ivar_name),
-                );
+                let ivar_type = registry
+                    .join_subclass_ivar_writes(
+                        context_class,
+                        ivar_name,
+                        registry.lookup_ivar_type(context_class, ivar_name),
+                    )
+                    .and_then(|ty| TypeRegistry::without_ivar_back_edges(ty, ivar_name.as_str()));
                 let result = match ivar_type {
                     Some(Type::Untyped)
                     | None

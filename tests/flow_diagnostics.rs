@@ -1378,6 +1378,35 @@ end
 // reported. When a case stops reporting it, move it to a regular test that
 // asserts no diagnostic.
 #[test]
+fn ivar_guard_narrows_before_later_methods_write_the_ivar() {
+    let source = concat!(
+        "class IvarNestedGuard\n",
+        "  def run(flag)\n",
+        "    if @buffer\n",
+        "      @buffer << \"x\" if flag\n",
+        "    end\n",
+        "    @buffer = nil\n",
+        "  end\n",
+        "  def start = @buffer = +\",\"\n",
+        "end\n",
+        "class IvarModifierGuard\n",
+        "  def run\n",
+        "    @b << \"x\" if @b\n",
+        "  end\n",
+        "  def start = @b = \"x\"\n",
+        "  def stop = @b = nil\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert!(
+            !missing.iter().any(|(_, method)| method == "NilClass#<<"),
+            "the truthy guard removes nil before the writers are walked: {missing:?}"
+        );
+    }
+}
+
+#[test]
 fn known_issue_nil_false_positives_still_reported() {
     let cases = [
         (
@@ -1394,21 +1423,6 @@ fn known_issue_nil_false_positives_still_reported() {
                 "end\n",
             ),
             "NilClass#empty?",
-        ),
-        (
-            "an ivar truthy guard reaches a nested modifier if",
-            concat!(
-                "class IvarNestedGuard\n",
-                "  def run(flag)\n",
-                "    if @buffer\n",
-                "      @buffer << \"x\" if flag\n",
-                "    end\n",
-                "    @buffer = nil\n",
-                "  end\n",
-                "  def start = @buffer = +\",\"\n",
-                "end\n",
-            ),
-            "NilClass#<<",
         ),
         (
             "a reader nil guard reaches a block in the same method",

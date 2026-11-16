@@ -185,3 +185,28 @@ class Errors
   def later: [X] (X x) -> X
 end
 ```
+
+## A guard on an ivar that later methods write narrows it
+
+### update
+
+```ruby
+class MemoGuard
+  def ignored?
+    return @ignored unless @ignored.nil?
+
+    @ignored = missing?
+  end
+
+  def missing? = true
+end
+```
+
+### result
+
+```rbs
+class MemoGuard
+  def ignored?: -> true
+  def missing?: -> true
+end
+```

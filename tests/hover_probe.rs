@@ -808,12 +808,27 @@ fn attr_reader_of_a_class_from_another_file_resolves_its_deferred_ivar() {
 // the method return keep `Integer` and `Range[Integer]`. When the check fails, assert the expected
 // `() { (Integer) -> void } -> Range[Integer]` instead.
 #[test]
-fn known_issue_range_each_call_hover_loses_element_type() {
+fn range_each_call_hover_keeps_parameter_element_type() {
     let source = "def run(limit) = (1..limit).each { |i| i }\n\nrun(3)\n";
-    let (_, _, display) = hover_with_display(source, 1, 30).expect("hover on `each`");
+    let (_, ty, display) = hover_with_display(source, 1, 30).expect("hover on `each`");
+    assert_eq!(ty, "Range[Integer]");
     assert_eq!(
         display.as_deref(),
-        Some("each: () { (untyped arg0) -> untyped } -> Range[untyped]"),
-        "known issue fixed (Range#each call hover); update this check"
+        Some("each: () { (Integer arg0) -> untyped } -> Range[Integer]")
+    );
+    let source = "def run(limit)\n  y = [limit]\n  y\nend\nrun(3)\n";
+    assert_hover(source, 2, 2, "y", "[Integer]");
+}
+
+#[test]
+fn known_issue_block_param_hover_over_parameter_range() {
+    // Known issue: the block parameter of a range built from a method parameter stays
+    // `untyped`, though the receiver hovers as `Range[Integer]`. Expected: `Integer`.
+    let source = "def run(limit) = (1..limit).each { |i| i }\n\nrun(3)\n";
+    let (name, ty) = hover(source, 1, 36).expect("hover on the block parameter");
+    assert_eq!(name, "i");
+    assert_eq!(
+        ty, "untyped",
+        "known issue fixed (block parameter over a parameter range); update this check"
     );
 }

@@ -150,6 +150,34 @@ impl Type {
         }))
     }
 
+    /// The type with `f` applied to each direct part of a tuple, intersection, generic,
+    /// hash or record; other types stay as they are.
+    pub fn map_children(&self, mut f: impl FnMut(&Type) -> Type) -> Type {
+        match self {
+            Type::Tuple(parts) => Type::Tuple(parts.iter().map(&mut f).collect()),
+            Type::Intersection(parts) => Type::Intersection(parts.iter().map(&mut f).collect()),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(&mut f).collect(),
+            },
+            Type::Hash(key, value) => Type::Hash(
+                key.as_deref().map(|key| Box::new(f(key))),
+                value.as_deref().map(|value| Box::new(f(value))),
+            ),
+            Type::Record(fields) => Type::Record(
+                fields
+                    .iter()
+                    .map(|field| RecordField {
+                        key: field.key.clone(),
+                        value: f(&field.value),
+                        optional: field.optional,
+                    })
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
     /// The same callable as another kind; other types stay as they are.
     pub fn with_callable_kind(self, kind: CallableKind) -> Type {
         match self {

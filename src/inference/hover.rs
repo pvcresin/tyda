@@ -4005,7 +4005,37 @@ impl<'a> InferenceEngine<'a> {
                     Type::NonNilProjection(_) => Some(Type::project_non_nil(&resolved_inner)),
                     _ => unreachable!(),
                 };
-                projected.unwrap_or(Type::Bot)
+                // An ivar resolves to its stored value, which can itself be a reference; the
+                // projection of that reference resolves one step further.
+                match projected {
+                    Some(projected)
+                        if projected != *ty && Self::type_contains_hover_ref(&projected) =>
+                    {
+                        self.registry.resolve_deferred_refs_for_context(
+                            class_context,
+                            singleton_dispatch,
+                            &projected,
+                        )
+                    }
+                    projected => projected.unwrap_or(Type::Bot),
+                }
+            }
+            Type::Tuple(_)
+            | Type::Intersection(_)
+            | Type::Generic { .. }
+            | Type::Hash(..)
+            | Type::Record(_)
+                if Self::type_contains_hover_ref(ty) =>
+            {
+                ty.map_children(|child| {
+                    self.resolve_type_for_hover_with_context(
+                        child,
+                        class_context,
+                        method_context,
+                        singleton_dispatch,
+                        method_context_singleton_dispatch,
+                    )
+                })
             }
             _ => ty.clone(),
         }
@@ -4513,6 +4543,35 @@ impl<'a> InferenceEngine<'a> {
                 .unwrap_or(class_name.as_str())
                 .to_string(),
         )
+    }
+
+    /// Whether a composite holds a part that `resolve_type_for_hover_with_context` resolves.
+    fn type_contains_hover_ref(ty: &Type) -> bool {
+        match ty {
+            Type::ParamRef(_)
+            | Type::KeywordParamRef(_)
+            | Type::IvarRef(_)
+            | Type::GlobalVariableRef(_)
+            | Type::MethodReturnRef(..)
+            | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..)
+            | Type::TruthyProjection(_)
+            | Type::FalsyProjection(_)
+            | Type::NonNilProjection(_) => true,
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+                parts.iter().any(Self::type_contains_hover_ref)
+            }
+            Type::Generic { args, .. } => args.iter().any(Self::type_contains_hover_ref),
+            Type::Array(Some(inner)) => Self::type_contains_hover_ref(inner),
+            Type::Hash(key, value) => key
+                .iter()
+                .chain(value.iter())
+                .any(|part| Self::type_contains_hover_ref(part)),
+            Type::Record(fields) => fields
+                .iter()
+                .any(|field| Self::type_contains_hover_ref(&field.value)),
+            _ => false,
+        }
     }
 
     fn hover_value_may_gain_from_workspace(ty: &Type) -> bool {
