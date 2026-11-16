@@ -1402,10 +1402,6 @@ end
 
 ## is_a? narrows a union of Struct classes
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -1427,7 +1423,7 @@ end
 ### result
 
 ```rbs
-class StructNarrow::Mapping
+class StructNarrow::Mapping < Struct
   def tag: -> untyped
   def tag=: (untyped tag) -> untyped
   def initialize: (tag: untyped) -> void
@@ -1439,7 +1435,7 @@ class StructNarrow::Parser
   def run: -> StructNarrow::Mapping?
 end
 
-class StructNarrow::Scalar
+class StructNarrow::Scalar < Struct
   def value: -> untyped
   def value=: (untyped value) -> untyped
   def initialize: (value: untyped) -> void
