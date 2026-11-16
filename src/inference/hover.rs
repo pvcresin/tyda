@@ -3552,9 +3552,13 @@ impl<'a> InferenceEngine<'a> {
         for snap in &self.var_snapshots {
             if byte_offset >= snap.start
                 && byte_offset < snap.end
-                && best
-                    .as_ref()
-                    .is_none_or(|b| (snap.end - snap.start) < (b.end - b.start))
+                && best.as_ref().is_none_or(|b| {
+                    let (span, best_span) = (snap.end - snap.start, b.end - b.start);
+                    span < best_span
+                        || (span == best_span
+                            && snap.start == b.start
+                            && Self::hover_snapshot_upgrades(b, snap))
+                })
             {
                 best = Some(snap);
             }

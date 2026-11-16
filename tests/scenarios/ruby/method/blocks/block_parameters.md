@@ -918,3 +918,32 @@ class LaterSetup
   def self.instance: -> LaterSetup
 end
 ```
+
+## A lone splat block parameter keeps a yielded array whole
+
+```yaml
+known_issue: true
+```
+
+`|*xs|` takes the single yielded value as one argument, so an array element is not
+splatted (`[[1, "a"]].map { |*xs| xs }` is `[[[1, "a"]]]` in Ruby). Tyda splats it.
+An Enumerator that yields two values (`each_with_index.map { |*a| a }`) reaches the
+block as one tuple too, so the binding cannot tell the two cases apart yet.
+
+### update
+
+```ruby
+class LoneSplat
+  def rows = [[1, "a"]].map { |*xs| xs }
+  def pairs = { a: 1 }.map { |*xs| xs }
+end
+```
+
+### result
+
+```rbs
+class LoneSplat
+  def rows: -> Array[[[1, "a"]]]
+  def pairs: -> Array[[[:a, 1]]]
+end
+```

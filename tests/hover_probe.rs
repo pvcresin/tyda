@@ -821,14 +821,48 @@ fn range_each_call_hover_keeps_parameter_element_type() {
 }
 
 #[test]
-fn known_issue_block_param_hover_over_parameter_range() {
-    // Known issue: the block parameter of a range built from a method parameter stays
-    // `untyped`, though the receiver hovers as `Range[Integer]`. Expected: `Integer`.
-    let source = "def run(limit) = (1..limit).each { |i| i }\n\nrun(3)\n";
-    let (name, ty) = hover(source, 1, 36).expect("hover on the block parameter");
-    assert_eq!(name, "i");
-    assert_eq!(
-        ty, "untyped",
-        "known issue fixed (block parameter over a parameter range); update this check"
-    );
+fn block_param_hover_follows_caller_types() {
+    // The first walk binds these before the callers' types are known; the replay with
+    // the callers' types records the typed hover for the same span.
+    let cases = [
+        (
+            "def run(limit) = (1..limit).each { |i| i }\n\nrun(3)\n",
+            36,
+            "i",
+            "Integer",
+        ),
+        (
+            "def run(xs) = xs.each { |x| x }\n\nrun([1])\n",
+            25,
+            "x",
+            "Integer",
+        ),
+        (
+            "def run(h) = h.each { |k, v| v }\n\nrun({ a: 1 })\n",
+            26,
+            "v",
+            "Integer",
+        ),
+        (
+            "def run(n) = n.times { |i| i }\n\nrun(3)\n",
+            24,
+            "i",
+            "Integer",
+        ),
+        (
+            "def run(s) = s.each_char { |c| c }\n\nrun(\"a\")\n",
+            28,
+            "c",
+            "String",
+        ),
+        (
+            "def run(xs) = xs.group_by(&:size).each { |k, v| v }\n\nrun([\"a\"])\n",
+            45,
+            "v",
+            "Array[String]",
+        ),
+    ];
+    for (source, column, name, ty) in cases {
+        assert_hover(source, 1, column, name, ty);
+    }
 }

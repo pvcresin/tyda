@@ -13848,9 +13848,25 @@ impl<'a> InferenceEngine<'a> {
 
     /// Blocks are walked once without and once with declared param types, so the
     /// same span can get a snapshot with untyped parts first and a typed one later.
-    fn hover_snapshot_upgrades(current: &HoverSnapshot, candidate: &HoverSnapshot) -> bool {
+    /// A destructure slot of an untyped value is untyped too.
+    fn hover_type_has_untyped_part(ty: &Type) -> bool {
+        match ty {
+            Type::PatternIndexRef(subject, _)
+            | Type::PatternRestRef(subject)
+            | Type::PatternTrailingRef(subject, _)
+            | Type::PatternKeyRef(subject, _)
+            | Type::PatternKeyRestRef(subject, _) => Self::hover_type_has_untyped_part(subject),
+            _ => Self::type_contains_untyped(ty),
+        }
+    }
+
+    pub(crate) fn hover_snapshot_upgrades(
+        current: &HoverSnapshot,
+        candidate: &HoverSnapshot,
+    ) -> bool {
         let upgrades = |current: &Type, candidate: &Type| {
-            Self::type_contains_untyped(current) && !Self::type_contains_untyped(candidate)
+            Self::hover_type_has_untyped_part(current)
+                && !Self::hover_type_has_untyped_part(candidate)
         };
         match (&current.target, &candidate.target) {
             (HoverTarget::Value(current_ty), HoverTarget::Value(candidate_ty)) => {
@@ -53591,6 +53607,12 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         window_size: Option<usize>,
     ) -> Type {
+        if method_name == "each_slice"
+            && let Type::Tuple(elems) = receiver_type
+            && let Some(window_size) = window_size.filter(|size| *size > 0)
+        {
+            return Self::tuple_slice_yield_type(elems, window_size);
+        }
         if let Some(window_size) = window_size
             && let Some(types) = Self::exact_tuple_window_block_param_types(
                 receiver_type,
@@ -53604,6 +53626,31 @@ impl<'a> InferenceEngine<'a> {
 
         let elem_type = Self::enumerable_element_type(receiver_type);
         Type::Array(Some(Box::new(elem_type)))
+    }
+
+    /// The last slice is shorter when the size does not divide the tuple, so it is a
+    /// tuple of its own rather than a full slice with `nil` slots.
+    fn tuple_slice_yield_type(elems: &[Type], window_size: usize) -> Type {
+        let full_count = elems.len() / window_size;
+        let mut slices = Vec::with_capacity(2);
+        if full_count > 0 {
+            slices.push(Type::Tuple(
+                (0..window_size)
+                    .map(|position| {
+                        Self::union_preserving_array_shapes(
+                            (0..full_count)
+                                .map(|slice| elems[slice * window_size + position].clone())
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            ));
+        }
+        let rest = &elems[full_count * window_size..];
+        if !rest.is_empty() {
+            slices.push(Type::Tuple(rest.to_vec()));
+        }
+        Self::union_preserving_array_shapes(slices)
     }
 
     fn rebuild_array_with_elem(receiver_type: &Type, elem_type: &Type) -> Type {

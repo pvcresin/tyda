@@ -5103,6 +5103,42 @@ fn known_issue_io_read_through_parameters_in_a_single_file() {
     );
 }
 
+// Known issue: the scenario runner and the LSP replay the method body with the callers'
+// argument types and infer these (`ruby/method/param_receiver_method_ref.md`). The CLI keeps
+// a call on a parameter as a deferred method reference, which has no block, so the block's
+// value is lost. When a check fails, drop it.
+#[test]
+fn known_issue_block_calls_on_parameters_in_a_single_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("source.rb"),
+        concat!(
+            "class BlockOnParam\n",
+            "  def bump(xs) = xs.map { |x| x + 1 }\n",
+            "  def visit(xs) = xs.each { |x| x }\n",
+            "end\n",
+            "\n",
+            "BlockOnParam.new.bump([1])\n",
+            "BlockOnParam.new.visit([1])\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def bump: (Array[Integer] xs) -> untyped\n"),
+        "known issue fixed (map with a block on a parameter); drop this check: {rbs}"
+    );
+    assert!(
+        rbs.contains("def visit: (Array[Integer] xs) -> untyped\n"),
+        "known issue fixed (each with a block on a parameter); drop this check: {rbs}"
+    );
+}
+
 /// Cross-file relation chains resolve in the merged registry after the engines finish, so
 /// that registry must apply the project's Rails version like the engine does.
 #[test]
