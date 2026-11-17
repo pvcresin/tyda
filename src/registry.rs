@@ -4633,13 +4633,22 @@ impl TypeRegistry {
         file_path: Option<&str>,
         alias: ConstantAlias,
     ) {
-        let data = self.class_data_mut(class_name);
-        data.user_defined = true;
-        let name = Sym::new(constant_name);
-        data.constants.insert(
-            name,
+        // An `.rbs` declaration of the constant keeps its declared type.
+        let (const_type, alias) = match self
+            .class_data
+            .get(class_name)
+            .and_then(|data| data.constants.get(constant_name))
+        {
+            Some(declared) if declared.external_source => {
+                (declared.const_type.clone(), declared.alias)
+            }
+            _ => (const_type, alias),
+        };
+        self.insert_constant_entry(
+            class_name,
+            constant_name,
             ConstantDef {
-                name,
+                name: Sym::new(constant_name),
                 const_type,
                 loc,
                 file_path: file_path.map(SharedPath::from),
@@ -4647,6 +4656,34 @@ impl TypeRegistry {
                 alias,
             },
         );
+    }
+
+    /// A constant declared in an `.rbs` file: used for lookup, never emitted in the output.
+    pub fn set_rbs_constant_entry(
+        &mut self,
+        class_name: &str,
+        constant_name: &str,
+        const_type: Type,
+        alias: ConstantAlias,
+    ) {
+        self.insert_constant_entry(
+            class_name,
+            constant_name,
+            ConstantDef {
+                name: Sym::new(constant_name),
+                const_type,
+                loc: None,
+                file_path: None,
+                external_source: true,
+                alias,
+            },
+        );
+    }
+
+    fn insert_constant_entry(&mut self, class_name: &str, constant_name: &str, def: ConstantDef) {
+        let data = self.class_data_mut(class_name);
+        data.user_defined = true;
+        data.constants.insert(Sym::new(constant_name), def);
     }
 
     pub fn constant_is_namespace_alias(

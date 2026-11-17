@@ -598,13 +598,25 @@ impl TypeRegistry {
             MergeRule::AddIfAbsent
         );
         for (const_name, const_def) in &rbs_data.constants {
-            data.constants.entry(*const_name).or_insert_with(|| {
-                let mut const_def = const_def.clone();
-                if constants_external {
-                    const_def.external_source = true;
+            let incoming_external = constants_external || const_def.external_source;
+            match data.constants.entry(*const_name) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let mut const_def = const_def.clone();
+                    const_def.external_source = incoming_external;
+                    entry.insert(const_def);
                 }
-                const_def
-            });
+                // A Ruby definition of a constant that only an `.rbs` file declared so far: emit it,
+                // keeping the declared type.
+                std::collections::hash_map::Entry::Occupied(mut entry)
+                    if entry.get().external_source && !incoming_external =>
+                {
+                    let existing = entry.get_mut();
+                    existing.loc = const_def.loc;
+                    existing.file_path = const_def.file_path.clone();
+                    existing.external_source = false;
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {}
+            }
         }
         if !shared_call_sites.is_empty() {
             // call site dedup uses a fingerprint (linear `contains` would be quadratic across thousands of sites).
