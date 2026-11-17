@@ -389,7 +389,9 @@ fn register_rbs_constant(
         Some((owner, tail)) => (owner.trim_start_matches("::"), tail),
         None => ("Object", qualified_name),
     };
-    registry.set_constant_entry(owner, const_name, ty, None, None, alias);
+    // `::FOO` declares a top-level constant.
+    let owner = if owner.is_empty() { "Object" } else { owner };
+    registry.set_rbs_constant_entry(owner, const_name, ty, alias);
 }
 
 fn collect_declared_classes_from_signature(sig: &rbs_sys::Signature) -> Vec<String> {

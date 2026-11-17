@@ -1999,3 +1999,53 @@ class RbsClassState
   def state: -> Symbol
 end
 ```
+
+## RBS constant declarations are used for lookup but not emitted
+
+```rbs
+module RbsConstLib
+  VERSION: String
+
+  class Thing
+    ::RBS_CONST_TOP: Integer
+  end
+end
+```
+
+```ruby
+class RbsConstUser
+  def version = RbsConstLib::VERSION
+  def top = RBS_CONST_TOP
+end
+```
+
+### result
+
+```rbs
+class RbsConstUser
+  def version: -> String
+  def top: -> Integer
+end
+```
+
+## Ruby constant declared in RBS is emitted with the declared type
+
+```rbs
+module RbsConstDeclared
+  LIMIT: Integer
+end
+```
+
+```ruby
+module RbsConstDeclared
+  LIMIT = 3
+end
+```
+
+### result
+
+```rbs
+module RbsConstDeclared
+  LIMIT: Integer
+end
+```

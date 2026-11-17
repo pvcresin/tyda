@@ -304,8 +304,6 @@ end
 ### result
 
 ```rbs
-class Entry = Types::Item
-
 class Object < BasicObject
   def rbs_class_alias_value: -> String
 end
@@ -338,8 +336,6 @@ end
 ### result
 
 ```rbs
-module Alias = Types::Named
-
 class Object < BasicObject
   def rbs_module_alias_value: -> String
 end

@@ -11,9 +11,11 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
   - RBS 出力は公式 parser が受理する構文に限る。戻り値の union / intersection は括弧で囲み、
     型注釈のない `&block` は `?{ (?) -> untyped }`、Float literal は `Float` で出す。戻り値の `void` を含む
     union は使える値がないため `void` にまとめる
-  - class / module を定数参照で代入した定数（`A = B`、alias の連鎖、RBS の `class A = B` /
-    `module A = B` 入力）は、定数宣言ではなく対象の種類に合わせた `class A = B` / `module A = B` で出す。
+  - class / module を定数参照で代入した定数（`A = B`、alias の連鎖）は、定数宣言ではなく対象の種類に
+    合わせた `class A = B` / `module A = B` で出す。
     `Class.new` の結果のように型だけが `singleton(...)` の値定数は従来どおり定数宣言にする
+  - `.rbs`（`sig/` や gem_rbs_collection など）で宣言した定数と `class A = B` / `module A = B` は
+    参照の解決にだけ使い、出力しない。Ruby で定義した定数に `.rbs` の宣言があれば、宣言の型で出す
 - TypeProf VSCode 拡張と接続できる LSP server
 - stdio MCP server による AI agent 向けの位置指定型推論と、明示queryによる同一source内の型由来説明
 - Rails / gem DSL plugin
