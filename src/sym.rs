@@ -133,15 +133,36 @@ static SHARDS: [Shard; SHARD_COUNT] = [
 ];
 
 #[inline]
-fn shard_for(s: &str) -> &'static Shard {
+fn hash_name(s: &str) -> usize {
     let mut hasher = rustc_hash::FxHasher::default();
     hasher.write(s.as_bytes());
-    let idx = (hasher.finish() as usize) % SHARD_COUNT;
-    &SHARDS[idx]
+    hasher.finish() as usize
+}
+
+// A per-thread direct-mapped cache in front of the shards. Hot names are interned from
+// every worker, and the shard read lock is a shared atomic each time.
+const LOCAL_CACHE_SLOTS: usize = 1024;
+
+thread_local! {
+    static LOCAL_CACHE: [std::cell::Cell<Option<&'static Entry>>; LOCAL_CACHE_SLOTS] =
+        const { [const { std::cell::Cell::new(None) }; LOCAL_CACHE_SLOTS] };
 }
 
 fn intern(s: &str) -> &'static Entry {
-    let shard = shard_for(s);
+    let hash = hash_name(s);
+    // The shard takes the low bits, so the slot uses higher ones.
+    let slot = (hash >> 16) % LOCAL_CACHE_SLOTS;
+    if let Some(cached) = LOCAL_CACHE.with(|cache| cache[slot].get())
+        && *cached.0 == *s
+    {
+        return cached;
+    }
+    let entry = intern_shared(s, &SHARDS[hash % SHARD_COUNT]);
+    LOCAL_CACHE.with(|cache| cache[slot].set(Some(entry)));
+    entry
+}
+
+fn intern_shared(s: &str, shard: &'static Shard) -> &'static Entry {
     {
         let guard = shard.read().unwrap_or_else(|e| e.into_inner());
         if let Some(set) = guard.as_ref()
@@ -343,6 +364,29 @@ mod tests {
         let b = Sym::new(String::from("Foo::Bar"));
         assert_eq!(a, b);
         assert!(std::ptr::eq(a.as_str().as_ptr(), b.as_str().as_ptr()));
+    }
+
+    #[test]
+    fn interning_is_stable_across_cache_slots_and_threads() {
+        // More names than the per-thread cache has slots, so slots get replaced.
+        let names: Vec<String> = (0..5000).map(|i| format!("Name{i}")).collect();
+        let first: Vec<Sym> = names.iter().map(Sym::new).collect();
+        let other_thread: Vec<usize> = {
+            let names = names.clone();
+            std::thread::spawn(move || {
+                names
+                    .iter()
+                    .map(|name| Sym::new(name).as_str().as_ptr() as usize)
+                    .collect()
+            })
+            .join()
+            .expect("thread")
+        };
+        for ((name, sym), ptr) in names.iter().zip(&first).zip(&other_thread) {
+            assert_eq!(sym.as_str(), name);
+            assert_eq!(Sym::new(name), *sym);
+            assert_eq!(sym.as_str().as_ptr() as usize, *ptr);
+        }
     }
 
     #[test]
