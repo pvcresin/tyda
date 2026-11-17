@@ -951,6 +951,12 @@ const MIN_INFER_NODE_FUEL_BUDGET: u64 = 100_000;
 const INFER_NODE_FUEL_PER_SOURCE_BYTE: u64 = 20;
 const DEFAULT_INFER_NODE_FUEL_BUDGET: u64 = 1_500_000;
 
+// Read once: an environment lookup takes a process-wide lock, and these are checked per block.
+static BLOCK_WALK_STATS: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("TYDA_BLOCK_WALK_STATS").is_some());
+static DEBUG_LAMBDA: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("DBG_LAMBDA").is_ok());
+
 pub fn set_infer_node_fuel_budget(source_len: usize) {
     let budget =
         MIN_INFER_NODE_FUEL_BUDGET.max(source_len as u64 * INFER_NODE_FUEL_PER_SOURCE_BYTE);
@@ -24009,7 +24015,7 @@ impl<'a> InferenceEngine<'a> {
         if block_invocation == IterationCardinality::Never {
             return;
         }
-        if std::env::var_os("TYDA_BLOCK_WALK_STATS").is_some() {
+        if *BLOCK_WALK_STATS {
             use std::sync::atomic::{AtomicU64, Ordering};
             static WALKS: AtomicU64 = AtomicU64::new(0);
             let walks = WALKS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -24634,7 +24640,7 @@ impl<'a> InferenceEngine<'a> {
                 && Self::receiver_matches_binding(&recv, var_name)
                 && let Some(args_node) = call.arguments()
             {
-                if std::env::var("DBG_LAMBDA").is_ok() {
+                if *DEBUG_LAMBDA {
                     eprintln!(
                         "DBG_LAMBDA matched call_site offset={call_start} method={method_name}"
                     );
@@ -24644,7 +24650,7 @@ impl<'a> InferenceEngine<'a> {
                         break;
                     }
                     let ty = self.infer_node_type(class_name, &arg, parse_result, scope);
-                    if std::env::var("DBG_LAMBDA").is_ok() {
+                    if *DEBUG_LAMBDA {
                         eprintln!("DBG_LAMBDA   arg[{idx}] ty={ty}");
                     }
                     if !matches!(ty, Type::Untyped | Type::Todo) {
