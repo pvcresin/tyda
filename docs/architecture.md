@@ -183,6 +183,15 @@ workspace context を分ける。
    DSL 検出だけを行い本文を残さない。`--diagnostics` は message 生成が target の本文を再度
    使うため、targets のソースだけ保持する。
 5. diagnostics は targets にだけ出力する。
+6. RBS / coverage 出力の `Batch` resolution は、call site をそろえた後・戻り値を解決する前に
+   一度止まる。ファイル単位の解析は呼び出し側の型を知らないため、parameter 由来の receiver への
+   引数付き・block 付きの呼び出し（`xs.map { |x| x + 1 }`、`a + b`）は引数と block を持たない
+   参照として残る。そうした method（`ParamDependentBody`）だけを、全呼び出し側から合わせた引数型で
+   compact engine により再推論し、戻り値と block の契約を差し替えてから戻り値の解決を続ける。
+   engine の文脈は最初の解析と同じ外部 RBS で、ほかのファイルの定義は従来どおり参照として残り
+   merge 済み registry が解決する。型の決まらない引数と、workspace のクラスを含む引数は parameter 参照
+   のまま渡す（再推論の文脈は workspace のソースを読まないため）。再推論の戻り値が `untyped` を含み、
+   最初の解析の戻り値が含まない場合は最初の解析を残す。再推論はそうした method を含むファイルだけを読み直す。
 
 この分離で、診断のために workspace 全体の詳細 body / call site を常駐させない。
 
@@ -220,6 +229,8 @@ snapshot に置き換える（block 内の `n.to_s` や `n * 2` も型あり走�
 snapshot は `first_walk_call_snapshots` に残し、`missing_method` 診断はそちらで判定する。block 内の推論には
 `reduce` の累積値などまだ粗い部分があり、hover の改善で診断を変えない（誤検出を増やさない）ためである。
 `proc` / `lambda` の block 引数は、型なし走査でも `untyped` として束縛する（未束縛のまま `nil` にしない）。
+受け手が `untyped` の block 付き呼び出しは値の推論で block に入らない。それが呼び出しの連鎖の途中にある場合
+（`x.then { }.tap { |a| a.y }.tap { }`）は、文の走査がその呼び出しを文と同じように 1 回走査する。
 引数なしの self 呼び出しへの nil ガードは、後続の文が self facts を無効化するまで同じ呼び出しに効く。定義が後方にある
 メソッドも遅延参照のまま絞り込む。
 引数型と block の戻り値は既存の scan site を共有して hover snapshot に複製せず、scan で得た戻り値を

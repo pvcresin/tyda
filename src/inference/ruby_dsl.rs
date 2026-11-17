@@ -2408,7 +2408,10 @@ impl<'a> InferenceEngine<'a> {
         comments: &[RbsComment],
         generate_writer: bool,
     ) {
-        self.registry.mark_superclass_unknown(class_name);
+        // `Struct.new` and `Data.define` return a direct subclass of `Struct` / `Data`.
+        let superclass = if generate_writer { "Struct" } else { "Data" };
+        self.ensure_external_class(superclass);
+        self.registry.set_superclass(class_name, superclass);
         let data_constructor_members = if generate_writer {
             None
         } else {

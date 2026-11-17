@@ -561,7 +561,7 @@ class Object < BasicObject
 end
 ```
 
-## class case keeps anonymous Struct parent possible
+## class case matches the Struct parent of a Struct.new class
 
 ### update
 
@@ -586,7 +586,7 @@ StructParentMatcher.new.match(Person.new("Ada"))
 ### result
 
 ```rbs
-class Person
+class Person < Struct
   def name: -> String
   def name=: (String name) -> String
   def initialize: (String name) -> void
@@ -594,11 +594,11 @@ class Person
 end
 
 class StructParentMatcher
-  def match: (Person value) -> (:other | :struct)
+  def match: (Person value) -> :struct
 end
 ```
 
-## class case keeps anonymous Data parent possible
+## class case matches the Data parent of a Data.define class
 
 ### update
 
@@ -624,10 +624,10 @@ DataParentMatcher.new.match(Point.new(x: 1))
 
 ```rbs
 class DataParentMatcher
-  def match: (Point value) -> (:data | :other)
+  def match: (Point value) -> :data
 end
 
-class Point
+class Point < Data
   def x: -> Integer
   def initialize: (x: Integer) -> void
   def self.members: -> Array[:x]

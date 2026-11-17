@@ -1399,3 +1399,46 @@ class Options
   def changed: (Hash[Symbol, String?] opts) -> String?
 end
 ```
+
+## is_a? narrows a union of Struct classes
+
+### update
+
+```ruby
+module StructNarrow
+  Mapping = Struct.new(:tag, keyword_init: true)
+  Scalar = Struct.new(:value, keyword_init: true)
+
+  class Parser
+    def mapping_or_nil(node) = node.is_a?(Mapping) ? node : nil
+
+    def run
+      mapping_or_nil(Mapping.new)
+      mapping_or_nil(Scalar.new)
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class StructNarrow::Mapping < Struct
+  def tag: -> untyped
+  def tag=: (untyped tag) -> untyped
+  def initialize: (tag: untyped) -> void
+  def self.members: -> Array[:tag]
+end
+
+class StructNarrow::Parser
+  def mapping_or_nil: ((StructNarrow::Mapping | StructNarrow::Scalar) node) -> StructNarrow::Mapping?
+  def run: -> StructNarrow::Mapping?
+end
+
+class StructNarrow::Scalar < Struct
+  def value: -> untyped
+  def value=: (untyped value) -> untyped
+  def initialize: (value: untyped) -> void
+  def self.members: -> Array[:value]
+end
+```

@@ -1,6 +1,6 @@
 use crate::prism_compat::LocationExt;
 use ruby_prism::{self as prism, Node};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -11,6 +11,7 @@ use crate::rbs::display::user_facing_type;
 use crate::rbs::inline::extract_inline_assertion_comments;
 use crate::rbs::stdlib_loader::LazyRbsLoader;
 use crate::registry::TypeRegistry;
+use crate::registry::{ParamReplayRequest, ParamReplayResult};
 
 pub(crate) struct AnalysisQueryLocation<'a> {
     pub(crate) file_path: &'a str,
@@ -291,6 +292,7 @@ fn build_hover_query_engine<'a>(
         external_rbs_loading: ExternalRbsLoading::OnDemand,
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     engine
 }
@@ -355,6 +357,7 @@ pub fn analyze_rbi_declaration_source_with_lazy_rbs(
         external_rbs_loading: ExternalRbsLoading::Preload,
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: true,
+        replay_bodies: None,
     });
     engine.into_registry()
 }
@@ -517,6 +520,121 @@ pub fn analyze_compact_file_snapshot_timed(
     )
 }
 
+/// Types the parameter-dependent bodies of one file again with their callers' merged
+/// argument types (see `ParamDependentBody`). `rbs_registry` is the first pass's context;
+/// `workspace` is the merged registry.
+#[allow(clippy::too_many_arguments)]
+pub fn replay_param_dependent_bodies(
+    source: &str,
+    rbs_registry: Option<&TypeRegistry>,
+    workspace: &TypeRegistry,
+    lazy_loader: &LazyRbsLoader,
+    lazy_rbi_loader: Option<&LazyRbiLoader>,
+    file_path: &str,
+    options: AnalysisOptions,
+    requests: &[ParamReplayRequest],
+) -> Vec<ParamReplayResult> {
+    // The replay reads RBS but not the workspace's sources, so a workspace class answers
+    // there with less than the merged registry knows (`is_a?` on it cannot narrow). Such a
+    // parameter keeps its reference and resolves as in the first pass.
+    let shadowed = |class_name: &str| workspace.is_user_defined_class(class_name);
+    let requests: Vec<ParamReplayRequest> = requests
+        .iter()
+        .filter_map(|request| {
+            let mut settled = false;
+            let mut keep = |ty: &Type, unsettled: Type| {
+                if matches!(ty, Type::ParamRef(_) | Type::KeywordParamRef(_))
+                    || type_mentions_class(ty, &shadowed)
+                {
+                    unsettled
+                } else {
+                    settled = true;
+                    ty.clone()
+                }
+            };
+            let positional = request
+                .positional
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| keep(ty, Type::ParamRef(index)))
+                .collect();
+            let keywords = request
+                .keywords
+                .iter()
+                .map(|(name, ty)| {
+                    (
+                        name.clone(),
+                        keep(ty, Type::KeywordParamRef(crate::types::Sym::new(name))),
+                    )
+                })
+                .collect();
+            settled.then(|| ParamReplayRequest {
+                body: request.body.clone(),
+                positional,
+                keywords,
+            })
+        })
+        .collect();
+    if requests.is_empty() {
+        return Vec::new();
+    }
+    let offsets: HashSet<usize> = requests
+        .iter()
+        .map(|request| request.body.def_offset)
+        .collect();
+    let parse_result = prism::parse(source.as_bytes());
+    let (mut engine, _timings) = build_engine_from_parse(
+        AnalysisRequest {
+            source,
+            rbs_registry,
+            lazy_loader: Some(lazy_loader),
+            lazy_rbi_loader,
+            file_path: Some(file_path),
+            options: &options,
+            dependency_collection: DependencyCollection::Disabled,
+            hover_snapshot_mode: HoverSnapshotMode::Skip,
+            annotated_body_hover_mode: AnnotatedBodyHoverMode::Disabled,
+            external_rbs_loading: ExternalRbsLoading::OnDemand,
+            resolution_depth: ResolutionDepth::ExportedFactsOnly,
+            rbi_declaration_source: false,
+            replay_bodies: Some(ReplayBodies {
+                offsets: &offsets,
+                workspace,
+            }),
+        },
+        &parse_result,
+    );
+    let root = parse_result.node();
+    let Some(program) = root.as_program_node() else {
+        return Vec::new();
+    };
+    engine.replay_param_dependent_bodies(&program, &parse_result, &requests)
+}
+
+fn type_mentions_class(ty: &Type, matches: &impl Fn(&str) -> bool) -> bool {
+    match ty {
+        Type::Class(name) | Type::Singleton(name) => matches(name.as_str()),
+        Type::Generic { base, args } => {
+            matches(base.as_str()) || args.iter().any(|arg| type_mentions_class(arg, matches))
+        }
+        Type::Array(Some(inner)) => type_mentions_class(inner, matches),
+        Type::Hash(key, value) => {
+            key.as_deref()
+                .is_some_and(|key| type_mentions_class(key, matches))
+                || value
+                    .as_deref()
+                    .is_some_and(|value| type_mentions_class(value, matches))
+        }
+        Type::Union(parts) | Type::Tuple(parts) | Type::Intersection(parts) => {
+            parts.iter().any(|part| type_mentions_class(part, matches))
+        }
+        Type::Record(fields) => fields
+            .iter()
+            .any(|field| type_mentions_class(&field.value, matches)),
+        _ => false,
+    }
+}
+
 /// Compact scan variant that records the inference sites used by the opt-in
 /// CLI coverage report. The regular compact path intentionally keeps snapshots
 /// disabled because they are not needed to render RBS.
@@ -625,6 +743,7 @@ fn build_compact_scan_engine<'a>(
         },
         resolution_depth: ResolutionDepth::ExportedFactsOnlyWithBlockReceiverReplay,
         rbi_declaration_source: false,
+        replay_bodies: None,
     })
 }
 
@@ -651,6 +770,7 @@ pub fn analyze_definitions_only_snapshot_timed(
         // Only the definition skeleton is needed, so local method-ref / backward / receiver-preload are skipped.
         resolution_depth: ResolutionDepth::ExportedFactsOnly,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     let mut snapshot = compact_file_snapshot(engine.into_file_analysis_snapshot());
     snapshot.strip_method_body_summary();
@@ -1361,6 +1481,7 @@ pub(crate) fn analyze_file_facts_with_deps_and_rbi_with_options_ref(
         // Workspace scan collects file-local facts only; deep local resolution is reintroduced by a later merge.
         resolution_depth: ResolutionDepth::ExportedFactsOnly,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     let (analysis, deps) = engine.into_file_analysis_snapshot_and_deps();
     (compact_file_snapshot(analysis), deps)
@@ -1473,6 +1594,7 @@ pub fn cli_diagnostics_for_source(
             external_rbs_loading: ExternalRbsLoading::OnDemand,
             resolution_depth: ResolutionDepth::ExportedFactsOnly,
             rbi_declaration_source: false,
+            replay_bodies: None,
         });
         let mut snapshot = engine.into_file_analysis_snapshot();
         snapshot.compact_current_pass_facts();
@@ -1518,6 +1640,7 @@ pub fn analyze_source_cached_with_deps_lazy(
         },
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     let into_file_analysis_snapshot_started = Instant::now();
     let (analysis, deps) = engine.into_file_analysis_snapshot_and_deps();
@@ -1609,6 +1732,7 @@ pub(crate) fn analyze_file_for_query(
         external_rbs_loading: ExternalRbsLoading::OnDemand,
         resolution_depth: mode.resolution_depth(),
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     let analysis = engine.into_file_analysis_snapshot();
     if mode.should_compact() {
@@ -1640,6 +1764,7 @@ fn analyze_source_inner(
         external_rbs_loading: ExternalRbsLoading::Preload,
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     engine.into_registry_and_deps()
 }
@@ -1666,6 +1791,7 @@ fn analyze_source_inner_with_timings(
         external_rbs_loading: ExternalRbsLoading::Preload,
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     (engine.into_registry_and_deps(), timings)
 }
@@ -1684,6 +1810,15 @@ struct AnalysisRequest<'a> {
     resolution_depth: ResolutionDepth,
     /// RBI declaration source: makes an empty-body `def`'s return value Untyped.
     rbi_declaration_source: bool,
+    /// A CLI replay types only these method bodies; the others take their first pass
+    /// return from the merged registry.
+    replay_bodies: Option<ReplayBodies<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct ReplayBodies<'a> {
+    offsets: &'a HashSet<usize>,
+    workspace: &'a TypeRegistry,
 }
 
 fn compact_file_snapshot(mut analysis: FileAnalysisSnapshot) -> FileAnalysisSnapshot {
@@ -2577,6 +2712,18 @@ fn is_ruby_identifier_byte(byte: u8) -> bool {
 fn build_engine_with_timings<'a>(
     request: AnalysisRequest<'a>,
 ) -> (InferenceEngine<'a>, AnalysisTimings) {
+    let parse_started = Instant::now();
+    let parse_result = prism::parse(request.source.as_bytes());
+    let parse_time = parse_started.elapsed();
+    let (engine, mut timings) = build_engine_from_parse(request, &parse_result);
+    timings.parse = parse_time;
+    (engine, timings)
+}
+
+fn build_engine_from_parse<'a>(
+    request: AnalysisRequest<'a>,
+    parse_result: &prism::ParseResult<'_>,
+) -> (InferenceEngine<'a>, AnalysisTimings) {
     let AnalysisRequest {
         source,
         rbs_registry,
@@ -2590,15 +2737,13 @@ fn build_engine_with_timings<'a>(
         external_rbs_loading,
         resolution_depth,
         rbi_declaration_source,
+        replay_bodies,
     } = request;
     let mut timings = AnalysisTimings::default();
 
     // Deeply pathological nesting is bounded-degraded via the fuel budget, while legitimately large files keep full accuracy.
     crate::inference::set_infer_node_fuel_budget(source.len());
 
-    let parse_started = Instant::now();
-    let parse_result = prism::parse(source.as_bytes());
-    timings.parse = parse_started.elapsed();
     let root = parse_result.node();
 
     let mut engine = InferenceEngine::new();
@@ -2619,6 +2764,9 @@ fn build_engine_with_timings<'a>(
         annotated_body_hover_mode.should_record(),
     );
     engine.set_analyzing_rbi_declaration(rbi_declaration_source);
+    if let Some(replay) = replay_bodies {
+        engine.limit_bodies_to_replay(replay.offsets.clone(), replay.workspace);
+    }
     engine.set_defer_unresolved_body_call_sites(!resolution_depth.keeps_only_exported_facts());
     engine.set_track_deferred_block_receiver_bodies(
         resolution_depth.replays_deferred_block_receiver_bodies(),
@@ -2672,6 +2820,10 @@ fn build_engine_with_timings<'a>(
         engine.set_lazy_rbi_loader(loader);
     }
 
+    if source.contains("with_index") || source.contains("with_object") {
+        engine.collect_separate_yield_block_params(&root);
+    }
+
     let sorbet_mode = sorbet_comment_mode(options.project_root.as_deref(), file_path);
     if sorbet_mode {
         let type_aliases =
@@ -2679,13 +2831,13 @@ fn build_engine_with_timings<'a>(
         for (alias_name, ty) in type_aliases {
             engine.add_type_alias(&alias_name, ty);
         }
-        engine.set_self_bind_comments(extract_sorbet_self_bind_comments(&parse_result));
+        engine.set_self_bind_comments(extract_sorbet_self_bind_comments(parse_result));
     }
     let comments_started = Instant::now();
-    let comments = extract_annotation_comments(&parse_result, sorbet_mode);
+    let comments = extract_annotation_comments(parse_result, sorbet_mode);
     timings.comments = comments_started.elapsed();
     // Common subset of rbs-inline / Sorbet — narrowing still works even in projects without `sorbet/config`.
-    engine.set_inline_assertion_comments(extract_inline_assertion_comments(&parse_result));
+    engine.set_inline_assertion_comments(extract_inline_assertion_comments(parse_result));
 
     if let Node::ProgramNode { .. } = &root {
         let program = root.as_program_node().expect("root must be ProgramNode");
@@ -2700,12 +2852,12 @@ fn build_engine_with_timings<'a>(
             }
             engine.collect_top_level_definitions_and_calls(
                 &node,
-                &parse_result,
+                parse_result,
                 &comments,
                 pending_sig.take(),
             );
         }
-        engine.refresh_program_methods_after_collection(&program, &parse_result);
+        engine.refresh_program_methods_after_collection(&program, parse_result);
         timings.definition_collection = top_level_collection_started.elapsed();
 
         if !resolution_depth.keeps_only_exported_facts() {
@@ -2747,7 +2899,7 @@ fn build_engine_with_timings<'a>(
 
         if resolution_depth.replays_deferred_block_receiver_bodies() {
             let backward_propagate_started = Instant::now();
-            engine.replay_deferred_block_receiver_bodies(&program, &parse_result);
+            engine.replay_deferred_block_receiver_bodies(&program, parse_result);
             timings.backward_propagate = backward_propagate_started.elapsed();
 
             let receiver_reference_preload_started = Instant::now();
@@ -2768,7 +2920,7 @@ fn build_engine_with_timings<'a>(
             timings.resolve_method_return_refs = resolve_method_return_refs_started.elapsed();
 
             let backward_propagate_started = Instant::now();
-            engine.backward_propagate(&program, &parse_result);
+            engine.backward_propagate(&program, parse_result);
             timings.backward_propagate = backward_propagate_started.elapsed();
 
             let receiver_reference_preload_started = Instant::now();
@@ -2793,7 +2945,7 @@ fn build_engine_with_timings<'a>(
 
         if hover_snapshot_mode.should_record() {
             let hover_snapshots_started = Instant::now();
-            engine.collect_top_level_hovers_isolated(&program, &parse_result);
+            engine.collect_top_level_hovers_isolated(&program, parse_result);
             timings.hover_snapshots = hover_snapshots_started.elapsed();
         }
     }
@@ -3353,6 +3505,7 @@ def read = ALIAS::VALUE
                 external_rbs_loading: ExternalRbsLoading::OnDemand,
                 resolution_depth: ResolutionDepth::Full,
                 rbi_declaration_source: false,
+                replay_bodies: None,
             });
             engine.into_file_analysis_snapshot().materialized_registry()
         };

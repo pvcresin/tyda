@@ -23,7 +23,8 @@ use crate::registry::argument_binding::{self, ArgumentRules, ProcKind};
 use crate::registry::{
     BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, ConstantAlias, DefineMethodMacro,
     KeywordArgTypes, LiteralBranchedDef, MacroNamePart, MethodBlockMeta, MethodBodySummary,
-    MethodDef, MixinKind, ParamFlow, ParamInfo, PendingScopedTypeRef, TypeRegistry, Visibility,
+    MethodDef, MixinKind, ParamDependentBody, ParamFlow, ParamInfo, ParamReplayRequest,
+    ParamReplayResult, PendingScopedTypeRef, TypeRegistry, Visibility,
 };
 use crate::sorbet::annotations::{
     extract_sig_source, find_method_annotations, sig_source_return_type, sig_sources_to_rbs_lines,
@@ -1119,6 +1120,10 @@ enum BlockPassChain {
 
 #[derive(Default)]
 struct ActiveMethodBody {
+    /// Parameters whose derived receivers had a call keep no arguments or block, so only a
+    /// replay with the callers' types can type those calls.
+    shape_lost_params: Vec<usize>,
+    shape_lost_keywords: Vec<Sym>,
     unresolved_block_receivers: DeferredBlockReceiverCandidates,
     has_case_class_dispatch: bool,
     has_super_call: bool,
@@ -1165,6 +1170,8 @@ pub struct InferenceEngine<'a> {
     block_pass_chain: BlockPassChain,
     in_discarded_block_walk: bool,
     value_walked_blocks: FxHashSet<usize>,
+    /// Blocks of calls on an untyped receiver that the value walk did not enter.
+    untyped_receiver_blocks: FxHashSet<usize>,
     unbound_block_return: Option<Type>,
     record_annotated_method_body_hover_snapshots: bool,
     analyzing_rbi_declaration: bool,
@@ -1190,6 +1197,13 @@ pub struct InferenceEngine<'a> {
     /// Start offsets of the `define_method` calls that the class method being typed always
     /// runs: top-level statements of its body.
     macro_define_method_offsets: Vec<usize>,
+    /// Block parameter offsets whose block gets each step's yielded values as separate
+    /// arguments (`each_with_index.map { |x| }`).
+    separate_yield_block_params: HashSet<usize>,
+    param_dependent_bodies: Vec<ParamDependentBody>,
+    /// A CLI replay types only these method bodies; the others take their first pass
+    /// return from the merged registry.
+    replay_bodies: Option<(HashSet<usize>, &'a TypeRegistry)>,
     /// Per controller, the unconditional `before_action` callbacks that halt unless a self
     /// method is truthy, and those methods.
     action_guards: HashMap<String, ActionGuards>,
@@ -1433,6 +1447,7 @@ pub struct FileAnalysisSnapshot {
     pub facts: FileFacts,
     pub method_body_summary: MethodBodySummary,
     pub hover_index: HoverIndex,
+    pub param_dependent_bodies: Vec<ParamDependentBody>,
     pub(crate) coverage: Option<crate::coverage::CoverageFile>,
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
@@ -1450,6 +1465,7 @@ impl FileAnalysisSnapshot {
         Self {
             facts: FileFacts::new(),
             method_body_summary: MethodBodySummary::default(),
+            param_dependent_bodies: Vec::new(),
             hover_index: HoverIndex::new(),
             coverage: None,
             file_path: None,
@@ -1468,6 +1484,7 @@ impl FileAnalysisSnapshot {
         Self {
             facts: FileFacts { registry },
             method_body_summary: MethodBodySummary::default(),
+            param_dependent_bodies: Vec::new(),
             hover_index: HoverIndex::new(),
             coverage: None,
             file_path: None,
@@ -1492,6 +1509,7 @@ impl FileAnalysisSnapshot {
         Self {
             facts: FileFacts::new(),
             method_body_summary: MethodBodySummary::default(),
+            param_dependent_bodies: Vec::new(),
             hover_index: std::mem::take(&mut self.hover_index),
             coverage: None,
             file_path: self.file_path.clone(),
@@ -2874,6 +2892,7 @@ impl<'a> InferenceEngine<'a> {
             block_pass_chain: BlockPassChain::Open,
             in_discarded_block_walk: false,
             value_walked_blocks: FxHashSet::default(),
+            untyped_receiver_blocks: FxHashSet::default(),
             unbound_block_return: None,
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
@@ -2887,6 +2906,9 @@ impl<'a> InferenceEngine<'a> {
             replaying_method_body: false,
             inferring_macro_template: false,
             macro_define_method_offsets: Vec::new(),
+            separate_yield_block_params: HashSet::new(),
+            param_dependent_bodies: Vec::new(),
+            replay_bodies: None,
             action_guards: HashMap::new(),
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
@@ -2981,6 +3003,7 @@ impl<'a> InferenceEngine<'a> {
             block_pass_chain: BlockPassChain::Open,
             in_discarded_block_walk: false,
             value_walked_blocks: FxHashSet::default(),
+            untyped_receiver_blocks: FxHashSet::default(),
             unbound_block_return: None,
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
@@ -2994,6 +3017,9 @@ impl<'a> InferenceEngine<'a> {
             replaying_method_body: false,
             inferring_macro_template: false,
             macro_define_method_offsets: Vec::new(),
+            separate_yield_block_params: HashSet::new(),
+            param_dependent_bodies: Vec::new(),
+            replay_bodies: None,
             action_guards: HashMap::new(),
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
@@ -3183,6 +3209,60 @@ impl<'a> InferenceEngine<'a> {
                 .registry
                 .lookup_method_def(owner, method_name, owner_is_singleton)
                 .is_some_and(|method| method.origin.is_rbs_file_source())
+    }
+
+    pub(crate) fn limit_bodies_to_replay(
+        &mut self,
+        offsets: HashSet<usize>,
+        workspace: &'a TypeRegistry,
+    ) {
+        self.replay_bodies = Some((offsets, workspace));
+    }
+
+    /// The return a CLI replay uses for a method body in its first walk. A body it does not
+    /// replay would be typed with less than the merged registry knows, so it reads that
+    /// return.
+    fn replay_skipped_body_return(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        def_offset: usize,
+    ) -> Option<Type> {
+        let (offsets, workspace) = self.replay_bodies.as_ref()?;
+        // A replayed body is typed once, by the replay with the callers' types.
+        if offsets.contains(&def_offset) {
+            return Some(Type::Untyped);
+        }
+        Some(
+            workspace
+                .lookup_method_def(class_name, method_name, is_singleton)
+                .map(|method| method.raw_return_type.clone())
+                .unwrap_or(Type::Untyped),
+        )
+    }
+
+    pub(crate) fn collect_separate_yield_block_params(&mut self, root: &Node<'_>) {
+        self.separate_yield_block_params = block_flow::separate_yield_block_params(root);
+    }
+
+    /// An Enumerator that yields several values per step reaches the block as one packed
+    /// tuple; a block that takes them as separate arguments sees its parts instead.
+    fn separately_yielded_param_types<'t>(
+        &self,
+        params_node: &Node<'_>,
+        param_types: &'t [Type],
+    ) -> std::borrow::Cow<'t, [Type]> {
+        if let [Type::Tuple(parts)] = param_types
+            && parts.len() > 1
+            && self
+                .separate_yield_block_params
+                .contains(&params_node.location().start_offset())
+        {
+            std::borrow::Cow::Owned(parts.clone())
+        } else {
+            std::borrow::Cow::Borrowed(param_types)
+        }
     }
 
     pub(crate) fn set_required_stdlib_feature_loads(&mut self, loads: Vec<(String, usize)>) {
@@ -6038,6 +6118,8 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
+        let param_types = self.separately_yielded_param_types(params_node, param_types);
+        let param_types = param_types.as_ref();
         if let Some(bp) = params_node.as_block_parameters_node()
             && let Some(inner) = bp.parameters()
         {
@@ -6049,9 +6131,10 @@ impl<'a> InferenceEngine<'a> {
                     .rest()
                     .is_none_or(|rest| !matches!(rest, Node::ImplicitRestNode { .. }));
             let leading_count = required_count + optional_count;
+            // A lone `*rest` takes one yielded value whole; it splats only beside other params.
             let needs_single_expand = param_types.len() == 1
                 && (leading_count + post_count > 1
-                    || has_rest
+                    || (has_rest && leading_count + post_count > 0)
                     || inner
                         .requireds()
                         .iter()
@@ -6131,6 +6214,8 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
+        let param_types = self.separately_yielded_param_types(params_node, param_types);
+        let param_types = param_types.as_ref();
         if let Some(np) = params_node.as_numbered_parameters_node() {
             for i in 0..(np.maximum() as usize) {
                 let ty = param_types.get(i).cloned().unwrap_or(Type::Untyped);
@@ -13848,9 +13933,25 @@ impl<'a> InferenceEngine<'a> {
 
     /// Blocks are walked once without and once with declared param types, so the
     /// same span can get a snapshot with untyped parts first and a typed one later.
-    fn hover_snapshot_upgrades(current: &HoverSnapshot, candidate: &HoverSnapshot) -> bool {
+    /// A destructure slot of an untyped value is untyped too.
+    fn hover_type_has_untyped_part(ty: &Type) -> bool {
+        match ty {
+            Type::PatternIndexRef(subject, _)
+            | Type::PatternRestRef(subject)
+            | Type::PatternTrailingRef(subject, _)
+            | Type::PatternKeyRef(subject, _)
+            | Type::PatternKeyRestRef(subject, _) => Self::hover_type_has_untyped_part(subject),
+            _ => Self::type_contains_untyped(ty),
+        }
+    }
+
+    pub(crate) fn hover_snapshot_upgrades(
+        current: &HoverSnapshot,
+        candidate: &HoverSnapshot,
+    ) -> bool {
         let upgrades = |current: &Type, candidate: &Type| {
-            Self::type_contains_untyped(current) && !Self::type_contains_untyped(candidate)
+            Self::hover_type_has_untyped_part(current)
+                && !Self::hover_type_has_untyped_part(candidate)
         };
         match (&current.target, &candidate.target) {
             (HoverTarget::Value(current_ty), HoverTarget::Value(candidate_ty)) => {
@@ -13880,6 +13981,7 @@ impl<'a> InferenceEngine<'a> {
                 registry: self.registry,
             },
             method_body_summary: MethodBodySummary::default(),
+            param_dependent_bodies: self.param_dependent_bodies,
             hover_index: HoverIndex {
                 snapshots,
                 first_walk_call_snapshots,
@@ -13966,6 +14068,7 @@ impl<'a> InferenceEngine<'a> {
                 registry: self.registry,
             },
             method_body_summary: MethodBodySummary::default(),
+            param_dependent_bodies: self.param_dependent_bodies,
             hover_index: HoverIndex {
                 snapshots,
                 first_walk_call_snapshots,
@@ -17676,6 +17779,13 @@ impl<'a> InferenceEngine<'a> {
         late_constant_names: &[String],
         late_constant_unknown: bool,
     ) {
+        if self
+            .replay_bodies
+            .as_ref()
+            .is_some_and(|(offsets, _)| !offsets.contains(&def_node.location().start_offset()))
+        {
+            return;
+        }
         let method_name = String::from_utf8_lossy(def_node.name().as_slice()).to_string();
         let is_singleton = force_singleton
             || def_node
@@ -19409,7 +19519,15 @@ impl<'a> InferenceEngine<'a> {
         );
         let saved_late_block_forwards = std::mem::take(&mut self.late_block_forwards);
         let mut blockless_return = None;
-        let mut return_type = if method_name == "initialize" {
+        let replay_return = self.replay_skipped_body_return(
+            class_name,
+            &method_name,
+            is_singleton,
+            def_node.location().start_offset(),
+        );
+        let mut return_type = if let Some(first_pass) = replay_return {
+            first_pass
+        } else if method_name == "initialize" {
             if let Some(body) = def_node.body() {
                 self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
             }
@@ -19484,6 +19602,7 @@ impl<'a> InferenceEngine<'a> {
         });
         self.active_loop_entry_scopes = saved_active_loop_entry_scopes;
         let (
+            (shape_lost_params, shape_lost_keywords),
             unresolved_block_receivers,
             has_case_class_dispatch,
             has_super_call,
@@ -19494,6 +19613,7 @@ impl<'a> InferenceEngine<'a> {
             .take()
             .map(|body| {
                 (
+                    (body.shape_lost_params, body.shape_lost_keywords),
                     body.unresolved_block_receivers,
                     body.has_case_class_dispatch,
                     body.has_super_call,
@@ -19503,6 +19623,18 @@ impl<'a> InferenceEngine<'a> {
             })
             .unwrap_or_default();
         self.active_method_body = saved_active_method_body;
+        if (!shape_lost_params.is_empty() || !shape_lost_keywords.is_empty())
+            && self.track_deferred_block_receiver_bodies
+        {
+            self.param_dependent_bodies.push(ParamDependentBody {
+                owner: Sym::new(class_name),
+                method: Sym::new(&method_name),
+                is_singleton,
+                def_offset: def_node.location().start_offset(),
+                positional: shape_lost_params,
+                keywords: shape_lost_keywords,
+            });
+        }
         if let Some(summary) = &body_scan_summary {
             let yield_param_types: Vec<Type> = summary
                 .yield_param_types
@@ -23769,6 +23901,33 @@ impl<'a> InferenceEngine<'a> {
         })
     }
 
+    /// A block call on an untyped receiver inside a call chain (`x.then { }.tap { |a| a.y }`)
+    /// gets no value walk. The statement's walk enters it here once, like a statement call.
+    fn process_receiver_chain_untyped_block(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        if self.untyped_receiver_blocks.is_empty() {
+            return;
+        }
+        let mut receiver = call_node.receiver();
+        while let Some(inner) = receiver.as_ref().and_then(|node| node.as_call_node()) {
+            if let Some(block) = inner.block().and_then(|block| block.as_block_node())
+                && self
+                    .untyped_receiver_blocks
+                    .remove(&block.location().start_offset())
+            {
+                // That call's own walk enters the blocks further down the chain.
+                self.process_call_block_side_effects(class_name, &inner, parse_result, scope);
+                return;
+            }
+            receiver = inner.receiver();
+        }
+    }
+
     fn process_call_block_side_effects(
         &mut self,
         class_name: &str,
@@ -23776,6 +23935,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
+        self.process_receiver_chain_untyped_block(class_name, call_node, parse_result, scope);
         if self.process_rspec_dsl_call(class_name, call_node, parse_result, scope) {
             return;
         }
@@ -34456,6 +34616,13 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             resolved
                         };
+                        if effective_receiver == Type::Untyped
+                            && let Some(block) =
+                                call_node.block().and_then(|block| block.as_block_node())
+                        {
+                            self.untyped_receiver_blocks
+                                .insert(block.location().start_offset());
+                        }
                         let (safe_nav_unknown, safe_nav_deferred) =
                             Self::receiver_union_flags(&safe_nav_receiver_type);
                         let (effective_unknown, has_deferred_union_member) =
@@ -34523,6 +34690,14 @@ impl<'a> InferenceEngine<'a> {
                             && (Self::is_concrete(&resolved) || keep_symbolic_result)
                         {
                             resolved
+                        } else if method_name != "tap"
+                            && Self::block_argument_symbol_name(&call_node).is_some()
+                            && resolved != Type::Untyped
+                            && resolved == effective_receiver
+                        {
+                            // `each(&:sym)` returns its receiver and the symbol call only sees
+                            // elements, so the receiver's own references resolve later.
+                            resolved
                         } else if let Some(structural) = structural {
                             structural
                         } else if call_node.block().is_none()
@@ -34565,6 +34740,7 @@ impl<'a> InferenceEngine<'a> {
                         wrap(result)
                     };
                     let result = Self::include_optional_control_type(result, &block_break_type);
+                    self.note_param_call_shape_drop(&call_node, &safe_nav_receiver_type, &result);
                     // The call is still walked so its arguments reach a definition in another file.
                     let result = match self.explicit_receiver_private_reach(
                         &receiver,
@@ -44609,6 +44785,45 @@ impl<'a> InferenceEngine<'a> {
         // Block-iterating methods (`map`/`select`/...) need the receiver's concrete element type to thread through the block.
         // A deferred instance-variable or method-return receiver (e.g.
         let receiver_type = &self.try_resolve_receiver_inline(class_name, &normalized);
+        // A union of different classes runs the block call on each, as Ruby dispatches on the
+        // runtime value; the block-less overload (an Enumerator) is not the answer.
+        if let Type::Union(members) = receiver_type
+            && members.len() > 1
+            && let Some(member_classes) = members
+                .iter()
+                .map(|member| {
+                    (!matches!(member, Type::Nil | Type::Untyped))
+                        .then(|| self.type_to_class_name(member))
+                        .flatten()
+                })
+                .collect::<Option<HashSet<String>>>()
+            && member_classes.len() > 1
+        {
+            // Each class's walk only computes its return. The block runs once at runtime, so
+            // diagnostics and hovers come from the walk with the whole union.
+            let members = members.clone();
+            let block_offset = block.location().start_offset();
+            let block_was_walked = self.value_walked_blocks.contains(&block_offset);
+            let observations = self.suspend_source_observations();
+            let results: Option<Vec<Type>> = members
+                .iter()
+                .map(|member| {
+                    self.resolve_block_call_generic(
+                        class_name,
+                        call_node,
+                        member,
+                        method_name,
+                        parse_result,
+                        scope,
+                    )
+                })
+                .collect();
+            self.resume_source_observations(observations);
+            if !block_was_walked {
+                self.value_walked_blocks.remove(&block_offset);
+            }
+            return results.map(Type::from_type_vec);
+        }
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
         self.ensure_class_available("Enumerable");
@@ -44782,6 +44997,12 @@ impl<'a> InferenceEngine<'a> {
                 )
             })
             .unwrap_or(effective_block_param_types);
+        let effective_block_param_types = match block.parameters() {
+            Some(params) => self
+                .separately_yielded_param_types(&params, &effective_block_param_types)
+                .into_owned(),
+            None => effective_block_param_types,
+        };
         let init_type = self.get_init_arg_type(call_node, class_name, parse_result, scope);
         let mutable_init_type = if Self::uses_mutable_seed_arg(method_name) {
             self.get_mutable_init_arg_type(call_node, class_name, parse_result, scope)
@@ -45165,8 +45386,17 @@ impl<'a> InferenceEngine<'a> {
         );
 
         if method_name == "each" {
+            // `Enumerator#each` with a block returns what the underlying iteration returns
+            // (`R`), not the enumerator; the other `each` methods return their receiver.
+            let result = if Self::nominal_base_name(receiver_type) == Some("Enumerator")
+                && method_return != Type::Untyped
+            {
+                method_return
+            } else {
+                receiver_type.clone()
+            };
             return Some(Self::include_optional_control_type(
-                receiver_type.clone(),
+                result,
                 &block_break_type,
             ));
         }
@@ -53591,6 +53821,12 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         window_size: Option<usize>,
     ) -> Type {
+        if method_name == "each_slice"
+            && let Type::Tuple(elems) = receiver_type
+            && let Some(window_size) = window_size.filter(|size| *size > 0)
+        {
+            return Self::tuple_slice_yield_type(elems, window_size);
+        }
         if let Some(window_size) = window_size
             && let Some(types) = Self::exact_tuple_window_block_param_types(
                 receiver_type,
@@ -53604,6 +53840,31 @@ impl<'a> InferenceEngine<'a> {
 
         let elem_type = Self::enumerable_element_type(receiver_type);
         Type::Array(Some(Box::new(elem_type)))
+    }
+
+    /// The last slice is shorter when the size does not divide the tuple, so it is a
+    /// tuple of its own rather than a full slice with `nil` slots.
+    fn tuple_slice_yield_type(elems: &[Type], window_size: usize) -> Type {
+        let full_count = elems.len() / window_size;
+        let mut slices = Vec::with_capacity(2);
+        if full_count > 0 {
+            slices.push(Type::Tuple(
+                (0..window_size)
+                    .map(|position| {
+                        Self::union_preserving_array_shapes(
+                            (0..full_count)
+                                .map(|slice| elems[slice * window_size + position].clone())
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            ));
+        }
+        let rest = &elems[full_count * window_size..];
+        if !rest.is_empty() {
+            slices.push(Type::Tuple(rest.to_vec()));
+        }
+        Self::union_preserving_array_shapes(slices)
     }
 
     fn rebuild_array_with_elem(receiver_type: &Type, elem_type: &Type) -> Type {
@@ -54299,6 +54560,11 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> (Type, Option<Type>, Scope) {
+        let param_types = match block.parameters() {
+            Some(params) => self.separately_yielded_param_types(&params, param_types),
+            None => std::borrow::Cow::Borrowed(param_types),
+        };
+        let param_types = param_types.as_ref();
         let mut block_scope = scope.fork_for_block();
         let named_requireds =
             Self::extract_block_required_param_infos_from_source(block, parse_result);
@@ -57158,6 +57424,59 @@ impl<'a> InferenceEngine<'a> {
             && !self.source_method_name_is_defined(method_name)
     }
 
+    fn note_param_call_shape_drop(
+        &mut self,
+        call_node: &ruby_prism::CallNode<'_>,
+        receiver_type: &Type,
+        result: &Type,
+    ) {
+        if self.replaying_method_body {
+            return;
+        }
+        let Some(body) = self.active_method_body.as_mut() else {
+            return;
+        };
+        let has_shape = call_node.block().is_some()
+            || call_node
+                .arguments()
+                .is_some_and(|arguments| arguments.arguments().iter().next().is_some());
+        if !has_shape || (Self::is_concrete(result) && !Self::type_contains_untyped(result)) {
+            return;
+        }
+        fn collect_params(ty: &Type, positional: &mut Vec<usize>, keywords: &mut Vec<Sym>) {
+            match ty {
+                Type::ParamRef(index) if !positional.contains(index) => positional.push(*index),
+                Type::KeywordParamRef(name) if !keywords.contains(name) => keywords.push(*name),
+                Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+                    for part in parts {
+                        collect_params(part, positional, keywords);
+                    }
+                }
+                Type::Array(Some(inner))
+                | Type::SplatRef(inner)
+                | Type::PatternRestRef(inner)
+                | Type::PatternIndexRef(inner, _)
+                | Type::PatternTrailingRef(inner, _)
+                | Type::PatternKeyRef(inner, _)
+                | Type::PatternKeyRestRef(inner, _)
+                | Type::ReceiverMethodRef(inner, _)
+                | Type::TruthyProjection(inner)
+                | Type::FalsyProjection(inner)
+                | Type::NonNilProjection(inner) => collect_params(inner, positional, keywords),
+                Type::DeferredSafeNavigation(receiver, result) => {
+                    collect_params(receiver, positional, keywords);
+                    collect_params(result, positional, keywords);
+                }
+                _ => {}
+            }
+        }
+        collect_params(
+            receiver_type,
+            &mut body.shape_lost_params,
+            &mut body.shape_lost_keywords,
+        );
+    }
+
     fn receiver_union_flags(ty: &Type) -> (bool, bool) {
         let Type::Union(parts) = ty else {
             return (false, false);
@@ -58160,14 +58479,26 @@ impl<'a> InferenceEngine<'a> {
                 {
                     return result;
                 }
+                // A reference does not record whether the call had a block. Calls on a
+                // reference mostly pass one, so a block-less `Enumerator` return reads the
+                // block overload instead (`map` gives `Array`, not an `Enumerator`).
                 if let Some(result) = self.resolve_rbs_no_arg_method_return_on_type(
                     &resolved_receiver,
                     method_name,
                     true,
                 ) {
-                    return result;
+                    return self.block_overload_return_for_enumerator(
+                        &resolved_receiver,
+                        method_name.as_str(),
+                        result,
+                    );
                 }
                 let result = self.resolve_method_on_type(&resolved_receiver, method_name);
+                let result = self.block_overload_return_for_enumerator(
+                    &resolved_receiver,
+                    method_name.as_str(),
+                    result,
+                );
                 if result != Type::Untyped && Self::is_concrete(&result) {
                     result
                 } else {
@@ -65397,6 +65728,78 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// Types the requested bodies again with the given argument types, which come from every
+    /// caller in the workspace, and returns their new raw returns.
+    pub(crate) fn replay_param_dependent_bodies<'b>(
+        &mut self,
+        program: &ruby_prism::ProgramNode<'b>,
+        parse_result: &ParseResult<'b>,
+        requests: &[ParamReplayRequest],
+    ) -> Vec<ParamReplayResult> {
+        let mut offsets = HashMap::with_capacity(requests.len());
+        for request in requests {
+            let body = &request.body;
+            self.registry.replace_method_call_sites(
+                body.owner.as_str(),
+                CallSite {
+                    method_name: body.method.as_str().into(),
+                    method_is_singleton: body.is_singleton,
+                    arg_types: request.positional.clone(),
+                    keyword_arg_types: request.keywords.iter().cloned().collect(),
+                    keyword_rest_shape: None,
+                    block: None,
+                    caller_context: None,
+                    open_splat: None,
+                    self_call: false,
+                },
+            );
+            offsets.insert(
+                body.def_offset,
+                DeferredMethodReplay {
+                    is_singleton: body.is_singleton,
+                    receiver_dependency_resolved: false,
+                    case_dispatch_needs_replay: false,
+                    source_return_dependency_resolved: false,
+                    block_forward_resolved: false,
+                },
+            );
+        }
+        self.suppress_external_merge = true;
+        let mut changed_method_returns = FxHashSet::default();
+        self.backward_propagate_in_statements(
+            "Object",
+            &program.statements(),
+            parse_result,
+            &offsets,
+            false,
+            &mut changed_method_returns,
+        );
+        self.suppress_external_merge = false;
+        requests
+            .iter()
+            .filter_map(|request| {
+                let body = &request.body;
+                let method = self.registry.lookup_method_def(
+                    body.owner.as_str(),
+                    body.method.as_str(),
+                    body.is_singleton,
+                )?;
+                Some(ParamReplayResult {
+                    body: body.clone(),
+                    return_type: method.raw_return_type.clone(),
+                    block_meta: self
+                        .registry
+                        .lookup_method_block_meta(
+                            body.owner.as_str(),
+                            body.method.as_str(),
+                            body.is_singleton,
+                        )
+                        .cloned(),
+                })
+            })
+            .collect()
+    }
+
     pub fn backward_propagate<'b>(
         &mut self,
         program: &ruby_prism::ProgramNode<'b>,
@@ -66782,6 +67185,24 @@ impl<'a> InferenceEngine<'a> {
 
     /// A replay binds parameters to caller types, so a yield argument that came from a block on
     /// a parameter receiver can now be typed.
+    /// A yield slot the replay can type: untyped, or the result of a call on a parameter.
+    /// A bare parameter stays, since it renders as a type parameter.
+    fn yield_slot_waits_on_replay(slot: &Type) -> bool {
+        fn calls_on_param(ty: &Type) -> bool {
+            match ty {
+                Type::ReceiverMethodRef(receiver, _) => {
+                    TypeRegistry::type_contains_param_ref_static(receiver)
+                }
+                Type::TruthyProjection(inner)
+                | Type::FalsyProjection(inner)
+                | Type::NonNilProjection(inner) => calls_on_param(inner),
+                Type::Union(parts) => parts.iter().any(calls_on_param),
+                _ => false,
+            }
+        }
+        matches!(slot, Type::Untyped) || calls_on_param(slot)
+    }
+
     fn refresh_unresolved_yield_param_types(
         &mut self,
         class_name: &str,
@@ -66801,7 +67222,7 @@ impl<'a> InferenceEngine<'a> {
             || !meta
                 .yield_param_types
                 .iter()
-                .any(|ty| matches!(ty, Type::Untyped))
+                .any(Self::yield_slot_waits_on_replay)
         {
             return;
         }
@@ -66817,7 +67238,7 @@ impl<'a> InferenceEngine<'a> {
             .iter_mut()
             .zip(&summary.yield_param_types)
         {
-            if !matches!(slot, Type::Untyped) || types.is_empty() {
+            if !Self::yield_slot_waits_on_replay(slot) || types.is_empty() {
                 continue;
             }
             let ty = Type::from_type_vec(types.clone());

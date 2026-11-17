@@ -95,6 +95,28 @@ class A
 end
 ```
 
+## Array param block calls use the caller's element type
+
+### update
+
+```ruby
+class BlockOnParam
+  def bump(xs) = xs.map { |x| x + 1 }
+  def visit(xs) = xs.each { |x| x }
+end
+BlockOnParam.new.bump([1])
+BlockOnParam.new.visit([1])
+```
+
+### result
+
+```rbs
+class BlockOnParam
+  def bump: (Array[Integer] xs) -> Array[Integer]
+  def visit: (Array[Integer] xs) -> Array[Integer]
+end
+```
+
 ## Union param common method resolves
 
 ### update

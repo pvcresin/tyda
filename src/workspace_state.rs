@@ -5,12 +5,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::dep_graph::{DependencyGraph, FileDeps};
 use crate::inference::FileAnalysisSnapshot;
 use crate::rbs::stdlib_loader::LazyRbsLoader;
-use crate::registry::TypeRegistry;
+use crate::registry::{ParamDependentBody, ParamReplayRequest, ParamReplayResult, TypeRegistry};
+use crate::types::Type;
 
 type FileId = u32;
 use self::display_scope::DisplayBaseRegistryCache;
@@ -598,11 +600,7 @@ impl WorkspaceState {
             ResolutionProfile::Batch => {
                 let run = |registry: &mut TypeRegistry| {
                     registry.apply_cli_resolution();
-                    if let Some(loader) = stdlib_loader {
-                        Self::resolve_with_stdlib_declarations(registry, loader);
-                    }
-                    registry.prewarm_and_freeze_resolve_params();
-                    registry.compact_after_batch_freeze();
+                    Self::finish_batch_resolution(registry, stdlib_loader);
                 };
                 match pool {
                     Some(pool) => pool.install(|| run(registry)),
@@ -621,6 +619,14 @@ impl WorkspaceState {
                 }
             }
         }
+    }
+
+    fn finish_batch_resolution(registry: &mut TypeRegistry, stdlib_loader: Option<&LazyRbsLoader>) {
+        if let Some(loader) = stdlib_loader {
+            Self::resolve_with_stdlib_declarations(registry, loader);
+        }
+        registry.prewarm_and_freeze_resolve_params();
+        registry.compact_after_batch_freeze();
     }
 
     pub fn invalidate_dependents_of(&mut self, symbols: &HashSet<String>) -> HashSet<String> {
@@ -669,7 +675,14 @@ pub struct BatchProjectionBuilder {
     registry: TypeRegistry,
     applied: usize,
     invalidate_resolved_params: bool,
+    param_dependent_bodies: Vec<(String, Vec<ParamDependentBody>)>,
 }
+
+/// Types parameter-dependent bodies again, per file, with the requested argument types, and
+/// returns their new returns and block contracts. It also gets the merged registry.
+pub type ParamBodyReplay<'a> = &'a (
+        dyn Fn(&TypeRegistry, &[(String, Vec<ParamReplayRequest>)]) -> Vec<ParamReplayResult> + Sync
+    );
 
 impl BatchProjectionBuilder {
     pub fn new(base: TypeRegistry) -> Self {
@@ -677,6 +690,7 @@ impl BatchProjectionBuilder {
             registry: base,
             applied: 0,
             invalidate_resolved_params: false,
+            param_dependent_bodies: Vec::new(),
         }
     }
 
@@ -685,11 +699,119 @@ impl BatchProjectionBuilder {
     where
         I: IntoIterator<Item = (String, FileAnalysisSnapshot)>,
     {
-        for (_file_path, analysis) in chunk {
+        for (file_path, mut analysis) in chunk {
+            if !analysis.param_dependent_bodies.is_empty() {
+                self.param_dependent_bodies.push((
+                    file_path,
+                    std::mem::take(&mut analysis.param_dependent_bodies),
+                ));
+            }
             self.invalidate_resolved_params |=
                 analysis.apply_to_registry_deferred(&mut self.registry);
             self.applied += 1;
         }
+    }
+
+    /// `finish`, but bodies that called methods on their parameters with arguments or a
+    /// block are typed again with the callers' types before returns resolve.
+    pub fn finish_with_param_replay(
+        mut self,
+        stdlib_loader: Option<&LazyRbsLoader>,
+        pool: Option<&rayon::ThreadPool>,
+        replay: ParamBodyReplay<'_>,
+    ) -> Arc<TypeRegistry> {
+        if self.invalidate_resolved_params {
+            self.registry.invalidate_resolve_cache();
+        }
+        let bodies = std::mem::take(&mut self.param_dependent_bodies);
+        let run = |registry: &mut TypeRegistry| {
+            registry.apply_cli_call_site_resolution();
+            let requests_started = std::time::Instant::now();
+            let shared: &TypeRegistry = registry;
+            let requests: Vec<(String, Vec<ParamReplayRequest>)> = bodies
+                .par_iter()
+                .filter_map(|(file_path, bodies)| {
+                    let requests: Vec<ParamReplayRequest> = bodies
+                        .iter()
+                        .filter_map(|body| shared.param_replay_request(body))
+                        .collect();
+                    (!requests.is_empty()).then(|| (file_path.clone(), requests))
+                })
+                .collect();
+            if std::env::var_os("TYDA_RESOLUTION_TIMING").is_some() {
+                eprintln!(
+                    "cli-resolution param-replay-requests: {:.3}s ({} candidate files)",
+                    requests_started.elapsed().as_secs_f64(),
+                    bodies.len(),
+                );
+            }
+            if !requests.is_empty() {
+                let timing = std::env::var_os("TYDA_RESOLUTION_TIMING").is_some();
+                let started = std::time::Instant::now();
+                let results = replay(registry, &requests);
+                if timing {
+                    eprintln!(
+                        "cli-resolution param-replay: {:.3}s ({} files, {} bodies)",
+                        started.elapsed().as_secs_f64(),
+                        requests.len(),
+                        requests
+                            .iter()
+                            .map(|(_, requests)| requests.len())
+                            .sum::<usize>(),
+                    );
+                }
+                for result in results {
+                    let body = &result.body;
+                    // The replay reads its file eagerly, with less than the merged registry
+                    // knows (`self.class.x` answers from the base class). Its return replaces
+                    // the first pass only when it settles fully where the first pass did not.
+                    let first_pass = registry
+                        .lookup_method_def(
+                            body.owner.as_str(),
+                            body.method.as_str(),
+                            body.is_singleton,
+                        )
+                        .map(|method| method.raw_return_type.clone());
+                    let settled = |ty: &Type| {
+                        TypeRegistry::is_concrete_for_global_resolve(ty)
+                            && !TypeRegistry::type_contains_untyped_member(ty)
+                    };
+                    let replaces_return = settled(&result.return_type)
+                        && first_pass.as_ref().is_none_or(|ty| !settled(ty));
+                    let replaces_block = result.block_meta.as_ref().is_some_and(|meta| {
+                        !meta.yield_param_types.is_empty()
+                            && meta.yield_param_types.iter().all(settled)
+                    });
+                    if !replaces_return && !replaces_block {
+                        continue;
+                    }
+                    if replaces_return {
+                        registry.update_method_return_type_variant(
+                            body.owner.as_str(),
+                            body.method.as_str(),
+                            body.is_singleton,
+                            result.return_type,
+                        );
+                    }
+                    if replaces_block && let Some(meta) = result.block_meta {
+                        registry.set_method_block_meta(
+                            body.owner.as_str(),
+                            body.method.as_str(),
+                            body.is_singleton,
+                            meta,
+                        );
+                    }
+                }
+                registry.invalidate_resolve_cache();
+            }
+            registry.apply_cli_return_resolution();
+            WorkspaceState::finish_batch_resolution(registry, stdlib_loader);
+        };
+        match pool {
+            Some(pool) => pool.install(|| run(&mut self.registry)),
+            None => run(&mut self.registry),
+        }
+        Arc::new(self.registry)
     }
 
     pub fn applied_file_count(&self) -> usize {

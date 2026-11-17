@@ -722,3 +722,25 @@ class SocketProbe
   def each_socket: { (String, Integer) -> untyped } -> [1]
 end
 ```
+
+## A block call on a union of classes returns each class's result
+
+### update
+
+```ruby
+class UnionBlockCall
+  def each_arm(x) = (x ? [1] : (1..2)).each { |v| v }
+  def map_arm(x) = (x ? [1] : (1..2)).map { |v| v }
+  def then_arm(x) = (x ? "a" : 1).then { |v| v }
+end
+```
+
+### result
+
+```rbs
+class UnionBlockCall
+  def each_arm: (untyped x) -> (Range[Integer] | [1])
+  def map_arm: (untyped x) -> Array[Integer]
+  def then_arm: (untyped x) -> (1 | "a")
+end
+```

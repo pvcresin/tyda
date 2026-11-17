@@ -11,7 +11,7 @@ Coordinate = Data.define(:lat, :lng)
 ### result
 
 ```rbs
-class Coordinate
+class Coordinate < Data
   def lat: -> untyped
   def lng: -> untyped
   def initialize: (lat: untyped, lng: untyped) -> void
@@ -38,7 +38,7 @@ def entry_count = Entry.new(name: "a", count: 1).count
 ```rbs
 FIELDS: { name: :name, count: :count }
 
-class Entry
+class Entry < Data
   def name: -> String
   def count: -> Integer
   def initialize: (name: String, count: Integer) -> void
@@ -72,7 +72,7 @@ def build_entry = Entry.build
 ### result
 
 ```rbs
-class Entry
+class Entry < Data
   def value: -> String
   def initialize: (value: String) -> void
   def self.members: -> Array[:value]
@@ -100,7 +100,7 @@ end
 ### result
 
 ```rbs
-class Token
+class Token < Data
   def type: -> untyped
   def value: -> untyped
   def initialize: (type: untyped, value: untyped) -> void
@@ -121,7 +121,7 @@ Name = Data.define(:value)
 ### result
 
 ```rbs
-class Name
+class Name < Data
   def value: -> untyped
   def initialize: (value: untyped) -> void
   def self.members: -> Array[:value]
@@ -140,7 +140,7 @@ Immutable = Data.define(:x, :y)
 ### result
 
 ```rbs
-class Immutable
+class Immutable < Data
   def x: -> untyped
   def y: -> untyped
   def initialize: (x: untyped, y: untyped) -> void
@@ -172,7 +172,7 @@ class Object < BasicObject
   def entry_label: -> String
 end
 
-class Store::Entry
+class Store::Entry < Data
   def name: -> Symbol
   def initialize: (name: Symbol) -> void
   def self.members: -> Array[:name]
@@ -198,7 +198,7 @@ class Object < BasicObject
   def foo: -> Point
 end
 
-class Point
+class Point < Data
   def x: -> Integer
   def y: -> Integer
   def initialize: (x: Integer, y: Integer) -> void
@@ -224,7 +224,7 @@ class Object < BasicObject
   def positional_data: -> String
 end
 
-class PosData
+class PosData < Data
   def x: -> Integer
   def y: -> String
   def initialize: (x: Integer, y: String) -> void

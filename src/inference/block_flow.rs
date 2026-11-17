@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use ruby_prism::{Node, Visit};
 
+use crate::prism_compat::LocationExt;
 use crate::registry::{BlockFlowSummary, BlockForward, LiteralBranchedDef};
 use crate::types::SharedName;
 
@@ -994,4 +995,185 @@ impl<'pr> Visit<'pr> for BlockFlowWalker {
     fn visit_retry_node(&mut self, _node: &ruby_prism::RetryNode<'pr>) {
         self.state = FlowState::dead();
     }
+}
+
+/// Enumerators from these methods yield two values per step (`each_with_index` yields the
+/// element and the index), as their block forms take two parameters.
+const MULTI_VALUE_ENUMERATOR_SOURCES: &[&[u8]] = &[
+    b"each_with_index",
+    b"each_with_object",
+    b"with_index",
+    b"with_object",
+];
+
+/// These methods hand each step's values to their block as separate arguments. The other
+/// Enumerable methods pack them into one array first (`select`, `find`, `sort_by`, ...).
+const SEPARATE_VALUE_CONSUMERS: &[&[u8]] = &[
+    b"map",
+    b"collect",
+    b"flat_map",
+    b"collect_concat",
+    b"filter_map",
+    b"each",
+    b"take_while",
+    b"count",
+    b"find_index",
+    b"any?",
+    b"all?",
+    b"none?",
+    b"one?",
+    b"to_h",
+    b"uniq",
+];
+
+/// Start offsets of the parameters of blocks that receive several yielded values as separate
+/// arguments (`xs.each_with_index.map { |x| x }` binds `x` to the element only). A local that
+/// every write in its scope sets to such an enumerator counts too.
+pub(super) fn separate_yield_block_params(root: &Node<'_>) -> HashSet<usize> {
+    #[derive(Default)]
+    struct Frame {
+        /// Per local, whether every write stores a multi-value enumerator.
+        writes: HashMap<Vec<u8>, bool>,
+        pending: Vec<(usize, Vec<u8>)>,
+    }
+
+    struct Collector {
+        offsets: HashSet<usize>,
+        frames: Vec<Frame>,
+    }
+
+    impl Collector {
+        fn record_write(&mut self, name: &[u8], multi: bool) {
+            if let Some(frame) = self.frames.last_mut() {
+                let entry = frame.writes.entry(name.to_vec()).or_insert(true);
+                *entry &= multi;
+            }
+        }
+
+        fn with_frame(&mut self, walk: impl FnOnce(&mut Self)) {
+            self.frames.push(Frame::default());
+            walk(self);
+            let frame = self.frames.pop().expect("frame pushed above");
+            for (offset, name) in frame.pending {
+                if frame.writes.get(&name).copied() == Some(true) {
+                    self.offsets.insert(offset);
+                }
+            }
+        }
+    }
+
+    impl<'pr> Visit<'pr> for Collector {
+        fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+            if SEPARATE_VALUE_CONSUMERS.contains(&node.name().as_slice())
+                && let Some(params) = node
+                    .block()
+                    .and_then(|block| block.as_block_node())
+                    .and_then(|block| block.parameters())
+                && let Some(receiver) = node.receiver()
+            {
+                let offset = params.location().start_offset();
+                if receiver
+                    .as_call_node()
+                    .is_some_and(|receiver| yields_multiple_values(&receiver))
+                {
+                    self.offsets.insert(offset);
+                } else if let Some(read) = receiver.as_local_variable_read_node()
+                    && let Some(frame) = self.frames.last_mut()
+                {
+                    frame
+                        .pending
+                        .push((offset, read.name().as_slice().to_vec()));
+                }
+            }
+            ruby_prism::visit_call_node(self, node);
+        }
+
+        fn visit_local_variable_write_node(
+            &mut self,
+            node: &ruby_prism::LocalVariableWriteNode<'pr>,
+        ) {
+            let multi = node
+                .value()
+                .as_call_node()
+                .is_some_and(|value| yields_multiple_values(&value));
+            self.record_write(node.name().as_slice(), multi);
+            ruby_prism::visit_local_variable_write_node(self, node);
+        }
+
+        fn visit_local_variable_target_node(
+            &mut self,
+            node: &ruby_prism::LocalVariableTargetNode<'pr>,
+        ) {
+            self.record_write(node.name().as_slice(), false);
+        }
+
+        fn visit_local_variable_or_write_node(
+            &mut self,
+            node: &ruby_prism::LocalVariableOrWriteNode<'pr>,
+        ) {
+            self.record_write(node.name().as_slice(), false);
+            ruby_prism::visit_local_variable_or_write_node(self, node);
+        }
+
+        fn visit_local_variable_and_write_node(
+            &mut self,
+            node: &ruby_prism::LocalVariableAndWriteNode<'pr>,
+        ) {
+            self.record_write(node.name().as_slice(), false);
+            ruby_prism::visit_local_variable_and_write_node(self, node);
+        }
+
+        fn visit_local_variable_operator_write_node(
+            &mut self,
+            node: &ruby_prism::LocalVariableOperatorWriteNode<'pr>,
+        ) {
+            self.record_write(node.name().as_slice(), false);
+            ruby_prism::visit_local_variable_operator_write_node(self, node);
+        }
+
+        fn visit_required_parameter_node(&mut self, node: &ruby_prism::RequiredParameterNode<'pr>) {
+            self.record_write(node.name().as_slice(), false);
+        }
+
+        fn visit_optional_parameter_node(&mut self, node: &ruby_prism::OptionalParameterNode<'pr>) {
+            self.record_write(node.name().as_slice(), false);
+            ruby_prism::visit_optional_parameter_node(self, node);
+        }
+
+        fn visit_def_node(&mut self, node: &ruby_prism::DefNode<'pr>) {
+            self.with_frame(|this| ruby_prism::visit_def_node(this, node));
+        }
+
+        fn visit_class_node(&mut self, node: &ruby_prism::ClassNode<'pr>) {
+            self.with_frame(|this| ruby_prism::visit_class_node(this, node));
+        }
+
+        fn visit_module_node(&mut self, node: &ruby_prism::ModuleNode<'pr>) {
+            self.with_frame(|this| ruby_prism::visit_module_node(this, node));
+        }
+
+        fn visit_singleton_class_node(&mut self, node: &ruby_prism::SingletonClassNode<'pr>) {
+            self.with_frame(|this| ruby_prism::visit_singleton_class_node(this, node));
+        }
+    }
+
+    fn yields_multiple_values(enumerator: &ruby_prism::CallNode<'_>) -> bool {
+        if enumerator.block().is_some() {
+            return false;
+        }
+        if enumerator.name().as_slice() == b"lazy" && enumerator.arguments().is_none() {
+            return enumerator
+                .receiver()
+                .and_then(|receiver| receiver.as_call_node())
+                .is_some_and(|receiver| yields_multiple_values(&receiver));
+        }
+        MULTI_VALUE_ENUMERATOR_SOURCES.contains(&enumerator.name().as_slice())
+    }
+
+    let mut collector = Collector {
+        offsets: HashSet::new(),
+        frames: Vec::new(),
+    };
+    collector.with_frame(|this| this.visit(root));
+    collector.offsets
 }

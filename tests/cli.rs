@@ -511,6 +511,73 @@ fn coverage_includes_arguments_of_unresolved_receiver_calls() {
 }
 
 #[test]
+fn coverage_walks_blocks_chained_on_untyped_receivers() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("untyped_chain.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class Chain\n",
+            "  def self.extra\n",
+            "    Other.value\n",
+            "  end\n",
+            "\n",
+            "  def self.run\n",
+            "    [1].then { |list| [list, list.extra] }\n",
+            "      .tap { |list, _| list.size }\n",
+            "      .tap { |_, value| value.log }\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    // `then` gives `untyped` here, and the middle `tap` block still counts `list` and `size`.
+    assert_eq!(report["by_kind"]["value"]["total"], 4);
+    assert_eq!(report["by_kind"]["method_call"]["total"], 7);
+}
+
+#[test]
+fn known_issue_coverage_skips_blocks_chained_on_unresolved_receivers() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("deferred_chain.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class Chain\n",
+            "  def run\n",
+            "    Marshal.load(\"\").tap { |item| item.save }.tap { |item| item.log }\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    // Known issue: the first `tap` block is never walked, because its receiver is still a
+    // reference when the chain is typed. `item` and `item.save` in it should count too.
+    assert_eq!(
+        report["by_kind"]["value"]["total"], 1,
+        "the first block is walked now: drop this check and expect 2 values"
+    );
+}
+
+#[test]
 fn coverage_keeps_narrowed_receivers_in_yielding_blocks() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("narrowed_yield.rb");
@@ -5048,12 +5115,11 @@ fn normalize_value_for_binds_value_from_another_file() {
     );
 }
 
-// Known issue: the scenario runner and the LSP analyze the current file at full depth and infer
-// these (`ruby/control/loops.md`, `ruby/method/call_return.md`). The CLI keeps `file.read(len)`
-// as a call without arguments and resolves it after the merge, where the first `IO#read`
-// overload (`-> String`) wins. When a check fails, drop it.
+// The CLI keeps `file.read(len)` on a parameter as a call without arguments in its first pass.
+// It types such bodies again with the callers' types, so these match the full path
+// (`ruby/control/loops.md`, `ruby/method/call_return.md`).
 #[test]
-fn known_issue_io_read_through_parameters_in_a_single_file() {
+fn io_read_through_parameters_matches_the_full_path() {
     let render = |source: &str| {
         let dir = tempfile::tempdir().expect("failed to create tempdir");
         fs::write(dir.path().join("source.rb"), source).expect("failed to write source");
@@ -5082,8 +5148,8 @@ fn known_issue_io_read_through_parameters_in_a_single_file() {
         "end\n",
     ));
     assert!(
-        yielded.contains("def each_part: (File file, Integer len) { (untyped) -> untyped } -> nil"),
-        "known issue fixed (yield after break unless); drop this check: {yielded}"
+        yielded.contains("def each_part: (File file, Integer len) { (String) -> untyped } -> nil"),
+        "yield after break unless: {yielded}"
     );
 
     let read = render(concat!(
@@ -5098,9 +5164,50 @@ fn known_issue_io_read_through_parameters_in_a_single_file() {
         "end\n",
     ));
     assert!(
-        read.contains("def read_part: (File file, Integer len) -> String\n"),
-        "known issue fixed (IO#read through a parameter); drop this check: {read}"
+        read.contains("def read_part: (File file, Integer len) -> String?\n"),
+        "IO#read through a parameter: {read}"
     );
+}
+
+// The CLI keeps a call on a parameter without its block in its first pass. It types such bodies
+// again with the callers' types, so these match the full path
+// (`ruby/method/param_receiver_method_ref.md`), also when the callers are in another file.
+#[test]
+fn block_calls_on_parameters_match_the_full_path() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("block_on_param.rb"),
+        concat!(
+            "class BlockOnParam\n",
+            "  def bump(xs) = xs.map { |x| x + 1 }\n",
+            "  def visit(xs) = xs.each { |x| x }\n",
+            "  def add(a, b) = a + b\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("caller.rb"),
+        concat!(
+            "BlockOnParam.new.bump([1])\n",
+            "BlockOnParam.new.visit([1])\n",
+            "BlockOnParam.new.add(1, 2)\n",
+        ),
+    )
+    .expect("failed to write caller");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "def bump: (Array[Integer] xs) -> Array[Integer]\n",
+        "def visit: (Array[Integer] xs) -> Array[Integer]\n",
+        "def add: (Integer a, Integer b) -> Integer\n",
+    ] {
+        assert!(rbs.contains(expected), "missing {expected:?}: {rbs}");
+    }
 }
 
 /// Cross-file relation chains resolve in the merged registry after the engines finish, so
