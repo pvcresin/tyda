@@ -308,7 +308,7 @@ mod stdlib_returns;
 
 pub use keyword_args::KeywordArgTypes;
 
-pub use external_types::PreparedStdlibMerge;
+pub use external_types::{PreparedClassPool, PreparedStdlibMerge};
 pub use file_local::MethodBodySummary;
 
 #[derive(Debug, Default, Clone, Copy)]

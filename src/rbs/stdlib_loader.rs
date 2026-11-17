@@ -29,8 +29,9 @@ struct SharedShape {
 }
 
 impl SharedShape {
-    fn new(registry: TypeRegistry) -> Arc<Self> {
-        let prepared = crate::registry::PreparedStdlibMerge::new(&registry);
+    fn new(registry: TypeRegistry, pool: &Mutex<crate::registry::PreparedClassPool>) -> Arc<Self> {
+        let mut pool = pool.lock().expect("stdlib prepared class pool poisoned");
+        let prepared = crate::registry::PreparedStdlibMerge::new(&registry, &mut pool);
         Arc::new(Self { registry, prepared })
     }
 
@@ -57,6 +58,7 @@ pub struct LazyRbsLoader {
     feature_extensions: Mutex<FxHashMap<String, Arc<[FeatureExtension]>>>,
     stdlib_paths: FxHashSet<PathBuf>,
     alias_dependencies: Mutex<FxHashMap<PathBuf, Arc<AliasDependency>>>,
+    prepared_classes: Mutex<crate::registry::PreparedClassPool>,
 }
 
 /// A method that a stdlib feature adds to a core class, absent from core RBS.
@@ -215,6 +217,7 @@ impl LazyRbsLoader {
             feature_extensions: Mutex::new(FxHashMap::default()),
             stdlib_paths,
             alias_dependencies: Mutex::new(FxHashMap::default()),
+            prepared_classes: Mutex::default(),
         }
     }
 
@@ -482,7 +485,7 @@ impl LazyRbsLoader {
         }
         crate::rbs::import::finalize_pending_method_aliases(&mut shape);
         shape.shrink_to_fit_after_compact();
-        Some(SharedShape::new(shape))
+        Some(SharedShape::new(shape, &self.prepared_classes))
     }
 
     fn build_feature_shape(&self, feature: &str) -> Option<Arc<SharedShape>> {
@@ -498,7 +501,7 @@ impl LazyRbsLoader {
         }
         crate::rbs::import::finalize_pending_method_aliases(&mut shape);
         shape.shrink_to_fit_after_compact();
-        Some(SharedShape::new(shape))
+        Some(SharedShape::new(shape, &self.prepared_classes))
     }
 
     /// Top-level classes, modules, and constants whose names start with `prefix`. Only

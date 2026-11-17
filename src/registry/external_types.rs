@@ -19,12 +19,40 @@ struct FreshClass {
     sets_dirty_patterns: bool,
     sets_mixin_hook_mixins: bool,
     sets_includer_bound_dsl: bool,
+    /// Merging the declaration again into exactly `data` leaves it as it is.
+    remerge_is_noop: bool,
+}
+
+/// Prepared classes by content, so declarations that hold the same class share one copy and a
+/// merge can tell that a registry still holds exactly that class.
+#[derive(Debug, Default)]
+pub struct PreparedClassPool {
+    classes: FxHashMap<Sym, Vec<(u64, Arc<ClassData>)>>,
+}
+
+impl PreparedClassPool {
+    fn share(&mut self, name: Sym, data: Arc<ClassData>) -> Arc<ClassData> {
+        use std::hash::{Hash, Hasher};
+        let text = format!("{data:?}");
+        let mut hasher = rustc_hash::FxHasher::default();
+        text.hash(&mut hasher);
+        let key = hasher.finish();
+        let same = self.classes.entry(name).or_default();
+        if let Some((_, existing)) = same
+            .iter()
+            .find(|(hash, existing)| *hash == key && format!("{existing:?}") == text)
+        {
+            return Arc::clone(existing);
+        }
+        same.push((key, Arc::clone(&data)));
+        data
+    }
 }
 
 impl PreparedStdlibMerge {
     /// Merges each class of `shape` into an empty registry, as `merge_stdlib_rbs_registry`
     /// would into a registry without that class. `shape` must not change afterwards.
-    pub fn new(shape: &TypeRegistry) -> Self {
+    pub fn new(shape: &TypeRegistry, pool: &mut PreparedClassPool) -> Self {
         let classes = shape
             .class_data
             .iter()
@@ -32,13 +60,26 @@ impl PreparedStdlibMerge {
                 let mut scratch = TypeRegistry::new();
                 scratch.merge_external_type_class(name, rbs_data, false, true);
                 debug_assert_eq!(scratch.class_data.len(), 1);
-                let data = scratch
+                let data = pool.share(
+                    *name,
+                    scratch
+                        .class_data
+                        .remove(name)
+                        .expect("merging a class creates it"),
+                );
+                // Checked by doing it: the class this registry holds is compared with what a
+                // second merge makes of it.
+                let mut again = TypeRegistry::new();
+                again.class_data.insert_shared(*name, Arc::clone(&data));
+                again.merge_external_type_class(name, rbs_data, false, true);
+                let remerge_is_noop = again
                     .class_data
-                    .remove(name)
-                    .expect("merging a class creates it");
+                    .get(name)
+                    .is_some_and(|merged| format!("{merged:?}") == format!("{data:?}"));
                 FreshClass {
                     name: *name,
                     data,
+                    remerge_is_noop,
                     sets_mixin_hook_methods: scratch.has_mixin_hook_methods,
                     sets_dirty_patterns: scratch.has_dirty_patterns,
                     sets_mixin_hook_mixins: scratch.has_mixin_hook_mixins,
@@ -149,10 +190,21 @@ impl TypeRegistry {
         for (index, (class_name, rbs_data)) in rbs_registry.class_data.iter().enumerate() {
             if let Some(fresh) = prepared.map(|prepared| &prepared.classes[index])
                 && fresh.name == *class_name
-                && !self.class_data.contains_key(class_name.as_str())
             {
-                self.insert_fresh_external_class(fresh);
-                continue;
+                match self.class_data.get(class_name.as_str()) {
+                    None => {
+                        self.insert_fresh_external_class(fresh);
+                        continue;
+                    }
+                    // Still the shared class, which merging again would not change.
+                    Some(existing)
+                        if fresh.remerge_is_noop && Arc::ptr_eq(existing, &fresh.data) =>
+                    {
+                        self.apply_fresh_merge_effects(fresh);
+                        continue;
+                    }
+                    Some(_) => {}
+                }
             }
             if propagate_user_defined && rbs_data.user_defined {
                 let data = self.class_data_mut(class_name);
@@ -210,6 +262,12 @@ impl TypeRegistry {
     /// The registry-wide effects of `merge_external_type_class` on a class this registry lacks,
     /// with the class itself taken from `fresh`.
     fn insert_fresh_external_class(&mut self, fresh: &FreshClass) {
+        self.apply_fresh_merge_effects(fresh);
+        self.class_data
+            .insert_shared(fresh.name, Arc::clone(&fresh.data));
+    }
+
+    fn apply_fresh_merge_effects(&mut self, fresh: &FreshClass) {
         self.invalidate_owner_walks();
         if fresh.sets_mixin_hook_methods {
             self.has_mixin_hook_methods = true;
@@ -224,8 +282,6 @@ impl TypeRegistry {
             self.has_includer_bound_dsl = true;
             self.includer_bound_dsl_applied = false;
         }
-        self.class_data
-            .insert_shared(fresh.name, Arc::clone(&fresh.data));
     }
 
     fn merge_external_type_class(
