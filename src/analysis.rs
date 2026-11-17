@@ -1,6 +1,6 @@
 use crate::prism_compat::LocationExt;
 use ruby_prism::{self as prism, Node};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -292,6 +292,7 @@ fn build_hover_query_engine<'a>(
         external_rbs_loading: ExternalRbsLoading::OnDemand,
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     engine
 }
@@ -356,6 +357,7 @@ pub fn analyze_rbi_declaration_source_with_lazy_rbs(
         external_rbs_loading: ExternalRbsLoading::Preload,
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: true,
+        replay_bodies: None,
     });
     engine.into_registry()
 }
@@ -576,16 +578,28 @@ pub fn replay_param_dependent_bodies(
     if requests.is_empty() {
         return Vec::new();
     }
-    let (mut engine, _timings) = build_compact_scan_engine(
+    let offsets: HashSet<usize> = requests
+        .iter()
+        .map(|request| request.body.def_offset)
+        .collect();
+    let (mut engine, _timings) = build_engine_with_timings(AnalysisRequest {
         source,
         rbs_registry,
-        lazy_loader,
+        lazy_loader: Some(lazy_loader),
         lazy_rbi_loader,
-        file_path,
-        &options,
-        true,
-        HoverSnapshotMode::Skip,
-    );
+        file_path: Some(file_path),
+        options: &options,
+        dependency_collection: DependencyCollection::Disabled,
+        hover_snapshot_mode: HoverSnapshotMode::Skip,
+        annotated_body_hover_mode: AnnotatedBodyHoverMode::Disabled,
+        external_rbs_loading: ExternalRbsLoading::OnDemand,
+        resolution_depth: ResolutionDepth::ExportedFactsOnly,
+        rbi_declaration_source: false,
+        replay_bodies: Some(ReplayBodies {
+            offsets: &offsets,
+            workspace,
+        }),
+    });
     let parse_result = prism::parse(source.as_bytes());
     let root = parse_result.node();
     let Some(program) = root.as_program_node() else {
@@ -726,6 +740,7 @@ fn build_compact_scan_engine<'a>(
         },
         resolution_depth: ResolutionDepth::ExportedFactsOnlyWithBlockReceiverReplay,
         rbi_declaration_source: false,
+        replay_bodies: None,
     })
 }
 
@@ -752,6 +767,7 @@ pub fn analyze_definitions_only_snapshot_timed(
         // Only the definition skeleton is needed, so local method-ref / backward / receiver-preload are skipped.
         resolution_depth: ResolutionDepth::ExportedFactsOnly,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     let mut snapshot = compact_file_snapshot(engine.into_file_analysis_snapshot());
     snapshot.strip_method_body_summary();
@@ -1462,6 +1478,7 @@ pub(crate) fn analyze_file_facts_with_deps_and_rbi_with_options_ref(
         // Workspace scan collects file-local facts only; deep local resolution is reintroduced by a later merge.
         resolution_depth: ResolutionDepth::ExportedFactsOnly,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     let (analysis, deps) = engine.into_file_analysis_snapshot_and_deps();
     (compact_file_snapshot(analysis), deps)
@@ -1574,6 +1591,7 @@ pub fn cli_diagnostics_for_source(
             external_rbs_loading: ExternalRbsLoading::OnDemand,
             resolution_depth: ResolutionDepth::ExportedFactsOnly,
             rbi_declaration_source: false,
+            replay_bodies: None,
         });
         let mut snapshot = engine.into_file_analysis_snapshot();
         snapshot.compact_current_pass_facts();
@@ -1619,6 +1637,7 @@ pub fn analyze_source_cached_with_deps_lazy(
         },
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     let into_file_analysis_snapshot_started = Instant::now();
     let (analysis, deps) = engine.into_file_analysis_snapshot_and_deps();
@@ -1710,6 +1729,7 @@ pub(crate) fn analyze_file_for_query(
         external_rbs_loading: ExternalRbsLoading::OnDemand,
         resolution_depth: mode.resolution_depth(),
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     let analysis = engine.into_file_analysis_snapshot();
     if mode.should_compact() {
@@ -1741,6 +1761,7 @@ fn analyze_source_inner(
         external_rbs_loading: ExternalRbsLoading::Preload,
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     engine.into_registry_and_deps()
 }
@@ -1767,6 +1788,7 @@ fn analyze_source_inner_with_timings(
         external_rbs_loading: ExternalRbsLoading::Preload,
         resolution_depth: ResolutionDepth::Full,
         rbi_declaration_source: false,
+        replay_bodies: None,
     });
     (engine.into_registry_and_deps(), timings)
 }
@@ -1785,6 +1807,15 @@ struct AnalysisRequest<'a> {
     resolution_depth: ResolutionDepth,
     /// RBI declaration source: makes an empty-body `def`'s return value Untyped.
     rbi_declaration_source: bool,
+    /// A CLI replay types only these method bodies; the others take their first pass
+    /// return from the merged registry.
+    replay_bodies: Option<ReplayBodies<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct ReplayBodies<'a> {
+    offsets: &'a HashSet<usize>,
+    workspace: &'a TypeRegistry,
 }
 
 fn compact_file_snapshot(mut analysis: FileAnalysisSnapshot) -> FileAnalysisSnapshot {
@@ -2691,6 +2722,7 @@ fn build_engine_with_timings<'a>(
         external_rbs_loading,
         resolution_depth,
         rbi_declaration_source,
+        replay_bodies,
     } = request;
     let mut timings = AnalysisTimings::default();
 
@@ -2720,6 +2752,9 @@ fn build_engine_with_timings<'a>(
         annotated_body_hover_mode.should_record(),
     );
     engine.set_analyzing_rbi_declaration(rbi_declaration_source);
+    if let Some(replay) = replay_bodies {
+        engine.limit_bodies_to_replay(replay.offsets.clone(), replay.workspace);
+    }
     engine.set_defer_unresolved_body_call_sites(!resolution_depth.keeps_only_exported_facts());
     engine.set_track_deferred_block_receiver_bodies(
         resolution_depth.replays_deferred_block_receiver_bodies(),
@@ -3458,6 +3493,7 @@ def read = ALIAS::VALUE
                 external_rbs_loading: ExternalRbsLoading::OnDemand,
                 resolution_depth: ResolutionDepth::Full,
                 rbi_declaration_source: false,
+                replay_bodies: None,
             });
             engine.into_file_analysis_snapshot().materialized_registry()
         };

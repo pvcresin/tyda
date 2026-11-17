@@ -1199,6 +1199,9 @@ pub struct InferenceEngine<'a> {
     /// arguments (`each_with_index.map { |x| }`).
     separate_yield_block_params: HashSet<usize>,
     param_dependent_bodies: Vec<ParamDependentBody>,
+    /// A CLI replay types only these method bodies; the others take their first pass
+    /// return from the merged registry.
+    replay_bodies: Option<(HashSet<usize>, &'a TypeRegistry)>,
     /// Per controller, the unconditional `before_action` callbacks that halt unless a self
     /// method is truthy, and those methods.
     action_guards: HashMap<String, ActionGuards>,
@@ -2902,6 +2905,7 @@ impl<'a> InferenceEngine<'a> {
             macro_define_method_offsets: Vec::new(),
             separate_yield_block_params: HashSet::new(),
             param_dependent_bodies: Vec::new(),
+            replay_bodies: None,
             action_guards: HashMap::new(),
             definition_snapshots: hover_index.definition_snapshots,
             pending_constant_definition_snapshots: Vec::new(),
@@ -3011,6 +3015,7 @@ impl<'a> InferenceEngine<'a> {
             macro_define_method_offsets: Vec::new(),
             separate_yield_block_params: HashSet::new(),
             param_dependent_bodies: Vec::new(),
+            replay_bodies: None,
             action_guards: HashMap::new(),
             definition_snapshots: Vec::new(),
             pending_constant_definition_snapshots: Vec::new(),
@@ -3200,6 +3205,37 @@ impl<'a> InferenceEngine<'a> {
                 .registry
                 .lookup_method_def(owner, method_name, owner_is_singleton)
                 .is_some_and(|method| method.origin.is_rbs_file_source())
+    }
+
+    pub(crate) fn limit_bodies_to_replay(
+        &mut self,
+        offsets: HashSet<usize>,
+        workspace: &'a TypeRegistry,
+    ) {
+        self.replay_bodies = Some((offsets, workspace));
+    }
+
+    /// The return a CLI replay uses for a method body in its first walk. A body it does not
+    /// replay would be typed with less than the merged registry knows, so it reads that
+    /// return.
+    fn replay_skipped_body_return(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+        def_offset: usize,
+    ) -> Option<Type> {
+        let (offsets, workspace) = self.replay_bodies.as_ref()?;
+        // A replayed body is typed once, by the replay with the callers' types.
+        if offsets.contains(&def_offset) {
+            return Some(Type::Untyped);
+        }
+        Some(
+            workspace
+                .lookup_method_def(class_name, method_name, is_singleton)
+                .map(|method| method.raw_return_type.clone())
+                .unwrap_or(Type::Untyped),
+        )
     }
 
     pub(crate) fn collect_separate_yield_block_params(&mut self, root: &Node<'_>) {
@@ -17739,6 +17775,13 @@ impl<'a> InferenceEngine<'a> {
         late_constant_names: &[String],
         late_constant_unknown: bool,
     ) {
+        if self
+            .replay_bodies
+            .as_ref()
+            .is_some_and(|(offsets, _)| !offsets.contains(&def_node.location().start_offset()))
+        {
+            return;
+        }
         let method_name = String::from_utf8_lossy(def_node.name().as_slice()).to_string();
         let is_singleton = force_singleton
             || def_node
@@ -19472,7 +19515,15 @@ impl<'a> InferenceEngine<'a> {
         );
         let saved_late_block_forwards = std::mem::take(&mut self.late_block_forwards);
         let mut blockless_return = None;
-        let mut return_type = if method_name == "initialize" {
+        let replay_return = self.replay_skipped_body_return(
+            class_name,
+            &method_name,
+            is_singleton,
+            def_node.location().start_offset(),
+        );
+        let mut return_type = if let Some(first_pass) = replay_return {
+            first_pass
+        } else if method_name == "initialize" {
             if let Some(body) = def_node.body() {
                 self.infer_body_return_type(class_name, &body, parse_result, &mut scope);
             }
