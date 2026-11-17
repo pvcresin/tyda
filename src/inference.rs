@@ -34651,6 +34651,14 @@ impl<'a> InferenceEngine<'a> {
                             && (Self::is_concrete(&resolved) || keep_symbolic_result)
                         {
                             resolved
+                        } else if method_name != "tap"
+                            && Self::block_argument_symbol_name(&call_node).is_some()
+                            && resolved != Type::Untyped
+                            && resolved == effective_receiver
+                        {
+                            // `each(&:sym)` returns its receiver and the symbol call only sees
+                            // elements, so the receiver's own references resolve later.
+                            resolved
                         } else if let Some(structural) = structural {
                             structural
                         } else if call_node.block().is_none()

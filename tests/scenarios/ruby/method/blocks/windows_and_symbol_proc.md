@@ -215,3 +215,43 @@ class Object < BasicObject
   def first_entries: -> Hash[Integer, Entry?]
 end
 ```
+
+## Symbol proc on each returns the receiver with unresolved elements
+
+### update
+
+```ruby
+class SymbolProcEach
+  attr_accessor :app
+
+  def wrap_each(value)
+    [value].each(&:to_s)
+  end
+
+  def wrap_reverse_each(value)
+    [value].reverse_each(&:to_s)
+  end
+
+  def mapped_reverse_each
+    futures = [1, 2].map { |item| app.pool.future(item) }
+    futures.reverse_each(&:value)
+  end
+
+  def untyped_each(value)
+    value.each(&:to_s)
+  end
+end
+```
+
+### result
+
+```rbs
+class SymbolProcEach
+  def app: -> untyped
+  def app=: (untyped app) -> untyped
+  def wrap_each: (untyped value) -> [untyped]
+  def wrap_reverse_each: (untyped value) -> [untyped]
+  def mapped_reverse_each: -> Array[untyped]
+  def untyped_each: (untyped value) -> untyped
+end
+```
