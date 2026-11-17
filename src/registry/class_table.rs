@@ -1,15 +1,18 @@
 //! The registry's class map. Every mutable access moves the table to a new generation, so a
 //! reader can tell that no class changed since it last looked by comparing generations.
+//!
+//! Classes are shared copy-on-write: a class merged unchanged from a shared declaration, or a
+//! registry clone, points at the same data until one side writes to it.
 
 use super::ClassData;
 use crate::types::Sym;
 use rustc_hash::FxHashMap;
 use std::cell::Cell;
-use std::collections::hash_map::{Entry, ValuesMut};
 use std::ops::Deref;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-type Map = FxHashMap<Sym, Box<ClassData>>;
+type Map = FxHashMap<Sym, Arc<ClassData>>;
 
 /// Generations are unique across the process: each thread takes a range from a shared
 /// counter and counts within it. Two tables share a generation only when one was cloned
@@ -58,8 +61,8 @@ impl Deref for ClassTable {
 }
 
 impl<'a> IntoIterator for &'a ClassTable {
-    type Item = (&'a Sym, &'a Box<ClassData>);
-    type IntoIter = std::collections::hash_map::Iter<'a, Sym, Box<ClassData>>;
+    type Item = (&'a Sym, &'a Arc<ClassData>);
+    type IntoIter = std::collections::hash_map::Iter<'a, Sym, Arc<ClassData>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.map.iter()
@@ -78,38 +81,46 @@ impl ClassTable {
         self.generation = next_generation();
     }
 
-    pub(crate) fn get_mut(&mut self, class_name: &str) -> Option<&mut Box<ClassData>> {
+    pub(crate) fn get_mut(&mut self, class_name: &str) -> Option<&mut ClassData> {
         self.touch();
-        self.map.get_mut(class_name)
+        self.map.get_mut(class_name).map(Arc::make_mut)
     }
 
     /// Mutable access that keeps the generation. Only for writes to a class's call sites and
     /// their bookkeeping, which nothing that compares generations reads.
-    pub(crate) fn get_mut_for_call_sites(
-        &mut self,
-        class_name: &str,
-    ) -> Option<&mut Box<ClassData>> {
-        self.map.get_mut(class_name)
+    pub(crate) fn get_mut_for_call_sites(&mut self, class_name: &str) -> Option<&mut ClassData> {
+        self.map.get_mut(class_name).map(Arc::make_mut)
     }
 
-    pub(crate) fn entry(&mut self, class_name: Sym) -> Entry<'_, Sym, Box<ClassData>> {
+    /// The class, created empty when missing.
+    pub(crate) fn get_or_insert_default(&mut self, class_name: Sym) -> &mut ClassData {
         self.touch();
-        self.map.entry(class_name)
+        Arc::make_mut(self.map.entry(class_name).or_default())
     }
 
-    pub(crate) fn remove(&mut self, class_name: &str) -> Option<Box<ClassData>> {
+    /// Puts `data` at `class_name`, shared with the caller's copy.
+    pub(crate) fn insert_shared(&mut self, class_name: Sym, data: Arc<ClassData>) {
+        self.touch();
+        self.map.insert(class_name, data);
+    }
+
+    pub(crate) fn remove(&mut self, class_name: &str) -> Option<Arc<ClassData>> {
         self.touch();
         self.map.remove(class_name)
     }
 
-    pub(crate) fn retain(&mut self, keep: impl FnMut(&Sym, &mut Box<ClassData>) -> bool) {
+    /// Like `HashMap::retain`, but `keep` reads the class and gets `ClassRef` to write it, so a
+    /// shared class is copied only when `keep` actually writes.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&Sym, &mut ClassRef<'_>) -> bool) {
         self.touch();
-        self.map.retain(keep);
+        self.map
+            .retain(|name, data| keep(name, &mut ClassRef { data }));
     }
 
-    pub(crate) fn values_mut(&mut self) -> ValuesMut<'_, Sym, Box<ClassData>> {
+    /// Every class, copied out of sharing only when the caller writes through `ClassRef`.
+    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = ClassRef<'_>> {
         self.touch();
-        self.map.values_mut()
+        self.map.values_mut().map(|data| ClassRef { data })
     }
 
     pub(crate) fn shrink_to_fit(&mut self) {
@@ -117,16 +128,38 @@ impl ClassTable {
     }
 }
 
+/// A class in the table: reads see it in place, and `write` copies it first when shared.
+pub(crate) struct ClassRef<'a> {
+    data: &'a mut Arc<ClassData>,
+}
+
+impl ClassRef<'_> {
+    #[inline]
+    pub(crate) fn write(&mut self) -> &mut ClassData {
+        Arc::make_mut(self.data)
+    }
+}
+
+impl Deref for ClassRef<'_> {
+    type Target = ClassData;
+
+    #[inline]
+    fn deref(&self) -> &ClassData {
+        self.data
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ClassTable;
     use crate::types::Sym;
+    use std::sync::Arc;
 
     #[test]
     fn mutable_access_moves_the_generation() {
         let mut table = ClassTable::default();
         let start = table.generation();
-        table.entry(Sym::new("A")).or_default();
+        table.get_or_insert_default(Sym::new("A"));
         let after_insert = table.generation();
         assert_ne!(start, after_insert);
         let _ = table.get("A");
@@ -138,10 +171,10 @@ mod tests {
     #[test]
     fn clones_share_a_generation_until_one_changes() {
         let mut table = ClassTable::default();
-        table.entry(Sym::new("A")).or_default();
+        table.get_or_insert_default(Sym::new("A"));
         let mut copy = table.clone();
         assert_eq!(copy.generation(), table.generation());
-        copy.entry(Sym::new("B")).or_default();
+        copy.get_or_insert_default(Sym::new("B"));
         assert_ne!(copy.generation(), table.generation());
         let other = ClassTable::default();
         assert_ne!(other.generation(), table.generation());
@@ -154,5 +187,21 @@ mod tests {
             .join()
             .expect("thread");
         assert_ne!(here, there);
+    }
+
+    #[test]
+    fn writes_copy_a_shared_class_only() {
+        let mut table = ClassTable::default();
+        table.get_or_insert_default(Sym::new("A")).is_module = true;
+        let copy = table.clone();
+        assert!(Arc::ptr_eq(&table["A"], &copy["A"]));
+        for data in table.values_mut() {
+            assert!(data.is_module);
+        }
+        assert!(Arc::ptr_eq(&table["A"], &copy["A"]));
+        table.get_mut("A").expect("A").is_module = false;
+        assert!(!Arc::ptr_eq(&table["A"], &copy["A"]));
+        assert!(copy["A"].is_module);
+        assert!(!table["A"].is_module);
     }
 }
