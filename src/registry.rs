@@ -297,6 +297,7 @@ impl Drop for CallerCtxMemoScope {
 }
 
 pub(crate) mod argument_binding;
+mod class_table;
 mod external_types;
 mod file_local;
 mod includer_dsl;
@@ -2820,7 +2821,7 @@ impl OwnerLookupCache {
 #[derive(Debug, Default)]
 pub struct TypeRegistry {
     // boxed: a 392-byte `ClassData` inline makes the map shell dominate per-file snapshots.
-    class_data: FxHashMap<Sym, Box<ClassData>>,
+    class_data: class_table::ClassTable,
     /// boxed: none of these are populated in a per-file snapshot, and their empty map
     /// headers would otherwise add 336B to every one of them.
     cold_tail: Option<Box<RegistryColdTail>>,
@@ -4574,7 +4575,17 @@ impl TypeRegistry {
         let mut call_site = call_site;
         self.intern_call_site(&mut call_site);
         self.mark_class_has_method_body_facts(class_name);
-        let data = self.class_data_mut(class_name);
+        // Call sites are not part of the class shape that generation readers compare.
+        let data = if self.class_data.contains_key(class_name) {
+            if self.name_pool_enabled {
+                self.intern_name(class_name);
+            }
+            self.class_data
+                .get_mut_for_call_sites(class_name)
+                .expect("class is present")
+        } else {
+            self.class_data_mut(class_name)
+        };
         if !data
             .call_site_fingerprints
             .get_or_insert_default()
@@ -13251,6 +13262,11 @@ impl TypeRegistry {
                 cold.sorbet_modifier_comments.push(comment);
             }
         }
+    }
+
+    /// Changes whenever any class may have changed (see `ClassTable`).
+    pub(crate) fn class_generation(&self) -> u64 {
+        self.class_data.generation()
     }
 
     pub fn class_data_for(&self, class_name: &str) -> Option<&ClassData> {

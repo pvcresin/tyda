@@ -1164,6 +1164,10 @@ pub struct InferenceEngine<'a> {
     pending_constant_names: FxHashSet<String>,
     external_rbs: Option<&'a TypeRegistry>,
     merged_external_classes: FxHashSet<String>,
+    /// Classes whose ancestor walk last changed nothing, valid while the registry's classes
+    /// stay at `ancestor_walk_memo_generation`: walking them again would change nothing.
+    ancestor_walk_memo: FxHashSet<String>,
+    ancestor_walk_memo_generation: u64,
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
     record_hover_snapshots: bool,
@@ -2886,6 +2890,8 @@ impl<'a> InferenceEngine<'a> {
             pending_constant_names: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
+            ancestor_walk_memo: FxHashSet::default(),
+            ancestor_walk_memo_generation: 0,
             file_path: meta.file_path,
             project_root: meta.project_root,
             record_hover_snapshots: true,
@@ -2997,6 +3003,8 @@ impl<'a> InferenceEngine<'a> {
             pending_constant_names: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
+            ancestor_walk_memo: FxHashSet::default(),
+            ancestor_walk_memo_generation: 0,
             file_path: None,
             project_root: None,
             record_hover_snapshots: true,
@@ -3094,6 +3102,7 @@ impl<'a> InferenceEngine<'a> {
         self.rails_mode = enabled;
         if enabled && self.dsl_activation.auto_detected.is_empty() {
             self.dsl_activation = DslActivation::with_rails_mode(true);
+            self.ancestor_walk_memo.clear();
         }
         self.registry
             .set_rails_string_inflections(self.rails_feature_enabled());
@@ -3358,6 +3367,7 @@ impl<'a> InferenceEngine<'a> {
     pub fn set_dsl_activation(&mut self, activation: DslActivation) {
         self.rails_mode = activation.rails_mode_compat();
         self.dsl_activation = activation;
+        self.ancestor_walk_memo.clear();
         self.registry
             .set_rails_string_inflections(self.rails_feature_enabled());
     }
@@ -3409,14 +3419,17 @@ impl<'a> InferenceEngine<'a> {
 
     pub fn set_external_rbs(&mut self, rbs_registry: &'a TypeRegistry) {
         self.external_rbs = Some(rbs_registry);
+        self.ancestor_walk_memo.clear();
     }
 
     pub fn set_lazy_loader(&mut self, loader: &'a LazyRbsLoader) {
         self.lazy_loader = Some(loader);
+        self.ancestor_walk_memo.clear();
     }
 
     pub fn set_lazy_rbi_loader(&mut self, loader: &'a LazyRbiLoader) {
         self.lazy_rbi_loader = Some(loader);
+        self.ancestor_walk_memo.clear();
         self.registry.set_generated_artifacts_present(true);
     }
 
@@ -11081,6 +11094,28 @@ impl<'a> InferenceEngine<'a> {
         if depth >= MAX_DEPTH {
             return;
         }
+        let generation = self.registry.class_generation();
+        if self.ancestor_walk_memo_generation == generation
+            && self.ancestor_walk_memo.contains(class_name)
+        {
+            return;
+        }
+        self.walk_class_ancestors(class_name, depth);
+        // A full walk that changed no class only tried loads that cannot succeed later
+        // without some class changing first. A suppressed walk skipped external loads.
+        if depth == 0
+            && !self.suppress_external_merge
+            && self.registry.class_generation() == generation
+        {
+            if self.ancestor_walk_memo_generation != generation {
+                self.ancestor_walk_memo.clear();
+                self.ancestor_walk_memo_generation = generation;
+            }
+            self.ancestor_walk_memo.insert(class_name.to_string());
+        }
+    }
+
+    fn walk_class_ancestors(&mut self, class_name: &str, depth: usize) {
         self.ensure_stdlib_class(class_name);
         self.ensure_external_class(class_name);
         self.ensure_plugin_class_declaration(class_name);
