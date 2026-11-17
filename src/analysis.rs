@@ -582,25 +582,28 @@ pub fn replay_param_dependent_bodies(
         .iter()
         .map(|request| request.body.def_offset)
         .collect();
-    let (mut engine, _timings) = build_engine_with_timings(AnalysisRequest {
-        source,
-        rbs_registry,
-        lazy_loader: Some(lazy_loader),
-        lazy_rbi_loader,
-        file_path: Some(file_path),
-        options: &options,
-        dependency_collection: DependencyCollection::Disabled,
-        hover_snapshot_mode: HoverSnapshotMode::Skip,
-        annotated_body_hover_mode: AnnotatedBodyHoverMode::Disabled,
-        external_rbs_loading: ExternalRbsLoading::OnDemand,
-        resolution_depth: ResolutionDepth::ExportedFactsOnly,
-        rbi_declaration_source: false,
-        replay_bodies: Some(ReplayBodies {
-            offsets: &offsets,
-            workspace,
-        }),
-    });
     let parse_result = prism::parse(source.as_bytes());
+    let (mut engine, _timings) = build_engine_from_parse(
+        AnalysisRequest {
+            source,
+            rbs_registry,
+            lazy_loader: Some(lazy_loader),
+            lazy_rbi_loader,
+            file_path: Some(file_path),
+            options: &options,
+            dependency_collection: DependencyCollection::Disabled,
+            hover_snapshot_mode: HoverSnapshotMode::Skip,
+            annotated_body_hover_mode: AnnotatedBodyHoverMode::Disabled,
+            external_rbs_loading: ExternalRbsLoading::OnDemand,
+            resolution_depth: ResolutionDepth::ExportedFactsOnly,
+            rbi_declaration_source: false,
+            replay_bodies: Some(ReplayBodies {
+                offsets: &offsets,
+                workspace,
+            }),
+        },
+        &parse_result,
+    );
     let root = parse_result.node();
     let Some(program) = root.as_program_node() else {
         return Vec::new();
@@ -2709,6 +2712,18 @@ fn is_ruby_identifier_byte(byte: u8) -> bool {
 fn build_engine_with_timings<'a>(
     request: AnalysisRequest<'a>,
 ) -> (InferenceEngine<'a>, AnalysisTimings) {
+    let parse_started = Instant::now();
+    let parse_result = prism::parse(request.source.as_bytes());
+    let parse_time = parse_started.elapsed();
+    let (engine, mut timings) = build_engine_from_parse(request, &parse_result);
+    timings.parse = parse_time;
+    (engine, timings)
+}
+
+fn build_engine_from_parse<'a>(
+    request: AnalysisRequest<'a>,
+    parse_result: &prism::ParseResult<'_>,
+) -> (InferenceEngine<'a>, AnalysisTimings) {
     let AnalysisRequest {
         source,
         rbs_registry,
@@ -2729,9 +2744,6 @@ fn build_engine_with_timings<'a>(
     // Deeply pathological nesting is bounded-degraded via the fuel budget, while legitimately large files keep full accuracy.
     crate::inference::set_infer_node_fuel_budget(source.len());
 
-    let parse_started = Instant::now();
-    let parse_result = prism::parse(source.as_bytes());
-    timings.parse = parse_started.elapsed();
     let root = parse_result.node();
 
     let mut engine = InferenceEngine::new();
@@ -2819,13 +2831,13 @@ fn build_engine_with_timings<'a>(
         for (alias_name, ty) in type_aliases {
             engine.add_type_alias(&alias_name, ty);
         }
-        engine.set_self_bind_comments(extract_sorbet_self_bind_comments(&parse_result));
+        engine.set_self_bind_comments(extract_sorbet_self_bind_comments(parse_result));
     }
     let comments_started = Instant::now();
-    let comments = extract_annotation_comments(&parse_result, sorbet_mode);
+    let comments = extract_annotation_comments(parse_result, sorbet_mode);
     timings.comments = comments_started.elapsed();
     // Common subset of rbs-inline / Sorbet — narrowing still works even in projects without `sorbet/config`.
-    engine.set_inline_assertion_comments(extract_inline_assertion_comments(&parse_result));
+    engine.set_inline_assertion_comments(extract_inline_assertion_comments(parse_result));
 
     if let Node::ProgramNode { .. } = &root {
         let program = root.as_program_node().expect("root must be ProgramNode");
@@ -2840,12 +2852,12 @@ fn build_engine_with_timings<'a>(
             }
             engine.collect_top_level_definitions_and_calls(
                 &node,
-                &parse_result,
+                parse_result,
                 &comments,
                 pending_sig.take(),
             );
         }
-        engine.refresh_program_methods_after_collection(&program, &parse_result);
+        engine.refresh_program_methods_after_collection(&program, parse_result);
         timings.definition_collection = top_level_collection_started.elapsed();
 
         if !resolution_depth.keeps_only_exported_facts() {
@@ -2887,7 +2899,7 @@ fn build_engine_with_timings<'a>(
 
         if resolution_depth.replays_deferred_block_receiver_bodies() {
             let backward_propagate_started = Instant::now();
-            engine.replay_deferred_block_receiver_bodies(&program, &parse_result);
+            engine.replay_deferred_block_receiver_bodies(&program, parse_result);
             timings.backward_propagate = backward_propagate_started.elapsed();
 
             let receiver_reference_preload_started = Instant::now();
@@ -2908,7 +2920,7 @@ fn build_engine_with_timings<'a>(
             timings.resolve_method_return_refs = resolve_method_return_refs_started.elapsed();
 
             let backward_propagate_started = Instant::now();
-            engine.backward_propagate(&program, &parse_result);
+            engine.backward_propagate(&program, parse_result);
             timings.backward_propagate = backward_propagate_started.elapsed();
 
             let receiver_reference_preload_started = Instant::now();
@@ -2933,7 +2945,7 @@ fn build_engine_with_timings<'a>(
 
         if hover_snapshot_mode.should_record() {
             let hover_snapshots_started = Instant::now();
-            engine.collect_top_level_hovers_isolated(&program, &parse_result);
+            engine.collect_top_level_hovers_isolated(&program, parse_result);
             timings.hover_snapshots = hover_snapshots_started.elapsed();
         }
     }
