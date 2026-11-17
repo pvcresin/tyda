@@ -1207,6 +1207,11 @@ impl Type {
         }
     }
 
+    /// A union with an `untyped` member, such as RBS `untyped | 0`.
+    pub fn has_untyped_member(&self) -> bool {
+        matches!(self, Type::Union(members) if members.contains(&Type::Untyped))
+    }
+
     pub fn from_type_vec_preserve_untyped(types: Vec<Type>) -> Type {
         let mut parts = Vec::new();
         for t in types {

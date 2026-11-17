@@ -90,7 +90,9 @@ Ruby code inference の順に優先する。これは query / projection の型�
 Ruby source に明示された `class X < Y` は外部宣言で上書きしない。
 
 framework DSL は library-scoped に有効化し、plugin のフックは `PluginCx` を通す。source / RBS に定義が
-ない framework method の戻り値は plugin の `synthetic_method_return` が受け手と名前から返す。引数の型に
+ない framework method の戻り値は plugin の `synthetic_method_return` が受け手と名前から返す。gem の生成 RBS に
+多い `untyped` / `untyped | X` の戻り値は値について何も言わないため、定義がない場合と同じく plugin の型を使う
+（Active Record の relation method など）。引数の型に
 依存するものは `call_return_method_names` で名前を宣言し、`synthetic_call_return` が引数の型を受け取る。
 宣言された名前の呼び出しだけが追加の引数推論を行うため、他の呼び出しの費用は hash lookup 1 回に留まる。
 plugin の戻り値が指す framework class（`ActiveSupport::HashWithIndifferentAccess[K, V] < Hash[K, V]` など）は

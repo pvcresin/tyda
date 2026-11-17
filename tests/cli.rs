@@ -148,6 +148,60 @@ fn analyze_single_file_uses_rbs_collection_config() {
 }
 
 #[test]
+fn active_record_relation_types_win_over_untyped_rbs_returns() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let root = dir.path();
+    let write = |path: &str, content: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).expect("failed to create dir");
+        fs::write(path, content).expect("failed to write file");
+    };
+    write(
+        "Gemfile.lock",
+        "GEM\n  remote: https://rubygems.org/\n  specs:\n    activerecord (8.1.2)\n    rails (8.1.2)\n\nDEPENDENCIES\n  rails\n",
+    );
+    write(
+        "db/schema.rb",
+        "ActiveRecord::Schema.define(version: 1) do\n  create_table \"posts\" do |t|\n    t.string \"title\"\n  end\nend\n",
+    );
+    write(
+        "app/models/application_record.rb",
+        "class ApplicationRecord < ActiveRecord::Base\n  self.abstract_class = true\nend\n",
+    );
+    write(
+        "app/models/post.rb",
+        "class Post < ApplicationRecord\n  scope :recent, -> { where(id: 1) }\n  def self.purge(ids) = where(id: ids).delete_all\nend\n",
+    );
+    write(
+        "app/services/cleaner.rb",
+        "class Cleaner\n  def purge = Post.where(id: 1).delete_all\n  def present? = Post.all.exists?\nend\n",
+    );
+    // Generated gem RBS often declares these returns as `untyped | X`.
+    write(
+        "rbs_collection.yaml",
+        "path: vendor/rbs_collection\ngems: []\n",
+    );
+    write(
+        "vendor/rbs_collection/activerecord/relation.rbs",
+        "module ActiveRecord\n  class Relation\n    def delete_all: () -> (untyped | 0)\n    def exists?: (*untyped) -> (false | untyped)\n  end\nend\n",
+    );
+
+    let output = tyda_bin().arg(root).output().expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "def self.purge: (untyped ids) -> Integer",
+        "def purge: -> Integer",
+        "def present?: -> bool",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "expected `{expected}`, got: {stdout}"
+        );
+    }
+}
+
+#[test]
 fn include_synthetic_methods_renders_active_record_find_overloads() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let models_dir = dir.path().join("app").join("models");

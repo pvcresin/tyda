@@ -1337,6 +1337,12 @@ impl MethodDef {
         self.origin.is_external_rbs()
     }
 
+    /// An `.rbs` return of `untyped` or `untyped | X`, which tells nothing about the value.
+    pub fn has_untyped_rbs_return(&self) -> bool {
+        self.is_external_rbs_source()
+            && (self.raw_return_type == Type::Untyped || self.raw_return_type.has_untyped_member())
+    }
+
     pub fn resolve_param_ref(&self, idx: usize) -> Option<Type> {
         let positional: Vec<&ParamInfo> = self
             .param_infos
@@ -8886,6 +8892,14 @@ impl TypeRegistry {
                         method_name,
                         prefer_singleton,
                     ) && ret != Type::Untyped
+                        // An `.rbs` `untyped | 0` tells nothing; a later pass may find a precise type.
+                        && !self
+                            .lookup_method_def_for_dispatch(
+                                &receiver_class,
+                                method_name,
+                                prefer_singleton,
+                            )
+                            .is_some_and(MethodDef::has_untyped_rbs_return)
                         && !matches!(ret, Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..))
                         && !Self::type_contains_param_ref_static(&ret)
                     {
