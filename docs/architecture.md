@@ -229,6 +229,8 @@ snapshot に置き換える（block 内の `n.to_s` や `n * 2` も型あり走�
 snapshot は `first_walk_call_snapshots` に残し、`missing_method` 診断はそちらで判定する。block 内の推論には
 `reduce` の累積値などまだ粗い部分があり、hover の改善で診断を変えない（誤検出を増やさない）ためである。
 `proc` / `lambda` の block 引数は、型なし走査でも `untyped` として束縛する（未束縛のまま `nil` にしない）。
+受け手が `untyped` の block 付き呼び出しは値の推論で block に入らない。それが呼び出しの連鎖の途中にある場合
+（`x.then { }.tap { |a| a.y }.tap { }`）は、文の走査がその呼び出しを文と同じように 1 回走査する。
 引数なしの self 呼び出しへの nil ガードは、後続の文が self facts を無効化するまで同じ呼び出しに効く。定義が後方にある
 メソッドも遅延参照のまま絞り込む。
 引数型と block の戻り値は既存の scan site を共有して hover snapshot に複製せず、scan で得た戻り値を

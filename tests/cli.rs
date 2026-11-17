@@ -511,6 +511,73 @@ fn coverage_includes_arguments_of_unresolved_receiver_calls() {
 }
 
 #[test]
+fn coverage_walks_blocks_chained_on_untyped_receivers() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("untyped_chain.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class Chain\n",
+            "  def self.extra\n",
+            "    Other.value\n",
+            "  end\n",
+            "\n",
+            "  def self.run\n",
+            "    [1].then { |list| [list, list.extra] }\n",
+            "      .tap { |list, _| list.size }\n",
+            "      .tap { |_, value| value.log }\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    // `then` gives `untyped` here, and the middle `tap` block still counts `list` and `size`.
+    assert_eq!(report["by_kind"]["value"]["total"], 4);
+    assert_eq!(report["by_kind"]["method_call"]["total"], 7);
+}
+
+#[test]
+fn known_issue_coverage_skips_blocks_chained_on_unresolved_receivers() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    let rb_file = dir.path().join("deferred_chain.rb");
+    fs::write(
+        &rb_file,
+        concat!(
+            "class Chain\n",
+            "  def run\n",
+            "    Marshal.load(\"\").tap { |item| item.save }.tap { |item| item.log }\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write");
+
+    let output = tyda_bin()
+        .arg("--coverage")
+        .arg(rb_file.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
+    // Known issue: the first `tap` block is never walked, because its receiver is still a
+    // reference when the chain is typed. `item` and `item.save` in it should count too.
+    assert_eq!(
+        report["by_kind"]["value"]["total"], 1,
+        "the first block is walked now: drop this check and expect 2 values"
+    );
+}
+
+#[test]
 fn coverage_keeps_narrowed_receivers_in_yielding_blocks() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("narrowed_yield.rb");

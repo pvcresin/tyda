@@ -1170,6 +1170,8 @@ pub struct InferenceEngine<'a> {
     block_pass_chain: BlockPassChain,
     in_discarded_block_walk: bool,
     value_walked_blocks: FxHashSet<usize>,
+    /// Blocks of calls on an untyped receiver that the value walk did not enter.
+    untyped_receiver_blocks: FxHashSet<usize>,
     unbound_block_return: Option<Type>,
     record_annotated_method_body_hover_snapshots: bool,
     analyzing_rbi_declaration: bool,
@@ -2890,6 +2892,7 @@ impl<'a> InferenceEngine<'a> {
             block_pass_chain: BlockPassChain::Open,
             in_discarded_block_walk: false,
             value_walked_blocks: FxHashSet::default(),
+            untyped_receiver_blocks: FxHashSet::default(),
             unbound_block_return: None,
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
@@ -3000,6 +3003,7 @@ impl<'a> InferenceEngine<'a> {
             block_pass_chain: BlockPassChain::Open,
             in_discarded_block_walk: false,
             value_walked_blocks: FxHashSet::default(),
+            untyped_receiver_blocks: FxHashSet::default(),
             unbound_block_return: None,
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
@@ -23897,6 +23901,33 @@ impl<'a> InferenceEngine<'a> {
         })
     }
 
+    /// A block call on an untyped receiver inside a call chain (`x.then { }.tap { |a| a.y }`)
+    /// gets no value walk. The statement's walk enters it here once, like a statement call.
+    fn process_receiver_chain_untyped_block(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        if self.untyped_receiver_blocks.is_empty() {
+            return;
+        }
+        let mut receiver = call_node.receiver();
+        while let Some(inner) = receiver.as_ref().and_then(|node| node.as_call_node()) {
+            if let Some(block) = inner.block().and_then(|block| block.as_block_node())
+                && self
+                    .untyped_receiver_blocks
+                    .remove(&block.location().start_offset())
+            {
+                // That call's own walk enters the blocks further down the chain.
+                self.process_call_block_side_effects(class_name, &inner, parse_result, scope);
+                return;
+            }
+            receiver = inner.receiver();
+        }
+    }
+
     fn process_call_block_side_effects(
         &mut self,
         class_name: &str,
@@ -23904,6 +23935,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
+        self.process_receiver_chain_untyped_block(class_name, call_node, parse_result, scope);
         if self.process_rspec_dsl_call(class_name, call_node, parse_result, scope) {
             return;
         }
@@ -34584,6 +34616,13 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             resolved
                         };
+                        if effective_receiver == Type::Untyped
+                            && let Some(block) =
+                                call_node.block().and_then(|block| block.as_block_node())
+                        {
+                            self.untyped_receiver_blocks
+                                .insert(block.location().start_offset());
+                        }
                         let (safe_nav_unknown, safe_nav_deferred) =
                             Self::receiver_union_flags(&safe_nav_receiver_type);
                         let (effective_unknown, has_deferred_union_member) =

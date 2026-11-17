@@ -54,6 +54,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] 保存前の ActiveRecord model を推論で区別する。既定は tapioca・rbs_rails と同じく保存済みで valid な model の契約とし、`null: false` のカラムと必須の `belongs_to` は非 nil にする。そのうえで `find` / `where` / association から来た値は非 nil のまま、`new` / `build` から来てまだ保存していない値だけカラムと association を `nil` を含む型にする。値の出どころを追えない RBI 生成ツールは全体を nilable にする設定（tapioca の `ActiveRecordColumnTypes`）しか持てないが、Tyda は推論で実際に危ない箇所だけを捉える。全体を切り替える設定は、要望が出るまで追加しない
 - [ ] nil の誤検出を減らす。メソッド内で代入した ivar が self 呼び出しの後に nil になる、reader の nil ガードが同じメソッドの block に届かない、ivar の nil ガードがそれを書かない self 呼び出しの後で消える、の3件（`tests/flow_diagnostics.rs` の `known_issue_nil_false_positives_still_reported`）
 - [ ] PR 154 の subject 差分で見つけたが、最小再現ができていない後退を調べる。Redmine `link_to_project` の引数が `(Project | untyped)?` から `untyped?` になる。`respond_to?` を確かめる述語メソッドなど、別メソッドのガードを越えた nil・missing method の誤検出（条件なしの `before_action` が self メソッドの nil で止める場合は action 内で非 nil にする）
+- [ ] 呼び出しの連鎖の途中にある block を、受け手が遅延参照のままでも走査する。`Marshal.load("").tap { |item| item.save }.tap { ... }` の最初の block は値の推論でも文の走査でも入らず、中の hover・coverage・診断が失われる（`tests/cli.rs` の `known_issue_coverage_skips_blocks_chained_on_unresolved_receivers`）。受け手が `untyped` の場合は文の走査で入る。遅延参照の場合は、呼び出し元の型での再走査と重なると coverage が悪いほうの結果になるため、走査の重複を避ける仕組みと合わせて直す
 - [ ] Ruby / Rails version、framework DSL、scenario coverage を継続する
 
 ### ジェネリクス
