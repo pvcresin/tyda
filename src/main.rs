@@ -241,7 +241,7 @@ struct CliAnalysisContext<'a> {
 
 /// Files analyzed or waiting to merge at once. Merges go in file order, so a slow file holds
 /// the window; a wider one keeps workers busy while it runs, and finished snapshots are small.
-const CLI_COMPACT_ANALYSIS_WINDOW: usize = 128;
+const CLI_COMPACT_ANALYSIS_WINDOW: usize = 64;
 
 fn skeleton_scan_chunk_size(analysis_threads: usize) -> usize {
     analysis_threads.saturating_mul(16).clamp(64, 256)

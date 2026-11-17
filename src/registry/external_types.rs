@@ -19,29 +19,58 @@ struct FreshClass {
     sets_dirty_patterns: bool,
     sets_mixin_hook_mixins: bool,
     sets_includer_bound_dsl: bool,
-    /// Merging the declaration again into exactly `data` leaves it as it is.
-    remerge_is_noop: bool,
+    /// Whether merging the declaration again into exactly `data` leaves it as it is, found by
+    /// doing it the first time a registry still holding `data` merges the declaration again.
+    remerge_is_noop: std::sync::OnceLock<bool>,
+}
+
+impl FreshClass {
+    fn remerge_is_noop(&self, rbs_data: &ClassData) -> bool {
+        *self.remerge_is_noop.get_or_init(|| {
+            let mut again = TypeRegistry::new();
+            again
+                .class_data
+                .insert_shared(self.name, Arc::clone(&self.data));
+            again.merge_external_type_class(&self.name, rbs_data, false, true);
+            again.class_data.get(&self.name).is_some_and(|merged| {
+                content_fingerprint(merged) == content_fingerprint(&self.data)
+            })
+        })
+    }
+}
+
+/// A 128-bit hash of the value's `Debug` text, streamed so the text is never built. `Debug`
+/// lists every field in iteration order, so equal fingerprints mean the same content laid out
+/// the same way. The keys are random per process; fingerprints are only compared within it.
+fn content_fingerprint(value: &impl std::fmt::Debug) -> u128 {
+    use std::hash::{BuildHasher, Hasher};
+    static KEYS: std::sync::LazyLock<(std::hash::RandomState, std::hash::RandomState)> =
+        std::sync::LazyLock::new(|| (std::hash::RandomState::new(), std::hash::RandomState::new()));
+    struct Stream(std::hash::DefaultHasher, std::hash::DefaultHasher);
+    impl std::fmt::Write for Stream {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.write(text.as_bytes());
+            self.1.write(text.as_bytes());
+            Ok(())
+        }
+    }
+    let mut stream = Stream(KEYS.0.build_hasher(), KEYS.1.build_hasher());
+    let _ = std::fmt::write(&mut stream, format_args!("{value:?}"));
+    (u128::from(stream.0.finish()) << 64) | u128::from(stream.1.finish())
 }
 
 /// Prepared classes by content, so declarations that hold the same class share one copy and a
 /// merge can tell that a registry still holds exactly that class.
 #[derive(Debug, Default)]
 pub struct PreparedClassPool {
-    classes: FxHashMap<Sym, Vec<(u64, Arc<ClassData>)>>,
+    classes: FxHashMap<Sym, Vec<(u128, Arc<ClassData>)>>,
 }
 
 impl PreparedClassPool {
     fn share(&mut self, name: Sym, data: Arc<ClassData>) -> Arc<ClassData> {
-        use std::hash::{Hash, Hasher};
-        let text = format!("{data:?}");
-        let mut hasher = rustc_hash::FxHasher::default();
-        text.hash(&mut hasher);
-        let key = hasher.finish();
+        let key = content_fingerprint(&data);
         let same = self.classes.entry(name).or_default();
-        if let Some((_, existing)) = same
-            .iter()
-            .find(|(hash, existing)| *hash == key && format!("{existing:?}") == text)
-        {
+        if let Some((_, existing)) = same.iter().find(|(fingerprint, _)| *fingerprint == key) {
             return Arc::clone(existing);
         }
         same.push((key, Arc::clone(&data)));
@@ -67,19 +96,10 @@ impl PreparedStdlibMerge {
                         .remove(name)
                         .expect("merging a class creates it"),
                 );
-                // Checked by doing it: the class this registry holds is compared with what a
-                // second merge makes of it.
-                let mut again = TypeRegistry::new();
-                again.class_data.insert_shared(*name, Arc::clone(&data));
-                again.merge_external_type_class(name, rbs_data, false, true);
-                let remerge_is_noop = again
-                    .class_data
-                    .get(name)
-                    .is_some_and(|merged| format!("{merged:?}") == format!("{data:?}"));
                 FreshClass {
                     name: *name,
                     data,
-                    remerge_is_noop,
+                    remerge_is_noop: std::sync::OnceLock::new(),
                     sets_mixin_hook_methods: scratch.has_mixin_hook_methods,
                     sets_dirty_patterns: scratch.has_dirty_patterns,
                     sets_mixin_hook_mixins: scratch.has_mixin_hook_mixins,
@@ -198,7 +218,8 @@ impl TypeRegistry {
                     }
                     // Still the shared class, which merging again would not change.
                     Some(existing)
-                        if fresh.remerge_is_noop && Arc::ptr_eq(existing, &fresh.data) =>
+                        if Arc::ptr_eq(existing, &fresh.data)
+                            && fresh.remerge_is_noop(rbs_data) =>
                     {
                         self.apply_fresh_merge_effects(fresh);
                         continue;
