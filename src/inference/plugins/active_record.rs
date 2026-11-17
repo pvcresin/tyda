@@ -138,7 +138,7 @@ impl Plugin for ActiveRecord {
         let has_real_definition = |registry: &crate::registry::TypeRegistry| {
             registry
                 .lookup_method_def(class_name, method_name, false)
-                .is_some_and(|def| !def.origin.is_synthetic_dsl())
+                .is_some_and(|def| !def.origin.is_synthetic_dsl() && !def.has_untyped_rbs_return())
         };
         if has_real_definition(cx.registry()) || cx.external_rbs().is_some_and(has_real_definition)
         {
