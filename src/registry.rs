@@ -3460,9 +3460,10 @@ impl TypeRegistry {
     }
 
     fn mark_class_has_method_body_facts(&mut self, class_name: &str) {
-        self.tail_mut()
-            .body_fact_class_names
-            .insert(class_name.to_string());
+        let names = &mut self.tail_mut().body_fact_class_names;
+        if !names.contains(class_name) {
+            names.insert(class_name.to_string());
+        }
     }
 
     fn call_site_summary_key(call_site: &CallSite) -> CallSiteSummaryKey {
@@ -13280,7 +13281,10 @@ impl TypeRegistry {
     }
 
     fn class_data_mut(&mut self, class_name: &str) -> &mut ClassData {
-        self.intern_name(class_name);
+        // Without a pool, interning only builds a name to drop it.
+        if self.name_pool_enabled {
+            self.intern_name(class_name);
+        }
         if !self.class_data.contains_key(class_name) {
             self.invalidate_owner_walks();
         }
