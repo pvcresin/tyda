@@ -32,6 +32,7 @@ pub mod inference;
 pub mod lsp;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+pub mod ordered_parallel;
 pub mod parser;
 mod prism_compat;
 pub mod project;

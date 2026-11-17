@@ -169,101 +169,102 @@ fn for_each_workspace_scan_result(
     mut should_abort: impl FnMut() -> bool,
     mut on_result: impl FnMut(WorkspaceScanResult),
 ) {
-    use rayon::prelude::*;
-
     let cold_closed_file_scan = context.cached_entries.is_empty() && context.open_docs.is_empty();
 
-    for chunk in scan_files.chunks(LSP_SCAN_CHUNK_SIZE) {
-        // Checked once per chunk (not per file) so a superseded scan bails out
-        // without a full walk, but without adding per-file lock overhead.
-        if should_abort() {
-            return;
-        }
-        let results: Vec<_> = lsp_analysis_pool().install(|| {
-            chunk
-                .par_iter()
-                .filter_map(|file_path| {
-                    if cold_closed_file_scan {
-                        let source = std::fs::read_to_string(file_path).ok()?;
-                        let on_disk_stamp = FileStamp::from_path(file_path);
-                        let content_hash = closed_file_scan_key(on_disk_stamp);
-                        let file_path_string = file_path.to_string_lossy().to_string();
-                        let (analysis, file_deps) =
-                            analyze_file_facts_with_deps_and_rbi_with_options_ref(
-                                &source,
-                                Some(context.user_rbs),
-                                Some(context.stdlib_loader),
-                                context.lazy_rbi_loader,
-                                Some(file_path_string.as_str()),
-                                context.options,
-                            );
-                        let fingerprints = FileFingerprints::from_analysis(&analysis);
-                        return Some(WorkspaceScanResult::Analyzed {
-                            file_path: file_path_string,
-                            content_hash,
-                            analysis,
-                            fingerprints,
-                            file_deps,
-                            on_disk_stamp,
-                        });
-                    }
+    // Results land in file order while later files are still being analyzed. A superseded
+    // scan stops starting new files; the ones already started still report.
+    let mut started = 0usize;
+    crate::ordered_parallel::for_each_ordered(
+        lsp_analysis_pool(),
+        scan_files,
+        LSP_SCAN_CHUNK_SIZE,
+        |file_path| {
+            if cold_closed_file_scan {
+                let source = std::fs::read_to_string(file_path).ok()?;
+                let on_disk_stamp = FileStamp::from_path(file_path);
+                let content_hash = closed_file_scan_key(on_disk_stamp);
+                let file_path_string = file_path.to_string_lossy().to_string();
+                let (analysis, file_deps) = analyze_file_facts_with_deps_and_rbi_with_options_ref(
+                    &source,
+                    Some(context.user_rbs),
+                    Some(context.stdlib_loader),
+                    context.lazy_rbi_loader,
+                    Some(file_path_string.as_str()),
+                    context.options,
+                );
+                let fingerprints = FileFingerprints::from_analysis(&analysis);
+                return Some(WorkspaceScanResult::Analyzed {
+                    file_path: file_path_string,
+                    content_hash,
+                    analysis,
+                    fingerprints,
+                    file_deps,
+                    on_disk_stamp,
+                });
+            }
 
-                    let fp_str = file_path.to_string_lossy().to_string();
-                    let (source, on_disk_stamp) = match context.open_docs.get(&fp_str) {
-                        Some(source) => (Cow::Borrowed(source.as_str()), None),
-                        None => {
-                            let current_stamp = FileStamp::from_path(file_path);
-                            if let Some(cached) = context.cached_entries.get(&fp_str)
-                                && cached.on_disk_stamp == current_stamp
-                            {
-                                return None;
-                            }
-                            (
-                                Cow::Owned(std::fs::read_to_string(file_path).ok()?),
-                                current_stamp,
-                            )
-                        }
-                    };
-                    let content_hash = if on_disk_stamp.is_some() {
-                        closed_file_scan_key(on_disk_stamp)
-                    } else {
-                        crate::workspace_state::hash_content(source.as_ref())
-                    };
-                    if context
-                        .cached_entries
-                        .get(&fp_str)
-                        .is_some_and(|cached| cached.content_hash == content_hash)
+            let fp_str = file_path.to_string_lossy().to_string();
+            let (source, on_disk_stamp) = match context.open_docs.get(&fp_str) {
+                Some(source) => (Cow::Borrowed(source.as_str()), None),
+                None => {
+                    let current_stamp = FileStamp::from_path(file_path);
+                    if let Some(cached) = context.cached_entries.get(&fp_str)
+                        && cached.on_disk_stamp == current_stamp
                     {
-                        return Some(WorkspaceScanResult::RefreshStamp {
-                            file_path: fp_str,
-                            on_disk_stamp,
-                        });
+                        return None;
                     }
-                    let (analysis, file_deps) =
-                        analyze_file_facts_with_deps_and_rbi_with_options_ref(
-                            source.as_ref(),
-                            Some(context.user_rbs),
-                            Some(context.stdlib_loader),
-                            context.lazy_rbi_loader,
-                            Some(fp_str.as_str()),
-                            context.options,
-                        );
-                    let fingerprints = FileFingerprints::from_analysis(&analysis);
-                    Some(WorkspaceScanResult::Analyzed {
-                        file_path: fp_str,
-                        content_hash,
-                        analysis,
-                        fingerprints,
-                        file_deps,
-                        on_disk_stamp,
-                    })
-                })
-                .collect()
-        });
-        for result in results {
-            on_result(result);
-        }
-    }
+                    (
+                        Cow::Owned(std::fs::read_to_string(file_path).ok()?),
+                        current_stamp,
+                    )
+                }
+            };
+            let content_hash = if on_disk_stamp.is_some() {
+                closed_file_scan_key(on_disk_stamp)
+            } else {
+                crate::workspace_state::hash_content(source.as_ref())
+            };
+            if context
+                .cached_entries
+                .get(&fp_str)
+                .is_some_and(|cached| cached.content_hash == content_hash)
+            {
+                return Some(WorkspaceScanResult::RefreshStamp {
+                    file_path: fp_str,
+                    on_disk_stamp,
+                });
+            }
+            let (analysis, file_deps) = analyze_file_facts_with_deps_and_rbi_with_options_ref(
+                source.as_ref(),
+                Some(context.user_rbs),
+                Some(context.stdlib_loader),
+                context.lazy_rbi_loader,
+                Some(fp_str.as_str()),
+                context.options,
+            );
+            let fingerprints = FileFingerprints::from_analysis(&analysis);
+            Some(WorkspaceScanResult::Analyzed {
+                file_path: fp_str,
+                content_hash,
+                analysis,
+                fingerprints,
+                file_deps,
+                on_disk_stamp,
+            })
+        },
+        |result| {
+            if let Some(result) = result {
+                on_result(result);
+            }
+        },
+        || {
+            // Checked once per chunk of started files, not per file, so the abort check
+            // does not take the state lock for every file.
+            let check = started.is_multiple_of(LSP_SCAN_CHUNK_SIZE);
+            started += 1;
+            check && should_abort()
+        },
+    );
 }
 
 fn collect_workspace_scan_files(

@@ -178,10 +178,11 @@ workspace context を分ける。
 
 1. **targets**: CLI 引数から展開したファイル。診断と詳細 snapshot を保持する。
 2. **context**: targets 外の Ruby ファイル。定義・superclass・mixin・定数などの骨格だけを読む。
-3. チャンク単位で並列解析し、`workspace_state::BatchProjectionBuilder` でチャンクが出来上がるたび
-   即時に registry へ merge する（全ファイルの snapshot を同時に保持しない）。順序はチャンク順、
-   チャンク内はファイル順を保つ。`Batch` resolution は全ファイル投入後に一度だけ行う。
-4. RBS 出力ではソースもチャンク単位で読み、merge 後に破棄する。preload の並列読み込みは
+3. ファイルを並列に解析し、`workspace_state::BatchProjectionBuilder` が解析の終わったファイルから
+   ファイル順に registry へ merge する（`ordered_parallel::for_each_ordered`）。worker は merge を
+   待たずに次のファイルへ進み、解析中または merge 待ちのファイル数を一定数に抑えるので、全ファイルの
+   snapshot を同時に保持しない。`Batch` resolution は全ファイル投入後に一度だけ行う。
+4. RBS 出力ではソースもファイルごとに読み、merge 後に破棄する。preload の並列読み込みは
    DSL 検出だけを行い本文を残さない。`--diagnostics` は message 生成が target の本文を再度
    使うため、targets のソースだけ保持する。
 5. diagnostics は targets にだけ出力する。
