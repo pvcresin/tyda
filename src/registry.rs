@@ -2596,6 +2596,13 @@ impl ParamCache {
         Some((*shared).clone())
     }
 
+    /// Whether `key` holds exactly `params`, compared in place instead of cloning the entry.
+    fn holds(&self, key: &ParamCacheKey, params: &[Param]) -> bool {
+        self.shard(key)
+            .and_then(|shard| shard.lock().ok())
+            .is_some_and(|shard| shard.get(key).is_some_and(|held| held.as_slice() == params))
+    }
+
     // when a shard exceeds its limit, clear it per-shard (bounds long-lived LSP sessions).
     fn insert_capped(&self, key: ParamCacheKey, params: Vec<Param>, shard_cap: usize) {
         let params = Arc::new(params);
@@ -11848,6 +11855,14 @@ impl TypeRegistry {
             Option<Vec<Param>>,
             Vec<(SharedName, SharedName, bool)>,
         );
+        let job_key = |job_idx: usize| {
+            let (class_name, method, _) = jobs[job_idx];
+            (
+                self.shared_name(class_name),
+                self.shared_name(method.name.as_str()),
+                method.is_singleton,
+            )
+        };
         let mut wake_keys: Vec<Vec<(SharedName, SharedName, bool)>> = vec![Vec::new(); jobs.len()];
         let mut eval_set: Vec<usize> = (0..jobs.len()).collect();
         // cyclic param feedback causes union growth -> the refinement cap converges deterministically, matching legacy behavior.
@@ -11931,17 +11946,11 @@ impl TypeRegistry {
                 let Some(params) = params else {
                     continue;
                 };
-                let (class_name, method, _) = jobs[job_idx];
-                let key = (
-                    self.shared_name(class_name),
-                    self.shared_name(method.name.as_str()),
-                    method.is_singleton,
-                );
+                let key = job_key(job_idx);
                 if frozen_keys.contains(&key) {
                     continue;
                 }
-                let previous = self.resolve_params_cache.get(&key);
-                if previous.as_deref() != Some(params.as_slice()) {
+                if !self.resolve_params_cache.holds(&key, &params) {
                     self.resolve_params_cache
                         .insert_uncapped(key.clone(), params);
                     let count = refinement_counts.entry(key.clone()).or_insert(0);
@@ -11965,18 +11974,11 @@ impl TypeRegistry {
             }
             eval_set = (0..jobs.len())
                 .filter(|&job_idx| {
-                    let (class_name, method, _) = jobs[job_idx];
-                    let own_key = (
-                        self.shared_name(class_name),
-                        self.shared_name(method.name.as_str()),
-                        method.is_singleton,
-                    );
-                    if frozen_keys.contains(&own_key) {
-                        return false;
-                    }
-                    wake_keys[job_idx]
-                        .iter()
-                        .any(|key| changed_keys.contains(key))
+                    // Most jobs read no other entry, so their key is not built at all.
+                    let reads = &wake_keys[job_idx];
+                    !reads.is_empty()
+                        && !frozen_keys.contains(&job_key(job_idx))
+                        && reads.iter().any(|key| changed_keys.contains(key))
                 })
                 .collect();
         }
