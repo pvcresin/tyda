@@ -1168,6 +1168,7 @@ pub struct InferenceEngine<'a> {
     /// stay at `ancestor_walk_memo_generation`: walking them again would change nothing.
     ancestor_walk_memo: FxHashSet<String>,
     ancestor_walk_memo_generation: u64,
+    ancestry_query_memo: std::cell::RefCell<rails_dsl::AncestryQueryMemo>,
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
     record_hover_snapshots: bool,
@@ -2892,6 +2893,7 @@ impl<'a> InferenceEngine<'a> {
             merged_external_classes: FxHashSet::default(),
             ancestor_walk_memo: FxHashSet::default(),
             ancestor_walk_memo_generation: 0,
+            ancestry_query_memo: Default::default(),
             file_path: meta.file_path,
             project_root: meta.project_root,
             record_hover_snapshots: true,
@@ -3005,6 +3007,7 @@ impl<'a> InferenceEngine<'a> {
             merged_external_classes: FxHashSet::default(),
             ancestor_walk_memo: FxHashSet::default(),
             ancestor_walk_memo_generation: 0,
+            ancestry_query_memo: Default::default(),
             file_path: None,
             project_root: None,
             record_hover_snapshots: true,
