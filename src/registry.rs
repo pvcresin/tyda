@@ -13962,6 +13962,11 @@ impl TypeRegistry {
         self.class_data.keys().copied().collect()
     }
 
+    /// The classes that hold call sites, in the order `class_names_unsorted` lists them.
+    pub(crate) fn classes_with_call_sites(&self) -> Arc<[Sym]> {
+        self.class_data.with_call_sites()
+    }
+
     pub fn user_defined_class_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .class_data

@@ -1633,15 +1633,16 @@ impl<'a> InferenceEngine<'a> {
         let external_callers: Vec<(String, Vec<CallSite>)> = self
             .external_rbs
             .map(|external| {
+                // Only classes with call sites can contribute any.
                 external
-                    .class_names_unsorted()
-                    .into_iter()
+                    .classes_with_call_sites()
+                    .iter()
                     .filter_map(|class_name| {
-                        if class_name.as_str() == "Object" || self.registry.has_class(&class_name) {
+                        if class_name.as_str() == "Object" || self.registry.has_class(class_name) {
                             return None;
                         }
                         let sites: Vec<CallSite> = external
-                            .get_call_sites(&class_name)
+                            .get_call_sites(class_name)
                             .iter()
                             .filter(|site| {
                                 site.method_name.as_ref() != "initialize"
