@@ -66,8 +66,8 @@ cargo test <module>::<test>
 ~~~
 
 GitHub Actions では `Test`、`Performance`、`Analysis compatibility`、`pages`、`release-vscode`、`Workflow lint` をPRゲートとする。required checkはmatrix個別jobではなく、常設の `test`、`performance`、`analysis-compatibility`、`pages`、`release-vscode`、`actionlint` gateとする。各gateは対象scopeでは依存する全jobのsuccessを要求し、対象外scopeでは分類成功と依存jobの全skipを確認した場合だけsuccessとする。`Test` はLinuxとWindowsの
-Rust build / clippy / test（Windowsも全test targetを実行し、unit、軽量integration、mutation、pathological、docのshardを独立したrunnerで並列実行し、`windows` gateでformat / clippyと併せて集約する）、`Performance` は pinned な Ruby / Rails OSS subject ごとの base/head 比較、release workflowはgem / VSIXのLinux x86_64・Windows x64・Intel macOS・
-ARM macOS package smoke testも確認する。Linux ARM64はrunnerの利用条件が整い次第追加する。
+Rust build / clippy / test（Windowsも全test targetを実行し、unit、軽量integration、mutation、pathological、docのshardを独立したrunnerで並列実行し、`windows` gateでformat / clippyと併せて集約する）、`Performance` は pinned な Ruby / Rails OSS subject ごとの base/head 比較、release workflowはgem / VSIXのLinux x86_64・Windows x64・ARM macOS package smoke testも
+確認する。Intel macOSは対象外とする。Linux ARM64はrunnerの利用条件が整い次第追加する。
 
 `pages / e2e-test` は `npm run format:check`、`npm run typecheck`、`npm run lint` を実行してからVitePressのドキュメント、Playgroundのwasm buildとE2Eを行う。E2EはPages artifactを `/tyda/` 配下で配信し、Top・Docs・Playgroundの遷移、編集内容のhash付きreload、ページ間およびPlayground内のBack/Forward、壊れたhashからの復帰を確認する。Playgroundのエディタでは、行頭へのカーソル移動、選択範囲の削除、プラットフォーム別コメント切り替えもブラウザ操作で確認する。`pages` gateが `e2e-test` の結果をrequired checkとして集約する。
 
