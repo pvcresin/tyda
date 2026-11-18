@@ -160,21 +160,25 @@ call site は記録した class にだけ置き、method の parameter を集め
 
 ### 外部型
 
-stdlib RBS と project の RBS / RBI は必要な file / class を lazy に読み込む。parse 結果は
+stdlib RBS と project の RBS / RBI は必要な file / class を lazy に読み込む。起動時の stdlib の
+index は、各 RBS file の行を一度だけ走査して top-level の宣言と定数を集める。parse 結果は
 共有可能な形に変換し、file 固有の推論状態と混ぜない。stdlib の file が別 file の型 alias に
 依存するときは、依存先ごとに参照先の path と alias 定義を一度だけ読んで共有する。外部定義の
 変更は LSP の reload で関連 cache を無効化する。
 
 registry の class は copy-on-write で共有し、書き込むときだけ複製する（`registry/class_table.rs`）。
 stdlib の shape は、各 class を空の registry へ merge した結果を一度だけ作って持ち、その class をまだ
-持たない registry への merge はそれを共有する。同じ内容の class は shape をまたいで一つにまとめ、
-registry がその class を変えずに持っているところへ同じ宣言を merge し直しても内容が変わらない場合は
-merge を省く（変わらないことは class ごとに最初の merge し直しで確かめる）。
+持たない registry への merge はそれを共有する。同じ内容の class は shape をまたいで一つにまとめる
+（内容を比べるのは同名の class が二つ目に来たときだけ）。registry がその class を変えずに持っている
+ところへ同じ宣言を merge し直しても内容が変わらない場合は merge を省く（変わらないことは class ごとに
+最初の merge し直しで確かめる）。
 
 file 単位の engine は class を使うたびに、その祖先の宣言が読み込まれているかを確かめる。registry の
 class table は、どの class が変わっても新しい世代になる。engine は
 class を何も変えなかった祖先の走査と、class だけを読む祖先の問い合わせ（plugin の継承・mixin
 判定）の答えを、同じ世代の間だけ再利用する。call site の追加は class の形を変えないので世代を進めない。
+class table は call site を持つ class の一覧を次の書き込み（call site を含む）まで持ち、file ごとに
+外部 registry の call site を `Object` へ伝える処理は全 class ではなくこの一覧だけを見る。
 
 call site の代入で初めて判明する receiver（`@v = x.to_s` の `x` が別ファイルの呼び出しから
 `String` になる場合など）は file 単位の解析では読み込めない。batch 解決は未解決の参照が

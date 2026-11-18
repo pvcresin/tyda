@@ -113,7 +113,8 @@ impl LazyRbsLoader {
             let rbs_files = collect_rbs_files(std::slice::from_ref(&root));
             for path in rbs_files {
                 let content = std::fs::read_to_string(&path).unwrap_or_default();
-                for (name, kind) in scan_top_level_constants(&content, &path) {
+                let scan = scan_top_level(&content, &path, is_stdlib_root);
+                for (name, kind) in scan.constants {
                     top_level_constants.entry(name).or_insert(kind);
                 }
                 if is_stdlib_root {
@@ -142,20 +143,8 @@ impl LazyRbsLoader {
                 {
                     insert_class_file(&mut class_to_files, class_name.to_string(), path.clone());
                 }
-                // stdlib often has stem != class name, so index by the leading declaration name (core skips this scan via the stem convention).
-                if is_stdlib_root {
-                    for declared in scan_top_level_declarations(&content) {
-                        insert_class_file(&mut class_to_files, declared, path.clone());
-                    }
-                } else {
-                    // Core aliases (`Mutex = Thread::Mutex`) can't use the stem convention -> lightly scan just the alias lines.
-                    for declared in scan_top_level_class_aliases(&content) {
-                        insert_class_file(&mut class_to_files, declared, path.clone());
-                    }
-                    // Qualified top-level nested classes (e.g. `File::Stat`) can't use the stem convention -> load via chained qualified scan.
-                    for declared in scan_top_level_qualified_declarations(&content) {
-                        insert_class_file(&mut class_to_files, declared, path.clone());
-                    }
+                for declared in scan.declared {
+                    insert_class_file(&mut class_to_files, declared, path.clone());
                 }
             }
         }
@@ -1003,115 +992,125 @@ fn reopens_core_class(path: &Path) -> bool {
     })
 }
 
-fn scan_top_level_declarations(content: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for line in content.lines() {
-        let Some(rest) = line
-            .strip_prefix("class ")
-            .or_else(|| line.strip_prefix("module "))
-        else {
-            continue;
-        };
-        let name: String = rest
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == ':' || *c == '_')
-            .collect();
-        if name
-            .chars()
-            .next()
-            .is_some_and(|first| first.is_ascii_uppercase())
-            && !CORE_OWNED_CLASSES.contains(&name.as_str())
-            && !names.contains(&name)
-        {
-            names.push(name);
-        }
-    }
-    names
+/// What an RBS file declares at column 0.
+struct TopLevelScan {
+    /// Single-segment `class`, `module`, and `NAME: Type` declarations.
+    constants: Vec<(String, TopLevelConstant)>,
+    /// Names to index the file under besides its stem, in index order.
+    declared: Vec<String>,
 }
 
-/// Scans column-0 `class`, `module`, and `NAME: Type` declarations with a single segment.
-fn scan_top_level_constants(content: &str, path: &Path) -> Vec<(String, TopLevelConstant)> {
-    let mut items = Vec::new();
+/// Reads the file's lines once. stdlib often has stem != class name, so a stdlib file is
+/// indexed by its leading declaration names. Core follows the stem convention except for
+/// aliases (`Mutex = Thread::Mutex`) and qualified nested classes (`File::Stat`), which are
+/// indexed in that order.
+fn scan_top_level(content: &str, path: &Path, is_stdlib_root: bool) -> TopLevelScan {
+    let mut constants = Vec::new();
+    let mut declared = Vec::new();
+    let mut qualified = Vec::new();
     for line in content.lines() {
-        let (rest, kind) = if let Some(rest) = line.strip_prefix("class ") {
-            (rest, TopLevelConstant::Class)
-        } else if let Some(rest) = line.strip_prefix("module ") {
-            (rest, TopLevelConstant::Module)
+        // Every match starts with an uppercase name, `class `, or `module `.
+        if !matches!(line.as_bytes().first(), Some(b'A'..=b'Z' | b'c' | b'm')) {
+            continue;
+        }
+        let declaration = if let Some(rest) = line.strip_prefix("class ") {
+            Some((rest, TopLevelConstant::Class))
         } else {
-            (line, TopLevelConstant::Constant(path.to_path_buf()))
+            line.strip_prefix("module ")
+                .map(|rest| (rest, TopLevelConstant::Module))
         };
-        let name_len = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(rest.len());
-        let (name, after) = rest.split_at(name_len);
-        if !name.starts_with(|c: char| c.is_ascii_uppercase()) || after.starts_with("::") {
+        let Some((rest, kind)) = declaration else {
+            push_top_level_constant(line, None, path, &mut constants);
             continue;
+        };
+        push_top_level_constant(rest, Some(kind), path, &mut constants);
+        if is_stdlib_root {
+            push_leading_declaration(rest, &mut declared);
+        } else {
+            push_class_alias(rest, &mut declared);
+            push_qualified_declaration(rest, &mut qualified);
         }
-        if matches!(kind, TopLevelConstant::Constant(_)) && !after.starts_with(':') {
-            continue;
-        }
-        items.push((name.to_string(), kind));
     }
-    items
+    declared.append(&mut qualified);
+    TopLevelScan {
+        constants,
+        declared,
+    }
 }
 
-/// Scans only for top-level aliases (avoids stem shadowing, reduces core startup cost).
-fn scan_top_level_class_aliases(content: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for line in content.lines() {
-        let Some(rest) = line
-            .strip_prefix("class ")
-            .or_else(|| line.strip_prefix("module "))
-        else {
-            continue;
-        };
-        // Only the alias form `Name = Other` (not `class Foo < Bar` / `class Foo[T]`).
-        let Some((lhs, _)) = rest.split_once('=') else {
-            continue;
-        };
-        let name = lhs.trim();
-        if name
+/// A single-segment name; `kind` is `None` for a `NAME: Type` constant line.
+fn push_top_level_constant(
+    rest: &str,
+    kind: Option<TopLevelConstant>,
+    path: &Path,
+    items: &mut Vec<(String, TopLevelConstant)>,
+) {
+    let name_len = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    let (name, after) = rest.split_at(name_len);
+    if !name.starts_with(|c: char| c.is_ascii_uppercase()) || after.starts_with("::") {
+        return;
+    }
+    if kind.is_none() && !after.starts_with(':') {
+        return;
+    }
+    let kind = kind.unwrap_or_else(|| TopLevelConstant::Constant(path.to_path_buf()));
+    items.push((name.to_string(), kind));
+}
+
+/// `rest` follows `class ` or `module `.
+fn push_leading_declaration(rest: &str, names: &mut Vec<String>) {
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == ':' || *c == '_')
+        .collect();
+    if name
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_uppercase())
+        && !CORE_OWNED_CLASSES.contains(&name.as_str())
+        && !names.contains(&name)
+    {
+        names.push(name);
+    }
+}
+
+/// Only the alias form `Name = Other` (not `class Foo < Bar` / `class Foo[T]`).
+fn push_class_alias(rest: &str, names: &mut Vec<String>) {
+    let Some((lhs, _)) = rest.split_once('=') else {
+        return;
+    };
+    let name = lhs.trim();
+    if name
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == ':' || c == '_')
+        && !names.iter().any(|existing| existing == name)
+    {
+        names.push(name.to_string());
+    }
+}
+
+/// Qualified names only (e.g. `File::Stat`). A single segment (`File`) is already indexed by
+/// the stem convention, and alias forms (`Name = Other`) are excluded.
+fn push_qualified_declaration(rest: &str, names: &mut Vec<String>) {
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == ':' || *c == '_')
+        .collect();
+    if name.contains("::")
+        && name
             .chars()
             .next()
             .is_some_and(|first| first.is_ascii_uppercase())
-            && name
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == ':' || c == '_')
-            && !names.iter().any(|existing: &String| existing == name)
-        {
-            names.push(name.to_string());
-        }
+        && !names.contains(&name)
+    {
+        names.push(name);
     }
-    names
-}
-
-/// Scans for qualified top-level nested classes (can't use the stem convention; resolves chains like `IO#stat` -> `File::Stat`).
-fn scan_top_level_qualified_declarations(content: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for line in content.lines() {
-        let Some(rest) = line
-            .strip_prefix("class ")
-            .or_else(|| line.strip_prefix("module "))
-        else {
-            continue;
-        };
-        let name: String = rest
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == ':' || *c == '_')
-            .collect();
-        // Qualified names only (e.g. `File::Stat`). A single segment (`File`) is already
-        // indexed by the stem convention, so it's skipped here; alias forms (`Name = Other`) are excluded too.
-        if name.contains("::")
-            && name
-                .chars()
-                .next()
-                .is_some_and(|first| first.is_ascii_uppercase())
-            && !names.contains(&name)
-        {
-            names.push(name);
-        }
-    }
-    names
 }
 
 /// Recognize well-known stdlib RBS files whose declared class name doesn't
@@ -1723,7 +1722,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_top_level_qualified_declarations_matches_only_qualified() {
+    fn core_scan_indexes_qualified_declarations_only() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("sample.rbs");
         std::fs::write(
@@ -1739,7 +1738,7 @@ mod tests {
         )
         .expect("write rbs");
         let content = std::fs::read_to_string(&path).expect("read rbs");
-        let mut names = scan_top_level_qualified_declarations(&content);
+        let mut names = scan_top_level(&content, &path, false).declared;
         names.sort();
         assert_eq!(
             names,
@@ -1748,13 +1747,15 @@ mod tests {
     }
 
     #[test]
-    fn scan_top_level_constants_reads_single_segment_declarations() {
+    fn scan_reads_single_segment_constants() {
         let path = PathBuf::from("sample.rbs");
-        let items = scan_top_level_constants(
+        let items = scan_top_level(
             "class Foo < Object\nend\nmodule Bar\n  BAZ: Integer\nend\nclass Foo::Inner\nend\n\
              class Alias = Foo\nARGV: Array[String]\ninterface _Each\nend\n",
             &path,
-        );
+            false,
+        )
+        .constants;
         assert_eq!(
             items,
             vec![
@@ -1763,6 +1764,21 @@ mod tests {
                 ("Alias".to_string(), TopLevelConstant::Class),
                 ("ARGV".to_string(), TopLevelConstant::Constant(path.clone())),
             ]
+        );
+    }
+
+    #[test]
+    fn stdlib_scan_indexes_leading_declarations() {
+        let path = PathBuf::from("sample.rbs");
+        let scan = scan_top_level(
+            "module Psych\nend\nclass Psych::Parser\nend\nclass String\nend\n\
+             module Psych\nend\n  class Nested\n  end\n",
+            &path,
+            true,
+        );
+        assert_eq!(
+            scan.declared,
+            vec!["Psych".to_string(), "Psych::Parser".to_string()]
         );
     }
 
@@ -1791,7 +1807,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_top_level_class_aliases_matches_only_alias_form() {
+    fn core_scan_indexes_alias_form_only() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("sample.rbs");
         std::fs::write(
@@ -1805,7 +1821,7 @@ mod tests {
         )
         .expect("write rbs");
         let content = std::fs::read_to_string(&path).expect("read rbs");
-        let mut names = scan_top_level_class_aliases(&content);
+        let mut names = scan_top_level(&content, &path, false).declared;
         names.sort();
         assert_eq!(names, vec!["Mutex".to_string(), "YAML".to_string()]);
     }

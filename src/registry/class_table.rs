@@ -40,6 +40,8 @@ fn next_generation() -> u64 {
 pub(crate) struct ClassTable {
     map: Map,
     generation: u64,
+    /// The classes holding call sites, in map order; dropped on any write, call sites included.
+    with_call_sites: std::sync::OnceLock<Arc<[Sym]>>,
 }
 
 impl Default for ClassTable {
@@ -47,6 +49,7 @@ impl Default for ClassTable {
         Self {
             map: Map::default(),
             generation: next_generation(),
+            with_call_sites: std::sync::OnceLock::new(),
         }
     }
 }
@@ -79,6 +82,18 @@ impl ClassTable {
     #[inline]
     fn touch(&mut self) {
         self.generation = next_generation();
+        self.with_call_sites = std::sync::OnceLock::new();
+    }
+
+    /// The classes that hold call sites, in the map's iteration order.
+    pub(crate) fn with_call_sites(&self) -> Arc<[Sym]> {
+        Arc::clone(self.with_call_sites.get_or_init(|| {
+            self.map
+                .iter()
+                .filter(|(_, data)| !data.call_sites.is_empty())
+                .map(|(name, _)| *name)
+                .collect()
+        }))
     }
 
     pub(crate) fn get_mut(&mut self, class_name: &str) -> Option<&mut ClassData> {
@@ -89,6 +104,7 @@ impl ClassTable {
     /// Mutable access that keeps the generation. Only for writes to a class's call sites and
     /// their bookkeeping, which nothing that compares generations reads.
     pub(crate) fn get_mut_for_call_sites(&mut self, class_name: &str) -> Option<&mut ClassData> {
+        self.with_call_sites = std::sync::OnceLock::new();
         self.map.get_mut(class_name).map(Arc::make_mut)
     }
 
