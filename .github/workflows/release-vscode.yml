@@ -142,8 +142,14 @@ jobs:
           echo "TYDA_RELEASE_VERSION=${PREFIX}.${TS}" >> "$GITHUB_ENV"
 
       # Profile-guided build: same behavior, less CPU time (docs/performance.md).
+      # Pull requests run the same PGO steps with parallel code generation, which
+      # builds about twice as fast; releases keep one codegen unit for speed.
       - name: Build release binary (PGO)
-        run: ./scripts/build_release_pgo.sh
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+          fi
+          ./scripts/build_release_pgo.sh
 
       # Stage the binary + its stdlib RBS into the extension so the bundled
       # binary resolves vendor/rbs relative to itself (bin/vendor/rbs).
