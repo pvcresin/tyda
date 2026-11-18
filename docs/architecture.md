@@ -165,6 +165,17 @@ stdlib RBS と project の RBS / RBI は必要な file / class を lazy に読�
 依存するときは、依存先ごとに参照先の path と alias 定義を一度だけ読んで共有する。外部定義の
 変更は LSP の reload で関連 cache を無効化する。
 
+registry の class は copy-on-write で共有し、書き込むときだけ複製する（`registry/class_table.rs`）。
+stdlib の shape は、各 class を空の registry へ merge した結果を一度だけ作って持ち、その class をまだ
+持たない registry への merge はそれを共有する。同じ内容の class は shape をまたいで一つにまとめ、
+registry がその class を変えずに持っているところへ同じ宣言を merge し直しても内容が変わらない場合は
+merge を省く（変わらないことは class ごとに最初の merge し直しで確かめる）。
+
+file 単位の engine は class を使うたびに、その祖先の宣言が読み込まれているかを確かめる。registry の
+class table は、どの class が変わっても新しい世代になる。engine は
+class を何も変えなかった祖先の走査と、class だけを読む祖先の問い合わせ（plugin の継承・mixin
+判定）の答えを、同じ世代の間だけ再利用する。call site の追加は class の形を変えないので世代を進めない。
+
 call site の代入で初めて判明する receiver（`@v = x.to_s` の `x` が別ファイルの呼び出しから
 `String` になる場合など）は file 単位の解析では読み込めない。batch 解決は未解決の参照が
 必要とする class の宣言を読み込み、増えなくなるまで解決し直す。引数を持たない遅延参照では
@@ -178,10 +189,11 @@ workspace context を分ける。
 
 1. **targets**: CLI 引数から展開したファイル。診断と詳細 snapshot を保持する。
 2. **context**: targets 外の Ruby ファイル。定義・superclass・mixin・定数などの骨格だけを読む。
-3. チャンク単位で並列解析し、`workspace_state::BatchProjectionBuilder` でチャンクが出来上がるたび
-   即時に registry へ merge する（全ファイルの snapshot を同時に保持しない）。順序はチャンク順、
-   チャンク内はファイル順を保つ。`Batch` resolution は全ファイル投入後に一度だけ行う。
-4. RBS 出力ではソースもチャンク単位で読み、merge 後に破棄する。preload の並列読み込みは
+3. ファイルを並列に解析し、`workspace_state::BatchProjectionBuilder` が解析の終わったファイルから
+   ファイル順に registry へ merge する（`ordered_parallel::for_each_ordered`）。worker は merge を
+   待たずに次のファイルへ進み、解析中または merge 待ちのファイル数を一定数に抑えるので、全ファイルの
+   snapshot を同時に保持しない。`Batch` resolution は全ファイル投入後に一度だけ行う。
+4. RBS 出力ではソースもファイルごとに読み、merge 後に破棄する。preload の並列読み込みは
    DSL 検出だけを行い本文を残さない。`--diagnostics` は message 生成が target の本文を再度
    使うため、targets のソースだけ保持する。
 5. diagnostics は targets にだけ出力する。

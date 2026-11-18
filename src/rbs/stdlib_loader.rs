@@ -19,7 +19,26 @@ use crate::types::Type;
 const MAX_ALIAS_DEPENDENCY_DEPTH: usize = 8;
 
 type StdlibFileRegistrySlot = Arc<OnceLock<Arc<TypeRegistry>>>;
-type SharedShapeSlot = Arc<OnceLock<Option<Arc<TypeRegistry>>>>;
+type SharedShapeSlot = Arc<OnceLock<Option<Arc<SharedShape>>>>;
+
+/// The declarations of a class or a feature, with what merging each of their classes into a
+/// registry that lacks it yields, so per-file registries share those classes.
+struct SharedShape {
+    registry: TypeRegistry,
+    prepared: crate::registry::PreparedStdlibMerge,
+}
+
+impl SharedShape {
+    fn new(registry: TypeRegistry, pool: &Mutex<crate::registry::PreparedClassPool>) -> Arc<Self> {
+        let mut pool = pool.lock().expect("stdlib prepared class pool poisoned");
+        let prepared = crate::registry::PreparedStdlibMerge::new(&registry, &mut pool);
+        Arc::new(Self { registry, prepared })
+    }
+
+    fn merge_into(&self, target: &mut TypeRegistry) {
+        target.merge_prepared_stdlib_rbs_registry(&self.registry, &self.prepared);
+    }
+}
 
 fn stdlib_file_cache_cap() -> usize {
     std::env::var("TYDA_STDLIB_RBS_FILE_CACHE_CAP")
@@ -39,6 +58,7 @@ pub struct LazyRbsLoader {
     feature_extensions: Mutex<FxHashMap<String, Arc<[FeatureExtension]>>>,
     stdlib_paths: FxHashSet<PathBuf>,
     alias_dependencies: Mutex<FxHashMap<PathBuf, Arc<AliasDependency>>>,
+    prepared_classes: Mutex<crate::registry::PreparedClassPool>,
 }
 
 /// A method that a stdlib feature adds to a core class, absent from core RBS.
@@ -197,6 +217,7 @@ impl LazyRbsLoader {
             feature_extensions: Mutex::new(FxHashMap::default()),
             stdlib_paths,
             alias_dependencies: Mutex::new(FxHashMap::default()),
+            prepared_classes: Mutex::default(),
         }
     }
 
@@ -321,7 +342,7 @@ impl LazyRbsLoader {
         let Some(shape) = self.shared_class_shape(class_name) else {
             return false;
         };
-        target.merge_stdlib_rbs_registry(&shape);
+        shape.merge_into(target);
         // Cross-file method aliases (`Kernel#send` → `BasicObject#__send__`) still
         // finalize against the engine once ancestors are present.
         crate::rbs::import::finalize_pending_method_aliases(target);
@@ -332,7 +353,7 @@ impl LazyRbsLoader {
         let Some(shape) = self.resolved_feature_shape(feature) else {
             return false;
         };
-        target.merge_stdlib_rbs_registry(&shape);
+        shape.merge_into(target);
         crate::rbs::import::finalize_pending_method_aliases(target);
         true
     }
@@ -350,7 +371,7 @@ impl LazyRbsLoader {
         }
         let extensions: Arc<[FeatureExtension]> = self
             .resolved_feature_shape(feature)
-            .map(|shape| self.collect_feature_extensions(&shape))
+            .map(|shape| self.collect_feature_extensions(&shape.registry))
             .unwrap_or_default()
             .into();
         self.feature_extensions
@@ -390,7 +411,7 @@ impl LazyRbsLoader {
         extensions
     }
 
-    fn resolved_feature_shape(&self, feature: &str) -> Option<Arc<TypeRegistry>> {
+    fn resolved_feature_shape(&self, feature: &str) -> Option<Arc<SharedShape>> {
         self.shared_feature_shape(feature).or_else(|| {
             feature
                 .contains('/')
@@ -399,7 +420,7 @@ impl LazyRbsLoader {
         })
     }
 
-    fn shared_class_shape(&self, class_name: &str) -> Option<Arc<TypeRegistry>> {
+    fn shared_class_shape(&self, class_name: &str) -> Option<Arc<SharedShape>> {
         if !self.class_to_files.contains_key(class_name) {
             return None;
         }
@@ -420,7 +441,7 @@ impl LazyRbsLoader {
             .clone()
     }
 
-    fn shared_feature_shape(&self, feature: &str) -> Option<Arc<TypeRegistry>> {
+    fn shared_feature_shape(&self, feature: &str) -> Option<Arc<SharedShape>> {
         if !self.feature_to_files.contains_key(feature) {
             return None;
         }
@@ -444,7 +465,7 @@ impl LazyRbsLoader {
     /// Merge every declaring `.rbs` file into an empty registry once per FQN.
     /// Alias expansion is done here so the cached shape does not depend on the
     /// caller's already-merged ancestors (byte-stable across per-file engines).
-    fn build_class_shape(&self, class_name: &str) -> Option<Arc<TypeRegistry>> {
+    fn build_class_shape(&self, class_name: &str) -> Option<Arc<SharedShape>> {
         #[cfg(test)]
         merge_counter::record_build(class_name);
         let paths = self.class_to_files.get(class_name)?;
@@ -464,10 +485,10 @@ impl LazyRbsLoader {
         }
         crate::rbs::import::finalize_pending_method_aliases(&mut shape);
         shape.shrink_to_fit_after_compact();
-        Some(Arc::new(shape))
+        Some(SharedShape::new(shape, &self.prepared_classes))
     }
 
-    fn build_feature_shape(&self, feature: &str) -> Option<Arc<TypeRegistry>> {
+    fn build_feature_shape(&self, feature: &str) -> Option<Arc<SharedShape>> {
         let paths = self.feature_to_files.get(feature)?;
         let mut shape = TypeRegistry::new();
         for path in paths {
@@ -480,7 +501,7 @@ impl LazyRbsLoader {
         }
         crate::rbs::import::finalize_pending_method_aliases(&mut shape);
         shape.shrink_to_fit_after_compact();
-        Some(Arc::new(shape))
+        Some(SharedShape::new(shape, &self.prepared_classes))
     }
 
     /// Top-level classes, modules, and constants whose names start with `prefix`. Only
@@ -582,9 +603,9 @@ impl LazyRbsLoader {
                 out.index_bytes += class_name.capacity()
                     + std::mem::size_of::<String>()
                     + std::mem::size_of::<SharedShapeSlot>();
-                if let Some(Some(registry)) = slot.get() {
+                if let Some(Some(shape)) = slot.get() {
                     out.shape_count += 1;
-                    out.shapes.accumulate(&registry.deep_breakdown(seen));
+                    out.shapes.accumulate(&shape.registry.deep_breakdown(seen));
                 }
             }
         }
@@ -597,9 +618,9 @@ impl LazyRbsLoader {
                 out.index_bytes += feature.capacity()
                     + std::mem::size_of::<String>()
                     + std::mem::size_of::<SharedShapeSlot>();
-                if let Some(Some(registry)) = slot.get() {
+                if let Some(Some(shape)) = slot.get() {
                     out.shape_count += 1;
-                    out.shapes.accumulate(&registry.deep_breakdown(seen));
+                    out.shapes.accumulate(&shape.registry.deep_breakdown(seen));
                 }
             }
         }

@@ -3,18 +3,136 @@ use super::*;
 use crate::rbs::ir as rbs_ir;
 use crate::types::MethodOrigin;
 
+/// What `merge_stdlib_rbs_registry` makes of each class of a shared declaration in a registry
+/// that does not have the class yet, built once so each merge can share it.
+#[derive(Debug, Default)]
+pub struct PreparedStdlibMerge {
+    /// In the declaration registry's class order.
+    classes: Vec<FreshClass>,
+}
+
+#[derive(Debug)]
+struct FreshClass {
+    name: Sym,
+    data: Arc<ClassData>,
+    sets_mixin_hook_methods: bool,
+    sets_dirty_patterns: bool,
+    sets_mixin_hook_mixins: bool,
+    sets_includer_bound_dsl: bool,
+    /// Whether merging the declaration again into exactly `data` leaves it as it is, found by
+    /// doing it the first time a registry still holding `data` merges the declaration again.
+    remerge_is_noop: std::sync::OnceLock<bool>,
+}
+
+impl FreshClass {
+    fn remerge_is_noop(&self, rbs_data: &ClassData) -> bool {
+        *self.remerge_is_noop.get_or_init(|| {
+            let mut again = TypeRegistry::new();
+            again
+                .class_data
+                .insert_shared(self.name, Arc::clone(&self.data));
+            again.merge_external_type_class(&self.name, rbs_data, false, true);
+            again.class_data.get(&self.name).is_some_and(|merged| {
+                content_fingerprint(merged) == content_fingerprint(&self.data)
+            })
+        })
+    }
+}
+
+/// A 128-bit hash of the value's `Debug` text, streamed so the text is never built. `Debug`
+/// lists every field in iteration order, so equal fingerprints mean the same content laid out
+/// the same way. The keys are random per process; fingerprints are only compared within it.
+fn content_fingerprint(value: &impl std::fmt::Debug) -> u128 {
+    use std::hash::{BuildHasher, Hasher};
+    static KEYS: std::sync::LazyLock<(std::hash::RandomState, std::hash::RandomState)> =
+        std::sync::LazyLock::new(|| (std::hash::RandomState::new(), std::hash::RandomState::new()));
+    struct Stream(std::hash::DefaultHasher, std::hash::DefaultHasher);
+    impl std::fmt::Write for Stream {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.write(text.as_bytes());
+            self.1.write(text.as_bytes());
+            Ok(())
+        }
+    }
+    let mut stream = Stream(KEYS.0.build_hasher(), KEYS.1.build_hasher());
+    let _ = std::fmt::write(&mut stream, format_args!("{value:?}"));
+    (u128::from(stream.0.finish()) << 64) | u128::from(stream.1.finish())
+}
+
+/// Prepared classes by content, so declarations that hold the same class share one copy and a
+/// merge can tell that a registry still holds exactly that class.
+#[derive(Debug, Default)]
+pub struct PreparedClassPool {
+    classes: FxHashMap<Sym, Vec<(u128, Arc<ClassData>)>>,
+}
+
+impl PreparedClassPool {
+    fn share(&mut self, name: Sym, data: Arc<ClassData>) -> Arc<ClassData> {
+        let key = content_fingerprint(&data);
+        let same = self.classes.entry(name).or_default();
+        if let Some((_, existing)) = same.iter().find(|(fingerprint, _)| *fingerprint == key) {
+            return Arc::clone(existing);
+        }
+        same.push((key, Arc::clone(&data)));
+        data
+    }
+}
+
+impl PreparedStdlibMerge {
+    /// Merges each class of `shape` into an empty registry, as `merge_stdlib_rbs_registry`
+    /// would into a registry without that class. `shape` must not change afterwards.
+    pub fn new(shape: &TypeRegistry, pool: &mut PreparedClassPool) -> Self {
+        let classes = shape
+            .class_data
+            .iter()
+            .map(|(name, rbs_data)| {
+                let mut scratch = TypeRegistry::new();
+                scratch.merge_external_type_class(name, rbs_data, false, true);
+                debug_assert_eq!(scratch.class_data.len(), 1);
+                let data = pool.share(
+                    *name,
+                    scratch
+                        .class_data
+                        .remove(name)
+                        .expect("merging a class creates it"),
+                );
+                FreshClass {
+                    name: *name,
+                    data,
+                    remerge_is_noop: std::sync::OnceLock::new(),
+                    sets_mixin_hook_methods: scratch.has_mixin_hook_methods,
+                    sets_dirty_patterns: scratch.has_dirty_patterns,
+                    sets_mixin_hook_mixins: scratch.has_mixin_hook_mixins,
+                    sets_includer_bound_dsl: scratch.has_includer_bound_dsl,
+                }
+            })
+            .collect();
+        Self { classes }
+    }
+}
+
 impl TypeRegistry {
     pub fn merge_rbs_registry(&mut self, rbs_registry: &TypeRegistry) {
-        self.merge_external_type_registry_inner(rbs_registry, false, false);
+        self.merge_external_type_registry_inner(rbs_registry, false, false, None);
     }
 
     // lazy stdlib constants are lookup-only and are never emitted in RBS output.
     pub fn merge_stdlib_rbs_registry(&mut self, rbs_registry: &TypeRegistry) {
-        self.merge_external_type_registry_inner(rbs_registry, false, true);
+        self.merge_external_type_registry_inner(rbs_registry, false, true, None);
+    }
+
+    /// `merge_stdlib_rbs_registry` that shares the classes this registry does not have yet
+    /// with `prepared` instead of building them again.
+    pub fn merge_prepared_stdlib_rbs_registry(
+        &mut self,
+        rbs_registry: &TypeRegistry,
+        prepared: &PreparedStdlibMerge,
+    ) {
+        self.merge_external_type_registry_inner(rbs_registry, false, true, Some(prepared));
     }
 
     pub fn merge_rbs_registry_preserving_user_defined(&mut self, rbs_registry: &TypeRegistry) {
-        self.merge_external_type_registry_inner(rbs_registry, true, false);
+        self.merge_external_type_registry_inner(rbs_registry, true, false, None);
     }
 
     fn merge_external_type_registry_inner(
@@ -22,6 +140,7 @@ impl TypeRegistry {
         rbs_registry: &TypeRegistry,
         propagate_user_defined: bool,
         constants_external: bool,
+        prepared: Option<&PreparedStdlibMerge>,
     ) {
         self.has_source_base_case_equality_override |=
             rbs_registry.has_source_base_case_equality_override;
@@ -80,7 +199,34 @@ impl TypeRegistry {
                 target.get_or_insert(method_name, true, meta);
             }
         }
-        for (class_name, rbs_data) in &rbs_registry.class_data {
+        // Without a name pool, merging a class this registry lacks builds exactly the prepared
+        // class, so it is shared instead.
+        let prepared = prepared.filter(|prepared| {
+            !self.name_pool_enabled
+                && !propagate_user_defined
+                && constants_external
+                && prepared.classes.len() == rbs_registry.class_data.len()
+        });
+        for (index, (class_name, rbs_data)) in rbs_registry.class_data.iter().enumerate() {
+            if let Some(fresh) = prepared.map(|prepared| &prepared.classes[index])
+                && fresh.name == *class_name
+            {
+                match self.class_data.get(class_name.as_str()) {
+                    None => {
+                        self.insert_fresh_external_class(fresh);
+                        continue;
+                    }
+                    // Still the shared class, which merging again would not change.
+                    Some(existing)
+                        if Arc::ptr_eq(existing, &fresh.data)
+                            && fresh.remerge_is_noop(rbs_data) =>
+                    {
+                        self.apply_fresh_merge_effects(fresh);
+                        continue;
+                    }
+                    Some(_) => {}
+                }
+            }
             if propagate_user_defined && rbs_data.user_defined {
                 let data = self.class_data_mut(class_name);
                 data.user_defined = true;
@@ -132,6 +278,31 @@ impl TypeRegistry {
         self.mixin_hook_mixins_applied = false;
         self.includer_bound_dsl_applied = false;
         true
+    }
+
+    /// The registry-wide effects of `merge_external_type_class` on a class this registry lacks,
+    /// with the class itself taken from `fresh`.
+    fn insert_fresh_external_class(&mut self, fresh: &FreshClass) {
+        self.apply_fresh_merge_effects(fresh);
+        self.class_data
+            .insert_shared(fresh.name, Arc::clone(&fresh.data));
+    }
+
+    fn apply_fresh_merge_effects(&mut self, fresh: &FreshClass) {
+        self.invalidate_owner_walks();
+        if fresh.sets_mixin_hook_methods {
+            self.has_mixin_hook_methods = true;
+        }
+        if fresh.sets_dirty_patterns {
+            self.mark_has_dirty_patterns();
+        }
+        if fresh.sets_mixin_hook_mixins {
+            self.has_mixin_hook_mixins = true;
+        }
+        if fresh.sets_includer_bound_dsl {
+            self.has_includer_bound_dsl = true;
+            self.includer_bound_dsl_applied = false;
+        }
     }
 
     fn merge_external_type_class(
@@ -674,15 +845,27 @@ impl TypeRegistry {
     }
 
     pub fn mark_all_methods_as_external_source(&mut self) {
-        for data in self.class_data.values_mut() {
+        let external_origin = |origin: MethodOrigin| {
+            if origin.is_sig() {
+                MethodOrigin::Rbi
+            } else {
+                MethodOrigin::RbsFile
+            }
+        };
+        for mut data in self.class_data.values_mut() {
+            let unchanged = !data.user_defined
+                && data
+                    .methods
+                    .iter()
+                    .all(|method| method.origin == external_origin(method.origin));
+            if unchanged {
+                continue;
+            }
+            let data = data.write();
             data.user_defined = false;
             for method in &mut data.methods {
                 let method = Arc::make_mut(method);
-                method.origin = if method.origin.is_sig() {
-                    MethodOrigin::Rbi
-                } else {
-                    MethodOrigin::RbsFile
-                };
+                method.origin = external_origin(method.origin);
             }
         }
         self.refresh_mixin_hook_method_flag();

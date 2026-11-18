@@ -239,7 +239,9 @@ struct CliAnalysisContext<'a> {
     include_synthetic_dsl_methods: bool,
 }
 
-const CLI_COMPACT_ANALYSIS_CHUNK_SIZE: usize = 32;
+/// Files analyzed or waiting to merge at once. Merges go in file order, so a slow file holds
+/// the window; a wider one keeps workers busy while it runs, and finished snapshots are small.
+const CLI_COMPACT_ANALYSIS_WINDOW: usize = 64;
 
 fn skeleton_scan_chunk_size(analysis_threads: usize) -> usize {
     analysis_threads.saturating_mul(16).clamp(64, 256)
@@ -682,6 +684,7 @@ fn run_cli(
         );
     }
     let total_files = file_sources.len();
+
     let (file_paths, diagnostic_sources): (Vec<PathBuf>, Vec<(PathBuf, String)>) =
         if options.diagnostics {
             (
@@ -845,56 +848,56 @@ fn run_cli(
         // own copy of `base_user_rbs` distinct from the analysis-context reference.
         let mut skeleton_builder =
             tyda::workspace_state::BatchProjectionBuilder::new(base_user_rbs.clone());
-        for chunk in skeleton_jobs.chunks(skeleton_scan_chunk_size(analysis_threads)) {
-            let compact_chunk_start = Instant::now();
-            let skeleton_user_rbs = &base_user_rbs;
-            let skeleton_lazy_rbi_loader = lazy_rbi_loader.as_ref();
-            let analyses = pool.install(|| {
-                chunk
-                    .par_iter()
-                    .filter_map(|(path, source)| {
-                        let is_context = source.is_none();
-                        let source = match source {
-                            Some(source) => Cow::Borrowed(*source),
-                            None => Cow::Owned(fs::read_to_string(path).ok()?),
-                        };
-                        let file_path_str = path.to_string_lossy();
-                        let job_start = scan_job_timing.then(Instant::now);
-                        let snapshot = analyze_definitions_only_snapshot_timed(
-                            source.as_ref(),
-                            Some(skeleton_user_rbs),
-                            &stdlib_loader,
-                            skeleton_lazy_rbi_loader,
-                            &file_path_str,
-                            opts.clone(),
-                        )
-                        .0;
-                        if let Some(job_start) = job_start {
-                            let elapsed = job_start.elapsed();
-                            if elapsed.as_millis() >= 500 {
-                                eprintln!(
-                                    "skeleton-scan-job {file_path_str}: {:.3}s",
-                                    elapsed.as_secs_f64()
-                                );
-                            }
-                        }
-                        Some((file_path_str.into_owned(), snapshot, is_context))
-                    })
-                    .collect::<Vec<_>>()
-            });
-            context_scan_elapsed += compact_chunk_start.elapsed();
-            context_file_count += analyses
-                .iter()
-                .filter(|(_, _, is_context)| *is_context)
-                .count();
-            let merge_chunk_start = Instant::now();
-            skeleton_builder.apply_chunk(
-                analyses
-                    .into_iter()
-                    .map(|(file_path, snapshot, _)| (file_path, snapshot)),
-            );
-            merge_elapsed += merge_chunk_start.elapsed();
-        }
+        let skeleton_scan_start = Instant::now();
+        let merge_before_skeleton = merge_elapsed;
+        let skeleton_user_rbs = &base_user_rbs;
+        let skeleton_lazy_rbi_loader = lazy_rbi_loader.as_ref();
+        tyda::ordered_parallel::for_each_ordered(
+            &pool,
+            &skeleton_jobs,
+            skeleton_scan_chunk_size(analysis_threads),
+            |(path, source)| {
+                let is_context = source.is_none();
+                let source = match source {
+                    Some(source) => Cow::Borrowed(*source),
+                    None => Cow::Owned(fs::read_to_string(path).ok()?),
+                };
+                let file_path_str = path.to_string_lossy();
+                let job_start = scan_job_timing.then(Instant::now);
+                let snapshot = analyze_definitions_only_snapshot_timed(
+                    source.as_ref(),
+                    Some(skeleton_user_rbs),
+                    &stdlib_loader,
+                    skeleton_lazy_rbi_loader,
+                    &file_path_str,
+                    opts.clone(),
+                )
+                .0;
+                if let Some(job_start) = job_start {
+                    let elapsed = job_start.elapsed();
+                    if elapsed.as_millis() >= 500 {
+                        eprintln!(
+                            "skeleton-scan-job {file_path_str}: {:.3}s",
+                            elapsed.as_secs_f64()
+                        );
+                    }
+                }
+                Some((file_path_str.into_owned(), snapshot, is_context))
+            },
+            |analysis| {
+                let Some((file_path, snapshot, is_context)) = analysis else {
+                    return;
+                };
+                context_file_count += usize::from(is_context);
+                let merge_start = Instant::now();
+                skeleton_builder.apply_chunk(std::iter::once((file_path, snapshot)));
+                merge_elapsed += merge_start.elapsed();
+            },
+            || false,
+        );
+        context_scan_elapsed += skeleton_scan_start
+            .elapsed()
+            .saturating_sub(merge_elapsed - merge_before_skeleton);
         // Context copy no longer needed; drop it before resolution grows the registry.
         drop(base_user_rbs);
 
@@ -917,45 +920,38 @@ fn run_cli(
             "Recording diagnostic sites for {} target files...",
             diagnostic_sources.len()
         );
-        diagnostic_replays.reserve(diagnostic_sources.len());
-        for chunk in diagnostic_sources.chunks(CLI_COMPACT_ANALYSIS_CHUNK_SIZE) {
-            let compact_chunk_start = Instant::now();
-            let skeleton_ref = skeleton.as_ref();
-            let compact_lazy_rbi_loader = lazy_rbi_loader.as_ref();
-            let compact_analyses = pool.install(|| {
-                chunk
-                    .par_iter()
-                    .map(|(path, source)| {
-                        let file_path_str = path.to_string_lossy();
-                        let job_start = scan_job_timing.then(Instant::now);
-                        let snapshot = analyze_cli_diagnostic_target_snapshot_timed(
-                            source,
-                            Some(skeleton_ref),
-                            &stdlib_loader,
-                            compact_lazy_rbi_loader,
-                            &file_path_str,
-                            opts.clone(),
-                            true,
-                        )
-                        .0;
-                        if let Some(job_start) = job_start {
-                            let elapsed = job_start.elapsed();
-                            if elapsed.as_millis() >= 500 {
-                                eprintln!(
-                                    "scan-job {file_path_str}: {:.3}s",
-                                    elapsed.as_secs_f64()
-                                );
-                            }
+        // Every target snapshot is kept for judgment, so one parallel pass over all of them
+        // has no chunk barriers to wait on.
+        let compact_scan_start = Instant::now();
+        let skeleton_ref = skeleton.as_ref();
+        let compact_lazy_rbi_loader = lazy_rbi_loader.as_ref();
+        pool.install(|| {
+            diagnostic_sources
+                .par_iter()
+                .map(|(path, source)| {
+                    let file_path_str = path.to_string_lossy();
+                    let job_start = scan_job_timing.then(Instant::now);
+                    let snapshot = analyze_cli_diagnostic_target_snapshot_timed(
+                        source,
+                        Some(skeleton_ref),
+                        &stdlib_loader,
+                        compact_lazy_rbi_loader,
+                        &file_path_str,
+                        opts.clone(),
+                        true,
+                    )
+                    .0;
+                    if let Some(job_start) = job_start {
+                        let elapsed = job_start.elapsed();
+                        if elapsed.as_millis() >= 500 {
+                            eprintln!("scan-job {file_path_str}: {:.3}s", elapsed.as_secs_f64());
                         }
-                        (file_path_str.into_owned(), snapshot)
-                    })
-                    .collect::<Vec<_>>()
-            });
-            compact_collection_elapsed += compact_chunk_start.elapsed();
-            for (_file_path, snapshot) in compact_analyses {
-                diagnostic_replays.push(snapshot);
-            }
-        }
+                    }
+                    snapshot
+                })
+                .collect_into_vec(&mut diagnostic_replays)
+        });
+        compact_collection_elapsed += compact_scan_start.elapsed();
 
         let resolve_start = Instant::now();
         let skeleton = std::sync::Arc::try_unwrap(skeleton).unwrap_or_else(|arc| (*arc).clone());
@@ -975,67 +971,68 @@ fn run_cli(
         // below, never from a partially-merged accumulator).
         let mut batch_builder =
             tyda::workspace_state::BatchProjectionBuilder::new(base_user_rbs.clone());
-        // Sources are read per chunk and dropped with it: nothing past this loop
-        // reads them, so the corpus is never resident all at once.
-        for chunk in file_paths.chunks(CLI_COMPACT_ANALYSIS_CHUNK_SIZE) {
-            let compact_chunk_start = Instant::now();
-            let compact_user_rbs = &base_user_rbs;
-            let compact_lazy_rbi_loader = lazy_rbi_loader.as_ref();
-            let mut compact_analyses = pool.install(|| {
-                chunk
-                    .par_iter()
-                    .filter_map(|path| {
-                        let source = fs::read_to_string(path).ok()?;
-                        let file_path_str = path.to_string_lossy();
-                        let job_start = scan_job_timing.then(Instant::now);
-                        let snapshot = if options.coverage {
-                            analyze_compact_file_snapshot_with_coverage_timed(
-                                &source,
-                                Some(compact_user_rbs),
-                                &stdlib_loader,
-                                compact_lazy_rbi_loader,
-                                &file_path_str,
-                                opts.clone(),
-                                true,
-                            )
-                            .0
-                        } else {
-                            analyze_compact_file_snapshot_timed(
-                                &source,
-                                Some(compact_user_rbs),
-                                &stdlib_loader,
-                                compact_lazy_rbi_loader,
-                                &file_path_str,
-                                opts.clone(),
-                                true,
-                            )
-                            .0
-                        };
-                        if let Some(job_start) = job_start {
-                            let elapsed = job_start.elapsed();
-                            if elapsed.as_millis() >= 500 {
-                                eprintln!(
-                                    "scan-job {file_path_str}: {:.3}s",
-                                    elapsed.as_secs_f64()
-                                );
-                            }
-                        }
-                        Some((file_path_str.into_owned(), snapshot))
-                    })
-                    .collect::<Vec<_>>()
-            });
-            compact_collection_elapsed += compact_chunk_start.elapsed();
-
-            if let Some(coverage) = coverage.as_mut() {
-                for (_file_path, snapshot) in &mut compact_analyses {
-                    coverage.add_file(snapshot);
+        // Sources are read per file and dropped with it: nothing past this loop
+        // reads them, so the corpus is never resident all at once. Files merge in input
+        // order while later files are still being analyzed.
+        let compact_scan_start = Instant::now();
+        let merge_before_scan = merge_elapsed;
+        let compact_user_rbs = &base_user_rbs;
+        let compact_lazy_rbi_loader = lazy_rbi_loader.as_ref();
+        tyda::ordered_parallel::for_each_ordered(
+            &pool,
+            &file_paths,
+            CLI_COMPACT_ANALYSIS_WINDOW,
+            |path| {
+                let source = fs::read_to_string(path).ok()?;
+                let file_path_str = path.to_string_lossy();
+                let job_start = scan_job_timing.then(Instant::now);
+                let snapshot = if options.coverage {
+                    analyze_compact_file_snapshot_with_coverage_timed(
+                        &source,
+                        Some(compact_user_rbs),
+                        &stdlib_loader,
+                        compact_lazy_rbi_loader,
+                        &file_path_str,
+                        opts.clone(),
+                        true,
+                    )
+                    .0
+                } else {
+                    analyze_compact_file_snapshot_timed(
+                        &source,
+                        Some(compact_user_rbs),
+                        &stdlib_loader,
+                        compact_lazy_rbi_loader,
+                        &file_path_str,
+                        opts.clone(),
+                        true,
+                    )
+                    .0
+                };
+                if let Some(job_start) = job_start {
+                    let elapsed = job_start.elapsed();
+                    if elapsed.as_millis() >= 500 {
+                        eprintln!("scan-job {file_path_str}: {:.3}s", elapsed.as_secs_f64());
+                    }
                 }
-            }
-
-            let merge_chunk_start = Instant::now();
-            batch_builder.apply_chunk(compact_analyses);
-            merge_elapsed += merge_chunk_start.elapsed();
-        }
+                Some((file_path_str.into_owned(), snapshot))
+            },
+            |analysis| {
+                let Some((file_path, mut snapshot)) = analysis else {
+                    return;
+                };
+                if let Some(coverage) = coverage.as_mut() {
+                    coverage.add_file(&mut snapshot);
+                }
+                let merge_start = Instant::now();
+                batch_builder.apply_chunk(std::iter::once((file_path, snapshot)));
+                merge_elapsed += merge_start.elapsed();
+            },
+            || false,
+        );
+        compact_collection_elapsed += compact_scan_start
+            .elapsed()
+            .saturating_sub(merge_elapsed - merge_before_scan);
 
         if memory_breakdown {
             eprintln!(

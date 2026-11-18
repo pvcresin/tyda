@@ -149,12 +149,44 @@ impl TypeRegistry {
         let mut removed_methods = false;
         self.class_data.retain(|class_name, data| {
             let class_is_file_local = data.file_path.as_deref() == Some(file_path);
+            let keeps_path = |path: &SharedPath| {
+                path.as_ref() == file_path && (class_name != "Object" || class_is_file_local)
+            };
+            // Decide from the class as it is, so a class shared with a declaration is not copied
+            // only to be dropped.
+            let kept = class_is_file_local
+                || data
+                    .constants
+                    .values()
+                    .any(|constant| constant.file_path.as_deref() == Some(file_path))
+                || !data.cold().class_variables.is_empty()
+                || data.methods.iter().any(|method| {
+                    data.method_file_paths
+                        .get(&(method.name, method.is_singleton))
+                        .is_some_and(keeps_path)
+                });
+            if !kept {
+                #[cfg(debug_assertions)]
+                {
+                    let mut copy = (**data).clone();
+                    copy.constants
+                        .retain(|_, constant| constant.file_path.as_deref() == Some(file_path));
+                    copy.method_file_paths.retain_paths(keeps_path);
+                    copy.methods.retain(|method| {
+                        copy.method_file_paths
+                            .get(&(method.name, method.is_singleton))
+                            .is_some()
+                    });
+                    debug_assert!(copy.constants.is_empty() && copy.methods.is_empty());
+                }
+                removed_methods |= !data.methods.is_empty();
+                return false;
+            }
+            let data = data.write();
             data.constants
                 .retain(|_, constant| constant.file_path.as_deref() == Some(file_path));
             // Top-level methods use Object for CodeLens, but are not file-local Object facts.
-            data.method_file_paths.retain_paths(|path| {
-                path.as_ref() == file_path && (class_name != "Object" || class_is_file_local)
-            });
+            data.method_file_paths.retain_paths(keeps_path);
             if !data.methods.is_empty() {
                 // every retained path already equals `file_path`, so presence is the filter.
                 let method_file_paths = std::mem::take(&mut data.method_file_paths);
@@ -209,9 +241,15 @@ impl TypeRegistry {
                 return false;
             }
             if Self::is_stdlib_root_class(name) {
+                let contributed =
+                    |method: &Arc<MethodDef>| contributed_methods.contains(&method.name);
+                if data.constants.is_empty() && !data.methods.iter().any(contributed) {
+                    removed_facts |= !data.methods.is_empty();
+                    return false;
+                }
+                let data = data.write();
                 let before = data.methods.len();
-                data.methods
-                    .retain(|method| contributed_methods.contains(&method.name));
+                data.methods.retain(contributed);
                 Self::rebuild_method_index(data);
                 removed_facts |= data.methods.len() != before;
                 return !data.methods.is_empty() || !data.constants.is_empty();

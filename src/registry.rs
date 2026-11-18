@@ -297,6 +297,7 @@ impl Drop for CallerCtxMemoScope {
 }
 
 pub(crate) mod argument_binding;
+mod class_table;
 mod external_types;
 mod file_local;
 mod includer_dsl;
@@ -307,6 +308,7 @@ mod stdlib_returns;
 
 pub use keyword_args::KeywordArgTypes;
 
+pub use external_types::{PreparedClassPool, PreparedStdlibMerge};
 pub use file_local::MethodBodySummary;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -2194,6 +2196,13 @@ impl HookMixins {
         }
     }
 
+    fn iter_all(&self) -> impl Iterator<Item = &Mixin> {
+        self.included
+            .iter()
+            .chain(&self.extended)
+            .chain(&self.prepended)
+    }
+
     fn iter_mut_all(&mut self) -> impl Iterator<Item = &mut Mixin> {
         self.included
             .iter_mut()
@@ -2596,6 +2605,13 @@ impl ParamCache {
         Some((*shared).clone())
     }
 
+    /// Whether `key` holds exactly `params`, compared in place instead of cloning the entry.
+    fn holds(&self, key: &ParamCacheKey, params: &[Param]) -> bool {
+        self.shard(key)
+            .and_then(|shard| shard.lock().ok())
+            .is_some_and(|shard| shard.get(key).is_some_and(|held| held.as_slice() == params))
+    }
+
     // when a shard exceeds its limit, clear it per-shard (bounds long-lived LSP sessions).
     fn insert_capped(&self, key: ParamCacheKey, params: Vec<Param>, shard_cap: usize) {
         let params = Arc::new(params);
@@ -2813,7 +2829,7 @@ impl OwnerLookupCache {
 #[derive(Debug, Default)]
 pub struct TypeRegistry {
     // boxed: a 392-byte `ClassData` inline makes the map shell dominate per-file snapshots.
-    class_data: FxHashMap<Sym, Box<ClassData>>,
+    class_data: class_table::ClassTable,
     /// boxed: none of these are populated in a per-file snapshot, and their empty map
     /// headers would otherwise add 336B to every one of them.
     cold_tail: Option<Box<RegistryColdTail>>,
@@ -3264,8 +3280,10 @@ impl TypeRegistry {
 
     // after freezing, only drop the collection-only scaffolding (`fingerprints` / `body_fact` / `name_pool`).
     pub fn drop_transient_collection_state(&mut self) {
-        for data in self.class_data.values_mut() {
-            data.call_site_fingerprints = None;
+        for mut data in self.class_data.values_mut() {
+            if data.call_site_fingerprints.is_some() {
+                data.write().call_site_fingerprints = None;
+            }
         }
         if let Some(tail) = self.tail_opt_mut() {
             tail.body_fact_class_names.clear();
@@ -3275,7 +3293,16 @@ impl TypeRegistry {
         }
     }
     pub fn mark_mixins_external(&mut self) {
-        for data in self.class_data.values_mut() {
+        for mut data in self.class_data.values_mut() {
+            let all_external = data.mixins.iter().all(|mixin| mixin.external_source)
+                && data
+                    .hook_mixins
+                    .as_deref()
+                    .is_none_or(|hooks| hooks.iter_all().all(|mixin| mixin.external_source));
+            if all_external {
+                continue;
+            }
+            let data = data.write();
             for mixin in &mut data.mixins {
                 mixin.external_source = true;
             }
@@ -3289,8 +3316,8 @@ impl TypeRegistry {
 
     pub fn shrink_to_fit_after_compact(&mut self) {
         self.class_data.shrink_to_fit();
-        for data in self.class_data.values_mut() {
-            data.shrink_to_fit_after_compact();
+        for mut data in self.class_data.values_mut() {
+            data.write().shrink_to_fit_after_compact();
         }
         let name_pool_enabled = self.name_pool_enabled;
         if let Some(tail) = self.tail_opt_mut() {
@@ -3315,8 +3342,8 @@ impl TypeRegistry {
         self.drop_transient_collection_state();
         // `call_sites` can't be dropped because render references it for attr-reader/block return types (pruning would change render output).
         self.class_data.shrink_to_fit();
-        for data in self.class_data.values_mut() {
-            data.shrink_containers_after_freeze();
+        for mut data in self.class_data.values_mut() {
+            data.write().shrink_containers_after_freeze();
         }
         if let Some(tail) = self.tail_opt_mut() {
             tail.type_aliases.shrink_to_fit();
@@ -3453,9 +3480,10 @@ impl TypeRegistry {
     }
 
     fn mark_class_has_method_body_facts(&mut self, class_name: &str) {
-        self.tail_mut()
-            .body_fact_class_names
-            .insert(class_name.to_string());
+        let names = &mut self.tail_mut().body_fact_class_names;
+        if !names.contains(class_name) {
+            names.insert(class_name.to_string());
+        }
     }
 
     fn call_site_summary_key(call_site: &CallSite) -> CallSiteSummaryKey {
@@ -3679,14 +3707,15 @@ impl TypeRegistry {
     /// Destructive holder-bisection for the memory-breakdown bench only.
     #[cfg(test)]
     pub fn debug_drop_annotated_params(&mut self) {
-        for data in self.class_data.values_mut() {
-            data.cold_mut().annotated_params = FxHashMap::default();
+        for mut data in self.class_data.values_mut() {
+            data.write().cold_mut().annotated_params = FxHashMap::default();
         }
     }
     /// Destructive holder-bisection for the memory-breakdown bench only.
     #[cfg(test)]
     pub fn debug_drop_method_bodies(&mut self) {
-        for data in self.class_data.values_mut() {
+        for mut data in self.class_data.values_mut() {
+            let data = data.write();
             data.methods = Vec::new();
             data.method_index = MethodIndex::default();
         }
@@ -3694,7 +3723,8 @@ impl TypeRegistry {
     /// Destructive holder-bisection for the memory-breakdown bench only.
     #[cfg(test)]
     pub fn debug_drop_constants_ivars(&mut self) {
-        for data in self.class_data.values_mut() {
+        for mut data in self.class_data.values_mut() {
+            let data = data.write();
             data.constants = FxHashMap::default();
             data.ivars = FxHashMap::default();
             data.cold_mut().singleton_ivars = FxHashMap::default();
@@ -4434,12 +4464,13 @@ impl TypeRegistry {
 
     pub fn strip_methods_defined_in(&mut self, file_path: &str) {
         let mut removed = false;
-        for data in self.class_data.values_mut() {
+        for mut data in self.class_data.values_mut() {
             let drop_all = matches!(
                 &data.method_file_paths,
                 MethodFilePaths::Uniform(uniform) if uniform.path.as_ref() == file_path
             );
             if drop_all {
+                let data = data.write();
                 removed |= !data.methods.is_empty();
                 data.methods.clear();
                 data.method_index.clear();
@@ -4458,6 +4489,7 @@ impl TypeRegistry {
                 continue;
             }
             removed = true;
+            let data = data.write();
             data.methods
                 .retain(|method| !drop_keys.contains(&(method.name, method.is_singleton)));
             data.method_file_paths
@@ -4566,7 +4598,17 @@ impl TypeRegistry {
         let mut call_site = call_site;
         self.intern_call_site(&mut call_site);
         self.mark_class_has_method_body_facts(class_name);
-        let data = self.class_data_mut(class_name);
+        // Call sites are not part of the class shape that generation readers compare.
+        let data = if self.class_data.contains_key(class_name) {
+            if self.name_pool_enabled {
+                self.intern_name(class_name);
+            }
+            self.class_data
+                .get_mut_for_call_sites(class_name)
+                .expect("class is present")
+        } else {
+            self.class_data_mut(class_name)
+        };
         if !data
             .call_site_fingerprints
             .get_or_insert_default()
@@ -4580,11 +4622,12 @@ impl TypeRegistry {
     }
     pub fn finalize_pending_call_site_summaries(&mut self) {
         let mut had_pending_call_site_summaries = false;
-        for data in self.class_data.values_mut() {
+        for mut data in self.class_data.values_mut() {
             if !data.has_pending_call_site_summary {
                 continue;
             }
             had_pending_call_site_summaries = true;
+            let data = data.write();
             if data.call_sites.len() <= 1 {
                 data.has_pending_call_site_summary = false;
                 continue;
@@ -11848,6 +11891,14 @@ impl TypeRegistry {
             Option<Vec<Param>>,
             Vec<(SharedName, SharedName, bool)>,
         );
+        let job_key = |job_idx: usize| {
+            let (class_name, method, _) = jobs[job_idx];
+            (
+                self.shared_name(class_name),
+                self.shared_name(method.name.as_str()),
+                method.is_singleton,
+            )
+        };
         let mut wake_keys: Vec<Vec<(SharedName, SharedName, bool)>> = vec![Vec::new(); jobs.len()];
         let mut eval_set: Vec<usize> = (0..jobs.len()).collect();
         // cyclic param feedback causes union growth -> the refinement cap converges deterministically, matching legacy behavior.
@@ -11931,17 +11982,11 @@ impl TypeRegistry {
                 let Some(params) = params else {
                     continue;
                 };
-                let (class_name, method, _) = jobs[job_idx];
-                let key = (
-                    self.shared_name(class_name),
-                    self.shared_name(method.name.as_str()),
-                    method.is_singleton,
-                );
+                let key = job_key(job_idx);
                 if frozen_keys.contains(&key) {
                     continue;
                 }
-                let previous = self.resolve_params_cache.get(&key);
-                if previous.as_deref() != Some(params.as_slice()) {
+                if !self.resolve_params_cache.holds(&key, &params) {
                     self.resolve_params_cache
                         .insert_uncapped(key.clone(), params);
                     let count = refinement_counts.entry(key.clone()).or_insert(0);
@@ -11965,18 +12010,11 @@ impl TypeRegistry {
             }
             eval_set = (0..jobs.len())
                 .filter(|&job_idx| {
-                    let (class_name, method, _) = jobs[job_idx];
-                    let own_key = (
-                        self.shared_name(class_name),
-                        self.shared_name(method.name.as_str()),
-                        method.is_singleton,
-                    );
-                    if frozen_keys.contains(&own_key) {
-                        return false;
-                    }
-                    wake_keys[job_idx]
-                        .iter()
-                        .any(|key| changed_keys.contains(key))
+                    // Most jobs read no other entry, so their key is not built at all.
+                    let reads = &wake_keys[job_idx];
+                    !reads.is_empty()
+                        && !frozen_keys.contains(&job_key(job_idx))
+                        && reads.iter().any(|key| changed_keys.contains(key))
                 })
                 .collect();
         }
@@ -13250,6 +13288,11 @@ impl TypeRegistry {
         }
     }
 
+    /// Changes whenever any class may have changed (see `ClassTable`).
+    pub(crate) fn class_generation(&self) -> u64 {
+        self.class_data.generation()
+    }
+
     pub fn class_data_for(&self, class_name: &str) -> Option<&ClassData> {
         self.class_data.get(class_name).map(|data| &**data)
     }
@@ -13278,11 +13321,14 @@ impl TypeRegistry {
     }
 
     fn class_data_mut(&mut self, class_name: &str) -> &mut ClassData {
-        self.intern_name(class_name);
+        // Without a pool, interning only builds a name to drop it.
+        if self.name_pool_enabled {
+            self.intern_name(class_name);
+        }
         if !self.class_data.contains_key(class_name) {
             self.invalidate_owner_walks();
         }
-        self.class_data.entry(Sym::new(class_name)).or_default()
+        self.class_data.get_or_insert_default(Sym::new(class_name))
     }
 
     /// At most one owner: every arm either propagates a nested result or
@@ -14813,8 +14859,7 @@ mod tests {
         registry.add_mixin("Host", "PhantomMixin", MixinKind::Include);
         let data = registry
             .class_data
-            .entry(Sym::new("PhantomMixin"))
-            .or_default();
+            .get_or_insert_default(Sym::new("PhantomMixin"));
         assert!(!data.has_type_substance());
 
         assert!(!registry.ancestor_knowledge_complete("Host"));

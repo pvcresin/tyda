@@ -951,6 +951,12 @@ const MIN_INFER_NODE_FUEL_BUDGET: u64 = 100_000;
 const INFER_NODE_FUEL_PER_SOURCE_BYTE: u64 = 20;
 const DEFAULT_INFER_NODE_FUEL_BUDGET: u64 = 1_500_000;
 
+// Read once: an environment lookup takes a process-wide lock, and these are checked per block.
+static BLOCK_WALK_STATS: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("TYDA_BLOCK_WALK_STATS").is_some());
+static DEBUG_LAMBDA: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("DBG_LAMBDA").is_ok());
+
 pub fn set_infer_node_fuel_budget(source_len: usize) {
     let budget =
         MIN_INFER_NODE_FUEL_BUDGET.max(source_len as u64 * INFER_NODE_FUEL_PER_SOURCE_BYTE);
@@ -1164,6 +1170,11 @@ pub struct InferenceEngine<'a> {
     pending_constant_names: FxHashSet<String>,
     external_rbs: Option<&'a TypeRegistry>,
     merged_external_classes: FxHashSet<String>,
+    /// Classes whose ancestor walk last changed nothing, valid while the registry's classes
+    /// stay at `ancestor_walk_memo_generation`: walking them again would change nothing.
+    ancestor_walk_memo: FxHashSet<String>,
+    ancestor_walk_memo_generation: u64,
+    ancestry_query_memo: std::cell::RefCell<rails_dsl::AncestryQueryMemo>,
     file_path: Option<SharedPath>,
     project_root: Option<PathBuf>,
     record_hover_snapshots: bool,
@@ -2886,6 +2897,9 @@ impl<'a> InferenceEngine<'a> {
             pending_constant_names: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
+            ancestor_walk_memo: FxHashSet::default(),
+            ancestor_walk_memo_generation: 0,
+            ancestry_query_memo: Default::default(),
             file_path: meta.file_path,
             project_root: meta.project_root,
             record_hover_snapshots: true,
@@ -2997,6 +3011,9 @@ impl<'a> InferenceEngine<'a> {
             pending_constant_names: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
+            ancestor_walk_memo: FxHashSet::default(),
+            ancestor_walk_memo_generation: 0,
+            ancestry_query_memo: Default::default(),
             file_path: None,
             project_root: None,
             record_hover_snapshots: true,
@@ -3094,6 +3111,7 @@ impl<'a> InferenceEngine<'a> {
         self.rails_mode = enabled;
         if enabled && self.dsl_activation.auto_detected.is_empty() {
             self.dsl_activation = DslActivation::with_rails_mode(true);
+            self.ancestor_walk_memo.clear();
         }
         self.registry
             .set_rails_string_inflections(self.rails_feature_enabled());
@@ -3358,6 +3376,7 @@ impl<'a> InferenceEngine<'a> {
     pub fn set_dsl_activation(&mut self, activation: DslActivation) {
         self.rails_mode = activation.rails_mode_compat();
         self.dsl_activation = activation;
+        self.ancestor_walk_memo.clear();
         self.registry
             .set_rails_string_inflections(self.rails_feature_enabled());
     }
@@ -3409,14 +3428,17 @@ impl<'a> InferenceEngine<'a> {
 
     pub fn set_external_rbs(&mut self, rbs_registry: &'a TypeRegistry) {
         self.external_rbs = Some(rbs_registry);
+        self.ancestor_walk_memo.clear();
     }
 
     pub fn set_lazy_loader(&mut self, loader: &'a LazyRbsLoader) {
         self.lazy_loader = Some(loader);
+        self.ancestor_walk_memo.clear();
     }
 
     pub fn set_lazy_rbi_loader(&mut self, loader: &'a LazyRbiLoader) {
         self.lazy_rbi_loader = Some(loader);
+        self.ancestor_walk_memo.clear();
         self.registry.set_generated_artifacts_present(true);
     }
 
@@ -11081,6 +11103,28 @@ impl<'a> InferenceEngine<'a> {
         if depth >= MAX_DEPTH {
             return;
         }
+        let generation = self.registry.class_generation();
+        if self.ancestor_walk_memo_generation == generation
+            && self.ancestor_walk_memo.contains(class_name)
+        {
+            return;
+        }
+        self.walk_class_ancestors(class_name, depth);
+        // A full walk that changed no class only tried loads that cannot succeed later
+        // without some class changing first. A suppressed walk skipped external loads.
+        if depth == 0
+            && !self.suppress_external_merge
+            && self.registry.class_generation() == generation
+        {
+            if self.ancestor_walk_memo_generation != generation {
+                self.ancestor_walk_memo.clear();
+                self.ancestor_walk_memo_generation = generation;
+            }
+            self.ancestor_walk_memo.insert(class_name.to_string());
+        }
+    }
+
+    fn walk_class_ancestors(&mut self, class_name: &str, depth: usize) {
         self.ensure_stdlib_class(class_name);
         self.ensure_external_class(class_name);
         self.ensure_plugin_class_declaration(class_name);
@@ -23971,7 +24015,7 @@ impl<'a> InferenceEngine<'a> {
         if block_invocation == IterationCardinality::Never {
             return;
         }
-        if std::env::var_os("TYDA_BLOCK_WALK_STATS").is_some() {
+        if *BLOCK_WALK_STATS {
             use std::sync::atomic::{AtomicU64, Ordering};
             static WALKS: AtomicU64 = AtomicU64::new(0);
             let walks = WALKS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -24596,7 +24640,7 @@ impl<'a> InferenceEngine<'a> {
                 && Self::receiver_matches_binding(&recv, var_name)
                 && let Some(args_node) = call.arguments()
             {
-                if std::env::var("DBG_LAMBDA").is_ok() {
+                if *DEBUG_LAMBDA {
                     eprintln!(
                         "DBG_LAMBDA matched call_site offset={call_start} method={method_name}"
                     );
@@ -24606,7 +24650,7 @@ impl<'a> InferenceEngine<'a> {
                         break;
                     }
                     let ty = self.infer_node_type(class_name, &arg, parse_result, scope);
-                    if std::env::var("DBG_LAMBDA").is_ok() {
+                    if *DEBUG_LAMBDA {
                         eprintln!("DBG_LAMBDA   arg[{idx}] ty={ty}");
                     }
                     if !matches!(ty, Type::Untyped | Type::Todo) {

@@ -5,6 +5,15 @@ use crate::types::MethodOrigin;
 use crate::types::{SharedName, Sym};
 use std::sync::Arc;
 
+/// Answers of the ancestry queries below, which read only classes, kept while the registry's
+/// classes stay at `generation`. DSL plugins ask them for nearly every method resolution.
+#[derive(Default)]
+pub(super) struct AncestryQueryMemo {
+    generation: u64,
+    superclass_chains: FxHashMap<String, Vec<String>>,
+    reachable_mixins: FxHashMap<String, FxHashSet<SharedName>>,
+}
+
 const ACTIVE_RECORD_RELATION_CLASS: &str = "ActiveRecord::Relation";
 const ACTIVE_RECORD_COLLECTION_PROXY_CLASS: &str = "ActiveRecord::Associations::CollectionProxy";
 struct EnumConstantInitializerScan<'pr> {
@@ -1077,23 +1086,43 @@ impl<'a> InferenceEngine<'a> {
             || class_name == "ActiveModel::Serializer"
     }
 
+    fn ancestry_query_memo(&self, generation: u64) -> std::cell::RefMut<'_, AncestryQueryMemo> {
+        let mut memo = self.ancestry_query_memo.borrow_mut();
+        if memo.generation != generation {
+            memo.superclass_chains.clear();
+            memo.reachable_mixins.clear();
+            memo.generation = generation;
+        }
+        memo
+    }
+
     pub(crate) fn class_matches_or_inherits(&self, class_name: &str, bases: &[&str]) -> bool {
         if bases.contains(&class_name) {
             return true;
         }
+        let mut memo = self.ancestry_query_memo(self.registry.class_generation());
+        if let Some(chain) = memo.superclass_chains.get(class_name) {
+            return chain.iter().any(|name| bases.contains(&name.as_str()));
+        }
+        let chain = self.superclass_chain(class_name);
+        let found = chain.iter().any(|name| bases.contains(&name.as_str()));
+        memo.superclass_chains.insert(class_name.to_string(), chain);
+        found
+    }
 
+    /// The resolved superclasses of `class_name`, nearest first, up to a repeat.
+    fn superclass_chain(&self, class_name: &str) -> Vec<String> {
+        let mut chain = Vec::new();
         let mut current = self.resolved_superclass_name(class_name);
         let mut seen = HashSet::new();
         while let Some(name) = current {
             if !seen.insert(name.clone()) {
                 break;
             }
-            if bases.contains(&name.as_str()) {
-                return true;
-            }
             current = self.resolved_superclass_name(&name);
+            chain.push(name);
         }
-        false
+        chain
     }
 
     fn resolved_superclass_name(&self, class_name: &str) -> Option<String> {
@@ -1124,9 +1153,22 @@ impl<'a> InferenceEngine<'a> {
         class_name: &str,
         module_name: &str,
     ) -> bool {
-        // `SharedName` throughout: the DSL plugins call this per method
-        // resolution, and every name here is already an `Arc<str>` on the
+        let mut memo = self.ancestry_query_memo(self.registry.class_generation());
+        if let Some(names) = memo.reachable_mixins.get(class_name) {
+            return names.contains(module_name);
+        }
+        let names = self.reachable_mixin_names(class_name);
+        let found = names.contains(module_name);
+        memo.reachable_mixins.insert(class_name.to_string(), names);
+        found
+    }
+
+    /// Every mixin name reached from `class_name` through its superclasses and the modules
+    /// they mix in. A module is among them exactly when a walk looking for it finds it.
+    fn reachable_mixin_names(&self, class_name: &str) -> FxHashSet<SharedName> {
+        // `SharedName` throughout: every name here is already an `Arc<str>` on the
         // registry side, so the walk needs no per-node string copy.
+        let mut names: FxHashSet<SharedName> = FxHashSet::default();
         let mut class_queue: Vec<SharedName> = vec![SharedName::from(class_name)];
         let mut seen_classes: FxHashSet<SharedName> = FxHashSet::default();
         let mut seen_modules: FxHashSet<SharedName> = FxHashSet::default();
@@ -1142,46 +1184,34 @@ impl<'a> InferenceEngine<'a> {
                 class_queue.push(superclass.clone());
             }
             for mixin in &data.mixins {
-                if mixin.module_name.as_ref() == module_name {
-                    return true;
-                }
-                if seen_modules.insert(mixin.module_name.clone())
-                    && self.module_includes_module(
+                names.insert(mixin.module_name.clone());
+                if seen_modules.insert(mixin.module_name.clone()) {
+                    self.collect_module_mixin_names(
                         &mixin.module_name,
-                        module_name,
                         &mut seen_modules,
-                    )
-                {
-                    return true;
+                        &mut names,
+                    );
                 }
             }
         }
-        false
+        names
     }
 
-    fn module_includes_module(
+    fn collect_module_mixin_names(
         &self,
         module_name: &str,
-        target_module_name: &str,
         seen_modules: &mut FxHashSet<SharedName>,
-    ) -> bool {
-        if module_name == target_module_name {
-            return true;
-        }
+        names: &mut FxHashSet<SharedName>,
+    ) {
         let Some(data) = self.registry.class_data_for(module_name) else {
-            return false;
+            return;
         };
         for mixin in &data.mixins {
-            if mixin.module_name.as_ref() == target_module_name {
-                return true;
-            }
-            if seen_modules.insert(mixin.module_name.clone())
-                && self.module_includes_module(&mixin.module_name, target_module_name, seen_modules)
-            {
-                return true;
+            names.insert(mixin.module_name.clone());
+            if seen_modules.insert(mixin.module_name.clone()) {
+                self.collect_module_mixin_names(&mixin.module_name, seen_modules, names);
             }
         }
-        false
     }
 
     fn scope_chain_return_is_relation_like(ret: &Type) -> bool {
