@@ -1704,6 +1704,11 @@ impl MethodIndex {
     }
 
     pub fn get(&self, name: &str) -> Option<MethodSlots> {
+        self.get_entry(name).map(|(_, slots)| slots)
+    }
+
+    /// The slots with the interned name they are stored under.
+    pub fn get_entry(&self, name: &str) -> Option<(Sym, MethodSlots)> {
         match self {
             Self::Empty => None,
             Self::Frozen(entries) => {
@@ -1712,9 +1717,9 @@ impl MethodIndex {
                     .binary_search_by(|probe| probe.cmp_name(prefix, name))
                     .ok()
                     .and_then(|idx| entries.get(idx))
-                    .map(|entry| entry.slots())
+                    .map(|entry| (entry.name, entry.slots()))
             }
-            Self::Live(map) => map.get(name).copied(),
+            Self::Live(map) => map.get_key_value(name).map(|(name, slots)| (*name, *slots)),
         }
     }
 
@@ -13833,7 +13838,9 @@ impl TypeRegistry {
         method_name: &str,
         is_singleton: Option<bool>,
     ) -> Option<&'a MethodDef> {
-        let slots = data.method_index.get(method_name)?;
+        // Names are interned, so comparing the indexed `Sym` matches the same methods as
+        // comparing text.
+        let (name, slots) = data.method_index.get_entry(method_name)?;
         match is_singleton {
             Some(true) if !slots.has(true) => return None,
             Some(false) if !slots.has(false) => return None,
@@ -13842,7 +13849,7 @@ impl TypeRegistry {
         let mut best: Option<&'a MethodDef> = None;
         let mut best_priority: u8 = 4;
         for method in data.methods.iter().rev() {
-            if method.name != method_name {
+            if method.name != name {
                 continue;
             }
             if let Some(flag) = is_singleton
