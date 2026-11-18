@@ -467,9 +467,11 @@ impl DslActivation {
     }
 
     pub fn rails_mode_compat(&self) -> bool {
-        self.enabled_libraries()
-            .into_iter()
-            .any(DslLibrary::is_rails_family)
+        // Same as checking `enabled_libraries()`, without building the set on this hot path.
+        self.auto_detected
+            .iter()
+            .chain(&self.forced_on)
+            .any(|&library| library.is_rails_family() && !self.forced_off.contains(&library))
     }
 
     pub fn with_auto_detected(auto_detected: BTreeSet<DslLibrary>) -> Self {
@@ -1423,6 +1425,38 @@ mod tests {
         assert!(activation.forced_on.contains(&DslLibrary::Aasm));
         assert!(activation.forced_on.contains(&DslLibrary::SidekiqWorker));
         assert!(activation.forced_off.contains(&DslLibrary::Protobuf));
+    }
+
+    #[test]
+    fn rails_mode_compat_follows_enabled_libraries() {
+        let rails = DslLibrary::ActiveRecordPersistence;
+        let cases = [
+            (BTreeSet::new(), BTreeSet::new(), BTreeSet::new()),
+            (BTreeSet::from([rails]), BTreeSet::new(), BTreeSet::new()),
+            (
+                BTreeSet::from([rails]),
+                BTreeSet::new(),
+                BTreeSet::from([rails]),
+            ),
+            (BTreeSet::new(), BTreeSet::from([rails]), BTreeSet::new()),
+            (
+                BTreeSet::from([DslLibrary::Aasm]),
+                BTreeSet::new(),
+                BTreeSet::new(),
+            ),
+        ];
+        for (auto_detected, forced_on, forced_off) in cases {
+            let activation = DslActivation {
+                auto_detected,
+                forced_on,
+                forced_off,
+            };
+            let expected = activation
+                .enabled_libraries()
+                .into_iter()
+                .any(DslLibrary::is_rails_family);
+            assert_eq!(activation.rails_mode_compat(), expected);
+        }
     }
 
     #[test]
