@@ -41,8 +41,9 @@ typeprof、conference-app）と `subject/sample` を解析し、記録した pro
 `target/release/tyda` を出力する。PGO は inline と code 配置だけを変えるので出力は変わらない。
 `llvm-tools-preview` component は script が追加する。計測用 build と最適化 build は同じ
 profile 設定でないと profile が対応しない（LTO や codegen unit 数を変えると効果がなくなる）。
-PR の VSIX build は 2 回の build を速くするため、両方を codegen unit 16 で行って全 platform で
-PGO の手順を確かめる。main への push と tag は codegen unit 1 のまま PGO をかける。性能 CI の
+PR の VSIX build は 2 回の build を速くするため、両方を codegen unit 16・LTO なしで行って
+全 platform で PGO の手順を確かめる（手元 4 core で script 全体 13 分 → 5 分）。main への push と
+tag は `release` profile のまま PGO をかける。性能 CI の
 base/head 比較は PGO なしの `release` で行う。
 ローカルの `release-fast` は増分コンパイルを有効にし、`mise run build-fast` などの反復時の
 再ビルドを短くする。最終確認の `./scripts/check.sh` とCIは `CARGO_INCREMENTAL=0` と

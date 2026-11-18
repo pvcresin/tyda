@@ -573,8 +573,8 @@ gitlab/app 8.08–8.92 → 7.18–7.42s。max RSS は inline で大きくなっ�
 codegen unit 16 にすると mastodon の CPU 削減が -12% → -3%、LTO を外すと rack・mastodon が
 PGO なしより遅くなった。両方の build を codegen unit 16 にすると、tyda crate の build 時間は
 計測用 307 → 111s、最適化 176s（手元 4 core）になるが、CPU 削減は gitlab/app -9% → -7%、
-redmine -9% → -5% に減る。このため codegen unit 16 は PR の VSIX build で手順を確かめる
-ときだけに使う。
+redmine -9% → -5% に減る。このため codegen unit 16（と LTO なし）は PR の VSIX build で
+手順を確かめるときだけに使う。
 
 tsrs（TypeScript 7 の Rust 移植）の手法のうち、ほかは次の理由で入れていない。
 
