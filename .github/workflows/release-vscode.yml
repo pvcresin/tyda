@@ -141,8 +141,16 @@ jobs:
           TS="$(TZ=UTC git show -s --date=format-local:%Y%m%d%H%M%S --format=%cd HEAD)"
           echo "TYDA_RELEASE_VERSION=${PREFIX}.${TS}" >> "$GITHUB_ENV"
 
-      - name: Build release binary
-        run: cargo build --release --locked --bin tyda
+      # Profile-guided build: same behavior, less CPU time (docs/performance.md).
+      # Pull requests run the same PGO steps with parallel code generation and no
+      # LTO, which builds about 2.5x faster; releases keep the release profile.
+      - name: Build release binary (PGO)
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+            export CARGO_PROFILE_RELEASE_LTO=off
+          fi
+          ./scripts/build_release_pgo.sh
 
       # Stage the binary + its stdlib RBS into the extension so the bundled
       # binary resolves vendor/rbs relative to itself (bin/vendor/rbs).
