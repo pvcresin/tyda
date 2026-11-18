@@ -46,34 +46,73 @@ fn content_fingerprint(value: &impl std::fmt::Debug) -> u128 {
     use std::hash::{BuildHasher, Hasher};
     static KEYS: std::sync::LazyLock<(std::hash::RandomState, std::hash::RandomState)> =
         std::sync::LazyLock::new(|| (std::hash::RandomState::new(), std::hash::RandomState::new()));
-    struct Stream(std::hash::DefaultHasher, std::hash::DefaultHasher);
+    const CHUNK: usize = 1024;
+    /// `Debug` writes many short pieces; the hashers take them in chunks, which hashes the
+    /// same bytes for less work per piece.
+    struct Stream {
+        hashers: (std::hash::DefaultHasher, std::hash::DefaultHasher),
+        chunk: [u8; CHUNK],
+        len: usize,
+    }
+    impl Stream {
+        fn flush(&mut self) {
+            self.hashers.0.write(&self.chunk[..self.len]);
+            self.hashers.1.write(&self.chunk[..self.len]);
+            self.len = 0;
+        }
+    }
     impl std::fmt::Write for Stream {
         fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            self.0.write(text.as_bytes());
-            self.1.write(text.as_bytes());
+            let bytes = text.as_bytes();
+            if self.len + bytes.len() > CHUNK {
+                self.flush();
+            }
+            if bytes.len() > CHUNK {
+                self.hashers.0.write(bytes);
+                self.hashers.1.write(bytes);
+            } else {
+                self.chunk[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+                self.len += bytes.len();
+            }
             Ok(())
         }
     }
-    let mut stream = Stream(KEYS.0.build_hasher(), KEYS.1.build_hasher());
+    let mut stream = Stream {
+        hashers: (KEYS.0.build_hasher(), KEYS.1.build_hasher()),
+        chunk: [0; CHUNK],
+        len: 0,
+    };
     let _ = std::fmt::write(&mut stream, format_args!("{value:?}"));
-    (u128::from(stream.0.finish()) << 64) | u128::from(stream.1.finish())
+    stream.flush();
+    (u128::from(stream.hashers.0.finish()) << 64) | u128::from(stream.hashers.1.finish())
 }
 
 /// Prepared classes by content, so declarations that hold the same class share one copy and a
 /// merge can tell that a registry still holds exactly that class.
 #[derive(Debug, Default)]
 pub struct PreparedClassPool {
-    classes: FxHashMap<Sym, Vec<(u128, Arc<ClassData>)>>,
+    /// Fingerprints are taken only once a second class of the same name arrives; most names
+    /// come once.
+    classes: FxHashMap<Sym, Vec<PooledClass>>,
 }
+
+/// A pooled class and its fingerprint, taken when first needed.
+type PooledClass = (std::cell::OnceCell<u128>, Arc<ClassData>);
 
 impl PreparedClassPool {
     fn share(&mut self, name: Sym, data: Arc<ClassData>) -> Arc<ClassData> {
-        let key = content_fingerprint(&data);
         let same = self.classes.entry(name).or_default();
-        if let Some((_, existing)) = same.iter().find(|(fingerprint, _)| *fingerprint == key) {
+        if same.is_empty() {
+            same.push((std::cell::OnceCell::new(), Arc::clone(&data)));
+            return data;
+        }
+        let key = content_fingerprint(&data);
+        if let Some((_, existing)) = same.iter().find(|(fingerprint, existing)| {
+            *fingerprint.get_or_init(|| content_fingerprint(existing)) == key
+        }) {
             return Arc::clone(existing);
         }
-        same.push((key, Arc::clone(&data)));
+        same.push((std::cell::OnceCell::from(key), Arc::clone(&data)));
         data
     }
 }
