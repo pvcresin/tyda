@@ -141,8 +141,9 @@ jobs:
           TS="$(TZ=UTC git show -s --date=format-local:%Y%m%d%H%M%S --format=%cd HEAD)"
           echo "TYDA_RELEASE_VERSION=${PREFIX}.${TS}" >> "$GITHUB_ENV"
 
-      - name: Build release binary
-        run: cargo build --release --locked --bin tyda
+      # Profile-guided build: same behavior, less CPU time (docs/performance.md).
+      - name: Build release binary (PGO)
+        run: ./scripts/build_release_pgo.sh
 
       # Stage the binary + its stdlib RBS into the extension so the bundled
       # binary resolves vendor/rbs relative to itself (bin/vendor/rbs).

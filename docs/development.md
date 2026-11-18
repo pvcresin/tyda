@@ -35,6 +35,12 @@ Rust の日常的な反復では、まず `mise run check-quick`（全targetの�
 `./scripts/check.sh` は、実行性能を重視する `release`（thin LTO、codegen 1）ではなく、
 LTOを無効にしてcodegenを並列化した `release-fast` を使う。配布物、性能計測、package
 workflowは引き続き `release` を使う。
+配布物（gem と VSIX）の binary は `./scripts/build_release_pgo.sh` で profile-guided
+optimization（PGO）をかけて作る。計測用ビルドで小さな pinned subject（rack、rake、
+typeprof、conference-app）と `subject/sample` を解析し、記録した profile で最適化した
+`target/release/tyda` を出力する。PGO は inline と code 配置だけを変えるので出力は変わらない。
+`llvm-tools-preview` component は script が追加する。性能 CI の base/head 比較は PGO なしの
+`release` で行う。
 ローカルの `release-fast` は増分コンパイルを有効にし、`mise run build-fast` などの反復時の
 再ビルドを短くする。最終確認の `./scripts/check.sh` とCIは `CARGO_INCREMENTAL=0` と
 sccache を使い、増分なしのビルドを確認する。
