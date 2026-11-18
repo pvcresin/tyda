@@ -497,6 +497,45 @@ mastodon full）と mastodon/app/models の `--diagnostics` は byte-identical�
   ただし cache が効く経路（`PARAM_TABLE_MODE`）の deep clone は窓内 6 sample しかなく、
   実費は `visiting` 依存で cache できない再計算側にある。
 
+## 起動と定数倍の削減（2026-11-18）
+
+Linux 4 core、release build、`perf record -e cpu-clock:u` の profile から、出力を変えずに
+消せる固定費を削った。各 subject は main と交互に 7 runs（gitlab/app は 5 runs）の中央値。
+
+| 変更 | 効いた場所 |
+| --- | --- |
+| stdlib index を RBS file ごとに 1 回の行走査で作る（以前は 2〜3 回） | 起動。rack の stdlib index 17ms → 9.5ms |
+| shape をまたぐ class の共有で、内容の fingerprint を同名の class が二つ目に来たときだけ取り、`Debug` 出力を chunk で hash する | 起動。rack の CPU の約 8% が fingerprint だった |
+| `DslActivation::rails_mode_compat` で毎回 `BTreeSet` を作らない | method 解決ごとの固定費 |
+| file ごとに外部 registry の call site を `Object` へ伝えるとき、call site を持つ class の一覧だけを見る | gitlab/app で CPU の約 3.7% だった全 class 走査 |
+| `method_for_lookup_kind` の全 method 走査を interned `Sym` の比較にする | 大きな class の method 検索 |
+
+| subject | main | 変更後 | CPU 時間 |
+| --- | ---: | ---: | ---: |
+| `sample` | 39ms | 27ms | 42 → 30ms |
+| `rack` | 172ms | 156ms | 444 → 413ms |
+| `rake` | 114ms | 95ms | 282 → 246ms |
+| `typeprof/lib` | 164ms | 146ms | 471 → 438ms |
+| `rubygems` | 473ms | 435ms | 1,570 → 1,421ms |
+| `redmine` | 517ms | 489ms | 1,653 → 1,569ms |
+| `rubygems.org` | 319ms | 294ms | 932 → 886ms |
+| `mastodon` | 638ms | 619ms | 2,007 → 1,981ms |
+| `gitlab/app` | 3.86s | 3.72s | 11.0 → 10.4s |
+
+max RSS は全 subject で ±1MB 以内（11 runs で再確認）。LSP workspace scan は gitlab/app で
+8.15–8.39s → 7.72–7.83s、ほかは揺れの範囲。RBS / `--coverage` / `--diagnostics` 出力は
+12 subject で byte-identical（gitlab 全体の RBS は既存の行順の揺れのみ）。
+
+試して**やめた**もの:
+
+- stdlib index の file 走査を rayon で並列化する。stdlib index は 17ms → 9.5ms になるが、CLI では
+  global pool の worker がそれぞれ RBS を読むため小さい subject の max RSS が 10〜13MB 増えた。
+  1 回走査にするだけで同じ時間になり、RSS も増えない。
+- Rails の model index と `schema.rb` の parse を並行に行う。gitlab/app で 10ms 程度しか縮まず、
+  CLI の global pool（既定 stack）で prism の parse と再帰 visit を走らせることになるのでやめた。
+- C の RBS parser と prism を `-DNDEBUG` でビルドする（rbs gem の release build は付けている）。
+  差は 1〜4% で揺れと区別できなかった。
+
 ## 記録ルール
 
 - 現在の基準を上書きし、履歴表を増やさない。
