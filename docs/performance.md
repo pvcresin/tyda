@@ -240,6 +240,12 @@ CLI の約135MB（LSP は約120MB）は live data ではなく mimalloc の reta
 同時に in-flight な per-file データが増えるためで、`[mem]` の live 側（`after-projection`
 の deep 内訳）が変わっていなければ回帰ではない。
 
+mimalloc v3 は Linux で大きな OS 確保に `MADV_HUGEPAGE` を付ける。`no_thp` feature で外すと、
+THP が `madvise` の環境では CLI の max RSS が rack 65→37MB、mastodon 129→79MB、gitlab/app
+316→262MB に下がる。ただし TLB miss が増え、Rails や大規模 subject の CPU 時間が 3〜7% 増える
+（PGO build 同士の比較、mastodon・redmine 15 runs、gitlab/app 8 runs）。LSP の RSS は変わらない。
+速度を優先して huge page は残している。
+
 ## per-file analysis の allocation churn（2026-08-26）
 
 samply（gitlab/app、idle thread を除いた active sample 基準）での上位:
@@ -535,6 +541,41 @@ max RSS は全 subject で ±1MB 以内（11 runs で再確認）。LSP workspac
   CLI の global pool（既定 stack）で prism の parse と再帰 visit を走らせることになるのでやめた。
 - C の RBS parser と prism を `-DNDEBUG` でビルドする（rbs gem の release build は付けている）。
   差は 1〜4% で揺れと区別できなかった。
+
+## リリース binary の PGO（2026-11-18）
+
+gem と VSIX の binary は `scripts/build_release_pgo.sh` で PGO をかける（手順は
+`docs/development.md`）。学習には rack、rake、typeprof、conference-app の RBS 出力と
+diagnostics、`subject/sample` の RBS 出力を使う。学習に入れていない subject でも CPU 時間が減る。
+
+Linux 4 core、PGO なしの `release` と交互に 11 runs（gitlab/app は 8 runs）の中央値:
+
+| subject | CPU 時間 | wall |
+| --- | ---: | ---: |
+| `rack` | 422 → 387ms（-8%） | 158 → 148ms |
+| `rake` | 258 → 240ms（-7%） | 101 → 96ms |
+| `optcarrot` | 853 → 727ms（-15%） | 439 → 343ms |
+| `typeprof/lib` | 466 → 435ms（-7%） | 156 → 149ms |
+| `rubygems` | 1,560 → 1,401ms（-10%） | 477 → 425ms |
+| `conference-app` | 394 → 364ms（-8%） | 168 → 155ms |
+| `redmine` | 1,627 → 1,457ms（-10%） | 504 → 457ms |
+| `rubygems.org` | 961 → 855ms（-11%） | 309 → 283ms |
+| `mastodon` | 2,175 → 1,970ms（-9%） | 681 → 642ms |
+| `gitlab/app` | 10.8 → 9.9s（-9%） | 3.90 → 3.61s |
+
+LSP workspace scan（3 runs）は rack 358–374 → 311–342ms、mastodon 2.79–2.86 → 2.24–2.33s、
+gitlab/app 8.08–8.92 → 7.18–7.42s。max RSS は inline で大きくなった binary の分だけ 1〜3% 増える
+（binary 17 → 20MB）。
+
+出力は 12 subject の RBS / `--coverage` / `--diagnostics` で byte-identical。
+
+tsrs（TypeScript 7 の Rust 移植）の手法のうち、ほかは次の理由で入れていない。
+
+- fat LTO: tsrs でも命令数 -2〜3% で CPU 時間に差が出ていない。CI の base/head build が遅くなる。
+- BOLT: Linux だけで -1〜4%。runner に llvm-bolt を入れる必要がある。
+- arena と 32bit handle: `Type` の clone と drop は gitlab/app の CPU の約 5%、`ClassData` の
+  copy-on-write 複製は約 1.5% で、表現を作り直す改修に見合わない。
+- `no_thp`: 上の allocator の節を参照。
 
 ## 記録ルール
 
