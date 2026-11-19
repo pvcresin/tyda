@@ -635,6 +635,36 @@ memory は次のとおり。
 構成では `app/`・`config/`・`db/`・`lib/` が `spec/`・`test/` より先に来るため、順序を変えても
 本体の結果が出るまでの時間はほとんど変わらない。
 
+## 共有 class の file ごとの作業（2026-11-19）
+
+LSP の初回 scan を profile すると、file ごとの推論以外に、全 file で同じ class に同じ処理をしている
+部分があった。gitlab 全体（4 core）での CPU 比率は次のとおり。
+
+- 依存の収集（`finalize_deps`、約 5%）: file の registry にある全 class（merge した stdlib を含む）の
+  型を走査し、戻り値型を毎回複製していた。依存 edge は 1 file 平均 85 本あり、重複を除くと 21 本になる。
+- project RBS の class の merge（約 2.5%）: stdlib と違い、file ごとに method を一つずつ merge していた。
+
+対応は次の三つ。どれも出力を変えない。
+
+- 依存 edge を file ごとに重複なしで持つ。型は複製せずに走査する。
+- 共有している class（変えずに merge したもの）は名指す symbol の一覧を class に持たせる。
+  class への書き込みで捨てる。旧実装と全 file の依存集合を比べ、rack・mastodon・gitlab/app で一致した。
+- project RBS の class を、まだ持たない file の registry へ merge するときは、空の registry へ merge した
+  結果を宣言側に一度だけ作って共有する（stdlib の shape と同じ方法）。
+
+`ClassData` は 272B に収めるため、まれな `hook_mixins` を cold 側へ移した。
+
+release build、4 core、`scripts/benchmark_lsp_client.rb`（rack・mastodon は 5 runs、gitlab は 3 runs の中央値）:
+
+| subject | scan | server CPU | server max RSS |
+| --- | ---: | ---: | ---: |
+| rack | 251 → 242ms | 720 → 690ms | 42.2 → 40.6MB |
+| mastodon | 1587 → 1517ms | 5790 → 5410ms | 102.1 → 100.2MB |
+| gitlab（`gitlab/app` を開いた root） | 4506 → 4270ms | 16810 → 15810ms | 360.2 → 353.0MB |
+
+CLI は依存を集めないので、効くのは project RBS の merge だけになる。CPU は rack −1%、mastodon −4%、
+redmine −6.5%、gitlab/app −1%。max RSS は揺れの範囲だった。
+
 ## 記録ルール
 
 - 現在の基準を上書きし、履歴表を増やさない。

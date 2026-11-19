@@ -67,6 +67,11 @@ self は `T::Private::Methods::DeclBuilder` であるため）。
 保持する。export が変わらない body-only edit は依存先を再計算せず、変更した symbol から
 reverse edge へ dirty を伝播する。
 
+依存 edge は集合として扱うので、ファイルごとに重複を除いて持つ。ファイルの依存は registry の
+各 class が型や継承で名指す symbol から作る。他の registry と共有している class（stdlib や外部
+RBS から merge したまま変えていないもの）は名指す symbol の一覧を class に持たせて使い回す。
+class への書き込みはこの一覧を捨てる（`registry/class_deps.rs`）。
+
 解決 profile は次の二つだけに分ける。
 
 - `Batch`: CLI の一括解析。targets と context をまとめて projection し、決定的に render する。
@@ -171,7 +176,8 @@ stdlib の shape は、各 class を空の registry へ merge した結果を一
 持たない registry への merge はそれを共有する。同じ内容の class は shape をまたいで一つにまとめる
 （内容を比べるのは同名の class が二つ目に来たときだけ）。registry がその class を変えずに持っている
 ところへ同じ宣言を merge し直しても内容が変わらない場合は merge を省く（変わらないことは class ごとに
-最初の merge し直しで確かめる）。
+最初の merge し直しで確かめる）。project の RBS（Rails の model 型など）の class も、まだ持たない
+file 単位の registry へ merge するときは、空の registry へ merge した結果を宣言側に一度だけ作って共有する。
 
 file 単位の engine は class を使うたびに、その祖先の宣言が読み込まれているかを確かめる。registry の
 class table は、どの class が変わっても新しい世代になる。engine は

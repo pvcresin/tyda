@@ -98,20 +98,20 @@ impl ClassTable {
 
     pub(crate) fn get_mut(&mut self, class_name: &str) -> Option<&mut ClassData> {
         self.touch();
-        self.map.get_mut(class_name).map(Arc::make_mut)
+        self.map.get_mut(class_name).map(write)
     }
 
     /// Mutable access that keeps the generation. Only for writes to a class's call sites and
     /// their bookkeeping, which nothing that compares generations reads.
     pub(crate) fn get_mut_for_call_sites(&mut self, class_name: &str) -> Option<&mut ClassData> {
         self.with_call_sites = std::sync::OnceLock::new();
-        self.map.get_mut(class_name).map(Arc::make_mut)
+        self.map.get_mut(class_name).map(write)
     }
 
     /// The class, created empty when missing.
     pub(crate) fn get_or_insert_default(&mut self, class_name: Sym) -> &mut ClassData {
         self.touch();
-        Arc::make_mut(self.map.entry(class_name).or_default())
+        write(self.map.entry(class_name).or_default())
     }
 
     /// Puts `data` at `class_name`, shared with the caller's copy.
@@ -144,6 +144,46 @@ impl ClassTable {
     }
 }
 
+/// The class for writing, copied first when shared. Values derived from it are dropped.
+fn write(data: &mut Arc<ClassData>) -> &mut ClassData {
+    let data = Arc::make_mut(data);
+    data.derived.clear();
+    data
+}
+
+/// A value computed from a class and kept with it. A write through the table drops it, and a
+/// copied class starts without it.
+pub(crate) struct DerivedSlot<T>(std::sync::OnceLock<T>);
+
+impl<T> DerivedSlot<T> {
+    pub(crate) fn get_or_init(&self, init: impl FnOnce() -> T) -> &T {
+        self.0.get_or_init(init)
+    }
+
+    fn clear(&mut self) {
+        self.0.take();
+    }
+}
+
+impl<T> Default for DerivedSlot<T> {
+    fn default() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+}
+
+impl<T> Clone for DerivedSlot<T> {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+// Class fingerprints hash the `Debug` text, so this prints the same whether it is filled.
+impl<T> std::fmt::Debug for DerivedSlot<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DerivedSlot")
+    }
+}
+
 /// A class in the table: reads see it in place, and `write` copies it first when shared.
 pub(crate) struct ClassRef<'a> {
     data: &'a mut Arc<ClassData>,
@@ -152,7 +192,7 @@ pub(crate) struct ClassRef<'a> {
 impl ClassRef<'_> {
     #[inline]
     pub(crate) fn write(&mut self) -> &mut ClassData {
-        Arc::make_mut(self.data)
+        write(self.data)
     }
 }
 

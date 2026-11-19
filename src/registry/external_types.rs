@@ -12,7 +12,7 @@ pub struct PreparedStdlibMerge {
 }
 
 #[derive(Debug)]
-struct FreshClass {
+pub(super) struct FreshClass {
     name: Sym,
     data: Arc<ClassData>,
     sets_mixin_hook_methods: bool,
@@ -124,29 +124,41 @@ impl PreparedStdlibMerge {
         let classes = shape
             .class_data
             .iter()
-            .map(|(name, rbs_data)| {
-                let mut scratch = TypeRegistry::new();
-                scratch.merge_external_type_class(name, rbs_data, false, true);
-                debug_assert_eq!(scratch.class_data.len(), 1);
-                let data = pool.share(
-                    *name,
-                    scratch
-                        .class_data
-                        .remove(name)
-                        .expect("merging a class creates it"),
-                );
-                FreshClass {
-                    name: *name,
-                    data,
-                    remerge_is_noop: std::sync::OnceLock::new(),
-                    sets_mixin_hook_methods: scratch.has_mixin_hook_methods,
-                    sets_dirty_patterns: scratch.has_dirty_patterns,
-                    sets_mixin_hook_mixins: scratch.has_mixin_hook_mixins,
-                    sets_includer_bound_dsl: scratch.has_includer_bound_dsl,
-                }
-            })
+            .map(|(name, rbs_data)| FreshClass::prepare(*name, rbs_data, true, Some(&mut *pool)))
             .collect();
         Self { classes }
+    }
+}
+
+impl FreshClass {
+    /// What `merge_external_type_class` makes of `rbs_data` in a registry without the class
+    /// and without a name pool.
+    fn prepare(
+        name: Sym,
+        rbs_data: &ClassData,
+        constants_external: bool,
+        pool: Option<&mut PreparedClassPool>,
+    ) -> Self {
+        let mut scratch = TypeRegistry::new();
+        scratch.merge_external_type_class(&name, rbs_data, false, constants_external);
+        debug_assert_eq!(scratch.class_data.len(), 1);
+        let data = scratch
+            .class_data
+            .remove(&name)
+            .expect("merging a class creates it");
+        let data = match pool {
+            Some(pool) => pool.share(name, data),
+            None => data,
+        };
+        FreshClass {
+            name,
+            data,
+            remerge_is_noop: std::sync::OnceLock::new(),
+            sets_mixin_hook_methods: scratch.has_mixin_hook_methods,
+            sets_dirty_patterns: scratch.has_dirty_patterns,
+            sets_mixin_hook_mixins: scratch.has_mixin_hook_mixins,
+            sets_includer_bound_dsl: scratch.has_includer_bound_dsl,
+        }
     }
 }
 
@@ -309,9 +321,24 @@ impl TypeRegistry {
     }
 
     pub fn merge_rbs_class_from(&mut self, rbs_registry: &TypeRegistry, class_name: &str) -> bool {
-        let Some(rbs_data) = rbs_registry.class_data.get(class_name) else {
+        let Some((name, rbs_data)) = rbs_registry.class_data.get_key_value(class_name) else {
             return false;
         };
+        // Merging a class this registry lacks builds the same class every time, so the
+        // declaration keeps the result and each registry shares it.
+        if !self.name_pool_enabled && !self.class_data.contains_key(class_name) {
+            let fresh = rbs_data
+                .derived()
+                .fresh_external_merge
+                .get_or_init(|| FreshClass::prepare(*name, rbs_data, false, None));
+            if fresh.name == *name {
+                self.insert_fresh_external_class(fresh);
+                self.invalidate_reverse_indexes();
+                self.mixin_hook_mixins_applied = false;
+                self.includer_bound_dsl_applied = false;
+                return true;
+            }
+        }
         self.merge_external_type_class(class_name, rbs_data, false, false);
         self.invalidate_reverse_indexes();
         self.mixin_hook_mixins_applied = false;
@@ -938,5 +965,38 @@ impl TypeRegistry {
             self.refresh_mixin_hook_method_flag();
             self.mixin_hook_mixins_applied = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sharing_a_project_class_matches_merging_it() {
+        let mut declarations = TypeRegistry::new();
+        crate::rbs::import::load_rbs_string(
+            "module Named\n  def name: () -> String\nend\n\
+             class Base\nend\n\
+             class User < Base\n  include Named\n  VERSION: Integer\n  \
+             def age: () -> Integer\n  def self.find: (Integer) -> User\n  alias years age\nend\n",
+            &mut declarations,
+        );
+
+        // The pooled registry merges method by method; the plain one shares the kept class.
+        let mut merged = TypeRegistry::new_pooled();
+        let mut shared = TypeRegistry::new();
+        let mut again = TypeRegistry::new();
+        for registry in [&mut merged, &mut shared, &mut again] {
+            assert!(registry.merge_rbs_class_from(&declarations, "User"));
+        }
+
+        let fingerprint =
+            |registry: &TypeRegistry| content_fingerprint(&registry.class_data["User"]);
+        assert_eq!(fingerprint(&shared), fingerprint(&merged));
+        assert!(Arc::ptr_eq(
+            &shared.class_data["User"],
+            &again.class_data["User"]
+        ));
     }
 }
