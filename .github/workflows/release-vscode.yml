@@ -69,10 +69,6 @@ jobs:
             platform: x86_64-linux
             vsce_target: linux-x64
             binary_name: tyda
-          - runner: macos-15-intel
-            platform: x86_64-darwin
-            vsce_target: darwin-x64
-            binary_name: tyda
           - runner: macos-15
             platform: arm64-darwin
             vsce_target: darwin-arm64

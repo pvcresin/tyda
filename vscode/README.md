@@ -54,4 +54,4 @@ npm run package            # tyda.vsix (vsce) — bundles whatever is in bin/
 
 Install the resulting `.vsix` with “Extensions: Install from VSIX…”.
 
-Release VSIX targets are Linux x64, Windows x64, macOS Intel, and macOS ARM64.
+Release VSIX targets are Linux x64, Windows x64, and macOS ARM64 (Apple silicon). Intel Macs are not supported.
