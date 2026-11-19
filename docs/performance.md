@@ -611,6 +611,30 @@ Linux 4 core、gitlab/app（全体 3.05s）の `Batch` resolution 約 1.36s を�
 facts が書き換わる。scope は field を直接書き換える箇所が多く、同じ状態かを確実に判定できないので、
 node 型の memo は入れていない。
 
+## LSP 初回 scan の worker 数（2026-11-19）
+
+LSP の初回 workspace scan は CLI の同じ subject より遅かった（mastodon wall 3.2s / CPU 5.2s に対して
+CLI は 0.58s / 1.8s）。原因は二つで、推論の重複ではない。
+
+- LSP は spec / test も読む（mastodon は CLI の 1,346 files に対して 3,090 files）。CPU の 57% が
+  RSpec の block 推論で、入れ子の深さに対して時間はほぼ線形にしか増えない。
+- 解析 worker が「論理コア数 - 2」で、4 core では 2 thread しか使っていなかった。
+
+初回の全体 scan だけ全コアの pool を使うと、4 core で rack 360–434 → 232–267ms、mastodon
+2.78–3.51 → 1.59–1.63s、gitlab/app 8.13–9.39 → 4.46–4.51s（各 3 runs）になった。
+
+memory は次のとおり。
+
+- 起動全体の max RSS は mastodon で変化なし（138–145MB）、gitlab/app で 279–282 → 284–293MB。
+  全体のピークは scan 後の registry 構築で、scan 中のピークより高い。
+- scan 中だけのピークは gitlab/app で +25〜45MB 上がる。大半は mimalloc が OS へ返す前の
+  解放済みメモリで、`MIMALLOC_PURGE_DELAY=0` では +8MB だった。
+- scan 後の常駐量は変わらない。保持する結果は同じで、一時 pool の thread は scan とともに終わる。
+
+本体のファイルを spec より先に解析する案は入れていない。scan はパス順で、Rails の一般的な
+構成では `app/`・`config/`・`db/`・`lib/` が `spec/`・`test/` より先に来るため、順序を変えても
+本体の結果が出るまでの時間はほとんど変わらない。
+
 ## 記録ルール
 
 - 現在の基準を上書きし、履歴表を増やさない。

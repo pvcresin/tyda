@@ -225,6 +225,10 @@ workspace context を分ける。
 - Hover、CodeLens、definition、typeDefinition、completion、diagnostics は共通の query 経路を使う。
 - open document は `didOpen` / `didChange` で snapshot を更新し、request 時に全ファイルを読み直さない。
 - 初回 workspace scan が終わるまで、未確定の missing method / constant を早期に報告しない。
+- 解析 worker は UI / tokio の余裕を残して「論理コア数 - 2」（ハイブリッド CPU は P コア数 - 1、
+  最小 2）にする。ただし初回の全体 scan（workspace をまだ読み終えていない scan）だけは、editor が
+  結果を待っているので全コアの pool を作り、scan の終わりに捨てる。`TYDA_LSP_ANALYSIS_THREADS` を
+  指定したときはどちらもその数にする。結果はファイル順に merge するので worker 数に依存しない。
 - refresh は変更をまとめ、保存されていない入力でも CodeLens / Hover が最新 snapshot を見る。
 - `didChange` の diagnostics 発行は debounce する（CodeLens refresh の 75ms と同じ形。document
   ごとの generation を持ち、新しい change が来た時点で pending を捨てる）。`didOpen` と scan 完了

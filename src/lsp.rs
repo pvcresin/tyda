@@ -101,6 +101,8 @@ struct WorkspaceScanInputs<'a> {
     stdlib_loader: &'a LazyRbsLoader,
     lazy_rbi_loader: Option<&'a LazyRbiLoader>,
     options: &'a AnalysisOptions,
+    /// The first full scan of the workspace, which the editor waits on.
+    initial_scan: bool,
 }
 
 /// Returns the P-core count on Apple Silicon (avoids fixed analysis on E-cores only).
@@ -137,13 +139,27 @@ fn lsp_analysis_thread_count() -> usize {
         None => logical.saturating_sub(2),
     }
     .max(2);
-    if let Ok(override_str) = std::env::var("TYDA_LSP_ANALYSIS_THREADS")
-        && let Ok(override_val) = override_str.parse::<usize>()
-        && override_val > 0
-    {
-        return override_val;
-    }
-    auto
+    lsp_analysis_thread_override().unwrap_or(auto)
+}
+
+/// `TYDA_LSP_ANALYSIS_THREADS`, when it is a positive count.
+fn lsp_analysis_thread_override() -> Option<usize> {
+    std::env::var("TYDA_LSP_ANALYSIS_THREADS")
+        .ok()?
+        .parse::<usize>()
+        .ok()
+        .filter(|count| *count > 0)
+}
+
+/// Worker count for the first full workspace scan: every core, because nothing is analyzed
+/// yet and the editor waits on it. Later scans and per-file work keep the smaller pool.
+fn lsp_initial_scan_thread_count() -> usize {
+    lsp_analysis_thread_override().unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(4)
+            .max(lsp_analysis_thread_count())
+    })
 }
 
 fn lsp_analysis_pool() -> &'static rayon::ThreadPool {
@@ -170,12 +186,24 @@ fn for_each_workspace_scan_result(
     mut on_result: impl FnMut(WorkspaceScanResult),
 ) {
     let cold_closed_file_scan = context.cached_entries.is_empty() && context.open_docs.is_empty();
+    // The first full scan runs on its own pool with every core. The pool ends with the scan,
+    // so later work keeps the headroom of the smaller pool.
+    let initial_scan_pool = context.initial_scan.then(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(lsp_initial_scan_thread_count())
+            .stack_size(crate::analysis::ANALYSIS_WORKER_STACK_SIZE)
+            .build()
+            .expect("failed to build LSP initial scan thread pool")
+    });
+    let pool = initial_scan_pool
+        .as_ref()
+        .unwrap_or_else(|| lsp_analysis_pool());
 
     // Results land in file order while later files are still being analyzed. A superseded
     // scan stops starting new files; the ones already started still report.
     let mut started = 0usize;
     crate::ordered_parallel::for_each_ordered(
-        lsp_analysis_pool(),
+        pool,
         scan_files,
         LSP_SCAN_CHUNK_SIZE,
         |file_path| {
@@ -1679,6 +1707,7 @@ impl TydaLsp {
                 stdlib_loader: &stdlib_loader,
                 lazy_rbi_loader: lazy_rbi_loader.as_deref(),
                 options: &options,
+                initial_scan: force_full,
             },
             should_abort,
             |result| {
@@ -12502,6 +12531,7 @@ end
                 stdlib_loader: &loader,
                 lazy_rbi_loader: None,
                 options: &options,
+                initial_scan: false,
             },
             || false,
             |result| {
@@ -12762,6 +12792,7 @@ end
                 stdlib_loader: state.stdlib_loader.as_ref(),
                 lazy_rbi_loader: state.lazy_rbi_loader.as_deref(),
                 options: &options,
+                initial_scan: true,
             },
             || false,
             |result| {
@@ -13036,6 +13067,7 @@ end
                 stdlib_loader: state.stdlib_loader.as_ref(),
                 lazy_rbi_loader: state.lazy_rbi_loader.as_deref(),
                 options: &options,
+                initial_scan: true,
             },
             || false,
             |result| {
@@ -13348,6 +13380,7 @@ end
                 stdlib_loader: &loader,
                 lazy_rbi_loader: None,
                 options: &options,
+                initial_scan: true,
             },
             || false,
             |result| {
@@ -13414,6 +13447,7 @@ end
                 stdlib_loader: &loader,
                 lazy_rbi_loader: None,
                 options: &options,
+                initial_scan: false,
             },
             || false,
             |result| {
