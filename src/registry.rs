@@ -297,6 +297,7 @@ impl Drop for CallerCtxMemoScope {
 }
 
 pub(crate) mod argument_binding;
+mod class_deps;
 mod class_table;
 mod external_types;
 mod file_local;
@@ -2076,6 +2077,8 @@ pub enum DataConstructor {
 
 #[derive(Debug, Default, Clone)]
 pub struct ClassDataCold {
+    // `included do` / `extended do` / `prepended do` mixins; rare, so boxed.
+    hook_mixins: Option<Box<HookMixins>>,
     pub undefined_methods: Vec<(SharedName, bool)>,
     // method aliases: call sites are consolidated to the canonical name, output uses an RBS alias.
     pub method_aliases: Vec<MethodAlias>,
@@ -2235,18 +2238,28 @@ pub struct ClassData {
     pub superclass_is_absolute: bool,
     pub superclass_is_unknown: bool,
     pub mixins: Vec<Mixin>,
-    // boxed: `included do` / `extended do` / `prepended do` are rare, and three inline
-    // vectors would cost 72B in every `ClassData`.
-    hook_mixins: Option<Box<HookMixins>>,
     pub is_module: bool,
     pub user_defined: bool,
     pub loc: Option<SourceLocation>,
     pub file_path: Option<SharedPath>,
 
     cold: Option<Box<ClassDataCold>>,
+    derived: class_table::DerivedSlot<Box<ClassDerived>>,
+}
+
+/// Values computed from a class's content and kept with it until the class is written.
+#[derive(Debug, Default)]
+struct ClassDerived {
+    dep_scan: std::sync::OnceLock<class_deps::ClassDepScan>,
+    /// The class as merged from this declaration into a registry that lacks it.
+    fresh_external_merge: std::sync::OnceLock<external_types::FreshClass>,
 }
 
 impl ClassData {
+    fn derived(&self) -> &ClassDerived {
+        self.derived.get_or_init(Default::default)
+    }
+
     #[inline]
     pub fn cold(&self) -> &ClassDataCold {
         match &self.cold {
@@ -2311,7 +2324,7 @@ impl ClassData {
             call_site.keyword_arg_types.shrink_to_fit();
         }
         self.mixins.shrink_to_fit();
-        if let Some(hooks) = self.hook_mixins.as_deref_mut() {
+        if let Some(hooks) = self.hook_mixins_if_any_mut() {
             hooks.included.shrink_to_fit();
             hooks.extended.shrink_to_fit();
             hooks.prepended.shrink_to_fit();
@@ -2350,16 +2363,20 @@ impl ClassData {
     }
 
     pub fn hook_mixins(&self) -> Option<&HookMixins> {
-        self.hook_mixins.as_deref()
+        self.cold().hook_mixins.as_deref()
     }
 
     pub fn hook_mixins_mut(&mut self) -> &mut HookMixins {
-        self.hook_mixins.get_or_insert_default()
+        self.cold_mut().hook_mixins.get_or_insert_default()
+    }
+
+    /// The hook mixins for writing, without creating them.
+    fn hook_mixins_if_any_mut(&mut self) -> Option<&mut HookMixins> {
+        self.cold.as_deref_mut()?.hook_mixins.as_deref_mut()
     }
 
     pub fn hook_mixins_by_kind(&self, kind: &MixinKind) -> &[Mixin] {
-        self.hook_mixins
-            .as_deref()
+        self.hook_mixins()
             .map_or(&[][..], |hooks| hooks.by_kind(kind))
     }
 
@@ -2384,7 +2401,7 @@ impl ClassData {
                     .sum::<usize>()
         };
         bytes += mixin_bytes(&self.mixins);
-        if let Some(hooks) = self.hook_mixins.as_deref() {
+        if let Some(hooks) = self.hook_mixins() {
             bytes += std::mem::size_of::<HookMixins>();
             bytes += mixin_bytes(&hooks.included);
             bytes += mixin_bytes(&hooks.extended);
@@ -3301,8 +3318,7 @@ impl TypeRegistry {
         for mut data in self.class_data.values_mut() {
             let all_external = data.mixins.iter().all(|mixin| mixin.external_source)
                 && data
-                    .hook_mixins
-                    .as_deref()
+                    .hook_mixins()
                     .is_none_or(|hooks| hooks.iter_all().all(|mixin| mixin.external_source));
             if all_external {
                 continue;
@@ -3311,7 +3327,7 @@ impl TypeRegistry {
             for mixin in &mut data.mixins {
                 mixin.external_source = true;
             }
-            if let Some(hooks) = data.hook_mixins.as_deref_mut() {
+            if let Some(hooks) = data.hook_mixins_if_any_mut() {
                 for mixin in hooks.iter_mut_all() {
                     mixin.external_source = true;
                 }
