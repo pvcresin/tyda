@@ -5729,71 +5729,33 @@ impl TypeRegistry {
             .take(class_names.len())
             .collect();
         let mut propagated_to_object: GroupedCallSites = HashMap::new();
-        let mut mro_cache: FxHashMap<(usize, SharedName, bool), Vec<(usize, bool)>> =
-            FxHashMap::default();
 
-        for (class_idx, class_name) in class_names.iter().enumerate() {
-            if class_name.as_str() == "Object" {
-                continue;
-            }
-            let Some(data) = self.class_data.get(class_name) else {
-                continue;
-            };
-            for site in &data.call_sites {
-                if site.method_name.as_ref() == "initialize" {
-                    continue;
-                }
-                if let Some(target_method_names) = target_method_names.as_ref()
-                    && !target_method_names.contains(&Sym::new(site.method_name.as_ref()))
-                {
-                    continue;
-                }
-                if !self.has_method_variant(
-                    class_name,
-                    site.method_name.as_ref(),
-                    site.method_is_singleton,
-                ) {
-                    let cache_key = (
+        // Each class's sites find their owners on their own, so classes run in parallel; the
+        // sites then fold into their owners in class order, as one walk would. Chunks keep
+        // only a bounded number of copied sites waiting for the fold.
+        use rayon::prelude::*;
+        const PROPAGATION_CHUNK: usize = 256;
+        let indexed: Vec<(usize, &Sym)> = class_names.iter().enumerate().collect();
+        for chunk in indexed.chunks(PROPAGATION_CHUNK) {
+            let per_class: Vec<Vec<(Option<usize>, CallSite)>> = chunk
+                .par_iter()
+                .map(|&(class_idx, class_name)| {
+                    self.propagated_call_sites_of(
                         class_idx,
-                        site.method_name.clone(),
-                        site.method_is_singleton,
-                    );
-                    let owners = mro_cache.entry(cache_key).or_insert_with(|| {
-                        self.resolve_method_call_owner_ref(
-                            class_name,
-                            site.method_name.as_ref(),
-                            site.method_is_singleton,
-                        )
-                        .into_iter()
-                        .filter_map(|(owner, is_singleton)| {
-                            class_index
-                                .get(owner)
-                                .copied()
-                                .map(|idx| (idx, is_singleton))
-                        })
-                        .collect()
-                    });
-                    if owners.is_empty() {
-                        if include_object && !site.method_is_singleton {
-                            Self::push_or_merge_call_site(&mut propagated_to_object, site.clone());
-                        }
-                    } else {
-                        for (owner_idx, owner_method_is_singleton) in owners.iter() {
-                            if !target_flags[*owner_idx] {
-                                continue;
-                            }
-                            if *owner_idx != class_idx
-                                || *owner_method_is_singleton != site.method_is_singleton
-                            {
-                                let mut propagated = site.clone();
-                                propagated.method_is_singleton = *owner_method_is_singleton;
-                                Self::push_or_merge_call_site(
-                                    &mut propagated_to_owners[*owner_idx],
-                                    propagated,
-                                );
-                            }
-                        }
+                        class_name,
+                        target_method_names.as_ref(),
+                        &class_index,
+                        &target_flags,
+                        include_object,
+                    )
+                })
+                .collect();
+            for (owner_idx, site) in per_class.into_iter().flatten() {
+                match owner_idx {
+                    Some(owner_idx) => {
+                        Self::push_or_merge_call_site(&mut propagated_to_owners[owner_idx], site);
                     }
+                    None => Self::push_or_merge_call_site(&mut propagated_to_object, site),
                 }
             }
         }
@@ -5820,6 +5782,78 @@ impl TypeRegistry {
                     .map(CallSiteSummaryAccumulator::finish),
             );
         }
+    }
+
+    /// The call sites of `class_name` that propagate to an owner of the called method, in
+    /// site order, with the owner's index (`None` is `Object`).
+    fn propagated_call_sites_of(
+        &self,
+        class_idx: usize,
+        class_name: &Sym,
+        target_method_names: Option<&FxHashSet<Sym>>,
+        class_index: &HashMap<&str, usize>,
+        target_flags: &[bool],
+        include_object: bool,
+    ) -> Vec<(Option<usize>, CallSite)> {
+        let mut propagated_sites = Vec::new();
+        if class_name.as_str() == "Object" {
+            return propagated_sites;
+        }
+        let Some(data) = self.class_data.get(class_name) else {
+            return propagated_sites;
+        };
+        let mut mro_cache: FxHashMap<(SharedName, bool), Vec<(usize, bool)>> = FxHashMap::default();
+        for site in &data.call_sites {
+            if site.method_name.as_ref() == "initialize" {
+                continue;
+            }
+            if let Some(target_method_names) = target_method_names
+                && !target_method_names.contains(&Sym::new(site.method_name.as_ref()))
+            {
+                continue;
+            }
+            if self.has_method_variant(
+                class_name,
+                site.method_name.as_ref(),
+                site.method_is_singleton,
+            ) {
+                continue;
+            }
+            let owners = mro_cache
+                .entry((site.method_name.clone(), site.method_is_singleton))
+                .or_insert_with(|| {
+                    self.resolve_method_call_owner_ref(
+                        class_name,
+                        site.method_name.as_ref(),
+                        site.method_is_singleton,
+                    )
+                    .into_iter()
+                    .filter_map(|(owner, is_singleton)| {
+                        class_index
+                            .get(owner)
+                            .copied()
+                            .map(|idx| (idx, is_singleton))
+                    })
+                    .collect()
+                });
+            if owners.is_empty() {
+                if include_object && !site.method_is_singleton {
+                    propagated_sites.push((None, site.clone()));
+                }
+                continue;
+            }
+            for &(owner_idx, owner_method_is_singleton) in owners.iter() {
+                if !target_flags[owner_idx] {
+                    continue;
+                }
+                if owner_idx != class_idx || owner_method_is_singleton != site.method_is_singleton {
+                    let mut propagated = site.clone();
+                    propagated.method_is_singleton = owner_method_is_singleton;
+                    propagated_sites.push((Some(owner_idx), propagated));
+                }
+            }
+        }
+        propagated_sites
     }
 
     pub fn get_annotated_param_type(
@@ -8367,15 +8401,29 @@ impl TypeRegistry {
 
     /// Classes whose declarations the still-deferred ivars and method returns of user classes need.
     pub(crate) fn deferred_receiver_classes(&self) -> Vec<String> {
+        use rayon::prelude::*;
+        // Read-only per class, and the sorted set makes the result independent of the order
+        // in which the classes finish.
+        let class_names = self.user_defined_class_names_unsorted();
+        let per_class: Vec<std::collections::BTreeSet<String>> = class_names
+            .par_iter()
+            .map(|class_name| {
+                let mut classes = std::collections::BTreeSet::new();
+                if let Some(data) = self.class_data.get(class_name) {
+                    self.collect_ivar_receiver_classes(data, &mut classes);
+                    for method in &data.methods {
+                        self.collect_deferred_receiver_classes(
+                            &method.raw_return_type,
+                            &mut classes,
+                        );
+                    }
+                }
+                classes
+            })
+            .collect();
         let mut classes = std::collections::BTreeSet::new();
-        for class_name in self.user_defined_class_names_unsorted() {
-            let Some(data) = self.class_data.get(&class_name) else {
-                continue;
-            };
-            self.collect_ivar_receiver_classes(data, &mut classes);
-            for method in &data.methods {
-                self.collect_deferred_receiver_classes(&method.raw_return_type, &mut classes);
-            }
+        for class_set in per_class {
+            classes.extend(class_set);
         }
         classes.into_iter().collect()
     }
@@ -11881,7 +11929,8 @@ impl TypeRegistry {
             })
             .collect();
         // prewarm LPT scheduling: avoids adjacent jobs for the same class being serialized onto one rayon worker (values are unaffected).
-        jobs.sort_by(|a, b| {
+        // The parallel sort is stable too, so it gives the same order.
+        jobs.par_sort_by(|a, b| {
             b.2.cmp(&a.2)
                 .then_with(|| a.0.cmp(b.0))
                 .then_with(|| a.1.name.cmp(&b.1.name))
@@ -11896,14 +11945,18 @@ impl TypeRegistry {
             Option<Vec<Param>>,
             Vec<(SharedName, SharedName, bool)>,
         );
-        let job_key = |job_idx: usize| {
-            let (class_name, method, _) = jobs[job_idx];
-            (
-                self.shared_name(class_name),
-                self.shared_name(method.name.as_str()),
-                method.is_singleton,
-            )
-        };
+        // Built once: the rounds look keys up many times, and each lookup may allocate.
+        let job_keys: Vec<(SharedName, SharedName, bool)> = jobs
+            .par_iter()
+            .map(|&(class_name, method, _)| {
+                (
+                    self.shared_name(class_name),
+                    self.shared_name(method.name.as_str()),
+                    method.is_singleton,
+                )
+            })
+            .collect();
+        let job_key = |job_idx: usize| job_keys[job_idx].clone();
         let mut wake_keys: Vec<Vec<(SharedName, SharedName, bool)>> = vec![Vec::new(); jobs.len()];
         let mut eval_set: Vec<usize> = (0..jobs.len()).collect();
         // cyclic param feedback causes union growth -> the refinement cap converges deterministically, matching legacy behavior.
@@ -12018,7 +12071,7 @@ impl TypeRegistry {
                     // Most jobs read no other entry, so their key is not built at all.
                     let reads = &wake_keys[job_idx];
                     !reads.is_empty()
-                        && !frozen_keys.contains(&job_key(job_idx))
+                        && !frozen_keys.contains(&job_keys[job_idx])
                         && reads.iter().any(|key| changed_keys.contains(key))
                 })
                 .collect();
