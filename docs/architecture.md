@@ -210,6 +210,10 @@ workspace context を分ける。
    merge 済み registry が解決する。型の決まらない引数と、workspace のクラスを含む引数は parameter 参照
    のまま渡す（再推論の文脈は workspace のソースを読まないため）。再推論の戻り値が `untyped` を含み、
    最初の解析の戻り値が含まない場合は最初の解析を残す。再推論はそうした method を含むファイルだけを読み直す。
+7. `Batch` resolution のうち registry を読むだけの段階（未解決 receiver のクラス集め、call site を
+   method の所有者へ伝える先の計算）はクラスごとに並列に計算し、書き込みは元のクラス順で行う。
+   前のクラスの更新を読む段階（呼び出し側から戻り値や ivar を決める段階）と、そこで使う
+   `resolve_params` cache は処理順が結果に効くので直列のまま残す。
 
 この分離で、診断のために workspace 全体の詳細 body / call site を常駐させない。
 

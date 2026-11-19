@@ -584,6 +584,33 @@ tsrs（TypeScript 7 の Rust 移植）の手法のうち、ほかは次の理由
   copy-on-write 複製は約 1.5% で、表現を作り直す改修に見合わない。
 - `no_thp`: 上の allocator の節を参照。
 
+## Batch resolution の並列化と再推論の実測（2026-11-19）
+
+Linux 4 core、gitlab/app（全体 3.05s）の `Batch` resolution 約 1.36s を段階ごとに wall と CPU で
+測ると、1 thread だけで走る段階が合計約 0.55s あった。
+
+| 段階 | wall | 変更 |
+| --- | ---: | --- |
+| 未解決 receiver のクラス集め（2 回） | 128 → 52ms | クラスごとに並列、結果は sorted set |
+| call site の伝播先の計算 | 93 → 53ms | クラスごとに並列、owner への合流は元のクラス順（256 クラスずつ） |
+| param prewarm（job の並べ替えと key） | 350 → 310ms | 安定な並列 sort、job key を一度だけ作る |
+| 呼び出し側から戻り値を決める段階（2 回） | 181ms | 直列のまま |
+| 引数参照から ivar を決める段階（2 回） | 92ms | 直列のまま |
+
+直列のまま残した段階は、前のクラスの更新結果を後のクラスが読み、途中で `resolve_params` cache
+（容量上限つき）に書いた値も後のクラスが使う。戻り値の読み取りは `note_return_type_read` を通らない
+経路もあるため、読んだものから衝突を判定する楽観的な並列化は結果を変えうる。
+
+結果（PGO なしの `release` 同士、9〜15 runs の中央値）: gitlab/app の wall 3.21 → 3.12s、mastodon
+573 → 553ms、rubygems.org 278 → 264ms。redmine と rubygems は揺れの範囲。max RSS は gitlab/app で
++7MB（+2%）、ほかは揺れの範囲。RBS / `--coverage` / `--diagnostics` 出力は 12 subject で byte-identical。
+
+同じ AST node の再推論も測った（1 thread）。推論全体のうち再推論は rack 73/183ms、rubygems
+304/709ms、mastodon 301/909ms で、その約 9 割は前回と同じ型を返していた。ただし約 3 割はクラス本体の
+後で定数を知ってから method body を推論し直すような意図した 2 回目で、残りも推論の合間に scope の
+facts が書き換わる。scope は field を直接書き換える箇所が多く、同じ状態かを確実に判定できないので、
+node 型の memo は入れていない。
+
 ## 記録ルール
 
 - 現在の基準を上書きし、履歴表を増やさない。
