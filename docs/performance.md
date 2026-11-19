@@ -621,8 +621,15 @@ CLI は 0.58s / 1.8s）。原因は二つで、推論の重複ではない。
 - 解析 worker が「論理コア数 - 2」で、4 core では 2 thread しか使っていなかった。
 
 初回の全体 scan だけ全コアの pool を使うと、4 core で rack 360–434 → 232–267ms、mastodon
-2.78–3.51 → 1.59–1.63s、gitlab/app 8.13–9.39 → 4.46–4.51s（各 3 runs）になった。max RSS は
-揺れの範囲（+0〜4MB）。
+2.78–3.51 → 1.59–1.63s、gitlab/app 8.13–9.39 → 4.46–4.51s（各 3 runs）になった。
+
+memory は次のとおり。
+
+- 起動全体の max RSS は mastodon で変化なし（138–145MB）、gitlab/app で 279–282 → 284–293MB。
+  全体のピークは scan 後の registry 構築で、scan 中のピークより高い。
+- scan 中だけのピークは gitlab/app で +25〜45MB 上がる。大半は mimalloc が OS へ返す前の
+  解放済みメモリで、`MIMALLOC_PURGE_DELAY=0` では +8MB だった。
+- scan 後の常駐量は変わらない。保持する結果は同じで、一時 pool の thread は scan とともに終わる。
 
 本体のファイルを spec より先に解析する案は入れていない。scan はパス順で、Rails の一般的な
 構成では `app/`・`config/`・`db/`・`lib/` が `spec/`・`test/` より先に来るため、順序を変えても
