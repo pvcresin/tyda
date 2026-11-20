@@ -568,47 +568,64 @@ pub fn replay_param_dependent_bodies(
                     )
                 })
                 .collect();
-            settled.then(|| ParamReplayRequest {
+            (settled || request.reads_other_files).then(|| ParamReplayRequest {
                 body: request.body.clone(),
                 positional,
                 keywords,
+                reads_other_files: request.reads_other_files,
             })
         })
         .collect();
     if requests.is_empty() {
         return Vec::new();
     }
-    let offsets: HashSet<usize> = requests
-        .iter()
-        .map(|request| request.body.def_offset)
-        .collect();
+    // A call on a method reference needs the other files' classes, so that replay also reads
+    // them from the merged registry.
+    let (on_references, on_params): (Vec<_>, Vec<_>) = requests
+        .into_iter()
+        .partition(|request| request.reads_other_files);
     let parse_result = prism::parse(source.as_bytes());
-    let (mut engine, _timings) = build_engine_from_parse(
-        AnalysisRequest {
-            source,
-            rbs_registry,
-            lazy_loader: Some(lazy_loader),
-            lazy_rbi_loader,
-            file_path: Some(file_path),
-            options: &options,
-            dependency_collection: DependencyCollection::Disabled,
-            hover_snapshot_mode: HoverSnapshotMode::Skip,
-            annotated_body_hover_mode: AnnotatedBodyHoverMode::Disabled,
-            external_rbs_loading: ExternalRbsLoading::OnDemand,
-            resolution_depth: ResolutionDepth::ExportedFactsOnly,
-            rbi_declaration_source: false,
-            replay_bodies: Some(ReplayBodies {
-                offsets: &offsets,
-                workspace,
-            }),
-        },
-        &parse_result,
-    );
-    let root = parse_result.node();
-    let Some(program) = root.as_program_node() else {
-        return Vec::new();
+    let replay = |context: Option<&TypeRegistry>, requests: &[ParamReplayRequest], loads: bool| {
+        if requests.is_empty() {
+            return Vec::new();
+        }
+        let offsets: HashSet<usize> = requests
+            .iter()
+            .map(|request| request.body.def_offset)
+            .collect();
+        let (mut engine, _timings) = build_engine_from_parse(
+            AnalysisRequest {
+                source,
+                rbs_registry: context,
+                lazy_loader: Some(lazy_loader),
+                lazy_rbi_loader,
+                file_path: Some(file_path),
+                options: &options,
+                dependency_collection: DependencyCollection::Disabled,
+                hover_snapshot_mode: HoverSnapshotMode::Skip,
+                annotated_body_hover_mode: AnnotatedBodyHoverMode::Disabled,
+                external_rbs_loading: ExternalRbsLoading::OnDemand,
+                resolution_depth: ResolutionDepth::ExportedFactsOnly,
+                rbi_declaration_source: false,
+                replay_bodies: Some(ReplayBodies {
+                    offsets: &offsets,
+                    workspace,
+                }),
+            },
+            &parse_result,
+        );
+        if loads {
+            engine.load_workspace_classes_in_replay();
+        }
+        let root = parse_result.node();
+        let Some(program) = root.as_program_node() else {
+            return Vec::new();
+        };
+        engine.replay_param_dependent_bodies(&program, &parse_result, requests)
     };
-    engine.replay_param_dependent_bodies(&program, &parse_result, &requests)
+    let mut results = replay(rbs_registry, &on_params, false);
+    results.extend(replay(rbs_registry, &on_references, true));
+    results
 }
 
 fn type_mentions_class(ty: &Type, matches: &impl Fn(&str) -> bool) -> bool {

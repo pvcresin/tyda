@@ -339,9 +339,10 @@ use crate::types::{
     SplatToA, Type,
 };
 
-/// A source method whose body called a method on a parameter-derived receiver with arguments
-/// or a block. The CLI keeps such a call without them, so it replays the body once the
-/// callers' types are known.
+/// A source method whose body called a method with arguments or a block on a receiver it could
+/// not type: one derived from a parameter, or a reference to a method another file defines. The
+/// CLI keeps such a call without its arguments or block, so it replays the body once the
+/// callers' types and the other files are known.
 #[derive(Clone, Debug)]
 pub struct ParamDependentBody {
     pub owner: Sym,
@@ -352,6 +353,17 @@ pub struct ParamDependentBody {
     pub positional: Vec<usize>,
     /// The keyword parameters whose calls lost their arguments or block.
     pub keywords: Vec<Sym>,
+    /// The calls on method references that lost their arguments or block.
+    pub reference_calls: Vec<ReferenceCall>,
+}
+
+/// A call on a method reference that kept no arguments or block.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferenceCall {
+    pub receiver: Type,
+    pub method: Sym,
+    /// The call already gave `untyped`; otherwise it stayed a reference without its arguments.
+    pub untyped: bool,
 }
 
 /// A parameter-dependent body to type again with its callers' merged argument types.
@@ -360,6 +372,8 @@ pub struct ParamReplayRequest {
     pub body: ParamDependentBody,
     pub positional: Vec<Type>,
     pub keywords: Vec<(SharedName, Type)>,
+    /// A call on a reference the merged files type, so the replay reads them.
+    pub reads_other_files: bool,
 }
 
 /// The new return and block contract of a replayed parameter-dependent body.
@@ -5590,6 +5604,35 @@ impl TypeRegistry {
         report("method-return-refs");
     }
 
+    /// Whether the method a call reaches returns something its arguments or block decide: a
+    /// source return that holds a parameter, or an RBS method with overloads, type parameters,
+    /// or a block. A method not found is not known to.
+    fn call_result_depends_on_arguments(&self, receiver: &Type, method_name: Sym) -> bool {
+        let Some(class_name) = Self::type_to_class_name(receiver) else {
+            return false;
+        };
+        let is_singleton = matches!(receiver, Type::Singleton(_));
+        let Some(method) = self
+            .first_method_call_owner_cached(&class_name, &method_name, is_singleton)
+            .and_then(|(owner, owner_singleton)| {
+                self.lookup_method_def(&owner, &method_name, owner_singleton)
+            })
+        else {
+            return false;
+        };
+        !method.extra_overloads.is_empty()
+            || method.rbs_method_types.len() > 1
+            || method.rbs_method_types.iter().any(|method_type| {
+                !method_type.type_params.is_empty() || method_type.block.is_some()
+            })
+            || Self::type_contains_leaf(&method.raw_return_type, &|leaf| {
+                matches!(
+                    leaf,
+                    Type::ParamRef(_) | Type::KeywordParamRef(_) | Type::BlockReturnRef
+                )
+            })
+    }
+
     /// The callers' merged argument types for a parameter-dependent body, with their
     /// references resolved, or `None` when no caller passes a known type.
     pub fn param_replay_request(&self, body: &ParamDependentBody) -> Option<ParamReplayRequest> {
@@ -5623,8 +5666,24 @@ impl TypeRegistry {
             body.method.as_str(),
             body.is_singleton,
         ));
+        // The replay helps a call on a reference once the merged files type the receiver, if
+        // the call gave `untyped` or its result depends on the arguments it lost.
+        let references_resolve = body.reference_calls.iter().any(|call| {
+            let receiver = self.resolve_deferred_refs_for_context(
+                &body.owner,
+                body.is_singleton,
+                &call.receiver,
+            );
+            settled(&receiver)
+                && (call.untyped || self.call_result_depends_on_arguments(&receiver, call.method))
+        });
         if sites.is_empty() {
-            return None;
+            return references_resolve.then(|| ParamReplayRequest {
+                body: body.clone(),
+                positional: Vec::new(),
+                keywords: Vec::new(),
+                reads_other_files: true,
+            });
         }
         let _caller_ctx_memo_scope = CallerCtxMemoScope::enter();
         let _hop_memo = DeferredHopMemoScope::enter();
@@ -5633,7 +5692,7 @@ impl TypeRegistry {
         // reference, so the replay types that part as the first pass did. Resolving those
         // references here, before returns resolve, would repeat that work for every body.
         // The replay helps only when a parameter whose call lost its shape gets a type.
-        let mut known = false;
+        let mut known = references_resolve;
         let mut settle = |ty: Type, unsettled: Type, lost_shape: bool| {
             if ty != Type::Untyped && Self::is_concrete_for_global_resolve(&ty) {
                 known |= lost_shape;
@@ -5660,6 +5719,7 @@ impl TypeRegistry {
             body: body.clone(),
             positional,
             keywords,
+            reads_other_files: references_resolve,
         })
     }
 

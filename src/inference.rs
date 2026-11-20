@@ -24,7 +24,7 @@ use crate::registry::{
     BlockFlowSummary, CallSite, CallSiteCallerContext, ClassData, ConstantAlias, DefineMethodMacro,
     KeywordArgTypes, LiteralBranchedDef, MacroNamePart, MethodBlockMeta, MethodBodySummary,
     MethodDef, MixinKind, ParamDependentBody, ParamFlow, ParamInfo, ParamReplayRequest,
-    ParamReplayResult, PendingScopedTypeRef, TypeRegistry, Visibility,
+    ParamReplayResult, PendingScopedTypeRef, ReferenceCall, TypeRegistry, Visibility,
 };
 use crate::sorbet::annotations::{
     extract_sig_source, find_method_annotations, sig_source_return_type, sig_sources_to_rbs_lines,
@@ -1134,6 +1134,8 @@ struct ActiveMethodBody {
     /// replay with the callers' types can type those calls.
     shape_lost_params: Vec<usize>,
     shape_lost_keywords: Vec<Sym>,
+    /// The calls on references to methods that lost their arguments or block.
+    shape_lost_on_references: Vec<ReferenceCall>,
     unresolved_block_receivers: DeferredBlockReceiverCandidates,
     has_case_class_dispatch: bool,
     has_super_call: bool,
@@ -1264,6 +1266,10 @@ pub struct InferenceEngine<'a> {
     collecting_concern_included: bool,
     // Concrete param types during re-infer would otherwise merge each receiver's mixin closure.
     suppress_external_merge: bool,
+    /// A CLI replay of calls on references loads the classes this file does not declare from
+    /// the merged registry, as the files that declare them left them.
+    replay_loads_workspace_classes: bool,
+    replay_workspace_classes: FxHashSet<String>,
     case_when_narrowing_enabled: bool,
     source_base_case_equality_override: bool,
     /// Source of each `===` defined in this file, reparsed when a call site asks how it narrows.
@@ -2976,6 +2982,8 @@ impl<'a> InferenceEngine<'a> {
             universal_singleton_tail_preloaded: false,
             collecting_concern_included: false,
             suppress_external_merge: false,
+            replay_loads_workspace_classes: false,
+            replay_workspace_classes: FxHashSet::default(),
             case_when_narrowing_enabled: false,
             source_base_case_equality_override: false,
             source_case_equality_defs: HashMap::new(),
@@ -3091,6 +3099,8 @@ impl<'a> InferenceEngine<'a> {
             universal_singleton_tail_preloaded: false,
             collecting_concern_included: false,
             suppress_external_merge: false,
+            replay_loads_workspace_classes: false,
+            replay_workspace_classes: FxHashSet::default(),
             case_when_narrowing_enabled: false,
             source_base_case_equality_override: false,
             source_case_equality_defs: HashMap::new(),
@@ -3245,6 +3255,38 @@ impl<'a> InferenceEngine<'a> {
                 .registry
                 .lookup_method_def(owner, method_name, owner_is_singleton)
                 .is_some_and(|method| method.origin.is_rbs_file_source())
+    }
+
+    pub(crate) fn load_workspace_classes_in_replay(&mut self) {
+        self.replay_loads_workspace_classes = true;
+    }
+
+    /// Only the replay walk loads them, once this file's own declarations are collected.
+    fn ensure_replay_workspace_class(&mut self, class_name: &str) {
+        if !self.replay_loads_workspace_classes
+            || !self.replaying_method_body
+            || self.replay_workspace_classes.contains(class_name)
+        {
+            return;
+        }
+        self.replay_workspace_classes.insert(class_name.to_string());
+        let Some((_, workspace)) = self.replay_bodies else {
+            return;
+        };
+        if self.registry.file_contribution_names().contains(class_name)
+            || self
+                .registry
+                .class_data_for(class_name)
+                .is_some_and(ClassData::has_type_substance)
+        {
+            return;
+        }
+        if workspace
+            .class_data_for(class_name)
+            .is_some_and(ClassData::has_type_substance)
+        {
+            self.registry.merge_rbs_class_from(workspace, class_name);
+        }
     }
 
     pub(crate) fn limit_bodies_to_replay(
@@ -3483,6 +3525,7 @@ impl<'a> InferenceEngine<'a> {
     fn ensure_external_class(&mut self, class_name: &str) {
         // Absolute references (`include ::Foo`, `class X < ::Bar`) carry a leading `::` that is not part of the stored registry / external key, so normalize before lookup — otherwise the external class (and its nested `ClassMethods`) never merges in the lazy per-file path.
         let class_name = class_name.trim_scope_prefix();
+        self.ensure_replay_workspace_class(class_name);
         if self.merged_external_classes.contains(class_name) {
             return;
         }
@@ -19691,7 +19734,7 @@ impl<'a> InferenceEngine<'a> {
         });
         self.active_loop_entry_scopes = saved_active_loop_entry_scopes;
         let (
-            (shape_lost_params, shape_lost_keywords),
+            (shape_lost_params, shape_lost_keywords, shape_lost_on_references),
             unresolved_block_receivers,
             has_case_class_dispatch,
             has_super_call,
@@ -19702,7 +19745,11 @@ impl<'a> InferenceEngine<'a> {
             .take()
             .map(|body| {
                 (
-                    (body.shape_lost_params, body.shape_lost_keywords),
+                    (
+                        body.shape_lost_params,
+                        body.shape_lost_keywords,
+                        body.shape_lost_on_references,
+                    ),
                     body.unresolved_block_receivers,
                     body.has_case_class_dispatch,
                     body.has_super_call,
@@ -19712,7 +19759,9 @@ impl<'a> InferenceEngine<'a> {
             })
             .unwrap_or_default();
         self.active_method_body = saved_active_method_body;
-        if (!shape_lost_params.is_empty() || !shape_lost_keywords.is_empty())
+        if (!shape_lost_params.is_empty()
+            || !shape_lost_keywords.is_empty()
+            || !shape_lost_on_references.is_empty())
             && self.track_deferred_block_receiver_bodies
         {
             self.param_dependent_bodies.push(ParamDependentBody {
@@ -19722,6 +19771,7 @@ impl<'a> InferenceEngine<'a> {
                 def_offset: def_node.location().start_offset(),
                 positional: shape_lost_params,
                 keywords: shape_lost_keywords,
+                reference_calls: shape_lost_on_references,
             });
         }
         if let Some(summary) = &body_scan_summary {
@@ -57635,6 +57685,41 @@ impl<'a> InferenceEngine<'a> {
             &mut body.shape_lost_params,
             &mut body.shape_lost_keywords,
         );
+        if Self::type_contains_method_reference(receiver_type) {
+            let call = ReferenceCall {
+                receiver: receiver_type.clone(),
+                method: Sym::new(String::from_utf8_lossy(call_node.name().as_slice())),
+                untyped: Self::type_contains_untyped(result),
+            };
+            if !body.shape_lost_on_references.contains(&call) {
+                body.shape_lost_on_references.push(call);
+            }
+        }
+    }
+
+    /// A reference to a method's return (`helper`, `Other.make`), which another file may answer.
+    /// A call on a parameter alone (`param.make`) waits for the callers instead.
+    fn type_contains_method_reference(ty: &Type) -> bool {
+        match ty {
+            Type::MethodReturnRef(..) => true,
+            Type::ReceiverMethodRef(receiver, _) => match receiver.as_ref() {
+                Type::ParamRef(_) | Type::KeywordParamRef(_) | Type::IvarRef(_) => false,
+                Type::ReceiverMethodRef(..) | Type::Union(_) => {
+                    Self::type_contains_method_reference(receiver)
+                }
+                _ => true,
+            },
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+                parts.iter().any(Self::type_contains_method_reference)
+            }
+            Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner) => Self::type_contains_method_reference(inner),
+            Type::DeferredSafeNavigation(receiver, _) => {
+                Self::type_contains_method_reference(receiver)
+            }
+            _ => false,
+        }
     }
 
     fn receiver_union_flags(ty: &Type) -> (bool, bool) {
@@ -65975,6 +66060,17 @@ impl<'a> InferenceEngine<'a> {
         let mut offsets = HashMap::with_capacity(requests.len());
         for request in requests {
             let body = &request.body;
+            // A replay for references alone keeps the callers the first pass saw.
+            if request.positional.is_empty() && request.keywords.is_empty() {
+                offsets.insert(
+                    body.def_offset,
+                    DeferredMethodReplay {
+                        is_singleton: body.is_singleton,
+                        ..DeferredMethodReplay::default()
+                    },
+                );
+                continue;
+            }
             self.registry.replace_method_call_sites(
                 body.owner.as_str(),
                 CallSite {

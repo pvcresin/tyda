@@ -5559,11 +5559,10 @@ fn absolute_constant_skips_nested_name_from_another_file() {
     assert!(rbs.contains("def nested: -> 1\n"), "got: {rbs}");
 }
 
-// Known issue: the scenario runner keeps the argument (`ruby/method/call_return.md`). The CLI
-// analyzes `user.rb` alone, where `ctx` is still a reference, and a call with arguments on a
-// reference keeps no arguments. When the check fails, drop it.
+// `ctx` is still a reference when `user.rb` is analyzed alone, so `get(2)` is typed again once
+// the other files are merged, as the scenario runner types it (`ruby/method/call_return.md`).
 #[test]
-fn known_issue_call_with_arguments_on_method_from_another_file() {
+fn call_with_arguments_on_method_from_another_file() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("ctx.rb"),
@@ -5572,7 +5571,13 @@ fn known_issue_call_with_arguments_on_method_from_another_file() {
     .expect("failed to write source");
     fs::write(
         dir.path().join("user.rb"),
-        "class User\n  def ctx = Ctx.make\n  def value = ctx.get(2)\nend\n",
+        concat!(
+            "class User\n",
+            "  def ctx = Ctx.make\n",
+            "  def value = ctx.get(2)\n",
+            "  def direct = Ctx.make.get(2)\n",
+            "end\n",
+        ),
     )
     .expect("failed to write source");
     let output = tyda_bin()
@@ -5581,10 +5586,8 @@ fn known_issue_call_with_arguments_on_method_from_another_file() {
         .expect("failed to run");
     assert!(output.status.success());
     let rbs = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        rbs.contains("def value: -> [untyped]\n"),
-        "known issue fixed (argument kept across files); drop this check: {rbs}"
-    );
+    assert!(rbs.contains("def value: -> [2]\n"), "got: {rbs}");
+    assert!(rbs.contains("def direct: -> [2]\n"), "got: {rbs}");
 }
 
 // The reader's `@src` belongs to `Ctx`; the caller in another file reads it through the reader.
