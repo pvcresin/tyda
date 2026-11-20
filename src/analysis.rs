@@ -2216,6 +2216,137 @@ fn collect_nested_namespaces(node: &Node<'_>, outer: Option<&str>, names: &mut V
     }
 }
 
+/// What one source file declares that another file's analysis may read before the merge.
+#[derive(Debug, Default)]
+pub struct SourceDeclarations {
+    pub namespaces: Vec<String>,
+    pub literal_hash_methods: Vec<(String, Vec<String>)>,
+}
+
+impl SourceDeclarations {
+    pub fn of(source: &str) -> Self {
+        Self {
+            namespaces: source_nested_namespaces(source),
+            literal_hash_methods: source_literal_hash_methods(source),
+        }
+    }
+
+    pub fn extend(&mut self, other: Self) {
+        self.namespaces.extend(other.namespaces);
+        self.literal_hash_methods.extend(other.literal_hash_methods);
+    }
+}
+
+/// Class methods whose body is a literal Hash, as `Owner.method` with the Hash keys
+/// (`def self.sources = { push: 1 }`). An enum in another file can read its values from them.
+pub fn source_literal_hash_methods(source: &str) -> Vec<(String, Vec<String>)> {
+    if !may_define_literal_hash_method(source) {
+        return Vec::new();
+    }
+    let parse_result = prism::parse(source.as_bytes());
+    let mut methods = Vec::new();
+    if let Some(program) = parse_result.node().as_program_node() {
+        collect_literal_hash_methods(&program.statements().as_node(), None, &mut methods);
+    }
+    methods
+}
+
+/// A `def self.` line followed by a line that opens a Hash, or one that opens it itself.
+fn may_define_literal_hash_method(source: &str) -> bool {
+    let mut after_def = false;
+    for line in source.lines() {
+        let line = line.trim();
+        if after_def && !line.is_empty() {
+            if line.starts_with('{') {
+                return true;
+            }
+            after_def = false;
+        }
+        if let Some(rest) = line.strip_prefix("def self.") {
+            if rest.contains("= {") {
+                return true;
+            }
+            after_def = !rest.contains('=');
+        }
+    }
+    false
+}
+
+fn collect_literal_hash_methods(
+    node: &Node<'_>,
+    outer: Option<&str>,
+    methods: &mut Vec<(String, Vec<String>)>,
+) {
+    let mut declare = |constant_path: Node<'_>, body: Option<Node<'_>>| {
+        let written = String::from_utf8_lossy(constant_path.location().as_slice());
+        let name = match (written.strip_prefix("::"), outer) {
+            (Some(absolute), _) => absolute.to_string(),
+            (None, Some(outer)) => crate::sym::join_scope(outer, &written),
+            (None, None) => written.into_owned(),
+        };
+        if let Some(body) = body {
+            collect_literal_hash_methods(&body, Some(&name), methods);
+        }
+    };
+    match node {
+        Node::StatementsNode { .. } => {
+            let statements = node.as_statements_node().expect("must be StatementsNode");
+            for statement in statements.body().iter() {
+                collect_literal_hash_methods(&statement, outer, methods);
+            }
+        }
+        Node::ClassNode { .. } => {
+            let class = node.as_class_node().expect("must be ClassNode");
+            declare(class.constant_path(), class.body());
+        }
+        Node::ModuleNode { .. } => {
+            let module = node.as_module_node().expect("must be ModuleNode");
+            declare(module.constant_path(), module.body());
+        }
+        Node::DefNode { .. } => {
+            let def = node.as_def_node().expect("must be DefNode");
+            let (Some(owner), Some(Node::SelfNode { .. }), None) =
+                (outer, def.receiver(), def.parameters())
+            else {
+                return;
+            };
+            let body = match def.body() {
+                Some(Node::StatementsNode { .. }) => {
+                    let statements = def.body().and_then(|body| body.as_statements_node());
+                    let mut body = statements.into_iter().flat_map(|s| s.body().iter());
+                    match (body.next(), body.next()) {
+                        (Some(only), None) => only,
+                        _ => return,
+                    }
+                }
+                Some(other) => other,
+                None => return,
+            };
+            let Some(hash) = body.as_hash_node() else {
+                return;
+            };
+            let mut keys = Vec::new();
+            for element in hash.elements().iter() {
+                let Some(key) = element.as_assoc_node().map(|assoc| assoc.key()) else {
+                    return;
+                };
+                let key = match &key {
+                    Node::SymbolNode { .. } => key.as_symbol_node().map(|s| s.unescaped().to_vec()),
+                    Node::StringNode { .. } => key.as_string_node().map(|s| s.unescaped().to_vec()),
+                    _ => None,
+                };
+                let Some(key) = key else {
+                    return;
+                };
+                keys.push(String::from_utf8_lossy(&key).into_owned());
+            }
+            let method = String::from_utf8_lossy(def.name().as_slice());
+            methods.push((format!("{owner}.{method}"), keys));
+        }
+        _ => {}
+    }
+}
+
 pub fn source_case_equality_overrides(source: &str) -> SourceCaseEqualityOverrides {
     let mut candidates = source_override_candidates(source);
     if candidates.equality {
@@ -4311,6 +4442,30 @@ end
             ["Core::Ctx", "Core::Deep::Inner", "Top::Abs"]
         );
         assert!(super::source_nested_namespaces("class Plain < Base\nend\n").is_empty());
+    }
+
+    #[test]
+    fn source_literal_hash_methods_reads_class_methods_returning_a_hash() {
+        let source = concat!(
+            "module Enums\n",
+            "  module Ci\n",
+            "    def self.sources\n",
+            "      { push: 1, \"web\" => 2 }\n",
+            "    end\n",
+            "    def self.computed = sources.except(:push)\n",
+            "    def self.with_arg(x) = { a: x }\n",
+            "    def instance_hash = { b: 1 }\n",
+            "  end\n",
+            "end\n",
+        );
+        assert_eq!(
+            super::source_literal_hash_methods(source),
+            [(
+                "Enums::Ci.sources".to_string(),
+                vec!["push".to_string(), "web".to_string()]
+            )]
+        );
+        assert!(super::source_literal_hash_methods("def self.x = 1\n").is_empty());
     }
 
     #[test]

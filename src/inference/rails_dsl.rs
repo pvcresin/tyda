@@ -2991,6 +2991,61 @@ impl<'a> InferenceEngine<'a> {
                         .unwrap_or_default(),
                 }
             }
+            // `enum :source, Enums.sources`: a class method that returns the mapping.
+            Node::CallNode { .. } => {
+                let call = node.as_call_node().expect("must be CallNode");
+                let Some(receiver) = call.receiver() else {
+                    return Vec::new();
+                };
+                if call.arguments().is_some()
+                    || call.block().is_some()
+                    || !matches!(
+                        receiver,
+                        Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+                    )
+                {
+                    return Vec::new();
+                }
+                let path = self.resolve_constant_path(&receiver, parse_result);
+                let method = String::from_utf8_lossy(call.name().as_slice()).to_string();
+                if let Type::Singleton(owner) =
+                    self.resolve_constant_type_in_scope(&path, class_name)
+                {
+                    self.ensure_class_available(owner.as_str());
+                    if let Some(Type::Record(fields)) = self
+                        .registry
+                        .lookup_method_return_type_with_hint(owner.as_str(), &method, true)
+                    {
+                        return fields
+                            .iter()
+                            .filter(|field| !field.optional)
+                            .map(|field| match &field.key {
+                                RecordKey::Symbol(name) | RecordKey::String(name) => name.clone(),
+                            })
+                            .collect();
+                    }
+                }
+                // The CLI reads one file at a time; the method may live in another one.
+                let bare = path.trim_start_matches("::");
+                let mut owners = if path.starts_with("::") {
+                    vec![bare.to_string()]
+                } else {
+                    self.scoped_constant_candidates_in_context(bare, class_name)
+                };
+                owners.push(bare.to_string());
+                owners
+                    .iter()
+                    .find_map(|owner| {
+                        self.registry
+                            .source_literal_hash_keys(owner, &method)
+                            .or_else(|| {
+                                self.external_rbs.and_then(|external| {
+                                    external.source_literal_hash_keys(owner, &method)
+                                })
+                            })
+                    })
+                    .unwrap_or_default()
+            }
             _ => Vec::new(),
         }
     }

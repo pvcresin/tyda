@@ -623,24 +623,24 @@ fn run_cli(
                 tyda::project::detect_dsl_from_source_text(&source, &mut detected);
                 let case_equality_overrides =
                     tyda::analysis::source_case_equality_overrides(&source);
-                let nested_namespaces = tyda::analysis::source_nested_namespaces(&source);
+                let declarations = tyda::analysis::SourceDeclarations::of(&source);
                 Some((
                     path,
                     retain_sources.then_some(source),
                     detected,
                     case_equality_overrides,
-                    nested_namespaces,
+                    declarations,
                 ))
             })
             .collect();
         let mut file_sources: Vec<(PathBuf, Option<String>)> = Vec::with_capacity(scanned.len());
         let mut detected_dsl = BTreeSet::new();
         let mut case_equality_overrides = tyda::analysis::SourceCaseEqualityOverrides::default();
-        let mut source_namespaces = Vec::new();
-        for (path, source, detected, file_overrides, nested_namespaces) in scanned {
+        let mut source_declarations = tyda::analysis::SourceDeclarations::default();
+        for (path, source, detected, file_overrides, declarations) in scanned {
             file_sources.push((path, source));
             detected_dsl.extend(detected);
-            source_namespaces.extend(nested_namespaces);
+            source_declarations.extend(declarations);
             case_equality_overrides.base_class_dispatch |= file_overrides.base_class_dispatch;
             case_equality_overrides.numeric_dispatch |= file_overrides.numeric_dispatch;
             case_equality_overrides.block_given_override |= file_overrides.block_given_override;
@@ -649,7 +649,7 @@ fn run_cli(
             file_sources,
             detected_dsl,
             case_equality_overrides,
-            source_namespaces,
+            source_declarations,
         )
     });
 
@@ -664,7 +664,7 @@ fn run_cli(
         project_versions,
     ) = build_cli_context(paths, options.debug, dsl_spec);
     let build_cli_context_elapsed = preload_started.elapsed();
-    let (file_sources, detected_dsl, case_equality_overrides, source_namespaces) =
+    let (file_sources, detected_dsl, case_equality_overrides, source_declarations) =
         file_collect_handle
             .join()
             .expect("file collection thread panicked");
@@ -673,7 +673,7 @@ fn run_cli(
         case_equality_overrides.numeric_dispatch,
         case_equality_overrides.block_given_override,
     );
-    user_rbs.record_source_namespaces(source_namespaces);
+    user_rbs.record_source_declarations(source_declarations);
     let file_collect_joined_elapsed = preload_started.elapsed();
 
     let dsl_detect_started = Instant::now();
@@ -1378,7 +1378,7 @@ type PreloadedFile = (
     Option<String>,
     BTreeSet<DslLibrary>,
     tyda::analysis::SourceCaseEqualityOverrides,
-    Vec<String>,
+    tyda::analysis::SourceDeclarations,
 );
 
 fn build_cli_context(

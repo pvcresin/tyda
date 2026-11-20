@@ -2883,6 +2883,28 @@ impl OwnerLookupCache {
     }
 }
 
+/// Names other source files declare, read before their bodies are analyzed.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SourceDeclarationIndex {
+    namespaces: FxHashSet<Box<str>>,
+    /// `Owner.method` -> the keys of the literal Hash its body is.
+    literal_hash_methods: FxHashMap<Box<str>, Box<[Box<str>]>>,
+}
+
+impl SourceDeclarationIndex {
+    fn is_empty(&self) -> bool {
+        self.namespaces.is_empty() && self.literal_hash_methods.is_empty()
+    }
+
+    fn extend(&mut self, other: &Self) {
+        self.namespaces.extend(other.namespaces.iter().cloned());
+        for (method, keys) in &other.literal_hash_methods {
+            self.literal_hash_methods
+                .insert(method.clone(), keys.clone());
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct TypeRegistry {
     // boxed: a 392-byte `ClassData` inline makes the map shell dominate per-file snapshots.
@@ -2907,7 +2929,8 @@ pub struct TypeRegistry {
     has_source_block_given_override: bool,
     /// Classes and modules the workspace's sources declare under a namespace (`Core::Ctx`). A
     /// file analyzed alone names them before the other files are merged.
-    source_namespaces: Arc<FxHashSet<Box<str>>>,
+    /// What each source file declares, for the CLI's one-file analyses to read before the merge.
+    source_declarations: Arc<SourceDeclarationIndex>,
     /// Lazy RBI declarations exist, so a method surface is complete only when they back it.
     generated_artifacts_present: bool,
     /// skip the dirty-synthesis path entirely for registries with no dirty patterns (avoids per-miss matching cost for non-Rails).
@@ -3016,7 +3039,7 @@ impl Clone for TypeRegistry {
             has_source_numeric_case_equality_override: self
                 .has_source_numeric_case_equality_override,
             has_source_block_given_override: self.has_source_block_given_override,
-            source_namespaces: self.source_namespaces.clone(),
+            source_declarations: self.source_declarations.clone(),
             generated_artifacts_present: self.generated_artifacts_present,
             has_dirty_patterns: self.has_dirty_patterns,
             resolve_params_cache: ParamCache::default(),
@@ -3095,21 +3118,46 @@ impl TypeRegistry {
         self.has_source_block_given_override
     }
 
-    pub fn record_source_namespaces(&mut self, names: impl IntoIterator<Item = String>) {
-        let namespaces = Arc::make_mut(&mut self.source_namespaces);
-        namespaces.extend(names.into_iter().map(String::into_boxed_str));
+    pub fn record_source_declarations(
+        &mut self,
+        declarations: crate::analysis::SourceDeclarations,
+    ) {
+        let index = Arc::make_mut(&mut self.source_declarations);
+        index.namespaces.extend(
+            declarations
+                .namespaces
+                .into_iter()
+                .map(String::into_boxed_str),
+        );
+        for (method, keys) in declarations.literal_hash_methods {
+            let keys: Box<[Box<str>]> = keys.into_iter().map(String::into_boxed_str).collect();
+            index
+                .literal_hash_methods
+                .insert(method.into_boxed_str(), keys);
+        }
     }
 
     pub(crate) fn source_declares_namespace(&self, name: &str) -> bool {
-        self.source_namespaces.contains(name)
+        self.source_declarations.namespaces.contains(name)
+    }
+
+    /// The keys of the literal Hash `owner.method` returns in some source file.
+    pub(crate) fn source_literal_hash_keys(
+        &self,
+        owner: &str,
+        method: &str,
+    ) -> Option<Vec<String>> {
+        self.source_declarations
+            .literal_hash_methods
+            .get(format!("{owner}.{method}").as_str())
+            .map(|keys| keys.iter().map(|key| key.to_string()).collect())
     }
 
     fn carry_source_namespaces(&mut self, other: &TypeRegistry) {
-        if self.source_namespaces.is_empty() {
-            self.source_namespaces = other.source_namespaces.clone();
-        } else if !Arc::ptr_eq(&self.source_namespaces, &other.source_namespaces) {
-            Arc::make_mut(&mut self.source_namespaces)
-                .extend(other.source_namespaces.iter().cloned());
+        if self.source_declarations.is_empty() {
+            self.source_declarations = other.source_declarations.clone();
+        } else if !Arc::ptr_eq(&self.source_declarations, &other.source_declarations) {
+            Arc::make_mut(&mut self.source_declarations).extend(&other.source_declarations);
         }
     }
 
@@ -5356,7 +5404,8 @@ impl TypeRegistry {
                 Type::from_type_vec(types.clone())
             };
             if matches!(ivar_ty, Type::Union(_)) && Self::holds_deferred_ivar_value(&ivar_ty) {
-                let resolved = self.resolve_deferred_ivar_value(class_name, is_singleton, &ivar_ty);
+                let resolved =
+                    self.resolve_deferred_ivar_value(class_name, is_singleton, &ivar, &ivar_ty);
                 if resolved != Type::Untyped && Self::is_resolved_attr_return_type(&resolved) {
                     return Some(resolved);
                 }
@@ -8760,11 +8809,12 @@ impl TypeRegistry {
                 if site.method_name.as_ref() == "initialize" && !site.method_is_singleton {
                     let forwarded = self.call_site_with_forwarded_args(site);
                     let site = forwarded.as_ref().unwrap_or(site);
-                    // A parameter marker left in an argument names the caller's parameter.
+                    // A parameter or ivar marker left in an argument names the caller's one,
+                    // which means nothing in this class's ivars.
                     let caller_resolved = site
                         .arg_types
                         .iter()
-                        .any(Self::type_contains_param_ref_static)
+                        .any(Self::type_contains_callee_relative_ref)
                         .then(|| {
                             let mut resolved = site.clone();
                             for ty in &mut resolved.arg_types {
@@ -8773,6 +8823,13 @@ impl TypeRegistry {
                                     ty,
                                     &mut visiting,
                                 );
+                                if let Some(ctx) = site.caller_context.as_deref() {
+                                    *ty = Self::qualify_caller_ivar_refs(
+                                        ty,
+                                        ctx.class_name.as_ref(),
+                                        ctx.method_is_singleton,
+                                    );
+                                }
                             }
                             resolved
                         });
@@ -8882,6 +8939,41 @@ impl TypeRegistry {
 
     /// A parameter or an instance variable of a method means nothing outside its class, so
     /// such a return cannot be copied into a caller as it is.
+    /// A caller's `@x` left in an argument reads that caller's ivar, so it is written as a
+    /// read on the caller class (`Node#@lenv`), which any class can resolve.
+    fn qualify_caller_ivar_refs(ty: &Type, caller_class: &str, singleton: bool) -> Type {
+        let recur = |inner: &Type| Self::qualify_caller_ivar_refs(inner, caller_class, singleton);
+        match ty {
+            Type::IvarRef(name) => {
+                let receiver = if singleton {
+                    Type::Singleton(Sym::new(caller_class))
+                } else {
+                    Type::Class(Sym::new(caller_class))
+                };
+                Type::ReceiverMethodRef(
+                    Box::new(receiver),
+                    Sym::new(format!("__tyda_instance_variable_get__:{name}")),
+                )
+            }
+            Type::Union(parts) => {
+                Type::from_type_vec_preserve_untyped(parts.iter().map(recur).collect())
+            }
+            Type::ReceiverMethodRef(receiver, method) => {
+                Type::ReceiverMethodRef(Box::new(recur(receiver)), *method)
+            }
+            Type::DeferredSafeNavigation(receiver, result) => {
+                Type::DeferredSafeNavigation(Box::new(recur(receiver)), Box::new(recur(result)))
+            }
+            Type::Array(Some(inner)) => Type::Array(Some(Box::new(recur(inner)))),
+            Type::Tuple(parts) => Type::Tuple(parts.iter().map(recur).collect()),
+            _ => ty.clone(),
+        }
+    }
+
+    pub(crate) fn type_contains_ivar_ref(ty: &Type) -> bool {
+        Self::type_contains_matching(ty, &|leaf| matches!(leaf, Type::IvarRef(_)))
+    }
+
     fn type_contains_callee_relative_ref(ty: &Type) -> bool {
         Self::type_contains_matching(ty, &|leaf| {
             matches!(
@@ -9668,6 +9760,7 @@ impl TypeRegistry {
         &self,
         class_name: &str,
         is_singleton: bool,
+        ivar: &str,
         ty: &Type,
     ) -> Type {
         let Type::Union(parts) = ty else {
@@ -9675,6 +9768,9 @@ impl TypeRegistry {
         };
         let mut resolved = Vec::with_capacity(parts.len());
         for part in parts {
+            if self.reads_back_own_ivar(class_name, is_singleton, ivar, part) {
+                continue;
+            }
             let part = if Self::holds_deferred_ivar_value(part) {
                 // A call whose receiver stays unresolved (`@locked.dup`) drops that receiver.
                 if let Type::ReceiverMethodRef(receiver, _)
@@ -9698,6 +9794,27 @@ impl TypeRegistry {
             resolved.push(part);
         }
         Type::from_type_vec(resolved)
+    }
+
+    /// `LocalEnv.new(@lenv.file_context)` writes back the value this ivar already holds, so
+    /// it adds nothing to it.
+    fn reads_back_own_ivar(
+        &self,
+        class_name: &str,
+        is_singleton: bool,
+        ivar: &str,
+        part: &Type,
+    ) -> bool {
+        let Type::ReceiverMethodRef(receiver, method) = part else {
+            return false;
+        };
+        let receiver = self.resolve_deferred_refs_for_context(class_name, is_singleton, receiver);
+        Self::type_to_class_name(&receiver).as_deref() == Some(class_name)
+            && matches!(receiver, Type::Class(_)) != is_singleton
+            && self
+                .attr_ivar_name_through_ancestors(class_name, method.as_str(), is_singleton)
+                .as_deref()
+                == Some(ivar)
     }
 
     fn is_known_ivar_value(ty: &Type) -> bool {
@@ -11242,6 +11359,22 @@ impl TypeRegistry {
         {
             return result;
         }
+        // A relation delegates the model's class methods and scopes (`pipelines.external`).
+        if let Some(Type::Class(model)) =
+            crate::rails::relation_api::relation_element_type(resolved_receiver)
+            && self
+                .lookup_method_def(model.as_str(), method_name, true)
+                .is_some()
+        {
+            return self.resolve_method_on_resolved_receiver(
+                _class_name,
+                &Type::Singleton(*model),
+                method_name,
+                depth,
+                memo,
+                visiting,
+            );
+        }
         if let Some(records) = crate::rails::relation_api::records_receiver(
             resolved_receiver,
             method_name,
@@ -11318,6 +11451,21 @@ impl TypeRegistry {
             for part in parts {
                 if *part == Type::Untyped {
                     resolved_parts.push(Type::Untyped);
+                } else if *part == Type::Nil && method_name == "nil?" {
+                    // `Object#nil?` would answer for nil when `NilClass` is not loaded.
+                    resolved_parts.push(Type::True);
+                } else if crate::rails::relation_api::relation_element_type(part).is_some() {
+                    let resolved = self.resolve_method_on_resolved_receiver(
+                        _class_name,
+                        part,
+                        method_name,
+                        depth,
+                        memo,
+                        visiting,
+                    );
+                    if resolved != Type::Untyped {
+                        resolved_parts.push(resolved);
+                    }
                 } else if let Some(cls) = Self::type_to_class_name(part) {
                     let prefer_singleton = matches!(part, Type::Singleton(_));
                     let ret = self
@@ -11417,6 +11565,28 @@ impl TypeRegistry {
         method_name.strip_prefix("__tyda_class_variable_get__:")
     }
 
+    /// What the methods of `class_name`'s ancestors (superclasses and modules) write to
+    /// `ivar_name`, with the class each write belongs to.
+    fn ancestors_writing_ivar(&self, class_name: &str, ivar_name: &str) -> Vec<(String, Type)> {
+        let mut seen = FxHashSet::default();
+        let mut found = Vec::new();
+        let mut pending: Vec<String> = vec![class_name.to_string()];
+        while let Some(owner) = pending.pop() {
+            if !seen.insert(owner.clone()) || seen.len() > MAX_RESOLVE_DEPTH {
+                continue;
+            }
+            if owner != class_name
+                && let Some(ty) = self.lookup_ivar_type(&owner, ivar_name)
+            {
+                found.push((owner.clone(), ty));
+            }
+            for ancestor in self.declared_ancestor_names(&owner) {
+                pending.push(self.resolve_scoped_class_ref(&owner, &ancestor));
+            }
+        }
+        found
+    }
+
     fn resolve_receiver_ivar_reflection(
         &self,
         resolved_receiver: &Type,
@@ -11427,10 +11597,25 @@ impl TypeRegistry {
     ) -> Type {
         if let Some(cls) = Self::type_to_class_name(resolved_receiver) {
             let singleton_context = matches!(resolved_receiver, Type::Singleton(_));
-            let raw = if singleton_context {
-                self.lookup_singleton_ivar_type(&cls, ivar_name)
+            let (cls, raw) = if singleton_context {
+                let raw = self.lookup_singleton_ivar_type(&cls, ivar_name);
+                (cls, raw)
             } else {
-                self.lookup_ivar_type(&cls, ivar_name)
+                // Methods of a superclass or an included module write it on this object too.
+                let mut parts: Vec<Type> =
+                    self.lookup_ivar_type(&cls, ivar_name).into_iter().collect();
+                for (owner, ty) in self.ancestors_writing_ivar(&cls, ivar_name) {
+                    parts.push(self.resolve_deferred_refs_depth(
+                        &owner,
+                        false,
+                        &ty,
+                        depth + 1,
+                        memo,
+                        visiting,
+                    ));
+                }
+                let raw = (!parts.is_empty()).then(|| Type::from_type_vec(parts));
+                (cls, raw)
             };
             return match raw {
                 Some(Type::Untyped)
@@ -11911,7 +12096,16 @@ impl TypeRegistry {
                             visiting.remove(&key);
                             resolved
                         })
-                        .filter(Self::is_concrete_for_global_resolve);
+                        .filter(Self::is_concrete_for_global_resolve)
+                        .or_else(|| {
+                            let receiver_class = Self::type_to_class_name(&resolved_receiver)?;
+                            self.resolve_attr_reader_return_type(
+                                &receiver_class,
+                                method_name,
+                                matches!(resolved_receiver, Type::Singleton(_)),
+                            )
+                            .filter(|ty| *ty != Type::Untyped)
+                        });
                     resolved_return.unwrap_or_else(|| {
                         Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
                     })

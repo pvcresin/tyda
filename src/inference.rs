@@ -2786,7 +2786,7 @@ impl<'a> InferenceEngine<'a> {
         }
         // An ivar argument is read in the caller's class, which may differ from the target's.
         let needs_context = arg_types.iter().any(|ty| {
-            Self::type_contains_call_site_param_ref(ty) || matches!(ty, Type::IvarRef(_))
+            Self::type_contains_call_site_param_ref(ty) || TypeRegistry::type_contains_ivar_ref(ty)
         }) || keyword_arg_types
             .values()
             .any(Self::type_contains_call_site_param_ref)
@@ -57778,6 +57778,9 @@ impl<'a> InferenceEngine<'a> {
     fn argument_is_plain_read(argument: &Node<'_>) -> bool {
         match argument {
             Node::LocalVariableReadNode { .. } => true,
+            Node::CallNode { .. } => argument.as_call_node().is_some_and(|call| {
+                call.receiver().is_none() && call.arguments().is_none() && call.block().is_none()
+            }),
             Node::KeywordHashNode { .. } => argument.as_keyword_hash_node().is_some_and(|hash| {
                 hash.elements().iter().all(|element| {
                     element

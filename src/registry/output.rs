@@ -977,6 +977,7 @@ impl TypeRegistry {
                     let resolved = self.resolve_deferred_ivar_value(
                         receiver_class,
                         method.is_singleton,
+                        ivar,
                         deferred,
                     );
                     if resolved != Type::Untyped && Self::is_concrete_for_global_resolve(&resolved)

@@ -5660,6 +5660,92 @@ fn nested_path_under_namespace_from_another_file() {
     );
 }
 
+// The enum values come from a method in another file, and a relation of the model in a
+// third file reaches the generated scope.
+#[test]
+fn enum_from_method_and_relation_scope_across_files() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+    let files = [
+        (
+            "base.rb",
+            "class ActiveRecord::Base; end\nclass ApplicationRecord < ActiveRecord::Base; end\n",
+        ),
+        (
+            "enums.rb",
+            "module PipelineEnums\n  def self.sources\n    { push: 1, external: 6 }\n  end\nend\n",
+        ),
+        (
+            "pipeline.rb",
+            "class Pipeline < ApplicationRecord\n  enum :source, PipelineEnums.sources\nend\n",
+        ),
+        (
+            "project.rb",
+            concat!(
+                "class Project < ApplicationRecord\n",
+                "  has_many :pipelines\n",
+                "  def external_pipelines = pipelines.external\n",
+                "end\n",
+            ),
+        ),
+    ];
+    for (name, source) in files {
+        fs::write(dir.path().join(name), source).expect("failed to write source");
+    }
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("  def self.external: -> ActiveRecord::Relation[Pipeline]\n"),
+        "{rbs}"
+    );
+    assert!(
+        rbs.contains("  def external_pipelines: -> ActiveRecord::Relation[Pipeline]\n"),
+        "{rbs}"
+    );
+}
+
+// A scope chain from another file ends in `find_by`, so the value may be nil; `nil?` on it is
+// a `bool`, not the `false` of `Object#nil?`.
+#[test]
+fn nil_predicate_on_a_nilable_scope_chain_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+    fs::write(
+        dir.path().join("act.rb"),
+        concat!(
+            "class ActiveRecord::Base; end\n",
+            "class ApplicationRecord < ActiveRecord::Base; end\n",
+            "class Act < ApplicationRecord\n",
+            "  scope :recent, -> { order(:id) }\n",
+            "  scope :upto, ->(v) { where(v: v) }\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("dv.rb"),
+        concat!(
+            "class Dv\n",
+            "  def action = Act.recent.upto(1).find_by(d: 1)\n",
+            "  def none? = action.nil?\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(rbs.contains("  def action: -> Act?\n"), "{rbs}");
+    assert!(rbs.contains("  def none?: -> bool\n"), "{rbs}");
+}
+
 // `NES::FPS` names a value constant in another file, not a class.
 #[test]
 fn constant_aliasing_a_value_constant_from_another_file() {
