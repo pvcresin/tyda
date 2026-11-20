@@ -5523,6 +5523,42 @@ fn namespace_constant_from_another_file() {
     assert!(rbs.contains("def make: -> String\n"), "got: {rbs}");
 }
 
+// `::Tool` names the top-level module even inside `module Core`, which also has a `Tool`.
+#[test]
+fn absolute_constant_skips_nested_name_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("core_tool.rb"),
+        "module Core\n  module Tool\n    def self.t = 1\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("tool.rb"),
+        "module Tool\n  def self.t = \"s\"\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("user.rb"),
+        concat!(
+            "module Core\n",
+            "  class User\n",
+            "    def top = ::Tool.t\n",
+            "    def nested = Tool.t\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(rbs.contains("def top: -> \"s\"\n"), "got: {rbs}");
+    assert!(rbs.contains("def nested: -> 1\n"), "got: {rbs}");
+}
+
 // The reader's `@src` belongs to `Ctx`; the caller in another file reads it through the reader.
 #[test]
 fn ivar_reader_return_from_another_file() {

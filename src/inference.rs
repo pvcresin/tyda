@@ -32384,7 +32384,7 @@ impl<'a> InferenceEngine<'a> {
                         if bare == "Unknown" {
                             receiver_type
                         } else {
-                            let resolved = self.resolve_constant_type_in_scope(bare, class_name);
+                            let resolved = self.resolve_constant_type_in_scope(&path, class_name);
                             if resolved != Type::Untyped {
                                 resolved
                             } else {

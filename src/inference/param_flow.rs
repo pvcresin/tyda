@@ -12,7 +12,7 @@ use ruby_prism::{Node, Visit};
 use crate::registry::ParamFlow;
 
 /// Guards pathological nesting; past it, no parameter is rendered as a type parameter.
-const MAX_SCAN_DEPTH: usize = 256;
+pub(super) const MAX_SCAN_DEPTH: usize = 256;
 
 /// Flows of the required positional parameters at the given indexes; parameters that are
 /// reassigned, shadowed, or never returned are left out.

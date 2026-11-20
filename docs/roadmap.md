@@ -52,6 +52,10 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] Ruby の意味論どおり、未初期化の ivar の値に `nil` を含める。`initialize` のすべての経路（class instance variable は class body）で代入される ivar だけを非 nil とし、それ以外の reader と参照は `T?` にする。この `nil` による `missing_method` は除外せずに報告する。意図して使う箇所は `# tyda: ignore[missing_method]` で抑制する。既存 scenario の期待値も合わせて直す（`known-issues/ruby_methods.md`、`ruby/variable/instance.md` の known issue）
 - [ ] TODO: 未初期化の ivar に由来する `nil` 診断の重さを検討する（他の `nil` と severity を分けて warning にするか、など）
 - [ ] 保存前の ActiveRecord model を推論で区別する。既定は tapioca・rbs_rails と同じく保存済みで valid な model の契約とし、`null: false` のカラムと必須の `belongs_to` は非 nil にする。そのうえで `find` / `where` / association から来た値は非 nil のまま、`new` / `build` から来てまだ保存していない値だけカラムと association を `nil` を含む型にする。値の出どころを追えない RBI 生成ツールは全体を nilable にする設定（tapioca の `ActiveRecordColumnTypes`）しか持てないが、Tyda は推論で実際に危ない箇所だけを捉える。全体を切り替える設定は、要望が出るまで追加しない
+- [ ] `h[x.key] ||= []` の直後の `h[x.key] << v` を非 nil にする。呼び出しの key には key fact がなく `nil` と読む（`tests/flow_diagnostics.rs` の `known_issue_index_or_write_with_call_key_still_reads_nil`）
+- [ ] 名前を補間した `define_method`（`(1..3).each { |v| define_method("mode_#{v}?") }`）のあるクラスでは、未知のメソッドを `missing_method` にしない（`known_issue_interpolated_define_method_is_reported_missing`）
+- [ ] `def item = super || build_item` で has_one の reader を上書きしたら非 nil にする（`rails/active_record/has_one.md` の known issue）
+- [ ] `I18n.t` を常に `String` にしない。`date.abbr_day_names` などは配列を返す（`rails/active_support/i18n.md` の known issue）
 - [ ] attr_writer に渡した値を ivar の型に含める。`self.conn = nil` の後の `@conn.close` が `NilClass#close` にならない（`tests/flow_diagnostics.rs` の `known_issue_attr_writer_nil_does_not_reach_ivar`）
 - [ ] PR 154 の subject 差分で見つけたが、最小再現ができていない後退を調べる。Redmine `link_to_project` の引数が `(Project | untyped)?` から `untyped?` になる。`respond_to?` を確かめる述語メソッドなど、別メソッドのガードを越えた nil・missing method の誤検出（条件なしの `before_action` が self メソッドの nil で止める場合は action 内で非 nil にする）
 - [ ] Ruby / Rails version、framework DSL、scenario coverage を継続する

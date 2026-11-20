@@ -555,7 +555,7 @@ impl<'a> InferenceEngine<'a> {
         class_context: &str,
     ) -> bool {
         let bare = name.trim_scope_prefix();
-        match self.resolve_constant_type_in_scope(bare, class_context) {
+        match self.resolve_constant_type_in_scope(name, class_context) {
             Type::Untyped => false,
             Type::Singleton(n) | Type::Class(n) => n.as_ref() != bare,
             _ => true,

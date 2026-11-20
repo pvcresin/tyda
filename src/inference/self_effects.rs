@@ -14,6 +14,7 @@ use ruby_prism::{Node, Visit};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::InferenceEngine;
+use super::param_flow::MAX_SCAN_DEPTH;
 use crate::types::{Sym, Type};
 
 /// The writes a method body or block body makes, read off its syntax.
@@ -51,6 +52,21 @@ impl SelfWrites {
 #[derive(Default)]
 struct SelfWritesCollector {
     writes: SelfWrites,
+    depth: usize,
+}
+
+/// Stops the walk below nodes that nest arbitrarily once the code is too deep to read, which
+/// leaves it opaque.
+macro_rules! guarded {
+    ($($method:ident, $node:ident;)*) => {
+        $(
+            fn $method(&mut self, node: &ruby_prism::$node<'pr>) {
+                if !self.writes.opaque {
+                    ruby_prism::$method(self, node);
+                }
+            }
+        )*
+    };
 }
 
 fn is_self_receiver(receiver: Option<Node<'_>>) -> bool {
@@ -58,6 +74,31 @@ fn is_self_receiver(receiver: Option<Node<'_>>) -> bool {
 }
 
 impl<'pr> Visit<'pr> for SelfWritesCollector {
+    fn visit_branch_node_enter(&mut self, _node: Node<'pr>) {
+        self.depth += 1;
+        self.writes.opaque |= self.depth > MAX_SCAN_DEPTH;
+    }
+
+    fn visit_branch_node_leave(&mut self) {
+        self.depth -= 1;
+    }
+
+    guarded! {
+        visit_statements_node, StatementsNode;
+        visit_arguments_node, ArgumentsNode;
+        visit_parentheses_node, ParenthesesNode;
+        visit_array_node, ArrayNode;
+        visit_hash_node, HashNode;
+        visit_keyword_hash_node, KeywordHashNode;
+        visit_assoc_node, AssocNode;
+        visit_else_node, ElseNode;
+        visit_block_node, BlockNode;
+        visit_begin_node, BeginNode;
+        visit_interpolated_string_node, InterpolatedStringNode;
+        visit_embedded_statements_node, EmbeddedStatementsNode;
+        visit_local_variable_write_node, LocalVariableWriteNode;
+    }
+
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         if is_self_receiver(node.receiver()) {
             self.writes.call_self(node.name().as_slice());

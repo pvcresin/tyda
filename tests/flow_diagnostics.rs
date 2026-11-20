@@ -1567,6 +1567,49 @@ fn known_issue_attr_writer_nil_does_not_reach_ivar() {
     }
 }
 
+#[test]
+fn known_issue_index_or_write_with_call_key_still_reads_nil() {
+    let source = concat!(
+        "class Grouping\n",
+        "  def run(item)\n",
+        "    groups = {}\n",
+        "    groups[item.key] ||= []\n",
+        "    groups[item.key] << item\n",
+        "  end\n",
+        "end\n",
+    );
+    // Known issue: the read right after `groups[item.key] ||= []` is the array just stored,
+    // but a call key gets no key fact, so it reads `nil` and reports `NilClass#<<`.
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert!(
+            missing.iter().any(|(_, method)| method == "NilClass#<<"),
+            "known issue fixed (compact: {compact}); expect no NilClass#<<: {missing:?}"
+        );
+    }
+}
+
+#[test]
+fn known_issue_interpolated_define_method_is_reported_missing() {
+    let source = concat!(
+        "class Flag\n",
+        "  (1..3).each { |v| define_method(\"mode_#{v}?\") { v } }\n",
+        "end\n",
+        "class User\n",
+        "  def run = Flag.new.mode_2?\n",
+        "end\n",
+    );
+    // Known issue: the names the loop defines are not known, so `Flag` should not report
+    // missing methods.
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert!(
+            missing.iter().any(|(_, method)| method == "Flag#mode_2?"),
+            "known issue fixed (compact: {compact}); expect no Flag#mode_2?: {missing:?}"
+        );
+    }
+}
+
 fn missing_methods_in(source: &str, compact: bool) -> Vec<(u32, String)> {
     diagnostics(source, compact)
         .into_iter()
