@@ -4220,7 +4220,9 @@ impl<'a> InferenceEngine<'a> {
                         crate::sym::join_scope(&ns, last)
                     };
                     self.ensure_class_available(&nested);
-                    if Self::is_real_class_data(&self.registry, &nested) {
+                    if Self::is_real_class_data(&self.registry, &nested)
+                        || self.is_other_source_namespace(&nested)
+                    {
                         return Type::Singleton(Sym::new(nested));
                     }
                     if let Some(found) = self.resolve_nested_namespace_ancestors_any(&ns, last) {
@@ -5043,11 +5045,14 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// Writes the value an in-place change (`<<`, `[]=`, `merge!`) leaves in `target`, which
+    /// held `existing` before it.
     fn write_alias_target(
         &mut self,
         class_name: &str,
         scope: &mut Scope,
         target: &AliasTarget,
+        existing: &Type,
         ty: Type,
     ) {
         match target {
@@ -5064,10 +5069,23 @@ impl<'a> InferenceEngine<'a> {
                         .is_some_and(|current| {
                             TypeRegistry::type_contains_param_ref_static(&current)
                         });
-                    let summary = if inherits_param_refs {
+                    let changed = if inherits_param_refs {
                         ty.clone()
                     } else {
                         Self::ivar_value_outside_initialize(scope, ty.clone())
+                    };
+                    // The change reaches only the object the ivar held here; values other
+                    // writes leave in it (`@x = nil` in `initialize`) stay.
+                    let summary = match self.registry.lookup_ivar_type(class_name, name) {
+                        Some(Type::Union(members)) if !matches!(existing, Type::Union(_)) => {
+                            let mut parts: Vec<Type> = members
+                                .into_iter()
+                                .filter(|member| member != existing)
+                                .collect();
+                            parts.push(changed);
+                            Type::from_type_vec(parts)
+                        }
+                        _ => changed,
                     };
                     if !self.replaying_method_body
                         && let Some(method_name) = scope.method_name.as_deref()
@@ -28839,7 +28857,9 @@ impl<'a> InferenceEngine<'a> {
                                     scope,
                                 )
                             {
-                                self.write_alias_target(class_name, scope, &target, new_type);
+                                self.write_alias_target(
+                                    class_name, scope, &target, &existing, new_type,
+                                );
                             } else if method_name == "transform_keys!"
                                 && matches!(
                                     existing,
@@ -28853,7 +28873,9 @@ impl<'a> InferenceEngine<'a> {
                                     scope,
                                 )
                             {
-                                self.write_alias_target(class_name, scope, &target, new_type);
+                                self.write_alias_target(
+                                    class_name, scope, &target, &existing, new_type,
+                                );
                             }
                         } else if method_name == "[]="
                             && let Some(args) = call_node.arguments()
@@ -46785,6 +46807,7 @@ impl<'a> InferenceEngine<'a> {
             class_name,
             scope,
             &target,
+            &existing,
             Type::Array(Some(Box::new(block_return))),
         );
     }
@@ -56137,8 +56160,8 @@ impl<'a> InferenceEngine<'a> {
     ) {
         let (target, existing) = target_and_existing;
         if key.slice && matches!(existing, Type::Tuple(_) | Type::Array(_)) {
-            let new_type = Self::apply_array_slice_write(existing, result_type);
-            self.write_alias_target(class_name, scope, &target, new_type);
+            let new_type = Self::apply_array_slice_write(existing.clone(), result_type);
+            self.write_alias_target(class_name, scope, &target, &existing, new_type);
             return;
         }
         let IndexWriteKey {
@@ -56171,8 +56194,8 @@ impl<'a> InferenceEngine<'a> {
     ) {
         let (target, existing) = target_and_existing;
         let (key, key_type) = key_and_type;
-        let new_type = Self::apply_index_write(existing, key, key_type, result_type);
-        self.write_alias_target(class_name, scope, &target, new_type);
+        let new_type = Self::apply_index_write(existing.clone(), key, key_type, result_type);
+        self.write_alias_target(class_name, scope, &target, &existing, new_type);
     }
 
     fn indexed_alias_access<'src>(
@@ -56286,7 +56309,7 @@ impl<'a> InferenceEngine<'a> {
             ) else {
                 return;
             };
-            self.write_alias_target(class_name, scope, &target, new_type);
+            self.write_alias_target(class_name, scope, &target, &existing, new_type);
             return;
         }
 

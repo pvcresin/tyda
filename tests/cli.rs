@@ -5590,6 +5590,68 @@ fn call_with_arguments_on_method_from_another_file() {
     assert!(rbs.contains("def direct: -> [2]\n"), "got: {rbs}");
 }
 
+// `Source` names `Bundler::Source` from another file, and `Source::Rubygems` its nested class.
+#[test]
+fn nested_path_under_namespace_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("source.rb"),
+        "module Bundler\n  class Source\n    class Rubygems < Source\n    end\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("source_list.rb"),
+        "module Bundler\n  class SourceList\n    def source_class = Source::Rubygems\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def source_class: -> singleton(Bundler::Source::Rubygems)\n"),
+        "got: {rbs}"
+    );
+}
+
+// Known issue: the scenario runner and a single file type `blk` as `SigFuncType?`. The CLI
+// analyzes `sig.rb` alone, where `AST.create(raw)` is a reference that keeps no arguments, and
+// only calls that reach a method's return are typed again after the merge, not ivar writes.
+// When the check fails, drop it.
+#[test]
+fn known_issue_ivar_from_call_with_arguments_in_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("ast.rb"),
+        "class AST\n  def self.create(raw) = SigFuncType.new(raw)\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("sig.rb"),
+        concat!(
+            "class AST\n",
+            "  class SigFuncType\n",
+            "    attr_reader :blk\n",
+            "    def initialize(raw) = @blk = raw ? AST.create(nil) : nil\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def blk: -> untyped\n"),
+        "known issue fixed (ivar from a call with arguments in another file); drop this check: {rbs}"
+    );
+}
+
 // The reader's `@src` belongs to `Ctx`; the caller in another file reads it through the reader.
 #[test]
 fn ivar_reader_return_from_another_file() {
