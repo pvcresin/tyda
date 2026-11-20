@@ -1545,7 +1545,7 @@ fn self_facts_end_where_code_may_write_them() {
 }
 
 #[test]
-fn known_issue_attr_writer_nil_does_not_reach_ivar() {
+fn attr_writer_value_reaches_the_ivar() {
     let source = concat!(
         "class WriterCall\n",
         "  attr_writer :conn\n",
@@ -1556,57 +1556,101 @@ fn known_issue_attr_writer_nil_does_not_reach_ivar() {
         "  end\n",
         "end\n",
     );
-    // Known issue: `self.conn = nil` should make `@conn` `File?`, so `@conn.close` should
-    // report `NilClass#close`.
     for compact in [false, true] {
         let missing = missing_methods_in(source, compact);
-        assert!(
-            missing.is_empty(),
-            "known issue fixed (compact: {compact}); expect NilClass#close: {missing:?}"
+        assert_eq!(
+            missing,
+            [(6, "NilClass#close".to_string())],
+            "compact: {compact}"
         );
     }
 }
 
 #[test]
-fn known_issue_index_or_write_with_call_key_still_reads_nil() {
-    let source = concat!(
+fn index_or_write_with_call_key_keeps_the_key() {
+    let kept = [
+        concat!(
+            "class Grouping\n",
+            "  def run(item)\n",
+            "    groups = {}\n",
+            "    groups[item.key] ||= []\n",
+            "    groups[item.key] << item\n",
+            "  end\n",
+            "end\n",
+        ),
+        concat!(
+            "class Grouping\n",
+            "  def run(items)\n",
+            "    @groups = {}\n",
+            "    items.each do |item|\n",
+            "      @groups[item.key] ||= []\n",
+            "      @groups[item.key] << item\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    ];
+    for source in kept {
+        for compact in [false, true] {
+            let missing = missing_methods_in(source, compact);
+            assert!(
+                missing.is_empty(),
+                "compact: {compact}: {missing:?}\n{source}"
+            );
+        }
+    }
+    // Another `item` may have another key.
+    let changed = concat!(
         "class Grouping\n",
-        "  def run(item)\n",
+        "  def run(item, other)\n",
         "    groups = {}\n",
         "    groups[item.key] ||= []\n",
+        "    item = other\n",
         "    groups[item.key] << item\n",
         "  end\n",
         "end\n",
     );
-    // Known issue: the read right after `groups[item.key] ||= []` is the array just stored,
-    // but a call key gets no key fact, so it reads `nil` and reports `NilClass#<<`.
-    for compact in [false, true] {
-        let missing = missing_methods_in(source, compact);
-        assert!(
-            missing.iter().any(|(_, method)| method == "NilClass#<<"),
-            "known issue fixed (compact: {compact}); expect no NilClass#<<: {missing:?}"
-        );
-    }
+    assert!(
+        missing_methods_in(changed, false)
+            .iter()
+            .any(|(_, method)| method == "NilClass#<<")
+    );
 }
 
 #[test]
-fn known_issue_interpolated_define_method_is_reported_missing() {
-    let source = concat!(
-        "class Flag\n",
-        "  (1..3).each { |v| define_method(\"mode_#{v}?\") { v } }\n",
-        "end\n",
-        "class User\n",
-        "  def run = Flag.new.mode_2?\n",
-        "end\n",
-    );
-    // Known issue: the names the loop defines are not known, so `Flag` should not report
-    // missing methods.
-    for compact in [false, true] {
-        let missing = missing_methods_in(source, compact);
-        assert!(
-            missing.iter().any(|(_, method)| method == "Flag#mode_2?"),
-            "known issue fixed (compact: {compact}); expect no Flag#mode_2?: {missing:?}"
-        );
+fn computed_define_method_names_are_not_reported_missing() {
+    let cases = [
+        (
+            "names from a small integer range",
+            concat!(
+                "class Flag\n",
+                "  (1..3).each { |v| define_method(\"mode_#{v}?\") { v } }\n",
+                "end\n",
+                "class User\n",
+                "  def run = Flag.new.mode_2?\n",
+                "end\n",
+            ),
+        ),
+        (
+            "names the source does not show",
+            concat!(
+                "class Flag\n",
+                "  NAMES.each { |name| define_method(name) { 1 } }\n",
+                "end\n",
+                "class User\n",
+                "  def run = Flag.new.anything\n",
+                "end\n",
+            ),
+        ),
+    ];
+    for (name, source) in cases {
+        for compact in [false, true] {
+            let missing = missing_methods_in(source, compact);
+            assert!(
+                missing.is_empty(),
+                "{name} (compact: {compact}): {missing:?}"
+            );
+        }
     }
 }
 

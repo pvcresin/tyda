@@ -13577,6 +13577,13 @@ impl<'a> InferenceEngine<'a> {
         {
             return Some(column_type);
         }
+        if let Some(generated) = self.registry.generated_module_method_return(
+            class_name,
+            &method_name,
+            scope.singleton_dispatch,
+        ) {
+            return Some(generated);
+        }
         let targets =
             self.super_call_targets(class_name, &method_name, scope.singleton_dispatch)?;
         let arguments = self.super_call_arguments(class_name, scope, super_node, parse_result);
@@ -16831,6 +16838,9 @@ impl<'a> InferenceEngine<'a> {
                                         &mut current_visibility,
                                     );
                                 if !static_mixin_collected && !iterator_collected {
+                                    if let Some(block) = call_node.block() {
+                                        self.mark_unnamed_define_methods(class_name, &block);
+                                    }
                                     self.collect_top_level_calls_with_scope(
                                         class_name,
                                         &node,
@@ -27588,12 +27598,65 @@ impl<'a> InferenceEngine<'a> {
         if Self::can_track_ivar_write_locally(&write_node.value(), &value_type) {
             scope.set_self_fact(&ivar_name, value_type.clone());
         }
+        self.record_ivar_type(class_name, &ivar_name, value_type, scope);
+    }
+
+    fn record_ivar_type(
+        &mut self,
+        class_name: &str,
+        ivar_name: &str,
+        value_type: Type,
+        scope: &Scope,
+    ) {
         if scope.singleton_dispatch {
-            self.record_singleton_ivar(class_name, &ivar_name, value_type);
+            self.record_singleton_ivar(class_name, ivar_name, value_type);
         } else {
             let value_type = Self::ivar_value_outside_initialize(scope, value_type);
             self.registry
-                .add_ivar_type(class_name, &ivar_name, value_type);
+                .add_ivar_type(class_name, ivar_name, value_type);
+        }
+    }
+
+    /// `self.conn = value` through an `attr_writer` writes `@conn` like `@conn = value`.
+    fn record_self_attr_writer_call(
+        &mut self,
+        class_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &mut Scope,
+    ) {
+        if !call_node
+            .receiver()
+            .is_some_and(|receiver| matches!(receiver, Node::SelfNode { .. }))
+            || call_node.block().is_some()
+        {
+            return;
+        }
+        let method_name = String::from_utf8_lossy(call_node.name().as_slice());
+        if !method_name.ends_with('=') || method_name == "[]=" {
+            return;
+        }
+        let Some(arguments) = call_node.arguments() else {
+            return;
+        };
+        let mut values = arguments.arguments().iter();
+        let (Some(value), None) = (values.next(), values.next()) else {
+            return;
+        };
+        let Some(ivar_name) = self
+            .registry
+            .first_method_call_owner_cached(class_name, &method_name, scope.singleton_dispatch)
+            .and_then(|(owner, is_singleton)| {
+                self.registry
+                    .lookup_method_def(&owner, &method_name, is_singleton)
+                    .and_then(|method| method.attr_ivar.clone())
+            })
+        else {
+            return;
+        };
+        let value_type = self.infer_node_type(class_name, &value, parse_result, scope);
+        if value_type != Type::Untyped {
+            self.record_ivar_type(class_name, &ivar_name, value_type, scope);
         }
     }
 
@@ -28383,6 +28446,7 @@ impl<'a> InferenceEngine<'a> {
             Node::CallNode { .. } => {
                 let call_node = node.as_call_node().expect("must be CallNode");
                 let method_name = String::from_utf8_lossy(call_node.name().as_slice()).to_string();
+                self.record_self_attr_writer_call(class_name, &call_node, parse_result, scope);
                 if Self::call_sets_regexp_match_globals(&method_name) {
                     scope.regexp_match_captures = true;
                     scope.regexp_required_captures = 0;
@@ -32502,6 +32566,13 @@ impl<'a> InferenceEngine<'a> {
                             scope,
                         ) {
                             break 'recv wrap(local_result);
+                        }
+                        if let Some(translation) = Self::i18n_translation_return(
+                            &safe_nav_receiver_type,
+                            &method_name,
+                            &call_node,
+                        ) {
+                            break 'recv wrap(translation);
                         }
                         if let Some(runtime_result) = self.runtime_fact_call_result(
                             class_name,
@@ -58416,6 +58487,26 @@ impl<'a> InferenceEngine<'a> {
             return;
         }
         let getter_name = setter_name.trim_end_matches('=');
+        // A generated writer (an association) takes what its generated reader returns, even
+        // when the class overrides that reader.
+        if self
+            .registry
+            .generated_module_method_return(class_name, setter_name, false)
+            .is_some()
+        {
+            if let Some(generated_getter_type) =
+                self.registry
+                    .generated_module_method_return(class_name, getter_name, false)
+            {
+                self.registry.update_method_param_default_type(
+                    class_name,
+                    setter_name,
+                    0,
+                    generated_getter_type.union_with(arg_type.clone()),
+                );
+            }
+            return;
+        }
         let methods = self.registry.get_methods(class_name);
         let getter_is_virtual = methods
             .iter()

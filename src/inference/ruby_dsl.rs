@@ -736,7 +736,7 @@ impl<'a> InferenceEngine<'a> {
                 ) else {
                     // A module computed at runtime adds methods Tyda cannot see.
                     if !consumed_by_plugin {
-                        self.registry.mark_dynamic_mixin(&target_class);
+                        self.registry.mark_dynamic_method_surface(&target_class);
                     }
                     continue;
                 };
@@ -1117,6 +1117,7 @@ impl<'a> InferenceEngine<'a> {
             name_arg_index,
             scope,
         ) else {
+            self.registry.mark_dynamic_method_surface(class_name);
             return;
         };
         let args = call_node.arguments().expect("define_method name checked");
@@ -2130,7 +2131,71 @@ impl<'a> InferenceEngine<'a> {
             Node::ArrayNode { .. } | Node::HashNode { .. } => {
                 Some(self.infer_node_type(class_name, receiver, parse_result, scope))
             }
+            Node::ParenthesesNode { .. } => {
+                let body = receiver.as_parentheses_node()?.body()?;
+                let statements = body.as_statements_node()?;
+                let mut statements = statements.body().iter();
+                let (Some(inner), None) = (statements.next(), statements.next()) else {
+                    return None;
+                };
+                self.static_iterator_receiver_type(class_name, &inner, parse_result, scope)
+            }
+            Node::RangeNode { .. } => Self::integer_range_elements(&receiver.as_range_node()?),
             _ => None,
+        }
+    }
+
+    /// The elements of a small integer literal range (`1..3`), as a tuple of literals.
+    fn integer_range_elements(range: &ruby_prism::RangeNode<'_>) -> Option<Type> {
+        let bound = |node: Option<Node<'_>>| -> Option<i64> {
+            let node = node?;
+            let integer = node.as_integer_node()?;
+            String::from_utf8_lossy(integer.location().as_slice())
+                .replace('_', "")
+                .parse()
+                .ok()
+        };
+        let first = bound(range.left())?;
+        let mut last = bound(range.right())?;
+        if range.is_exclude_end() {
+            last = last.checked_sub(1)?;
+        }
+        let count = last.checked_sub(first)?.checked_add(1)?;
+        if !(0..=Self::TUPLE_PUSH_COMPLEXITY_LIMIT as i64).contains(&count) {
+            return None;
+        }
+        Some(Type::Tuple(
+            (first..=last).map(Type::LiteralInteger).collect(),
+        ))
+    }
+
+    /// A `define_method` inside `node` whose name was not read adds methods the source does not
+    /// name, so missing methods on the class cannot be proven.
+    pub(super) fn mark_unnamed_define_methods(&mut self, class_name: &str, node: &Node<'_>) {
+        #[derive(Default)]
+        struct DefineMethodScan {
+            found: bool,
+        }
+        impl<'pr> ruby_prism::Visit<'pr> for DefineMethodScan {
+            fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
+                self.found |= matches!(
+                    node.name().as_slice(),
+                    b"define_method" | b"define_singleton_method"
+                ) && node
+                    .receiver()
+                    .is_none_or(|receiver| matches!(receiver, Node::SelfNode { .. }));
+                if !self.found {
+                    ruby_prism::visit_call_node(self, node);
+                }
+            }
+            fn visit_def_node(&mut self, _node: &ruby_prism::DefNode<'pr>) {}
+            fn visit_class_node(&mut self, _node: &ruby_prism::ClassNode<'pr>) {}
+            fn visit_module_node(&mut self, _node: &ruby_prism::ModuleNode<'pr>) {}
+        }
+        let mut scan = DefineMethodScan::default();
+        ruby_prism::Visit::visit(&mut scan, node);
+        if scan.found {
+            self.registry.mark_dynamic_method_surface(class_name);
         }
     }
 

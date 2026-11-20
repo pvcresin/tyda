@@ -1,7 +1,8 @@
 //! Flow facts about keys written to a hash held in a local or an instance variable.
 //!
 //! A key written through `recv[key] = v`, `recv[key] ||= v`, or `recv[key] += v` is present until
-//! `recv` or a non-static `key` is used in any other way. `Hash#[]` then yields the declared value
+//! `recv` or a non-static `key` is used in any other way. A non-static key is a local or a
+//! no-argument call chain on one (`item.key`), and it lasts as long as that local. `Hash#[]` then yields the declared value
 //! type without its implicit `nil`. A local assigned `{}` also knows its full key set, so a key
 //! with a different static value is absent.
 
@@ -15,7 +16,11 @@ use crate::types::Type;
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum HashKeyIdentity {
     Value(Type),
-    Local(String),
+    /// A read rooted at a local: the local itself or a call chain on it, as written.
+    Read {
+        local: String,
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -59,7 +64,32 @@ fn key_identity(key_node: &Node<'_>, key_type: &Type) -> Option<HashKeyIdentity>
     if is_static_key_type(key_type) {
         return Some(HashKeyIdentity::Value(key_type.clone()));
     }
-    local_name(key_node).map(HashKeyIdentity::Local)
+    Some(HashKeyIdentity::Read {
+        local: read_root(key_node)?,
+        text: String::from_utf8_lossy(key_node.location().as_slice()).into_owned(),
+    })
+}
+
+/// The local a key read starts from: `item` for `item` or `item.key.id`. Each call takes no
+/// arguments or block, so reading the key again calls the same readers.
+fn read_root(node: &Node<'_>) -> Option<String> {
+    if let Some(name) = local_name(node) {
+        return Some(name);
+    }
+    let call = node.as_call_node()?;
+    let name = call.name().as_slice();
+    let is_reader = name
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte >= 0x80)
+        || name.ends_with(b"?");
+    if !is_reader
+        || call.arguments().is_some()
+        || call.block().is_some()
+        || call.is_safe_navigation()
+    {
+        return None;
+    }
+    read_root(&call.receiver()?)
 }
 
 pub(super) fn merge_hash_key_facts(left: &HashKeyFacts, right: &HashKeyFacts) -> HashKeyFacts {
@@ -133,10 +163,6 @@ pub(super) fn invalidate_hash_key_facts(node: &Node<'_>, facts: &mut HashKeyFact
     walker.visit(node);
 }
 
-fn is_local_read(node: &Node<'_>) -> bool {
-    matches!(node, Node::LocalVariableReadNode { .. })
-}
-
 fn is_receiver_read(node: &Node<'_>) -> bool {
     matches!(
         node,
@@ -155,17 +181,17 @@ impl FactInvalidator<'_> {
         for fact in self.facts.values_mut() {
             let before = fact.keys.len();
             fact.keys.retain(
-                |key| !matches!(key, HashKeyIdentity::Local(local) if local == name.as_ref()),
+                |key| !matches!(key, HashKeyIdentity::Read { local, .. } if local == name.as_ref()),
             );
             fact.truthy.retain(|key| fact.keys.contains(key));
             fact.complete &= fact.keys.len() == before;
         }
     }
 
-    /// The first argument is the key position, where reading a local cannot mutate it.
+    /// The first argument is the key position, where reading a key cannot mutate it.
     fn visit_index_arguments<'pr>(&mut self, arguments: impl Iterator<Item = Node<'pr>>) {
         for (index, argument) in arguments.enumerate() {
-            if index > 0 || !is_local_read(&argument) {
+            if index > 0 || read_root(&argument).is_none() {
                 self.visit(&argument);
             }
         }

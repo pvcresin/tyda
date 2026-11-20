@@ -865,6 +865,33 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// `I18n.t("date.day_names")` returns what the locale holds at that key, which is not
+    /// always a string.
+    pub(super) fn i18n_translation_return(
+        receiver_type: &Type,
+        method_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+    ) -> Option<Type> {
+        if !matches!(receiver_type, Type::Singleton(name) if *name == "I18n")
+            || !matches!(method_name, "t" | "translate")
+        {
+            return None;
+        }
+        let arguments = call_node.arguments()?;
+        let mut arguments = arguments.arguments().iter();
+        let key = arguments.next()?;
+        // `scope:` prefixes the key, and a `default:` may answer instead.
+        if arguments.next().is_some() {
+            return None;
+        }
+        let key = if let Some(string) = key.as_string_node() {
+            String::from_utf8_lossy(string.unescaped()).into_owned()
+        } else {
+            String::from_utf8_lossy(key.as_symbol_node()?.unescaped()).into_owned()
+        };
+        plugins::active_support::default_locale_value(&key)
+    }
+
     pub(super) fn synthetic_i18n_method_return(
         &self,
         receiver_type: &Type,

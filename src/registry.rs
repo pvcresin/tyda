@@ -2125,6 +2125,9 @@ pub struct ClassDataCold {
     pub bare_ivar_readers: FxHashSet<(Sym, bool)>,
     // Readers explicitly memoized by a DSL and therefore stable across a flow branch.
     pub memoized_readers: FxHashSet<(Sym, bool)>,
+    /// Methods a framework defines in a module the class includes (Active Record
+    /// associations), with their returns. A `def` of the same name reaches them with `super`.
+    pub generated_module_methods: Vec<((Sym, bool), Type)>,
     /// DSL recorded in a concern `included do` that must run against each includer
     /// (resource name / serializer owner), not the concern module itself.
     pub includer_bound_dsl: Vec<IncluderBoundDsl>,
@@ -2137,8 +2140,9 @@ pub struct ClassDataCold {
     /// Class methods (name, parameter names) whose body passes those parameters on to another
     /// receiverless call (`mount_uploader(field, uploader)`), so their values name accessors.
     pub macro_forwarded_params: Vec<(Sym, Vec<Sym>)>,
-    /// `include` / `extend` / `prepend` of a module computed at runtime (`include Routing.url_helpers`).
-    pub has_dynamic_mixin: bool,
+    /// Methods the source does not name: an `include` / `extend` / `prepend` of a module computed
+    /// at runtime (`include Routing.url_helpers`), or a `define_method` with a computed name.
+    pub has_dynamic_method_surface: bool,
 }
 
 /// Owner-dependent DSL collected on a concern and applied at each includer.
@@ -2334,6 +2338,7 @@ impl ClassData {
         };
         cold.method_visibility.shrink_to_fit();
         cold.bare_ivar_readers.shrink_to_fit();
+        cold.generated_module_methods.shrink_to_fit();
         cold.undefined_methods.shrink_to_fit();
         cold.singleton_ivars.shrink_to_fit();
         for types in cold.singleton_ivars.values_mut() {
@@ -4035,6 +4040,23 @@ impl TypeRegistry {
         if let Some(existing_idx) = data.methods.iter().position(|existing| {
             existing.name == method.name && existing.is_singleton == method.is_singleton
         }) {
+            // The class's own `def` comes before the module that holds a generated method,
+            // whose return stays in `generated_module_methods` for `super`.
+            if is_user
+                && data
+                    .cold()
+                    .generated_module_methods
+                    .iter()
+                    .any(|(key, _)| *key == (method.name, method.is_singleton))
+            {
+                data.methods[existing_idx] = Arc::new(method);
+                if let Some(file_path) = method_file_path {
+                    let method = &data.methods[existing_idx];
+                    data.method_file_paths
+                        .insert((method.name, method.is_singleton), file_path);
+                }
+                return;
+            }
             let existing = &data.methods[existing_idx];
             if existing.origin.is_rbs_file_source() && !method.origin.is_rbs_file_source() {
                 if data
@@ -4250,15 +4272,20 @@ impl TypeRegistry {
         self.add_method_def(class_name, method);
     }
 
-    pub(crate) fn mark_dynamic_mixin(&mut self, class_name: &str) {
-        self.class_data_mut(class_name).cold_mut().has_dynamic_mixin = true;
+    pub(crate) fn mark_dynamic_method_surface(&mut self, class_name: &str) {
+        self.class_data_mut(class_name)
+            .cold_mut()
+            .has_dynamic_method_surface = true;
     }
 
-    fn walked_closure_has_dynamic_mixin(&self, classes: &[String]) -> bool {
+    fn walked_closure_has_dynamic_method_surface(&self, classes: &[String]) -> bool {
         classes
             .iter()
             .filter_map(|name| self.class_data.get(name.as_str()))
-            .any(|data| data.cold_opt().is_some_and(|cold| cold.has_dynamic_mixin))
+            .any(|data| {
+                data.cold_opt()
+                    .is_some_and(|cold| cold.has_dynamic_method_surface)
+            })
     }
 
     pub(crate) fn mark_runtime_attribute(&mut self, class_name: &str, name: &str) {
@@ -13062,6 +13089,38 @@ impl TypeRegistry {
             .insert(key);
     }
 
+    pub(crate) fn record_generated_module_methods(
+        &mut self,
+        class_name: &str,
+        methods: Vec<((Sym, bool), Type)>,
+    ) {
+        if methods.is_empty() {
+            return;
+        }
+        self.class_data_mut(class_name)
+            .cold_mut()
+            .generated_module_methods
+            .extend(methods);
+    }
+
+    /// The return of the generated method a `def` in `class_name` overrides, which its
+    /// `super` calls.
+    pub(crate) fn generated_module_method_return(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> Option<Type> {
+        self.class_data
+            .get(class_name)?
+            .cold()
+            .generated_module_methods
+            .iter()
+            .rev()
+            .find(|((name, singleton), _)| *name == method_name && *singleton == is_singleton)
+            .map(|(_, ty)| ty.clone())
+    }
+
     /// record a DSL-declared memoized reader for flow narrowing.
     pub fn mark_memoized_reader(
         &mut self,
@@ -13672,7 +13731,7 @@ impl TypeRegistry {
             return false;
         }
         if self.walked_closure_defines_method_missing(&visited)
-            || self.walked_closure_has_dynamic_mixin(&visited)
+            || self.walked_closure_has_dynamic_method_surface(&visited)
         {
             return false;
         }

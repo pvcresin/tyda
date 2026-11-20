@@ -159,22 +159,30 @@ impl Plugin for ActiveRecord {
     ) -> bool {
         match method_name {
             "belongs_to" if cx.dsl_enabled(DslLibrary::ActiveRecordAssociations) => {
-                cx.collect_belongs_to(class_name, call_node, parse_result);
+                cx.collect_into_generated_module(class_name, |engine| {
+                    engine.collect_belongs_to(class_name, call_node, parse_result)
+                });
                 cx.collect_active_model_serializer_belongs_to(class_name, call_node, parse_result);
                 true
             }
             "has_many" if cx.dsl_enabled(DslLibrary::ActiveRecordAssociations) => {
-                cx.collect_has_many(class_name, call_node, parse_result);
+                cx.collect_into_generated_module(class_name, |engine| {
+                    engine.collect_has_many(class_name, call_node, parse_result)
+                });
                 cx.collect_active_model_serializer_has_many(class_name, call_node, parse_result);
                 true
             }
             "has_one" if cx.dsl_enabled(DslLibrary::ActiveRecordAssociations) => {
-                cx.collect_has_one(class_name, call_node, parse_result);
+                cx.collect_into_generated_module(class_name, |engine| {
+                    engine.collect_has_one(class_name, call_node, parse_result)
+                });
                 cx.collect_active_model_serializer_belongs_to(class_name, call_node, parse_result);
                 true
             }
             "has_and_belongs_to_many" if cx.dsl_enabled(DslLibrary::ActiveRecordAssociations) => {
-                cx.collect_has_and_belongs_to_many(class_name, call_node, parse_result);
+                cx.collect_into_generated_module(class_name, |engine| {
+                    engine.collect_has_and_belongs_to_many(class_name, call_node, parse_result)
+                });
                 true
             }
             "composed_of" if cx.dsl_enabled(DslLibrary::ActiveRecordAssociations) => {

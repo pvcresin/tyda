@@ -183,7 +183,7 @@ impl<'a> InferenceEngine<'a> {
 
         // `devise :recoverable, ...` includes `Devise::Models::*` modules picked at runtime;
         // the methods below cover only part of them.
-        self.registry.mark_dynamic_mixin(class_name);
+        self.registry.mark_dynamic_method_surface(class_name);
         if self.is_collecting_concern_included() {
             return;
         }

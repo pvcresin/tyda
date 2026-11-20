@@ -695,8 +695,8 @@ impl TypeRegistry {
             }
         }
         if let Some(src_cold) = rbs_data.cold_opt() {
-            if src_cold.has_dynamic_mixin {
-                data.cold_mut().has_dynamic_mixin = true;
+            if src_cold.has_dynamic_method_surface {
+                data.cold_mut().has_dynamic_method_surface = true;
             }
             for entry in &src_cold.macro_forwarded_params {
                 if !data.cold().macro_forwarded_params.contains(entry) {

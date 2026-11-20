@@ -181,6 +181,48 @@ pub(in crate::inference) fn synthetic_method_return(
     time_ext_return(engine, receiver_type, method_name)
 }
 
+/// The value Active Support's bundled `en.yml` holds at a translation key, when it is not a
+/// string. A key naming a subtree returns that subtree; any other key is a string.
+pub(in crate::inference) fn default_locale_value(key: &str) -> Option<Type> {
+    let strings = || Type::Array(Some(Box::new(Type::String)));
+    let optional_strings = || {
+        Type::Array(Some(Box::new(Type::from_type_vec(vec![
+            Type::String,
+            Type::Nil,
+        ]))))
+    };
+    match key {
+        "date.day_names" | "date.abbr_day_names" => Some(strings()),
+        // Index 0 is `nil`, so January is 1.
+        "date.month_names" | "date.abbr_month_names" => Some(optional_strings()),
+        "date.order" => Some(Type::Array(Some(Box::new(Type::Symbol)))),
+        "date"
+        | "date.formats"
+        | "time"
+        | "time.formats"
+        | "number"
+        | "number.format"
+        | "number.currency"
+        | "number.currency.format"
+        | "number.percentage"
+        | "number.percentage.format"
+        | "number.precision"
+        | "number.precision.format"
+        | "number.human"
+        | "number.human.format"
+        | "number.human.storage_units"
+        | "number.human.storage_units.units"
+        | "number.human.decimal_units"
+        | "number.human.decimal_units.units"
+        | "support"
+        | "support.array" => Some(Type::Hash(
+            Some(Box::new(Type::Symbol)),
+            Some(Box::new(Type::Untyped)),
+        )),
+        _ => None,
+    }
+}
+
 fn core_ext_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
     if method_name == "to_json" {
         return Some(Type::String);

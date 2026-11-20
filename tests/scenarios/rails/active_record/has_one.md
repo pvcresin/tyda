@@ -137,10 +137,6 @@ end
 
 ## A reader that falls back to building the record is not nil
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -150,6 +146,8 @@ class A
   def item
     super || build_item
   end
+
+  def current_item = item
 end
 ```
 
@@ -162,5 +160,6 @@ class A
   def build_item: (?Hash[String | Symbol, untyped] attributes) -> Item
   def create_item: (?Hash[String | Symbol, untyped] attributes) -> Item
   def create_item!: (?Hash[String | Symbol, untyped] attributes) -> Item
+  def current_item: -> Item
 end
 ```
