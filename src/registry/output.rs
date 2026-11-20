@@ -927,7 +927,29 @@ impl TypeRegistry {
                         _ => method.raw_return_type.clone(),
                     }
                 }
-                Some(ref deferred) if Self::holds_deferred_ivar_value(deferred) => {
+                // `f ? A.make : nil` keeps the call as a union member. One that stays unknown
+                // keeps the value unresolved, as before.
+                Some(ref deferred @ Type::Union(_))
+                    if Self::holds_deferred_ivar_value(deferred) =>
+                {
+                    let resolved = self.resolve_deferred_ivar_value(
+                        receiver_class,
+                        method.is_singleton,
+                        deferred,
+                    );
+                    if resolved != Type::Untyped && Self::is_concrete_for_global_resolve(&resolved)
+                    {
+                        resolved
+                    } else {
+                        deferred.clone()
+                    }
+                }
+                Some(
+                    ref deferred @ (Type::IvarRef(_)
+                    | Type::MethodReturnRef(..)
+                    | Type::ReceiverMethodRef(..)
+                    | Type::DeferredSafeNavigation(..)),
+                ) => {
                     let resolved = self.resolve_deferred_refs_for_context(
                         receiver_class,
                         method.is_singleton,

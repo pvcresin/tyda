@@ -9647,6 +9647,54 @@ impl TypeRegistry {
         }
     }
 
+    /// Resolves each union member on its own: the context resolver drops an `untyped` member,
+    /// but here a member that stays unknown, unresolved, or `bot` (a read cycle through the
+    /// reader itself) leaves the whole value unknown.
+    pub(super) fn resolve_deferred_ivar_value(
+        &self,
+        class_name: &str,
+        is_singleton: bool,
+        ty: &Type,
+    ) -> Type {
+        let Type::Union(parts) = ty else {
+            return self.resolve_deferred_refs_for_context(class_name, is_singleton, ty);
+        };
+        let mut resolved = Vec::with_capacity(parts.len());
+        for part in parts {
+            let part = if Self::holds_deferred_ivar_value(part) {
+                // A call whose receiver stays unresolved (`@locked.dup`) drops that receiver.
+                if let Type::ReceiverMethodRef(receiver, _)
+                | Type::DeferredSafeNavigation(receiver, _) = part
+                    && Self::holds_deferred_ivar_value(receiver)
+                    && !Self::is_known_ivar_value(&self.resolve_deferred_refs_for_context(
+                        class_name,
+                        is_singleton,
+                        receiver,
+                    ))
+                {
+                    return Type::Untyped;
+                }
+                self.resolve_deferred_refs_for_context(class_name, is_singleton, part)
+            } else {
+                part.clone()
+            };
+            if !Self::is_known_ivar_value(&part) {
+                return Type::Untyped;
+            }
+            resolved.push(part);
+        }
+        Type::from_type_vec(resolved)
+    }
+
+    fn is_known_ivar_value(ty: &Type) -> bool {
+        let unknown = match ty {
+            Type::Untyped | Type::Bot => true,
+            Type::Union(members) => members.contains(&Type::Untyped),
+            _ => false,
+        };
+        !unknown && !Self::holds_deferred_ivar_value(ty)
+    }
+
     fn is_resolved_attr_return_type(ty: &Type) -> bool {
         match ty {
             Type::Untyped => true,

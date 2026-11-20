@@ -579,13 +579,10 @@ impl<'a> InferenceEngine<'a> {
         let ty_is_unknown = matches!(ty, Type::Untyped);
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
         if self.is_active_record_model_class(class_name) {
+            // A coder without a declared type decodes values the writes here do not show.
+            let attr_ivar = (!ty_is_unknown).then(|| format!("@{attr_name}"));
             self.register_typed_attribute_accessors_inner(
-                class_name,
-                &attr_name,
-                ty,
-                loc,
-                Some(format!("@{attr_name}")),
-                true,
+                class_name, &attr_name, ty, loc, attr_ivar, true,
             );
             if ty_is_unknown {
                 self.registry

@@ -978,6 +978,33 @@ class User < ApplicationRecord
 end
 ```
 
+## A serialized attribute with an untyped coder reads values the writes do not show
+
+### update
+
+```ruby
+class ActiveRecord::Base; end
+class ApplicationRecord < ActiveRecord::Base; end
+
+class Role < ApplicationRecord
+  serialize :perms, coder: PermsCoder
+
+  def reset = self.perms = []
+  def has?(perm) = !perms.nil? && perms.include?(perm)
+end
+```
+
+### result
+
+```rbs
+class Role < ApplicationRecord
+  def perms: -> untyped
+  def perms=: ([ ] perms) -> untyped
+  def reset: -> [ ]
+  def has?: (untyped perm) -> untyped
+end
+```
+
 ## Preserve explicit methods for serialized attributes
 
 ### update
