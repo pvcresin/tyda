@@ -57817,13 +57817,16 @@ impl<'a> InferenceEngine<'a> {
         if !has_block && !has_arguments {
             return;
         }
-        // A call whose arguments are plain reads (`where(user: user)`) may still return a type
-        // that does not depend on them.
+        // A relation query (`where(user: user)`) returns the same shape whatever plain reads it
+        // takes, so a replay with the merged files can type it.
+        let method_name = String::from_utf8_lossy(call_node.name().as_slice());
+        let relation_query = self.rails_feature_enabled()
+            && crate::rails::relation_api::result_ignores_arguments(&method_name);
         let informative = has_block
             || call_node.arguments().is_some_and(|arguments| {
                 arguments.arguments().iter().any(|argument| {
                     Self::argument_type_is_known(&argument, scope)
-                        || Self::argument_is_plain_read(&argument)
+                        || (relation_query && Self::argument_is_plain_read(&argument))
                 })
             });
         if !informative {

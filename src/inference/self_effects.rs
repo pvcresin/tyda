@@ -15,6 +15,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::InferenceEngine;
 use super::param_flow::MAX_SCAN_DEPTH;
+use crate::prism_compat::LocationExt;
 use crate::types::{Sym, Type};
 
 /// The writes a method body or block body makes, read off its syntax.
@@ -286,6 +287,9 @@ type SelfCallKey = (Sym, Sym, bool);
 #[derive(Default)]
 pub(super) struct SelfWriteSummaries {
     by_method: FxHashMap<SelfCallKey, SelfWrites>,
+    /// Summaries by def start offset: the class body summarizes its defs on entry, and each def
+    /// is recorded again when it is collected.
+    by_def_offset: FxHashMap<usize, SelfWrites>,
     /// `None` when the call may write any ivar.
     call_effects: RefCell<FxHashMap<SelfCallKey, Option<Arc<[Sym]>>>>,
 }
@@ -312,10 +316,20 @@ impl InferenceEngine<'_> {
         is_singleton: bool,
         def_node: &ruby_prism::DefNode<'_>,
     ) {
-        let writes = def_node
-            .body()
-            .map(|body| SelfWrites::of(&body))
-            .unwrap_or_default();
+        let offset = def_node.location().start_offset();
+        let writes = match self.self_write_summaries.by_def_offset.get(&offset) {
+            Some(writes) => writes.clone(),
+            None => {
+                let writes = def_node
+                    .body()
+                    .map(|body| SelfWrites::of(&body))
+                    .unwrap_or_default();
+                self.self_write_summaries
+                    .by_def_offset
+                    .insert(offset, writes.clone());
+                writes
+            }
+        };
         self.self_write_summaries
             .record(owner, method, is_singleton, writes);
     }

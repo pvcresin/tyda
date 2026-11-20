@@ -2110,110 +2110,103 @@ fn source_case_equality_overrides_in_root(root: &Node<'_>) -> SourceCaseEquality
 /// The classes and modules a source declares under a namespace (`Core::Ctx` from
 /// `module Core; class Ctx`). A top-level name needs no entry: a file analyzed alone keeps it
 /// as written, which is already the full name.
+/// Class and module names declared under another one (`Core::Ctx`). The preload reads every
+/// file, so this follows the declaration lines and their indentation instead of parsing:
+/// a declaration's parent is the nearest less-indented one above it.
 pub fn source_nested_namespaces(source: &str) -> Vec<String> {
-    if !may_declare_nested_namespace(source) {
-        return Vec::new();
-    }
-    let parse_result = prism::parse(source.as_bytes());
+    // (indent, name); `None` marks `class << self`, whose body declares nothing visible.
+    let mut open: Vec<(usize, Option<String>)> = Vec::new();
     let mut names = Vec::new();
-    if let Some(program) = parse_result.node().as_program_node() {
-        collect_nested_namespaces(&program.statements().as_node(), None, &mut names);
-    }
-    names
-}
-
-/// A nested declaration needs two `class` / `module` lines or a scoped name (`class A::B`).
-fn may_declare_nested_namespace(source: &str) -> bool {
-    let mut declarations = 0;
+    let mut heredoc_end: Option<String> = None;
     for line in source.lines() {
-        let line = line.trim_start();
-        let Some(rest) = line
+        let trimmed = line.trim_start();
+        if let Some(terminator) = &heredoc_end {
+            if trimmed.trim_end() == terminator {
+                heredoc_end = None;
+            }
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        heredoc_end = heredoc_terminator(line);
+        let indent = line.len() - trimmed.len();
+        // `end` closes what was opened at its indentation or deeper.
+        if trimmed == "end" || trimmed.starts_with("end ") || trimmed.starts_with("end;") {
+            while open
+                .last()
+                .is_some_and(|(open_indent, _)| *open_indent >= indent)
+            {
+                open.pop();
+            }
+            continue;
+        }
+        let Some(rest) = trimmed
             .strip_prefix("class ")
-            .or_else(|| line.strip_prefix("module "))
+            .or_else(|| trimmed.strip_prefix("module "))
         else {
             continue;
         };
-        let name = rest.trim_start();
-        if name.starts_with("<<") {
+        while open
+            .last()
+            .is_some_and(|(open_indent, _)| *open_indent >= indent)
+        {
+            open.pop();
+        }
+        let rest = rest.trim_start();
+        if rest.starts_with("<<") {
+            open.push((indent, None));
             continue;
         }
-        declarations += 1;
-        if declarations > 1
-            || name
-                .split_whitespace()
-                .next()
-                .is_some_and(|n| n.contains("::"))
+        let written: &str = rest
+            .split(|c: char| c.is_whitespace() || c == ';' || c == '<' || c == '(')
+            .next()
+            .unwrap_or_default();
+        if written.is_empty()
+            || !written
+                .trim_start_matches("::")
+                .starts_with(|c: char| c.is_ascii_uppercase())
         {
-            return true;
+            continue;
         }
-    }
-    false
-}
-
-/// Walks only the statements that can hold declarations, so the depth follows the
-/// declaration nesting, not the expressions.
-fn collect_nested_namespaces(node: &Node<'_>, outer: Option<&str>, names: &mut Vec<String>) {
-    let declare = |constant_path: Node<'_>, body: Option<Node<'_>>, names: &mut Vec<String>| {
-        let written = String::from_utf8_lossy(constant_path.location().as_slice());
+        let outer = match open.last() {
+            Some((_, Some(outer))) => Some(outer.as_str()),
+            Some((_, None)) => {
+                open.push((indent, None));
+                continue;
+            }
+            None => None,
+        };
         let name = match (written.strip_prefix("::"), outer) {
             (Some(absolute), _) => absolute.to_string(),
-            (None, Some(outer)) => crate::sym::join_scope(outer, &written),
-            (None, None) => written.into_owned(),
+            (None, Some(outer)) => crate::sym::join_scope(outer, written),
+            (None, None) => written.to_string(),
         };
         if name.contains("::") {
             names.push(name.clone());
         }
-        if let Some(body) = body {
-            collect_nested_namespaces(&body, Some(&name), names);
+        // `module Bundler; end` is closed on its own line.
+        let closed = rest.trim_end().ends_with(" end") || rest.trim_end().ends_with(";end");
+        if !closed {
+            open.push((indent, Some(name)));
         }
-    };
-    match node {
-        Node::StatementsNode { .. } => {
-            let statements = node.as_statements_node().expect("must be StatementsNode");
-            for statement in statements.body().iter() {
-                collect_nested_namespaces(&statement, outer, names);
-            }
-        }
-        Node::ClassNode { .. } => {
-            let class = node.as_class_node().expect("must be ClassNode");
-            declare(class.constant_path(), class.body(), names);
-        }
-        Node::ModuleNode { .. } => {
-            let module = node.as_module_node().expect("must be ModuleNode");
-            declare(module.constant_path(), module.body(), names);
-        }
-        Node::IfNode { .. } => {
-            let if_node = node.as_if_node().expect("must be IfNode");
-            for branch in [
-                if_node.statements().map(|statements| statements.as_node()),
-                if_node.subsequent(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                collect_nested_namespaces(&branch, outer, names);
-            }
-        }
-        Node::UnlessNode { .. } => {
-            let unless = node.as_unless_node().expect("must be UnlessNode");
-            if let Some(statements) = unless.statements() {
-                collect_nested_namespaces(&statements.as_node(), outer, names);
-            }
-        }
-        Node::ElseNode { .. } => {
-            let else_node = node.as_else_node().expect("must be ElseNode");
-            if let Some(statements) = else_node.statements() {
-                collect_nested_namespaces(&statements.as_node(), outer, names);
-            }
-        }
-        Node::BeginNode { .. } => {
-            let begin = node.as_begin_node().expect("must be BeginNode");
-            if let Some(statements) = begin.statements() {
-                collect_nested_namespaces(&statements.as_node(), outer, names);
-            }
-        }
-        _ => {}
     }
+    names
+}
+
+/// The terminator of a heredoc that starts on this line (`<<~'END'`, `<<-SQL`, `<<EOS`).
+fn heredoc_terminator(line: &str) -> Option<String> {
+    let start = line.find("<<")?;
+    let rest = line[start + 2..].trim_start_matches(['~', '-']);
+    let rest = rest.trim_start_matches(['\'', '"']);
+    if !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return None;
+    }
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    Some(name)
 }
 
 /// What one source file declares that another file's analysis may read before the merge.
@@ -4442,6 +4435,30 @@ end
             ["Core::Ctx", "Core::Deep::Inner", "Top::Abs"]
         );
         assert!(super::source_nested_namespaces("class Plain < Base\nend\n").is_empty());
+        let closed = concat!(
+            "module Bundler; end\n",
+            "if defined?(X)\n",
+            "  module Gem\n",
+            "  end\n",
+            "end\n",
+            "module Outer\n",
+            "  class A\n",
+            "  end\n",
+            "  if cond\n",
+            "    class B; end\n",
+            "  end\n",
+            "  CODE = <<~'End'\n",
+            "    module Kernel\n",
+            "    end\n",
+            "  End\n",
+            "  # s.description = <<-EOF\n",
+            "  class C < Err; end\n",
+            "end\n",
+        );
+        assert_eq!(
+            super::source_nested_namespaces(closed),
+            ["Outer::A", "Outer::B", "Outer::C"]
+        );
     }
 
     #[test]
