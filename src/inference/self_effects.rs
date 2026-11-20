@@ -42,37 +42,59 @@ impl SelfWrites {
     /// Also finds the ivars the body always leaves non-nil: a top-level write of a value that
     /// is never `nil`, with no `return` before it and no later write of the same ivar.
     fn of_method_body(body: &Node<'_>) -> Self {
-        let mut writes = Self::of(body);
         let Some(statements) = body.as_statements_node() else {
-            return writes;
+            return Self::of(body);
         };
         let statements: Vec<Node<'_>> = statements.body().iter().collect();
-        for (index, statement) in statements.iter().enumerate() {
+        let has_candidate = statements.iter().any(|statement| {
+            statement
+                .as_instance_variable_write_node()
+                .is_some_and(|write| is_never_nil(&write.value()))
+        });
+        if !has_candidate {
+            return Self::of(body);
+        }
+        let parts: Vec<Self> = statements.iter().map(Self::of).collect();
+        let mut writes = Self::default();
+        for part in &parts {
+            writes.opaque |= part.opaque;
+            writes.returns |= part.returns;
+            for ivar in &part.ivars {
+                if !writes.ivars.contains(ivar) {
+                    writes.ivars.push(*ivar);
+                }
+            }
+            for callee in &part.self_calls {
+                if !writes.self_calls.contains(callee) {
+                    writes.self_calls.push(*callee);
+                }
+            }
+        }
+        let first_return = parts
+            .iter()
+            .position(|part| part.returns)
+            .unwrap_or(parts.len());
+        for (index, statement) in statements.iter().enumerate().take(first_return) {
             let Some(write) = statement.as_instance_variable_write_node() else {
                 continue;
             };
-            if !is_never_nil(&write.value())
-                || statements[..index]
-                    .iter()
-                    .any(|earlier| Self::of(earlier).returns)
-            {
+            if !is_never_nil(&write.value()) {
                 continue;
             }
             let ivar = Sym::new(String::from_utf8_lossy(write.name().as_slice()));
-            let mut later_calls = Vec::new();
-            let mut kept = true;
-            for later in &statements[index + 1..] {
-                let later = Self::of(later);
-                if later.opaque || later.ivars.contains(&ivar) {
-                    kept = false;
-                    break;
-                }
-                later_calls.extend(later.self_calls);
+            let later = &parts[index + 1..];
+            if later
+                .iter()
+                .any(|part| part.opaque || part.ivars.contains(&ivar))
+            {
+                continue;
             }
-            if kept {
-                writes.non_nil_at_end.retain(|(name, _)| *name != ivar);
-                writes.non_nil_at_end.push((ivar, later_calls));
-            }
+            let later_calls = later
+                .iter()
+                .flat_map(|part| part.self_calls.iter().copied())
+                .collect();
+            writes.non_nil_at_end.retain(|(name, _)| *name != ivar);
+            writes.non_nil_at_end.push((ivar, later_calls));
         }
         writes
     }
@@ -359,6 +381,8 @@ type SelfCallKey = (Sym, Sym, bool);
 #[derive(Default)]
 pub(super) struct SelfWriteSummaries {
     by_method: FxHashMap<SelfCallKey, SelfWrites>,
+    /// Names of methods whose body always leaves some ivar non-nil.
+    non_nil_setters: FxHashSet<Box<str>>,
     /// Summaries by def start offset: the class body summarizes its defs on entry, and each def
     /// is recorded again when it is collected.
     by_def_offset: FxHashMap<usize, SelfWrites>,
@@ -374,6 +398,9 @@ impl SelfWriteSummaries {
         is_singleton: bool,
         writes: SelfWrites,
     ) {
+        if !writes.non_nil_at_end.is_empty() {
+            self.non_nil_setters.insert(method.into());
+        }
         self.by_method
             .insert((Sym::new(owner), Sym::new(method), is_singleton), writes);
         self.call_effects.get_mut().clear();
@@ -526,6 +553,9 @@ impl InferenceEngine<'_> {
         singleton_dispatch: bool,
         method: &str,
     ) -> Vec<Sym> {
+        if !self.self_write_summaries.non_nil_setters.contains(method) {
+            return Vec::new();
+        }
         let name = Sym::new(method);
         let own_key = (Sym::new(class_name), name, singleton_dispatch);
         let summary_key = match self.registry.first_method_call_owner_cached(
