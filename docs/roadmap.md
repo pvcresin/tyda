@@ -48,13 +48,12 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 - [ ] 大規模 Rails での `--diagnostics` context scan を高速化する
 - [ ] block callback の副作用解析を一般化し、外側で nil check 済みのivarがcallback内で誤って `nil` と診断されるケースを見直す（Redmine `Attachment#files_to_final_location` の `sha.update(@temp_file)`）。実際のmutationは引き続きnarrowingを無効化し、クラス・メソッド固有の例外は追加しない
 - [ ] CLI のファイル単位推論で、後のファイルに依存する型を遅延参照として保ち、全体の集約後に解決する。別ファイルの model への `find(1)` が `untyped` になる、後のファイルで定義されるクラスの `when` が引数を `untyped` にする、concern の `included` で定義した scope を別ファイルの model から呼ぶと `ActiveRecord::Relation[self]` が残る、の3件（`known_issue_concern_scope_keeps_self_across_files`）（`tests/cli.rs` の `when_with_class_from_later_file_does_not_leak_other_arguments`）。シナリオ runner は他ファイルを先に解析するため、CLI でのみ再現する
-- [ ] CLI と scenario runner の結果をそろえる。単一ファイルでも `*args` の要素、class 内の再帰が CLI だけ `untyped` になり、別ファイルの定数参照もディレクトリ指定の CLI で `untyped` になる（別ファイルの `Core::Ctx` を `module Core` 内から `Ctx` で読む呼び出しも失われる。`tests/cli.rs` の `known_issue_namespace_constant_from_another_file`）。scenario は CLI 経路を確かめないため、両経路を比べる仕組みも用意する
+- [ ] CLI と scenario runner の結果をそろえる。単一ファイルでも `*args` の要素、class 内の再帰が CLI だけ `untyped` になり、別ファイルの値の定数（`LIMIT = 5`）の参照もディレクトリ指定の CLI で `untyped` になる。scenario は CLI 経路を確かめないため、両経路を比べる仕組みも用意する
 - [ ] Ruby の意味論どおり、未初期化の ivar の値に `nil` を含める。`initialize` のすべての経路（class instance variable は class body）で代入される ivar だけを非 nil とし、それ以外の reader と参照は `T?` にする。この `nil` による `missing_method` は除外せずに報告する。意図して使う箇所は `# tyda: ignore[missing_method]` で抑制する。既存 scenario の期待値も合わせて直す（`known-issues/ruby_methods.md`、`ruby/variable/instance.md` の known issue）
 - [ ] TODO: 未初期化の ivar に由来する `nil` 診断の重さを検討する（他の `nil` と severity を分けて warning にするか、など）
 - [ ] 保存前の ActiveRecord model を推論で区別する。既定は tapioca・rbs_rails と同じく保存済みで valid な model の契約とし、`null: false` のカラムと必須の `belongs_to` は非 nil にする。そのうえで `find` / `where` / association から来た値は非 nil のまま、`new` / `build` から来てまだ保存していない値だけカラムと association を `nil` を含む型にする。値の出どころを追えない RBI 生成ツールは全体を nilable にする設定（tapioca の `ActiveRecordColumnTypes`）しか持てないが、Tyda は推論で実際に危ない箇所だけを捉える。全体を切り替える設定は、要望が出るまで追加しない
-- [ ] nil の誤検出を減らす。メソッド内で代入した ivar が self 呼び出しの後に nil になる、reader の nil ガードが同じメソッドの block に届かない、ivar の nil ガードがそれを書かない self 呼び出しの後で消える、の3件（`tests/flow_diagnostics.rs` の `known_issue_nil_false_positives_still_reported`）
+- [ ] attr_writer に渡した値を ivar の型に含める。`self.conn = nil` の後の `@conn.close` が `NilClass#close` にならない（`tests/flow_diagnostics.rs` の `known_issue_attr_writer_nil_does_not_reach_ivar`）
 - [ ] PR 154 の subject 差分で見つけたが、最小再現ができていない後退を調べる。Redmine `link_to_project` の引数が `(Project | untyped)?` から `untyped?` になる。`respond_to?` を確かめる述語メソッドなど、別メソッドのガードを越えた nil・missing method の誤検出（条件なしの `before_action` が self メソッドの nil で止める場合は action 内で非 nil にする）
-- [ ] 呼び出しの連鎖の途中にある block を、受け手が遅延参照のままでも走査する。`Marshal.load("").tap { |item| item.save }.tap { ... }` の最初の block は値の推論でも文の走査でも入らず、中の hover・coverage・診断が失われる（`tests/cli.rs` の `known_issue_coverage_skips_blocks_chained_on_unresolved_receivers`）。受け手が `untyped` の場合は文の走査で入る。遅延参照の場合は、呼び出し元の型での再走査と重なると coverage が悪いほうの結果になるため、走査の重複を避ける仕組みと合わせて直す
 - [ ] Ruby / Rails version、framework DSL、scenario coverage を継続する
 
 ### ジェネリクス

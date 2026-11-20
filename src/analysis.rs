@@ -2090,6 +2090,56 @@ fn source_case_equality_overrides_in_root(root: &Node<'_>) -> SourceCaseEquality
     scan.overrides
 }
 
+/// The classes and modules a source declares under a namespace (`Core::Ctx` from
+/// `module Core; class Ctx`). A top-level name needs no entry: a file analyzed alone keeps it
+/// as written, which is already the full name.
+pub fn source_nested_namespaces(source: &str) -> Vec<String> {
+    let parse_result = prism::parse(source.as_bytes());
+    let mut scan = NestedNamespaceScan::default();
+    prism::Visit::visit(&mut scan, &parse_result.node());
+    scan.names
+}
+
+#[derive(Default)]
+struct NestedNamespaceScan {
+    nesting: Vec<String>,
+    names: Vec<String>,
+}
+
+impl NestedNamespaceScan {
+    fn visit_namespace_body(&mut self, constant_path: &Node<'_>, body: Option<Node<'_>>) {
+        let written = String::from_utf8_lossy(constant_path.location().as_slice());
+        let name = match (written.strip_prefix("::"), self.nesting.last()) {
+            (Some(absolute), _) => absolute.to_string(),
+            (None, Some(outer)) => crate::sym::join_scope(outer, &written),
+            (None, None) => written.into_owned(),
+        };
+        if name.contains("::") {
+            self.names.push(name.clone());
+        }
+        if let Some(body) = body {
+            self.nesting.push(name);
+            prism::Visit::visit(self, &body);
+            self.nesting.pop();
+        }
+    }
+}
+
+impl<'pr> prism::Visit<'pr> for NestedNamespaceScan {
+    fn visit_class_node(&mut self, node: &prism::ClassNode<'pr>) {
+        self.visit_namespace_body(&node.constant_path(), node.body());
+    }
+
+    fn visit_module_node(&mut self, node: &prism::ModuleNode<'pr>) {
+        self.visit_namespace_body(&node.constant_path(), node.body());
+    }
+
+    // Method bodies cannot declare classes, and a singleton class body is another namespace.
+    fn visit_def_node(&mut self, _node: &prism::DefNode<'pr>) {}
+
+    fn visit_singleton_class_node(&mut self, _node: &prism::SingletonClassNode<'pr>) {}
+}
+
 pub fn source_case_equality_overrides(source: &str) -> SourceCaseEqualityOverrides {
     let mut candidates = source_override_candidates(source);
     if candidates.equality {
@@ -4162,6 +4212,27 @@ end
                 .registry()
                 .lookup_class_variable_type("Source", "@@value"),
             Some(Type::LiteralString("stored".to_string()))
+        );
+    }
+
+    #[test]
+    fn nested_namespaces_follow_the_declaration_nesting() {
+        let source = concat!(
+            "module Core\n",
+            "  class Ctx\n",
+            "    class << self\n",
+            "      class Hidden; end\n",
+            "    end\n",
+            "    def build = 1\n",
+            "  end\n",
+            "  module Deep::Inner; end\n",
+            "  class ::Top::Abs; end\n",
+            "end\n",
+            "class Plain; end\n",
+        );
+        assert_eq!(
+            super::source_nested_namespaces(source),
+            ["Core::Ctx", "Core::Deep::Inner", "Top::Abs"]
         );
     }
 

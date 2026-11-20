@@ -599,22 +599,10 @@ fn coverage_walks_blocks_chained_on_untyped_receivers() {
     assert_eq!(report["by_kind"]["method_call"]["total"], 7);
 }
 
-#[test]
-fn known_issue_coverage_skips_blocks_chained_on_unresolved_receivers() {
+fn coverage_by_kind(source: &str) -> serde_json::Value {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
-    let rb_file = dir.path().join("deferred_chain.rb");
-    fs::write(
-        &rb_file,
-        concat!(
-            "class Chain\n",
-            "  def run\n",
-            "    Marshal.load(\"\").tap { |item| item.save }.tap { |item| item.log }\n",
-            "  end\n",
-            "end\n",
-        ),
-    )
-    .expect("failed to write");
-
+    let rb_file = dir.path().join("coverage.rb");
+    fs::write(&rb_file, source).expect("failed to write");
     let output = tyda_bin()
         .arg("--coverage")
         .arg(rb_file.to_str().unwrap())
@@ -623,12 +611,44 @@ fn known_issue_coverage_skips_blocks_chained_on_unresolved_receivers() {
     assert!(output.status.success());
     let report: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
-    // Known issue: the first `tap` block is never walked, because its receiver is still a
-    // reference when the chain is typed. `item` and `item.save` in it should count too.
-    assert_eq!(
-        report["by_kind"]["value"]["total"], 1,
-        "the first block is walked now: drop this check and expect 2 values"
-    );
+    report["by_kind"].clone()
+}
+
+#[test]
+fn coverage_walks_blocks_chained_on_deferred_receivers() {
+    let by_kind = coverage_by_kind(concat!(
+        "class Chain\n",
+        "  def run\n",
+        "    Marshal.load(\"\").tap { |item| item.save }.tap { |item| item.log }\n",
+        "  end\n",
+        "end\n",
+    ));
+    // `Marshal.load` stays a reference until the end, and both blocks still count.
+    assert_eq!(by_kind["value"]["total"], 2);
+    assert_eq!(by_kind["method_call"]["total"], 5);
+}
+
+#[test]
+fn coverage_counts_the_typed_walk_of_a_block() {
+    // The first walk of each block does not know `item` yet: the `map` block is walked once
+    // without its declared parameter types, and the `tap` blocks wait for `later`.
+    for source in [
+        "class Chain\n  def run = [1].map { |item| item.to_s }\nend\n",
+        concat!(
+            "class Chain\n",
+            "  def run = later.tap { |item| item.size }.tap { |item| item.size }\n",
+            "  def later = \"x\"\n",
+            "end\n",
+        ),
+    ] {
+        let by_kind = coverage_by_kind(source);
+        for kind in ["value", "method_call"] {
+            assert_eq!(
+                by_kind[kind]["typed"], by_kind[kind]["total"],
+                "{kind} in {source}: {by_kind}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -5462,11 +5482,10 @@ fn range_with_parameter_end_keeps_element_type_in_a_single_file() {
     );
 }
 
-// Known issue: the scenario runner analyzes the other files first and resolves `Ctx` to
-// `Core::Ctx` (`ruby/variable/constant_resolution.md`). The CLI analyzes each file alone, keeps
-// the bare `Ctx`, and loses the call. When the check fails, drop it.
+// Each file is analyzed alone, so `Ctx` inside `module Core` names the `Core::Ctx` another file
+// declares, as the scenario runner resolves it (`ruby/variable/constant_resolution.md`).
 #[test]
-fn known_issue_namespace_constant_from_another_file() {
+fn namespace_constant_from_another_file() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("ctx.rb"),
@@ -5498,7 +5517,36 @@ fn known_issue_namespace_constant_from_another_file() {
     assert!(output.status.success());
     let rbs = String::from_utf8_lossy(&output.stdout);
     assert!(
-        rbs.contains("def make: -> untyped\n"),
-        "known issue fixed (namespace constant from another file); drop this check: {rbs}"
+        rbs.contains("def initialize: (String src) -> void\n"),
+        "got: {rbs}"
     );
+    assert!(rbs.contains("def make: -> String\n"), "got: {rbs}");
+}
+
+// The reader's `@src` belongs to `Ctx`; the caller in another file reads it through the reader.
+#[test]
+fn ivar_reader_return_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("ctx.rb"),
+        concat!(
+            "class Ctx\n",
+            "  def initialize(src) = @src = src\n",
+            "  def raw = @src\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("user.rb"),
+        "class User\n  def make = Ctx.new(\"q\").raw\nend\n",
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(rbs.contains("def make: -> String\n"), "got: {rbs}");
 }

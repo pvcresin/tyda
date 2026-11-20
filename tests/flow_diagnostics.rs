@@ -1407,7 +1407,7 @@ fn ivar_guard_narrows_before_later_methods_write_the_ivar() {
 }
 
 #[test]
-fn known_issue_nil_false_positives_still_reported() {
+fn self_facts_survive_code_that_does_not_write_them() {
     let cases = [
         (
             "an ivar assigned in the method keeps its value across a self call",
@@ -1459,14 +1459,110 @@ fn known_issue_nil_false_positives_still_reported() {
     ];
 
     for (name, source, method) in cases {
-        let reported = [false, true].into_iter().any(|compact| {
-            diagnostics(source, compact)
-                .iter()
-                .any(|diagnostic| diagnostic.unresolved_method == method)
-        });
+        for compact in [false, true] {
+            let missing = missing_methods_in(source, compact);
+            assert!(
+                !missing.iter().any(|(_, missing)| missing == method),
+                "{name} (compact: {compact}): {missing:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn self_facts_end_where_code_may_write_them() {
+    let cases = [
+        (
+            "a self call that writes the ivar",
+            concat!(
+                "class DirectWrite\n",
+                "  def run\n",
+                "    return unless @conn\n",
+                "    reset\n",
+                "    @conn.close\n",
+                "  end\n",
+                "  def reset = @conn = nil\n",
+                "  def open = @conn = File.open(\"x\")\n",
+                "end\n",
+            ),
+        ),
+        (
+            "a self call that writes the ivar through another self call",
+            concat!(
+                "class NestedWrite\n",
+                "  def run\n",
+                "    return unless @conn\n",
+                "    helper\n",
+                "    @conn.close\n",
+                "  end\n",
+                "  def helper = reset\n",
+                "  def reset = @conn = nil\n",
+                "  def open = @conn = File.open(\"x\")\n",
+                "end\n",
+            ),
+        ),
+        (
+            "a block that writes the ivar",
+            concat!(
+                "class BlockWrite\n",
+                "  def run\n",
+                "    return unless @conn\n",
+                "    [1].each { @conn = nil }\n",
+                "    @conn.close\n",
+                "  end\n",
+                "  def open = @conn = File.open(\"x\")\n",
+                "end\n",
+            ),
+        ),
+        (
+            "a block that calls a method writing the reader's ivar",
+            concat!(
+                "class ReaderBlockWrite\n",
+                "  attr_reader :mime\n",
+                "  def initialize(mime) = @mime = mime\n",
+                "  def run\n",
+                "    return false unless mime\n",
+                "    [\"a\"].each { |prefix| clear }\n",
+                "    mime.start_with?(\"a\")\n",
+                "  end\n",
+                "  def clear = @mime = nil\n",
+                "end\n",
+                "ReaderBlockWrite.new(\"x\")\n",
+            ),
+        ),
+    ];
+    for (name, source) in cases {
+        for compact in [false, true] {
+            let missing = missing_methods_in(source, compact);
+            assert!(
+                missing
+                    .iter()
+                    .any(|(_, method)| method.starts_with("NilClass#")),
+                "{name} (compact: {compact}): {missing:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn known_issue_attr_writer_nil_does_not_reach_ivar() {
+    let source = concat!(
+        "class WriterCall\n",
+        "  attr_writer :conn\n",
+        "  def open = @conn = File.open(\"x\")\n",
+        "  def run\n",
+        "    self.conn = nil\n",
+        "    @conn.close\n",
+        "  end\n",
+        "end\n",
+    );
+    // Known issue: `self.conn = nil` should make `@conn` `File?`, so `@conn.close` should
+    // report `NilClass#close`.
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
         assert!(
-            reported,
-            "known issue fixed ({name}); move it to a regular test that asserts no {method}"
+            missing.is_empty(),
+            "known issue fixed (compact: {compact}); expect NilClass#close: {missing:?}"
         );
     }
 }

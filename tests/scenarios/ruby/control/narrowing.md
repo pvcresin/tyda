@@ -1265,7 +1265,7 @@ class AndReturnGuard
 end
 ```
 
-## A self call drops instance variable narrowing
+## A self call drops instance variable narrowing only when it may write an instance variable
 
 ### update
 
@@ -1277,6 +1277,13 @@ class Holder
     @value
   end
 
+  def kept_across_call
+    @value = rand > 0.5 ? "s" : nil
+    return 0 unless @value
+    ping
+    @value
+  end
+
   def dropped
     @value = rand > 0.5 ? "s" : nil
     return 0 unless @value
@@ -1284,7 +1291,8 @@ class Holder
     @value
   end
 
-  def touch = nil
+  def ping = nil
+  def touch = @value = nil
 end
 ```
 
@@ -1293,7 +1301,9 @@ end
 ```rbs
 class Holder
   def kept: -> (0 | "s")
+  def kept_across_call: -> (0 | "s")
   def dropped: -> (0 | "s")?
+  def ping: -> nil
   def touch: -> nil
 end
 ```

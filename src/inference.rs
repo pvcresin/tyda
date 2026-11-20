@@ -42,6 +42,7 @@ use crate::types::{
 mod array_element_flow;
 mod block_flow;
 use block_flow::LiteralArg;
+use self_effects::{SelfFactEffect, SelfWriteSummaries, SelfWrites};
 mod deps;
 mod dsl_patterns;
 mod hash_key_flow;
@@ -52,6 +53,7 @@ mod param_flow;
 mod passes;
 mod plugins;
 mod receiver_attr_flow;
+mod self_effects;
 pub(crate) use plugins::builtin_plugin_manifests;
 mod rails_dsl;
 mod rbs;
@@ -335,30 +337,6 @@ fn has_disjoint_primitive_flow_types(left: &Type, right: &Type) -> bool {
         && !primitive_flow_types_may_overlap(left, right)
 }
 
-fn call_invalidates_self_facts(
-    call: &ruby_prism::CallNode<'_>,
-    fact_keys: &HashMap<String, Type>,
-    is_pure_reader: &dyn Fn(&str) -> bool,
-) -> bool {
-    if call.block().is_some() {
-        return true;
-    }
-    match call.receiver() {
-        None => {
-            if call.arguments().is_some() {
-                return true;
-            }
-            let name = String::from_utf8_lossy(call.name().as_slice()).to_string();
-            !fact_keys.contains_key(&name) && !is_pure_reader(&name)
-        }
-        Some(receiver) => {
-            matches!(receiver, Node::SelfNode { .. })
-                || (call.name().as_slice() != b"[]"
-                    && is_const_index_fact_receiver(&receiver, fact_keys))
-        }
-    }
-}
-
 /// The fact key of a read like `ENV["TOKEN"]`: a constant receiver indexed by one literal key.
 fn const_index_fact_key(node: &Node<'_>) -> Option<String> {
     let call = node.as_call_node()?;
@@ -400,17 +378,24 @@ fn is_const_index_fact_receiver(receiver: &Node<'_>, fact_keys: &HashMap<String,
     fact_keys.keys().any(|key| key.starts_with(&prefix))
 }
 
-/// A visitor that checks whether a statement contains a node that could invalidate a self fact
-/// (a call that could affect self, or a write to an ivar). Expression paths (an immutable scope)
-/// can't clear a fact, so invalidation is judged conservatively via statement-level traversal.
-/// `fact_keys` is the currently tracked set of fact keys, referenced so that re-reading a tracked
-/// reader is excluded from invalidation. `is_pure_reader` is a closure that determines whether a
-/// reader is pure (simply returns a backing ivar), referenced so invalidation is excluded even
-/// when the fact isn't registered. The judgment cost is incurred only when a call node is reached.
-struct SelfFactInvalidatorScan<'a> {
-    found: bool,
+/// Collects what a statement may do to self facts: its ivar writes, the self calls it makes, and
+/// its blocks. Branch and loop bodies are left to their own statements. Re-reading a tracked
+/// fact or a pure reader does not invalidate anything.
+struct SelfFactInvalidatorScan<'a, 'e> {
+    effect: SelfFactEffect,
+    engine: &'a InferenceEngine<'e>,
+    class_name: &'a str,
+    singleton_dispatch: bool,
     fact_keys: &'a HashMap<String, Type>,
-    is_pure_reader: &'a dyn Fn(&str) -> bool,
+}
+
+impl SelfFactInvalidatorScan<'_, '_> {
+    fn call_self(&mut self, name: &str) {
+        let effect = self
+            .engine
+            .self_call_effect(self.class_name, self.singleton_dispatch, name);
+        self.effect.merge(&effect);
+    }
 }
 
 struct SelfFactReadScan<'a> {
@@ -571,23 +556,34 @@ impl<'pr> ruby_prism::Visit<'pr> for LoopExitScan {
     fn visit_singleton_class_node(&mut self, _node: &ruby_prism::SingletonClassNode<'pr>) {}
 }
 
-impl<'a, 'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'a> {
+impl<'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'_, '_> {
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
-        if self.found {
+        if self.effect.is_any() {
             return;
         }
-        if call_invalidates_self_facts(node, self.fact_keys, self.is_pure_reader) {
-            self.found = true;
+        let effect = self.engine.call_self_fact_effect(
+            self.class_name,
+            self.singleton_dispatch,
+            node,
+            self.fact_keys,
+        );
+        self.effect.merge(&effect);
+        if self.effect.is_any() {
             return;
         }
-        ruby_prism::visit_call_node(self, node);
+        if let Some(receiver) = node.receiver() {
+            self.visit(&receiver);
+        }
+        if let Some(arguments) = node.arguments() {
+            self.visit_arguments_node(&arguments);
+        }
     }
 
     fn visit_if_node(&mut self, node: &ruby_prism::IfNode<'pr>) {
         ruby_prism::Visit::visit(self, &node.predicate());
         if let Some(Node::IfNode { .. }) = node.subsequent()
             && let Some(subsequent) = node.subsequent().and_then(|node| node.as_if_node())
-            && !self.found
+            && !self.effect.is_any()
         {
             self.visit_if_node(&subsequent);
         }
@@ -604,7 +600,7 @@ impl<'a, 'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'a> {
         for condition in node.conditions().iter() {
             if let Some(when_node) = condition.as_when_node() {
                 for condition in when_node.conditions().iter() {
-                    if self.found {
+                    if self.effect.is_any() {
                         return;
                     }
                     ruby_prism::Visit::visit(self, &condition);
@@ -629,52 +625,60 @@ impl<'a, 'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'a> {
 
     fn visit_instance_variable_write_node(
         &mut self,
-        _node: &ruby_prism::InstanceVariableWriteNode<'pr>,
+        node: &ruby_prism::InstanceVariableWriteNode<'pr>,
     ) {
-        self.found = true;
+        self.effect
+            .write_ivar(&String::from_utf8_lossy(node.name().as_slice()));
+        ruby_prism::visit_instance_variable_write_node(self, node);
     }
 
     fn visit_instance_variable_operator_write_node(
         &mut self,
-        _node: &ruby_prism::InstanceVariableOperatorWriteNode<'pr>,
+        node: &ruby_prism::InstanceVariableOperatorWriteNode<'pr>,
     ) {
-        self.found = true;
+        self.effect
+            .write_ivar(&String::from_utf8_lossy(node.name().as_slice()));
+        ruby_prism::visit_instance_variable_operator_write_node(self, node);
     }
 
     fn visit_instance_variable_or_write_node(
         &mut self,
-        _node: &ruby_prism::InstanceVariableOrWriteNode<'pr>,
+        node: &ruby_prism::InstanceVariableOrWriteNode<'pr>,
     ) {
-        self.found = true;
+        self.effect
+            .write_ivar(&String::from_utf8_lossy(node.name().as_slice()));
+        ruby_prism::visit_instance_variable_or_write_node(self, node);
     }
 
     fn visit_instance_variable_and_write_node(
         &mut self,
-        _node: &ruby_prism::InstanceVariableAndWriteNode<'pr>,
+        node: &ruby_prism::InstanceVariableAndWriteNode<'pr>,
     ) {
-        self.found = true;
+        self.effect
+            .write_ivar(&String::from_utf8_lossy(node.name().as_slice()));
+        ruby_prism::visit_instance_variable_and_write_node(self, node);
     }
 
     fn visit_instance_variable_target_node(
         &mut self,
-        _node: &ruby_prism::InstanceVariableTargetNode<'pr>,
+        node: &ruby_prism::InstanceVariableTargetNode<'pr>,
     ) {
-        self.found = true;
+        self.effect
+            .write_ivar(&String::from_utf8_lossy(node.name().as_slice()));
     }
 
     fn visit_call_target_node(&mut self, node: &ruby_prism::CallTargetNode<'pr>) {
         if matches!(node.receiver(), Node::SelfNode { .. }) {
-            self.found = true;
+            self.call_self(&String::from_utf8_lossy(node.name().as_slice()));
         }
     }
 
     fn visit_index_target_node(&mut self, node: &ruby_prism::IndexTargetNode<'pr>) {
-        if self.found {
+        if self.effect.is_any() {
             return;
         }
         if matches!(node.receiver(), Node::SelfNode { .. }) {
-            self.found = true;
-            return;
+            self.call_self("[]=");
         }
         ruby_prism::visit_index_target_node(self, node);
     }
@@ -1181,8 +1185,10 @@ pub struct InferenceEngine<'a> {
     block_pass_chain: BlockPassChain,
     in_discarded_block_walk: bool,
     value_walked_blocks: FxHashSet<usize>,
-    /// Blocks of calls on an untyped receiver that the value walk did not enter.
-    untyped_receiver_blocks: FxHashSet<usize>,
+    /// Blocks of calls whose receiver is still unknown or deferred, so the value walk did not
+    /// enter them.
+    unwalked_receiver_blocks: FxHashSet<usize>,
+    self_write_summaries: SelfWriteSummaries,
     unbound_block_return: Option<Type>,
     record_annotated_method_body_hover_snapshots: bool,
     analyzing_rbi_declaration: bool,
@@ -2381,6 +2387,16 @@ impl Scope {
         }
     }
 
+    fn apply_self_fact_effect(&mut self, effect: &SelfFactEffect) {
+        if effect.is_any() {
+            self.clear_self_facts();
+            return;
+        }
+        for ivar in effect.ivars() {
+            self.invalidate_self_facts_for_ivar_write(ivar);
+        }
+    }
+
     fn invalidate_self_facts_for_ivar_write(&mut self, ivar_name: &str) {
         if self.self_facts.is_empty() {
             return;
@@ -2906,7 +2922,8 @@ impl<'a> InferenceEngine<'a> {
             block_pass_chain: BlockPassChain::Open,
             in_discarded_block_walk: false,
             value_walked_blocks: FxHashSet::default(),
-            untyped_receiver_blocks: FxHashSet::default(),
+            unwalked_receiver_blocks: FxHashSet::default(),
+            self_write_summaries: SelfWriteSummaries::default(),
             unbound_block_return: None,
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
@@ -3020,7 +3037,8 @@ impl<'a> InferenceEngine<'a> {
             block_pass_chain: BlockPassChain::Open,
             in_discarded_block_walk: false,
             value_walked_blocks: FxHashSet::default(),
-            untyped_receiver_blocks: FxHashSet::default(),
+            unwalked_receiver_blocks: FxHashSet::default(),
+            self_write_summaries: SelfWriteSummaries::default(),
             unbound_block_return: None,
             record_annotated_method_body_hover_snapshots: false,
             analyzing_rbi_declaration: false,
@@ -4217,7 +4235,9 @@ impl<'a> InferenceEngine<'a> {
             // Fallback: maybe the full path names a class.
             for candidate in candidates.iter().map(|p| crate::sym::join_scope(p, last)) {
                 self.ensure_class_available(&candidate);
-                if Self::is_real_class_data(&self.registry, &candidate) {
+                if Self::is_real_class_data(&self.registry, &candidate)
+                    || self.is_other_source_namespace(&candidate)
+                {
                     return Type::Singleton(Sym::new(candidate));
                 }
             }
@@ -4291,7 +4311,9 @@ impl<'a> InferenceEngine<'a> {
             if candidate != "Object" {
                 self.ensure_class_available(candidate);
             }
-            if Self::is_real_class_data(&self.registry, candidate) {
+            if Self::is_real_class_data(&self.registry, candidate)
+                || self.is_other_source_namespace(candidate)
+            {
                 return Type::Singleton(Sym::new(candidate));
             }
         }
@@ -4673,6 +4695,15 @@ impl<'a> InferenceEngine<'a> {
 
     fn is_real_class_data(registry: &TypeRegistry, class_name: &str) -> bool {
         registry.class_data_for(class_name).is_some()
+    }
+
+    /// Another source declares this nested class or module. Its body is merged only later,
+    /// so the name is all this file knows.
+    fn is_other_source_namespace(&self, name: &str) -> bool {
+        self.registry.source_declares_namespace(name)
+            || self
+                .external_rbs
+                .is_some_and(|external| external.source_declares_namespace(name))
     }
 
     fn scoped_constant_candidates(bare: &str, class_context: &str) -> Vec<String> {
@@ -15852,6 +15883,9 @@ impl<'a> InferenceEngine<'a> {
         options: ClassBodyCollectionOptions,
     ) {
         self.registry.mark_user_defined(class_name);
+        if options.singleton_depth <= 1 {
+            self.summarize_class_body_defs(class_name, body, options.in_singleton_class);
+        }
         let class_ivar_writes = body
             .as_statements_node()
             .map(|statements| Self::collect_class_instance_ivar_writes(&statements))
@@ -19095,6 +19129,7 @@ impl<'a> InferenceEngine<'a> {
         }
 
         // Record hand-written bare ivar readers (no args, body is just reading a single `@ivar`) into the cold set. This is so they qualify for the pure-reader exception in self fact narrowing; it doesn't participate in render's return type resolution (independent of the attr_ivar channel).
+        self.record_self_writes(class_name, &method_name, is_singleton, &def_node);
         if param_infos.is_empty() && Self::def_body_is_single_ivar_read(&def_node) {
             self.registry
                 .mark_bare_ivar_reader(class_name, &method_name, is_singleton);
@@ -23566,11 +23601,11 @@ impl<'a> InferenceEngine<'a> {
                 return ty;
             }
         }
-        let (_, clears_self_facts) =
+        let (_, deferred_effect) =
             self.process_statement_keeping_read_facts(class_name, node, parse_result, scope);
         let ty = self.infer_node_type(class_name, node, parse_result, scope);
-        if clears_self_facts {
-            scope.clear_self_facts();
+        if let Some(effect) = deferred_effect {
+            scope.apply_self_fact_effect(&effect);
         }
         ty
     }
@@ -23945,23 +23980,24 @@ impl<'a> InferenceEngine<'a> {
         })
     }
 
-    /// A block call on an untyped receiver inside a call chain (`x.then { }.tap { |a| a.y }`)
-    /// gets no value walk. The statement's walk enters it here once, like a statement call.
-    fn process_receiver_chain_untyped_block(
+    /// A block call on an unknown or deferred receiver inside a call chain
+    /// (`x.then { }.tap { |a| a.y }`) gets no value walk. The statement's walk enters it here
+    /// once, like a statement call.
+    fn process_receiver_chain_unwalked_block(
         &mut self,
         class_name: &str,
         call_node: &ruby_prism::CallNode<'_>,
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
-        if self.untyped_receiver_blocks.is_empty() {
+        if self.unwalked_receiver_blocks.is_empty() {
             return;
         }
         let mut receiver = call_node.receiver();
         while let Some(inner) = receiver.as_ref().and_then(|node| node.as_call_node()) {
             if let Some(block) = inner.block().and_then(|block| block.as_block_node())
                 && self
-                    .untyped_receiver_blocks
+                    .unwalked_receiver_blocks
                     .remove(&block.location().start_offset())
             {
                 // That call's own walk enters the blocks further down the chain.
@@ -23979,7 +24015,7 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) {
-        self.process_receiver_chain_untyped_block(class_name, call_node, parse_result, scope);
+        self.process_receiver_chain_unwalked_block(class_name, call_node, parse_result, scope);
         if self.process_rspec_dsl_call(class_name, call_node, parse_result, scope) {
             return;
         }
@@ -27509,10 +27545,10 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
     ) -> bool {
-        let (statement_exits, clears_self_facts) =
+        let (statement_exits, deferred_effect) =
             self.process_statement_keeping_read_facts(class_name, node, parse_result, scope);
-        if clears_self_facts {
-            scope.clear_self_facts();
+        if let Some(effect) = deferred_effect {
+            scope.apply_self_fact_effect(&effect);
         }
         statement_exits
     }
@@ -27561,15 +27597,15 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    /// Also returns whether facts on self end after the statement. They still hold while its own
-    /// value is inferred, because the statement reads its operands before its last call.
+    /// Also returns what the statement does to facts on self once it ends. They still hold while
+    /// its own value is inferred, because the statement reads its operands before its last call.
     fn process_statement_keeping_read_facts(
         &mut self,
         class_name: &str,
         node: &Node<'_>,
         parse_result: &ParseResult<'_>,
         scope: &mut Scope,
-    ) -> (bool, bool) {
+    ) -> (bool, Option<SelfFactEffect>) {
         let _trace_site = self.enter_trace_site(class_name, node, parse_result, scope);
         if !scope.array_first_facts.is_empty()
             && !Self::statement_consumes_array_first_fact(node, &scope.array_first_facts)
@@ -27586,13 +27622,17 @@ impl<'a> InferenceEngine<'a> {
         self.record_hash_index_assignment(class_name, node, parse_result, scope);
         self.update_exclusive_receiver_facts_for_statement(class_name, node, parse_result, scope);
         self.apply_sorbet_self_bind_for_statement(class_name, node, parse_result, scope);
-        let invalidates_self_facts = !scope.self_facts.is_empty()
-            && self.statement_invalidates_self_facts(
-                class_name,
-                scope.singleton_dispatch,
-                node,
-                &scope.self_facts,
-            );
+        let self_fact_effect = (!scope.self_facts.is_empty())
+            .then(|| {
+                self.statement_self_fact_effect(
+                    class_name,
+                    scope.singleton_dispatch,
+                    node,
+                    &scope.self_facts,
+                )
+            })
+            .filter(|effect| effect.invalidates(&scope.self_facts));
+        let invalidates_self_facts = self_fact_effect.is_some();
         // An expression reads its operands before its last call can invalidate facts on self.
         // Keep the facts while inferring it, then discard them for later statements.
         let defer_self_fact_invalidation = invalidates_self_facts
@@ -27606,9 +27646,14 @@ impl<'a> InferenceEngine<'a> {
                 _ => false,
             }
             && !self.expression_invalidates_before_later_reads(class_name, node, scope);
-        if invalidates_self_facts && !defer_self_fact_invalidation {
-            scope.clear_self_facts();
-        }
+        let deferred_effect = if defer_self_fact_invalidation {
+            self_fact_effect
+        } else {
+            if let Some(effect) = &self_fact_effect {
+                scope.apply_self_fact_effect(effect);
+            }
+            None
+        };
         if node.as_call_node().is_some() && Self::condition_has_flow_effects(node) {
             self.infer_node_type(class_name, node, parse_result, scope);
             self.apply_condition_effects(
@@ -27618,7 +27663,7 @@ impl<'a> InferenceEngine<'a> {
                 parse_result,
                 scope,
             );
-            return (false, defer_self_fact_invalidation);
+            return (false, deferred_effect);
         }
         let mut statement_exits = false;
         match node {
@@ -28834,7 +28879,7 @@ impl<'a> InferenceEngine<'a> {
             }
         }
         scope.clear_array_first_facts();
-        (statement_exits, defer_self_fact_invalidation)
+        (statement_exits, deferred_effect)
     }
 
     fn infer_node_type_with_scope(
@@ -34660,11 +34705,11 @@ impl<'a> InferenceEngine<'a> {
                         } else {
                             resolved
                         };
-                        if effective_receiver == Type::Untyped
+                        if Self::is_unresolved_receiver(&effective_receiver)
                             && let Some(block) =
                                 call_node.block().and_then(|block| block.as_block_node())
                         {
-                            self.untyped_receiver_blocks
+                            self.unwalked_receiver_blocks
                                 .insert(block.location().start_offset());
                         }
                         let (safe_nav_unknown, safe_nav_deferred) =
@@ -64727,20 +64772,20 @@ impl<'a> InferenceEngine<'a> {
         scope.get(&name).is_some().then_some(name)
     }
 
-    fn statement_invalidates_self_facts(
+    fn statement_self_fact_effect(
         &self,
         class_name: &str,
         singleton_dispatch: bool,
         node: &Node<'_>,
         fact_keys: &HashMap<String, Type>,
-    ) -> bool {
+    ) -> SelfFactEffect {
         use ruby_prism::Visit;
-        let is_pure_reader =
-            |name: &str| self.is_pure_ivar_reader(class_name, singleton_dispatch, name);
         let mut scan = SelfFactInvalidatorScan {
-            found: false,
+            effect: SelfFactEffect::default(),
+            engine: self,
+            class_name,
+            singleton_dispatch,
             fact_keys,
-            is_pure_reader: &is_pure_reader,
         };
         match node {
             Node::InstanceVariableWriteNode { .. } => {
@@ -64769,7 +64814,63 @@ impl<'a> InferenceEngine<'a> {
             }
             _ => scan.visit(node),
         }
-        scan.found
+        scan.effect
+    }
+
+    fn statement_invalidates_self_facts(
+        &self,
+        class_name: &str,
+        singleton_dispatch: bool,
+        node: &Node<'_>,
+        fact_keys: &HashMap<String, Type>,
+    ) -> bool {
+        self.statement_self_fact_effect(class_name, singleton_dispatch, node, fact_keys)
+            .invalidates(fact_keys)
+    }
+
+    /// A call on another receiver reaches self only through its block. A self call writes what
+    /// its callee writes.
+    fn call_self_fact_effect(
+        &self,
+        class_name: &str,
+        singleton_dispatch: bool,
+        call: &ruby_prism::CallNode<'_>,
+        fact_keys: &HashMap<String, Type>,
+    ) -> SelfFactEffect {
+        let name = String::from_utf8_lossy(call.name().as_slice());
+        let mut effect = match call.receiver() {
+            None if call.arguments().is_none()
+                && call.block().is_none()
+                && (fact_keys.contains_key(name.as_ref())
+                    || self.is_pure_ivar_reader(class_name, singleton_dispatch, &name)) =>
+            {
+                SelfFactEffect::default()
+            }
+            None | Some(Node::SelfNode { .. }) => {
+                self.self_call_effect(class_name, singleton_dispatch, &name)
+            }
+            Some(receiver)
+                if name != "[]" && is_const_index_fact_receiver(&receiver, fact_keys) =>
+            {
+                SelfFactEffect::any()
+            }
+            Some(_) => SelfFactEffect::default(),
+        };
+        if let Some(block) = call.block() {
+            if let Some(block) = block.as_block_node() {
+                if let Some(body) = block.body() {
+                    let writes = SelfWrites::of(&body);
+                    effect.merge(&self.self_writes_effect(class_name, singleton_dispatch, &writes));
+                }
+            } else if !block
+                .as_block_argument_node()
+                .and_then(|argument| argument.expression())
+                .is_some_and(|expression| expression.as_symbol_node().is_some())
+            {
+                effect = SelfFactEffect::any();
+            }
+        }
+        effect
     }
 
     /// Whether `node` evaluates left to right without a block or branch that may invalidate self facts.
@@ -69269,7 +69370,7 @@ end
             "    @corporation = flag ? Corporation.new : nil\n",
             "  end\n",
             "  def helper\n",
-            "    nil\n",
+            "    @corporation = nil\n",
             "  end\n",
             "  def process\n",
             "    return if @corporation.blank?\n",
@@ -69313,7 +69414,7 @@ end
     }
 
     #[test]
-    fn test_hover_ivar_fact_not_leaked_into_block() {
+    fn test_hover_ivar_fact_not_leaked_into_block_that_writes_it() {
         let source = concat!(
             "class Corporation\n",
             "end\n",
@@ -69324,7 +69425,7 @@ end
             "  #: (Array[Integer]) -> void\n",
             "  def process(items)\n",
             "    return if @corporation.blank?\n",
-            "    items.each { @corporation }\n",
+            "    items.each { @corporation; @corporation = nil }\n",
             "  end\n",
             "end\n",
         );
@@ -69381,7 +69482,7 @@ end
             "    @corporation = flag ? Corporation.new : nil\n",
             "  end\n",
             "  def helper\n",
-            "    nil\n",
+            "    @corporation = nil\n",
             "  end\n",
             "  def process\n",
             "    return if @corporation.blank?\n",
@@ -69489,7 +69590,7 @@ end
             "    @corporation\n",
             "  end\n",
             "  def helper\n",
-            "    nil\n",
+            "    @corporation = nil\n",
             "  end\n",
             "  def process\n",
             "    return if corporation.blank?\n",
@@ -69508,7 +69609,7 @@ end
     }
 
     #[test]
-    fn test_hover_self_method_fact_not_leaked_into_block() {
+    fn test_hover_self_method_fact_not_leaked_into_block_that_writes_it() {
         let source = concat!(
             "class Corporation\n",
             "end\n",
@@ -69520,7 +69621,7 @@ end
             "  #: (Array[Integer]) -> void\n",
             "  def process(items)\n",
             "    return if corporation.blank?\n",
-            "    items.each { corporation }\n",
+            "    items.each { corporation; @corporation = nil }\n",
             "  end\n",
             "end\n",
         );
@@ -69819,7 +69920,7 @@ end
             "    log\n",
             "    @owner\n",
             "  end\n",
-            "  def log; end\n",
+            "  def log = @logged = true\n",
             "  def process\n",
             "    return if corporation.blank?\n",
             "    return if owner.blank?\n",
@@ -69844,7 +69945,7 @@ end
             "  attr_reader :corporation\n",
             "  #: -> Integer\n",
             "  def score\n",
-            "    41 + 1\n",
+            "    @score = 41 + 1\n",
             "  end\n",
             "  def process\n",
             "    return if corporation.blank?\n",

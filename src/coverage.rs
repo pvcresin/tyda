@@ -280,19 +280,20 @@ impl CoverageRecorder {
                 if existing.explicit_unknown {
                     return;
                 }
+                if existing.kind == kind {
+                    // Walks of one site differ only in what they knew, such as a block walk
+                    // before its declared parameter types or a body before the callers' types.
+                    // Hover shows the typed walk, so coverage counts it too.
+                    existing.level = existing.level.max(level);
+                    return;
+                }
                 if level < existing.level
                     || (level == existing.level
                         && site_kind_priority(kind) > site_kind_priority(existing.kind))
                 {
                     existing.kind = kind;
                 }
-                existing.level = if existing.kind == CoverageSiteKind::ConstantReference
-                    && kind == CoverageSiteKind::ConstantReference
-                {
-                    existing.level.max(level)
-                } else {
-                    merge_levels(existing.level, level)
-                };
+                existing.level = merge_levels(existing.level, level);
             })
             .or_insert(CoverageCandidate {
                 kind,
@@ -697,6 +698,27 @@ mod tests {
         assert_eq!(file.references.unknown, 1);
         assert_eq!(file.references.typed, 0);
         assert_eq!(file.references.untyped, 0);
+    }
+
+    #[test]
+    fn repeated_walks_of_a_site_count_the_typed_walk() {
+        let call = |receiver_type| HoverTarget::MethodCall {
+            receiver_type,
+            result_type: Type::String,
+            has_block: false,
+            safe_navigation: false,
+            singleton_dispatch: false,
+            respond_to_guards: Vec::new(),
+        };
+        let mut recorder = CoverageRecorder::default();
+        recorder.record_hover_snapshot(make_snapshot(0, 1, HoverTarget::Value(Type::Untyped)));
+        recorder.record_hover_snapshot(make_snapshot(0, 1, HoverTarget::Value(Type::Integer)));
+        recorder.record_hover_snapshot(make_snapshot(2, 3, call(Type::Integer)));
+        recorder.record_hover_snapshot(make_snapshot(2, 3, call(Type::Untyped)));
+
+        let file = recorder.finish();
+        assert_eq!(file.references.total, 2);
+        assert_eq!(file.references.typed, 2);
     }
 
     #[test]

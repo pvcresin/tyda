@@ -120,7 +120,7 @@ class IvarCallValue
 end
 ```
 
-## A self call after a no-argument call write ends the local value
+## A self call that may write the instance variable ends the local value
 
 ### update
 
@@ -136,7 +136,14 @@ class IvarCallValueAfterSelfCall
     @items
   end
 
-  def helper = 1
+  def build_kept
+    @items = [1, nil].compact
+    ping
+    @items
+  end
+
+  def helper = reset
+  def ping = 1
 end
 ```
 
@@ -146,7 +153,9 @@ end
 class IvarCallValueAfterSelfCall
   def reset: -> nil
   def build: -> [1]?
-  def helper: -> 1
+  def build_kept: -> [1]
+  def helper: -> nil
+  def ping: -> 1
 end
 ```
 

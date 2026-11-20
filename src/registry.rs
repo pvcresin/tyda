@@ -2870,6 +2870,9 @@ pub struct TypeRegistry {
     has_source_base_case_equality_override: bool,
     has_source_numeric_case_equality_override: bool,
     has_source_block_given_override: bool,
+    /// Classes and modules the workspace's sources declare under a namespace (`Core::Ctx`). A
+    /// file analyzed alone names them before the other files are merged.
+    source_namespaces: Arc<FxHashSet<Box<str>>>,
     /// Lazy RBI declarations exist, so a method surface is complete only when they back it.
     generated_artifacts_present: bool,
     /// skip the dirty-synthesis path entirely for registries with no dirty patterns (avoids per-miss matching cost for non-Rails).
@@ -2978,6 +2981,7 @@ impl Clone for TypeRegistry {
             has_source_numeric_case_equality_override: self
                 .has_source_numeric_case_equality_override,
             has_source_block_given_override: self.has_source_block_given_override,
+            source_namespaces: self.source_namespaces.clone(),
             generated_artifacts_present: self.generated_artifacts_present,
             has_dirty_patterns: self.has_dirty_patterns,
             resolve_params_cache: ParamCache::default(),
@@ -3054,6 +3058,24 @@ impl TypeRegistry {
 
     pub(crate) fn has_source_block_given_override(&self) -> bool {
         self.has_source_block_given_override
+    }
+
+    pub fn record_source_namespaces(&mut self, names: impl IntoIterator<Item = String>) {
+        let namespaces = Arc::make_mut(&mut self.source_namespaces);
+        namespaces.extend(names.into_iter().map(String::into_boxed_str));
+    }
+
+    pub(crate) fn source_declares_namespace(&self, name: &str) -> bool {
+        self.source_namespaces.contains(name)
+    }
+
+    fn carry_source_namespaces(&mut self, other: &TypeRegistry) {
+        if self.source_namespaces.is_empty() {
+            self.source_namespaces = other.source_namespaces.clone();
+        } else if !Arc::ptr_eq(&self.source_namespaces, &other.source_namespaces) {
+            Arc::make_mut(&mut self.source_namespaces)
+                .extend(other.source_namespaces.iter().cloned());
+        }
     }
 
     pub(crate) fn push_pending_method_alias(&mut self, pending: PendingMethodAlias) {
@@ -8727,23 +8749,35 @@ impl TypeRegistry {
     }
 
     pub(crate) fn type_contains_param_ref_static(ty: &Type) -> bool {
+        Self::type_contains_leaf(ty, &|leaf| {
+            matches!(leaf, Type::ParamRef(_) | Type::KeywordParamRef(_))
+        })
+    }
+
+    /// A parameter or an instance variable of a method means nothing outside its class, so
+    /// such a return cannot be copied into a caller as it is.
+    fn type_contains_callee_relative_ref(ty: &Type) -> bool {
+        Self::type_contains_leaf(ty, &|leaf| {
+            matches!(
+                leaf,
+                Type::ParamRef(_) | Type::KeywordParamRef(_) | Type::IvarRef(_)
+            )
+        })
+    }
+
+    fn type_contains_leaf(ty: &Type, is_match: &impl Fn(&Type) -> bool) -> bool {
+        let contains = |inner: &Type| Self::type_contains_leaf(inner, is_match);
         match ty {
-            Type::ParamRef(_) | Type::KeywordParamRef(_) => true,
-            Type::Union(parts) | Type::Intersection(parts) => {
-                parts.iter().any(Self::type_contains_param_ref_static)
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+                parts.iter().any(contains)
             }
-            Type::Array(Some(inner)) => Self::type_contains_param_ref_static(inner),
-            Type::Hash(Some(k), Some(v)) => {
-                Self::type_contains_param_ref_static(k) || Self::type_contains_param_ref_static(v)
+            Type::Array(Some(inner)) => contains(inner),
+            Type::Hash(key, value) => {
+                key.as_deref().is_some_and(contains) || value.as_deref().is_some_and(contains)
             }
-            Type::Hash(Some(k), None) => Self::type_contains_param_ref_static(k),
-            Type::Hash(None, Some(v)) => Self::type_contains_param_ref_static(v),
-            Type::Record(fields) => fields
-                .iter()
-                .any(|field| Self::type_contains_param_ref_static(&field.value)),
-            Type::Tuple(elems) => elems.iter().any(Self::type_contains_param_ref_static),
-            Type::Generic { args, .. } => args.iter().any(Self::type_contains_param_ref_static),
-            Type::Proc(proc_type) => Self::type_contains_param_ref_static(&proc_type.return_type),
+            Type::Record(fields) => fields.iter().any(|field| contains(&field.value)),
+            Type::Generic { args, .. } => args.iter().any(contains),
+            Type::Proc(proc_type) => contains(&proc_type.return_type),
             Type::PatternIndexRef(subject, _)
             | Type::PatternRestRef(subject)
             | Type::PatternTrailingRef(subject, _)
@@ -8753,12 +8787,11 @@ impl TypeRegistry {
             | Type::TruthyProjection(subject)
             | Type::FalsyProjection(subject)
             | Type::NonNilProjection(subject)
-            | Type::SplatRef(subject) => Self::type_contains_param_ref_static(subject),
+            | Type::SplatRef(subject) => contains(subject),
             Type::DeferredSafeNavigation(receiver, result) => {
-                Self::type_contains_param_ref_static(receiver)
-                    || Self::type_contains_param_ref_static(result)
+                contains(receiver) || contains(result)
             }
-            _ => false,
+            _ => is_match(ty),
         }
     }
 
@@ -9013,7 +9046,7 @@ impl TypeRegistry {
                             )
                             .is_some_and(MethodDef::has_untyped_rbs_return)
                         && !matches!(ret, Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..))
-                        && !Self::type_contains_param_ref_static(&ret)
+                        && !Self::type_contains_callee_relative_ref(&ret)
                     {
                         // resolve `self` / `instance` returns to the receiver (prevents misattribution from baking in an unresolved owner).
                         return Self::deferred_self_return(&ret, &resolved_receiver)
