@@ -508,7 +508,38 @@ pub struct CallSite {
 
 type CallSiteCallerContextKey = (SharedName, SharedName, bool);
 type CallSiteSummaryKey = (SharedName, bool, Option<CallSiteCallerContextKey>);
-type GroupedCallSites = HashMap<CallSiteSummaryKey, CallSiteSummaryAccumulator>;
+
+/// Call sites merged by summary key, in the order each key was first seen, so the merged sites
+/// (and the methods macros define from them) do not depend on hash order.
+#[derive(Default)]
+struct GroupedCallSites {
+    index: HashMap<CallSiteSummaryKey, usize>,
+    groups: Vec<CallSiteSummaryAccumulator>,
+}
+
+impl GroupedCallSites {
+    fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    fn push(&mut self, key: CallSiteSummaryKey, call_site: CallSite) {
+        match self.index.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                self.groups[*entry.get()].fold(call_site);
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(self.groups.len());
+                self.groups.push(CallSiteSummaryAccumulator::new(call_site));
+            }
+        }
+    }
+
+    fn into_sites(self) -> impl Iterator<Item = CallSite> {
+        self.groups
+            .into_iter()
+            .map(CallSiteSummaryAccumulator::finish)
+    }
+}
 
 // type slot dedups immediately via a set (avoids the O(n^2) sort+dedup cost and transient bloat for popular methods).
 #[derive(Default)]
@@ -3628,33 +3659,21 @@ impl TypeRegistry {
 
     fn push_or_merge_call_site(grouped: &mut GroupedCallSites, call_site: CallSite) {
         let key = Self::call_site_summary_key(&call_site);
-        match grouped.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                entry.get_mut().fold(call_site);
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(CallSiteSummaryAccumulator::new(call_site));
-            }
-        }
+        grouped.push(key, call_site);
     }
 
     fn merge_summarized_call_sites(
         data: &mut ClassData,
         new_sites: impl IntoIterator<Item = CallSite>,
     ) {
-        let mut grouped: GroupedCallSites = HashMap::new();
+        let mut grouped = GroupedCallSites::default();
         for site in data.call_sites.take_all() {
             Self::push_or_merge_call_site(&mut grouped, site);
         }
         for site in new_sites {
             Self::push_or_merge_call_site(&mut grouped, site);
         }
-        data.call_sites.replace_with(
-            grouped
-                .into_values()
-                .map(CallSiteSummaryAccumulator::finish)
-                .collect(),
-        );
+        data.call_sites.replace_with(grouped.into_sites().collect());
         data.call_sites_revision = data.call_sites_revision.wrapping_add(1);
         data.has_pending_call_site_summary = false;
     }
@@ -4780,16 +4799,11 @@ impl TypeRegistry {
                 data.has_pending_call_site_summary = false;
                 continue;
             }
-            let mut grouped: GroupedCallSites = HashMap::new();
+            let mut grouped = GroupedCallSites::default();
             for site in data.call_sites.take_all() {
                 Self::push_or_merge_call_site(&mut grouped, site);
             }
-            data.call_sites.replace_with(
-                grouped
-                    .into_values()
-                    .map(CallSiteSummaryAccumulator::finish)
-                    .collect(),
-            );
+            data.call_sites.replace_with(grouped.into_sites().collect());
             data.call_sites_revision = data.call_sites_revision.wrapping_add(1);
             data.has_pending_call_site_summary = false;
         }
@@ -5802,10 +5816,11 @@ impl TypeRegistry {
             .enumerate()
             .map(|(idx, name)| (name.as_str(), idx))
             .collect();
-        let mut propagated_to_owners: Vec<GroupedCallSites> = std::iter::repeat_with(HashMap::new)
-            .take(class_names.len())
-            .collect();
-        let mut propagated_to_object: GroupedCallSites = HashMap::new();
+        let mut propagated_to_owners: Vec<GroupedCallSites> =
+            std::iter::repeat_with(GroupedCallSites::default)
+                .take(class_names.len())
+                .collect();
+        let mut propagated_to_object = GroupedCallSites::default();
         let mut mro_cache: FxHashMap<(usize, SharedName, bool), Vec<(usize, bool)>> =
             FxHashMap::default();
 
@@ -5871,20 +5886,10 @@ impl TypeRegistry {
                 continue;
             }
             let data = self.class_data_mut(&class_names[owner_idx]);
-            Self::merge_summarized_call_sites(
-                data,
-                new_sites
-                    .into_values()
-                    .map(CallSiteSummaryAccumulator::finish),
-            );
+            Self::merge_summarized_call_sites(data, new_sites.into_sites());
         }
         let object_data = self.class_data_mut("Object");
-        Self::merge_summarized_call_sites(
-            object_data,
-            propagated_to_object
-                .into_values()
-                .map(CallSiteSummaryAccumulator::finish),
-        );
+        Self::merge_summarized_call_sites(object_data, propagated_to_object.into_sites());
     }
 
     pub fn propagate_call_sites_for_target_classes(&mut self, target_classes: &HashSet<String>) {
@@ -5921,10 +5926,11 @@ impl TypeRegistry {
             .iter()
             .map(|name| target_classes.contains(name.as_str()))
             .collect();
-        let mut propagated_to_owners: Vec<GroupedCallSites> = std::iter::repeat_with(HashMap::new)
-            .take(class_names.len())
-            .collect();
-        let mut propagated_to_object: GroupedCallSites = HashMap::new();
+        let mut propagated_to_owners: Vec<GroupedCallSites> =
+            std::iter::repeat_with(GroupedCallSites::default)
+                .take(class_names.len())
+                .collect();
+        let mut propagated_to_object = GroupedCallSites::default();
 
         // Each class's sites find their owners on their own, so classes run in parallel; the
         // sites then fold into their owners in class order, as one walk would. Chunks keep
@@ -5961,22 +5967,12 @@ impl TypeRegistry {
                 continue;
             }
             let data = self.class_data_mut(&class_names[owner_idx]);
-            Self::merge_summarized_call_sites(
-                data,
-                new_sites
-                    .into_values()
-                    .map(CallSiteSummaryAccumulator::finish),
-            );
+            Self::merge_summarized_call_sites(data, new_sites.into_sites());
         }
 
         if include_object {
             let object_data = self.class_data_mut("Object");
-            Self::merge_summarized_call_sites(
-                object_data,
-                propagated_to_object
-                    .into_values()
-                    .map(CallSiteSummaryAccumulator::finish),
-            );
+            Self::merge_summarized_call_sites(object_data, propagated_to_object.into_sites());
         }
     }
 
@@ -15795,6 +15791,24 @@ mod tests {
         let bar = registry.class_data_for("Bar").expect("bar data");
         assert_eq!(bar.call_sites.len(), 1);
         assert!(!bar.has_pending_call_site_summary);
+    }
+
+    #[test]
+    fn merged_call_sites_keep_the_order_each_method_was_first_called() {
+        let mut registry = TypeRegistry::new();
+        for name in ["scope_to", "operation_name", "scope_to", "feature_category"] {
+            registry.add_call_site("Job", test_call_site(name));
+        }
+        registry.finalize_pending_call_site_summaries();
+
+        let names: Vec<String> = registry
+            .class_data_for("Job")
+            .expect("job data")
+            .call_sites
+            .iter()
+            .map(|site| site.method_name.to_string())
+            .collect();
+        assert_eq!(names, ["scope_to", "operation_name", "feature_category"]);
     }
 
     #[test]
