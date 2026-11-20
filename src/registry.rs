@@ -12096,16 +12096,7 @@ impl TypeRegistry {
                             visiting.remove(&key);
                             resolved
                         })
-                        .filter(Self::is_concrete_for_global_resolve)
-                        .or_else(|| {
-                            let receiver_class = Self::type_to_class_name(&resolved_receiver)?;
-                            self.resolve_attr_reader_return_type(
-                                &receiver_class,
-                                method_name,
-                                matches!(resolved_receiver, Type::Singleton(_)),
-                            )
-                            .filter(|ty| *ty != Type::Untyped)
-                        });
+                        .filter(Self::is_concrete_for_global_resolve);
                     resolved_return.unwrap_or_else(|| {
                         Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name)
                     })
@@ -12521,6 +12512,36 @@ impl TypeRegistry {
         }
     }
 
+    /// `LocalEnv.new(@lenv.file_context)` passes back what `initialize` stored from this
+    /// parameter (`@file_context = file_context`), so it adds nothing to the parameter.
+    fn reads_back_initialize_param(
+        &self,
+        class_name: &str,
+        method: &MethodDef,
+        index: usize,
+        arg: &Type,
+        call_site: &CallSite,
+        visiting: &mut FxHashSet<(String, String, bool)>,
+    ) -> bool {
+        let Type::ReceiverMethodRef(receiver, reader) = arg else {
+            return false;
+        };
+        if method.name != "initialize" || method.is_singleton {
+            return false;
+        }
+        let Some(param) = method.param_infos.get(index) else {
+            return false;
+        };
+        let reads_param_ivar = self
+            .attr_ivar_name_through_ancestors(class_name, reader.as_str(), false)
+            .is_some_and(|ivar| ivar.strip_prefix('@') == Some(param.name.as_str()));
+        reads_param_ivar
+            && matches!(
+                self.resolve_call_site_type_from_caller_context(call_site, receiver, visiting),
+                Type::Class(name) if name.as_str() == class_name
+            )
+    }
+
     fn resolve_params_inner(
         &self,
         class_name: &str,
@@ -12628,7 +12649,13 @@ impl TypeRegistry {
                 let resolved_arg_types =
                     Self::synthesize_keyword_hash_arg(call_site, &method.param_infos)
                         .into_iter()
-                        .map(|ty| {
+                        .enumerate()
+                        .map(|(index, ty)| {
+                            if self.reads_back_initialize_param(
+                                class_name, method, index, &ty, call_site, visiting,
+                            ) {
+                                return Type::Bot;
+                            }
                             self.resolve_call_site_type_from_caller_context(
                                 call_site, &ty, visiting,
                             )
@@ -12641,6 +12668,9 @@ impl TypeRegistry {
                     &method.param_infos,
                 );
             }
+        }
+        for types in &mut param_types {
+            types.retain(|ty| *ty != Type::Bot);
         }
 
         let mut positional_idx = 0;

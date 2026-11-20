@@ -2126,18 +2126,26 @@ pub fn source_nested_namespaces(source: &str) -> Vec<String> {
             }
             continue;
         }
-        if trimmed.starts_with('#') {
+        let first = trimmed.as_bytes().first().copied();
+        if first == Some(b'#') {
             continue;
         }
         heredoc_end = heredoc_terminator(line);
+        if !matches!(first, Some(b'c' | b'm' | b'e')) {
+            continue;
+        }
         let indent = line.len() - trimmed.len();
         // `end` closes what was opened at its indentation or deeper.
-        if trimmed == "end" || trimmed.starts_with("end ") || trimmed.starts_with("end;") {
-            while open
-                .last()
-                .is_some_and(|(open_indent, _)| *open_indent >= indent)
+        if first == Some(b'e') {
+            if !open.is_empty()
+                && (trimmed == "end" || trimmed.starts_with("end ") || trimmed.starts_with("end;"))
             {
-                open.pop();
+                while open
+                    .last()
+                    .is_some_and(|(open_indent, _)| *open_indent >= indent)
+                {
+                    open.pop();
+                }
             }
             continue;
         }
@@ -2246,6 +2254,9 @@ pub fn source_literal_hash_methods(source: &str) -> Vec<(String, Vec<String>)> {
 
 /// A `def self.` line followed by a line that opens a Hash, or one that opens it itself.
 fn may_define_literal_hash_method(source: &str) -> bool {
+    if !source.contains("def self.") {
+        return false;
+    }
     let mut after_def = false;
     for line in source.lines() {
         let line = line.trim();
