@@ -234,6 +234,22 @@ struct DeferredHopMemoScope {
     installed: bool,
 }
 
+/// Keeps the resolution memos for a run of reads against a registry that does not change,
+/// such as computing every replay request.
+pub(crate) struct ResolutionMemoGuard {
+    _caller_ctx: CallerCtxMemoScope,
+    _deferred_hop: DeferredHopMemoScope,
+}
+
+impl ResolutionMemoGuard {
+    pub(crate) fn enter() -> Self {
+        Self {
+            _caller_ctx: CallerCtxMemoScope::enter(),
+            _deferred_hop: DeferredHopMemoScope::enter(),
+        }
+    }
+}
+
 impl DeferredHopMemoScope {
     fn enter() -> Self {
         let installed = DEFERRED_HOP_MEMO.with(|cell| {
@@ -5625,7 +5641,7 @@ impl TypeRegistry {
             || method.rbs_method_types.iter().any(|method_type| {
                 !method_type.type_params.is_empty() || method_type.block.is_some()
             })
-            || Self::type_contains_leaf(&method.raw_return_type, &|leaf| {
+            || Self::type_contains_matching(&method.raw_return_type, &|leaf| {
                 matches!(
                     leaf,
                     Type::ParamRef(_) | Type::KeywordParamRef(_) | Type::BlockReturnRef
@@ -5666,8 +5682,9 @@ impl TypeRegistry {
             body.method.as_str(),
             body.is_singleton,
         ));
-        // The replay helps a call on a reference once the merged files type the receiver, if
-        // the call gave `untyped` or its result depends on the arguments it lost.
+        let _caller_ctx_memo_scope = CallerCtxMemoScope::enter();
+        let _hop_memo = DeferredHopMemoScope::enter();
+        // The replay helps a call on a reference once the merged files type the receiver.
         let references_resolve = body.reference_calls.iter().any(|call| {
             let receiver = self.resolve_deferred_refs_for_context(
                 &body.owner,
@@ -5685,8 +5702,6 @@ impl TypeRegistry {
                 reads_other_files: true,
             });
         }
-        let _caller_ctx_memo_scope = CallerCtxMemoScope::enter();
-        let _hop_memo = DeferredHopMemoScope::enter();
         let (positional, keywords) = self.merged_call_site_param_types(method, &sites);
         // A parameter whose callers pass a type that still holds references keeps its own
         // reference, so the replay types that part as the first pass did. Resolving those
@@ -8836,7 +8851,7 @@ impl TypeRegistry {
     }
 
     pub(crate) fn type_contains_param_ref_static(ty: &Type) -> bool {
-        Self::type_contains_leaf(ty, &|leaf| {
+        Self::type_contains_matching(ty, &|leaf| {
             matches!(leaf, Type::ParamRef(_) | Type::KeywordParamRef(_))
         })
     }
@@ -8844,7 +8859,7 @@ impl TypeRegistry {
     /// A parameter or an instance variable of a method means nothing outside its class, so
     /// such a return cannot be copied into a caller as it is.
     fn type_contains_callee_relative_ref(ty: &Type) -> bool {
-        Self::type_contains_leaf(ty, &|leaf| {
+        Self::type_contains_matching(ty, &|leaf| {
             matches!(
                 leaf,
                 Type::ParamRef(_) | Type::KeywordParamRef(_) | Type::IvarRef(_)
@@ -8852,8 +8867,11 @@ impl TypeRegistry {
         })
     }
 
-    fn type_contains_leaf(ty: &Type, is_match: &impl Fn(&Type) -> bool) -> bool {
-        let contains = |inner: &Type| Self::type_contains_leaf(inner, is_match);
+    fn type_contains_matching(ty: &Type, is_match: &impl Fn(&Type) -> bool) -> bool {
+        if is_match(ty) {
+            return true;
+        }
+        let contains = |inner: &Type| Self::type_contains_matching(inner, is_match);
         match ty {
             Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
                 parts.iter().any(contains)
@@ -8878,7 +8896,7 @@ impl TypeRegistry {
             Type::DeferredSafeNavigation(receiver, result) => {
                 contains(receiver) || contains(result)
             }
-            _ => is_match(ty),
+            _ => false,
         }
     }
 

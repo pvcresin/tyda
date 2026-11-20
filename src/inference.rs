@@ -19759,6 +19759,8 @@ impl<'a> InferenceEngine<'a> {
             })
             .unwrap_or_default();
         self.active_method_body = saved_active_method_body;
+        let shape_lost_on_references =
+            Self::reference_calls_reaching_return(shape_lost_on_references, &return_type);
         if (!shape_lost_params.is_empty()
             || !shape_lost_keywords.is_empty()
             || !shape_lost_on_references.is_empty())
@@ -34951,6 +34953,12 @@ impl<'a> InferenceEngine<'a> {
                     };
                     let result = Self::include_optional_control_type(result, &block_break_type);
                     self.note_param_call_shape_drop(&call_node, &safe_nav_receiver_type, &result);
+                    self.note_reference_call_shape_drop(
+                        &call_node,
+                        &safe_nav_receiver_type,
+                        &result,
+                        scope,
+                    );
                     // The call is still walked so its arguments reach a definition in another file.
                     let result = match self.explicit_receiver_private_reach(
                         &receiver,
@@ -57685,15 +57693,137 @@ impl<'a> InferenceEngine<'a> {
             &mut body.shape_lost_params,
             &mut body.shape_lost_keywords,
         );
-        if Self::type_contains_method_reference(receiver_type) {
-            let call = ReferenceCall {
-                receiver: receiver_type.clone(),
-                method: Sym::new(String::from_utf8_lossy(call_node.name().as_slice())),
-                untyped: Self::type_contains_untyped(result),
-            };
-            if !body.shape_lost_on_references.contains(&call) {
-                body.shape_lost_on_references.push(call);
+    }
+
+    /// Whether an argument has a type without inferring it again: a literal, a constant, a
+    /// typed local, or a keyword or hash holding one.
+    fn argument_type_is_known(argument: &Node<'_>, scope: &Scope) -> bool {
+        let known = |ty: &Type| {
+            Self::is_concrete(ty)
+                && !Self::type_contains_untyped(ty)
+                && !TypeRegistry::type_contains_param_ref_static(ty)
+        };
+        match argument {
+            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => true,
+            Node::LocalVariableReadNode { .. } => Self::extract_local_var_name(argument)
+                .and_then(|name| scope.get(&name))
+                .is_some_and(known),
+            Node::KeywordHashNode { .. } | Node::HashNode { .. } => {
+                let elements: Vec<Node<'_>> = match argument {
+                    Node::KeywordHashNode { .. } => argument
+                        .as_keyword_hash_node()
+                        .map(|hash| hash.elements().iter().collect())
+                        .unwrap_or_default(),
+                    _ => argument
+                        .as_hash_node()
+                        .map(|hash| hash.elements().iter().collect())
+                        .unwrap_or_default(),
+                };
+                elements.iter().any(|element| {
+                    element
+                        .as_assoc_node()
+                        .is_some_and(|assoc| Self::argument_type_is_known(&assoc.value(), scope))
+                })
             }
+            _ => Self::infer_context_free_node_type(argument).is_some_and(|ty| known(&ty)),
+        }
+    }
+
+    /// Records a call on a method reference that kept no arguments or block, when they carry
+    /// something a replay could use: a literal block or an argument with a type.
+    fn note_reference_call_shape_drop(
+        &mut self,
+        call_node: &ruby_prism::CallNode<'_>,
+        receiver_type: &Type,
+        result: &Type,
+        scope: &Scope,
+    ) {
+        if self.replaying_method_body
+            || self.active_method_body.is_none()
+            || (Self::is_concrete(result) && !Self::type_contains_untyped(result))
+            || !Self::type_contains_method_reference(receiver_type)
+        {
+            return;
+        }
+        let has_block = call_node
+            .block()
+            .is_some_and(|block| block.as_block_node().is_some());
+        let has_arguments = call_node
+            .arguments()
+            .is_some_and(|arguments| arguments.arguments().iter().next().is_some());
+        if !has_block && !has_arguments {
+            return;
+        }
+        let informative = has_block
+            || call_node.arguments().is_some_and(|arguments| {
+                arguments
+                    .arguments()
+                    .iter()
+                    .any(|argument| Self::argument_type_is_known(&argument, scope))
+            });
+        if !informative {
+            return;
+        }
+        let call = ReferenceCall {
+            receiver: receiver_type.clone(),
+            method: Sym::new(String::from_utf8_lossy(call_node.name().as_slice())),
+            untyped: Self::type_contains_untyped(result),
+        };
+        let Some(body) = self.active_method_body.as_mut() else {
+            return;
+        };
+        if !body.shape_lost_on_references.contains(&call) {
+            body.shape_lost_on_references.push(call);
+        }
+    }
+
+    /// The lost calls a replay can improve the return with: one that gave `untyped` when the
+    /// return holds `untyped`, or one whose reference is still in the return.
+    fn reference_calls_reaching_return(
+        mut calls: Vec<ReferenceCall>,
+        return_type: &Type,
+    ) -> Vec<ReferenceCall> {
+        if calls.is_empty() {
+            return calls;
+        }
+        let return_has_untyped = Self::type_contains_untyped(return_type);
+        calls.retain(|call| {
+            if call.untyped {
+                return return_has_untyped;
+            }
+            let reference = Type::ReceiverMethodRef(Box::new(call.receiver.clone()), call.method);
+            Self::type_contains_part(return_type, &reference)
+        });
+        calls
+    }
+
+    /// Whether `needle` appears in `ty`, including inside the containers and references that
+    /// carry a value on (`[x]`, `x?`, `x.foo`).
+    fn type_contains_part(ty: &Type, needle: &Type) -> bool {
+        if ty == needle {
+            return true;
+        }
+        let contains = |inner: &Type| Self::type_contains_part(inner, needle);
+        match ty {
+            Type::Union(parts) | Type::Intersection(parts) | Type::Tuple(parts) => {
+                parts.iter().any(contains)
+            }
+            Type::Array(Some(inner))
+            | Type::ReceiverMethodRef(inner, _)
+            | Type::TruthyProjection(inner)
+            | Type::FalsyProjection(inner)
+            | Type::NonNilProjection(inner)
+            | Type::SplatRef(inner) => contains(inner),
+            Type::Hash(key, value) => {
+                key.as_deref().is_some_and(contains) || value.as_deref().is_some_and(contains)
+            }
+            Type::Record(fields) => fields.iter().any(|field| contains(&field.value)),
+            Type::Generic { args, .. } => args.iter().any(contains),
+            Type::Proc(proc_type) => contains(&proc_type.return_type),
+            Type::DeferredSafeNavigation(receiver, result) => {
+                contains(receiver) || contains(result)
+            }
+            _ => false,
         }
     }
 

@@ -604,36 +604,7 @@ fn run_cli(
         None
     };
 
-    let preload_timing = std::env::var_os("TYDA_PRELOAD_TIMING").is_some();
-    let mut analysis_threads = std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(4)
-        .max(1);
-    // Cap for benchmark / verification runs that must not monopolize the
-    // machine (CPU heat and per-worker transient memory scale with workers).
-    if let Some(value) = std::env::var_os("TYDA_CLI_ANALYSIS_THREADS")
-        && let Some(parsed) = value.to_str().and_then(|v| v.parse::<usize>().ok())
-        && parsed > 0
-    {
-        analysis_threads = parsed;
-    }
-    let pool_build_started = Instant::now();
-    // The file scan below parses sources, so it runs on this pool's large stacks too.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(analysis_threads)
-        .stack_size(tyda::analysis::ANALYSIS_WORKER_STACK_SIZE)
-        .build()
-        .expect("failed to build CLI analysis thread pool");
-    let pool = std::sync::Arc::new(pool);
-    if preload_timing {
-        eprintln!(
-            "TIMING pool_build_ms={:.3} analysis_threads={analysis_threads}",
-            pool_build_started.elapsed().as_secs_f64() * 1000.0,
-        );
-    }
-
     let paths_owned: Vec<PathBuf> = paths.to_vec();
-    let collect_pool = std::sync::Arc::clone(&pool);
     // Diagnostics needs every target source again after analysis (message
     // rendering reads it); the RBS path re-reads per chunk instead of holding
     // the whole corpus resident.
@@ -641,29 +612,27 @@ fn run_cli(
     let file_collect_handle = std::thread::spawn(move || {
         let files = collect_analysis_files(&paths_owned);
         // par_iter over an indexed source preserves input order in the collected Vec.
-        let scanned: Vec<PreloadedFile> = collect_pool.install(|| {
-            files
-                .into_par_iter()
-                .filter_map(|path| {
-                    if !is_ruby_file(&path) {
-                        return None;
-                    }
-                    let source = fs::read_to_string(&path).ok()?;
-                    let mut detected = BTreeSet::new();
-                    tyda::project::detect_dsl_from_source_text(&source, &mut detected);
-                    let case_equality_overrides =
-                        tyda::analysis::source_case_equality_overrides(&source);
-                    let nested_namespaces = tyda::analysis::source_nested_namespaces(&source);
-                    Some((
-                        path,
-                        retain_sources.then_some(source),
-                        detected,
-                        case_equality_overrides,
-                        nested_namespaces,
-                    ))
-                })
-                .collect()
-        });
+        let scanned: Vec<PreloadedFile> = files
+            .into_par_iter()
+            .filter_map(|path| {
+                if !is_ruby_file(&path) {
+                    return None;
+                }
+                let source = fs::read_to_string(&path).ok()?;
+                let mut detected = BTreeSet::new();
+                tyda::project::detect_dsl_from_source_text(&source, &mut detected);
+                let case_equality_overrides =
+                    tyda::analysis::source_case_equality_overrides(&source);
+                let nested_namespaces = tyda::analysis::source_nested_namespaces(&source);
+                Some((
+                    path,
+                    retain_sources.then_some(source),
+                    detected,
+                    case_equality_overrides,
+                    nested_namespaces,
+                ))
+            })
+            .collect();
         let mut file_sources: Vec<(PathBuf, Option<String>)> = Vec::with_capacity(scanned.len());
         let mut detected_dsl = BTreeSet::new();
         let mut case_equality_overrides = tyda::analysis::SourceCaseEqualityOverrides::default();
@@ -684,6 +653,7 @@ fn run_cli(
         )
     });
 
+    let preload_timing = std::env::var_os("TYDA_PRELOAD_TIMING").is_some();
     let (
         workspace_root,
         stdlib_loader,
@@ -698,8 +668,6 @@ fn run_cli(
         file_collect_handle
             .join()
             .expect("file collection thread panicked");
-    let pool = std::sync::Arc::try_unwrap(pool)
-        .unwrap_or_else(|_| unreachable!("the file collection thread has ended"));
     user_rbs.record_source_case_equality_overrides(
         case_equality_overrides.base_class_dispatch,
         case_equality_overrides.numeric_dispatch,
@@ -796,6 +764,31 @@ fn run_cli(
         project_versions,
         project_root: Some(workspace_root.clone()),
     };
+
+    let mut analysis_threads = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(4)
+        .max(1);
+    // Cap for benchmark / verification runs that must not monopolize the
+    // machine (CPU heat and per-worker transient memory scale with workers).
+    if let Some(value) = std::env::var_os("TYDA_CLI_ANALYSIS_THREADS")
+        && let Some(parsed) = value.to_str().and_then(|v| v.parse::<usize>().ok())
+        && parsed > 0
+    {
+        analysis_threads = parsed;
+    }
+    let pool_build_started = Instant::now();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(analysis_threads)
+        .stack_size(tyda::analysis::ANALYSIS_WORKER_STACK_SIZE)
+        .build()
+        .expect("failed to build CLI analysis thread pool");
+    if preload_timing {
+        eprintln!(
+            "TIMING pool_build_ms={:.3} analysis_threads={analysis_threads}",
+            pool_build_started.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
 
     let mut compact_collection_elapsed = Duration::ZERO;
     let mut context_scan_elapsed = Duration::ZERO;
