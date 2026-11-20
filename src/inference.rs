@@ -29588,6 +29588,9 @@ impl<'a> InferenceEngine<'a> {
                 let mut module_name_narrowing = predicate
                     .as_ref()
                     .and_then(|pred| self.case_module_name_receiver(class_name, pred, scope));
+                let class_name_subject = predicate
+                    .as_ref()
+                    .and_then(|pred| self.case_class_name_subject(class_name, pred, scope));
                 let predicate_subject = predicate.as_ref().and_then(|pred| {
                     let subject = Self::extract_narrow_subject_in_scope(pred, scope)?;
                     match &subject {
@@ -29717,6 +29720,13 @@ impl<'a> InferenceEngine<'a> {
                             (&module_name_narrowing, &module_name_narrowed_type)
                         {
                             branch_scope.narrow(&narrowing.local_name, narrowed_type.clone());
+                        }
+                        if literal_narrowing_safe
+                            && let Some((subject, subject_type)) = &class_name_subject
+                            && let Some(narrowed) =
+                                self.case_class_name_branch_type(subject_type, &when_node)
+                        {
+                            branch_scope.narrow_subject(subject, narrowed);
                         }
                         if Self::when_sets_regexp_match_globals(&when_node) {
                             branch_scope.regexp_match_captures = true;
@@ -60404,18 +60414,7 @@ impl<'a> InferenceEngine<'a> {
             return None;
         }
 
-        self.ensure_class_available("Module");
-        if self.instance_method_has_source_override("Module", "name")
-            || self.active_refinement_overrides_instance_method("Module", "name", scope)
-            || self.active_refinement_overrides_instance_method("Class", "name", scope)
-        {
-            return None;
-        }
-        let module_name = self
-            .registry
-            .lookup_method_def("Module", "name", false)
-            .is_some_and(|method| method.origin.is_rbs_file_source());
-        if !module_name {
+        if !self.module_name_is_standard(scope) {
             return None;
         }
 
@@ -60442,6 +60441,127 @@ impl<'a> InferenceEngine<'a> {
         }
 
         CaseModuleNameNarrowing::new(local_name, receiver_type)
+    }
+
+    fn module_name_is_standard(&mut self, scope: &Scope) -> bool {
+        self.ensure_class_available("Module");
+        if self.instance_method_has_source_override("Module", "name")
+            || self.active_refinement_overrides_instance_method("Module", "name", scope)
+            || self.active_refinement_overrides_instance_method("Class", "name", scope)
+        {
+            return false;
+        }
+        self.registry
+            .lookup_method_def("Module", "name", false)
+            .is_some_and(|method| method.origin.is_rbs_file_source())
+    }
+
+    /// The subject of `case value.class.name` and its closed type.
+    fn case_class_name_subject(
+        &mut self,
+        class_name: &str,
+        predicate: &Node<'_>,
+        scope: &Scope,
+    ) -> Option<(NarrowSubject, Type)> {
+        let name_call = predicate.as_call_node()?;
+        let class_call = name_call.receiver()?.as_call_node()?;
+        if name_call.name().as_slice() != b"name"
+            || class_call.name().as_slice() != b"class"
+            || name_call.arguments().is_some()
+            || name_call.block().is_some()
+            || class_call.arguments().is_some()
+            || class_call.block().is_some()
+        {
+            return None;
+        }
+        let subject = Self::extract_narrow_subject_in_scope(&class_call.receiver()?, scope)?;
+        if !matches!(
+            subject,
+            NarrowSubject::Local(_) | NarrowSubject::Ivar(_) | NarrowSubject::SelfMethod(_)
+        ) {
+            return None;
+        }
+        let subject_type = self.resolve_subject_input_type(class_name, scope, &subject)?;
+        let subject_type = self.resolve_receiver_method_refs(&subject_type);
+        if !self.module_name_is_standard(scope) {
+            return None;
+        }
+        // A type still to be resolved can only lose `nil`, whose class is always `NilClass`.
+        let members = if Self::is_closed_case_subject_type(&subject_type) {
+            match &subject_type {
+                Type::Union(parts) => parts.as_slice(),
+                other => std::slice::from_ref(other),
+            }
+        } else {
+            std::slice::from_ref(&Type::Nil)
+        };
+        for member in members {
+            if matches!(member, Type::Singleton(_)) {
+                return None;
+            }
+            let member_class = self.type_to_class_name(member)?;
+            self.ensure_class_available(&member_class);
+            if self
+                .registry
+                .resolve_method_call_owners(&member_class, "class", false)
+                .first()
+                .is_none_or(|(owner, is_singleton)| owner != "Kernel" || *is_singleton)
+            {
+                return None;
+            }
+        }
+        Some((subject, subject_type))
+    }
+
+    /// A `when "Name"` branch of `case value.class.name` sees only the members whose class can
+    /// be named `Name`: that class itself, or a parent of it. A member is dropped only when the
+    /// named class's superclass chain is fully known, or the member has no subclasses (`nil`).
+    fn case_class_name_branch_type(
+        &mut self,
+        subject_type: &Type,
+        when_node: &ruby_prism::WhenNode<'_>,
+    ) -> Option<Type> {
+        let mut names = Vec::new();
+        for condition in when_node.conditions().iter() {
+            let string = condition.as_string_node()?;
+            names.push(String::from_utf8_lossy(string.unescaped()).into_owned());
+        }
+        if !Self::is_closed_case_subject_type(subject_type) {
+            return (!names.iter().any(|name| name == "NilClass"))
+                .then(|| Type::project_non_nil(subject_type));
+        }
+        let chains: Vec<Option<Vec<String>>> = names
+            .iter()
+            .map(|name| {
+                self.ensure_class_available(name);
+                self.complete_superclass_chain(name)
+            })
+            .collect();
+        let members = match subject_type {
+            Type::Union(parts) => parts.as_slice(),
+            other => std::slice::from_ref(other),
+        };
+        let mut matched = Vec::new();
+        for member in members {
+            let member_class = self.type_to_class_name(member)?;
+            let exact_class = matches!(member, Type::Nil | Type::True | Type::False);
+            for (name, chain) in names.iter().zip(&chains) {
+                let kept = if member_class == *name {
+                    Some(member.clone())
+                } else if exact_class {
+                    None
+                } else {
+                    match chain {
+                        Some(chain) => chain
+                            .contains(&member_class)
+                            .then(|| Type::Class(Sym::new(name))),
+                        None => Some(member.clone()),
+                    }
+                };
+                matched.extend(kept);
+            }
+        }
+        (!matched.is_empty()).then(|| Type::from_type_vec(matched))
     }
 
     fn case_when_branch_class_narrowing(

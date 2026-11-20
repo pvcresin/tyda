@@ -1855,3 +1855,77 @@ fn nil_subject_never_matches_a_class_when() {
         assert!(missing.is_empty(), "compact={compact}: {found:?}");
     }
 }
+
+#[test]
+fn class_name_case_narrows_the_subject_to_matching_classes() {
+    let source = concat!(
+        "class Acct\n",
+        "  def id = 1\n",
+        "end\n",
+        "class Post\n",
+        "  def id = 2\n",
+        "end\n",
+        "class Redirector\n",
+        "  def initialize(flag) = @flag = flag\n",
+        "  def object\n",
+        "    @object ||= @flag ? Acct.new : (rand > 0.5 ? Post.new : nil)\n",
+        "  end\n",
+        "  def path\n",
+        "    case object.class.name\n",
+        "    when 'Acct' then object.id\n",
+        "    end\n",
+        "  end\n",
+        "  def local_path(value)\n",
+        "    item = value ? Acct.new : (value.nil? ? Post.new : nil)\n",
+        "    case item.class.name\n",
+        "    when 'Acct' then item.only_acct\n",
+        "    when 'NilClass' then item.only_nil\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+        "Redirector.new(true).path\n",
+        "Redirector.new(true).local_path(true)\n",
+    );
+    for compact in [false, true] {
+        let mut missing = missing_methods_in(source, compact);
+        missing.sort();
+        assert_eq!(
+            missing,
+            [
+                (20, "Acct#only_acct".to_string()),
+                (21, "NilClass#only_nil".to_string()),
+            ],
+            "compact: {compact}"
+        );
+    }
+}
+
+#[test]
+fn known_issue_self_call_that_assigns_the_ivar_does_not_narrow_it() {
+    let source = concat!(
+        "class Acc\n",
+        "  def self.find(u) = u ? new : nil\n",
+        "  def suspended? = false\n",
+        "end\n",
+        "class Svc\n",
+        "  def call(u)\n",
+        "    @account = Acc.find(u)\n",
+        "    create_account if @account.nil?\n",
+        "    @account.suspended?\n",
+        "  end\n",
+        "  def create_account\n",
+        "    @account = Acc.new\n",
+        "  end\n",
+        "end\n",
+    );
+    // Known issue: `create_account` always leaves `@account` as `Acc`, so `@account` is not nil
+    // after the guard and `NilClass#suspended?` should not be reported.
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert_eq!(
+            missing,
+            [(9, "NilClass#suspended?".to_string())],
+            "known issue fixed (compact: {compact}); drop this check and assert no diagnostics"
+        );
+    }
+}

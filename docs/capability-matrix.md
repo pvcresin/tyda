@@ -24,7 +24,7 @@
 `case/when` の到達不能枝除外は、Full inference の再解析で標準 `Class#===`、閉じた subject、
 完全な祖先情報を確認できた場合に限る。初回解析でも、subject の型がすでに閉じていれば、
 class または `nil` の `when` に一致した型を後続の `when` と `else` から除く。`Struct.new` / `Data.define` で作ったクラス（その継承も含む）は
-`Struct` / `Data` の直接のサブクラスとして扱い、`is_a?` や `when Struct` で絞り込む。compact CLI は既存の初回解析を保ち、再解析対象外の
+`Struct` / `Data` の直接のサブクラスとして扱い、`is_a?` や `when Struct` で絞り込む。`case value.class.name` の文字列 `when` は、標準の `Kernel#class` / `Module#name` のとき、その名前のクラス（またはその親クラス）になり得る候補だけに subject（local / ivar / 引数なし self 呼び出し）を絞る。`nil` は `"NilClass"` 以外の枝から除き、他の候補は名前のクラスの superclass 連鎖がすべて分かるときだけ除く。compact CLI は既存の初回解析を保ち、再解析対象外の
 method も初回解析時の推論を保つ。そのため、後置 `Module#===` override がある noarg method では
 既知の推論誤差が残る。
 
