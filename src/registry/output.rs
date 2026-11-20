@@ -927,12 +927,7 @@ impl TypeRegistry {
                         _ => method.raw_return_type.clone(),
                     }
                 }
-                Some(
-                    ref deferred @ (Type::IvarRef(_)
-                    | Type::MethodReturnRef(..)
-                    | Type::ReceiverMethodRef(..)
-                    | Type::DeferredSafeNavigation(..)),
-                ) => {
+                Some(ref deferred) if Self::holds_deferred_ivar_value(deferred) => {
                     let resolved = self.resolve_deferred_refs_for_context(
                         receiver_class,
                         method.is_singleton,

@@ -6473,7 +6473,17 @@ impl TypeRegistry {
         scope_class: &str,
         raw_name: &'a str,
     ) -> &'a str {
-        // Ruby constant order (enclosing->top), plus skip on self-match (so `class B::A < A` doesn't land on self).
+        // Skip on self-match so `class B::A < A` doesn't land on self.
+        self.resolve_lexical_class_ref_borrow(scope_class, raw_name, false)
+    }
+
+    fn resolve_lexical_class_ref_borrow<'a>(
+        &'a self,
+        scope_class: &str,
+        raw_name: &'a str,
+        allow_self: bool,
+    ) -> &'a str {
+        // Ruby constant order (enclosing->top).
         let mut scope: &str = scope_class;
         // One buffer for the whole walk: the first scope is the longest, so no
         // later candidate reallocates. This walk runs on every mixin and
@@ -6485,7 +6495,7 @@ impl TypeRegistry {
                 candidate.push_str(scope);
                 candidate.push_str("::");
                 candidate.push_str(raw_name);
-                if candidate != scope_class
+                if (allow_self || candidate != scope_class)
                     && let Some((k, _)) = self.class_data.get_key_value(candidate.as_str())
                 {
                     return k.as_str();
@@ -6499,7 +6509,7 @@ impl TypeRegistry {
                 None => scope = "",
             }
         }
-        if raw_name != scope_class
+        if (allow_self || raw_name != scope_class)
             && let Some((k, _)) = self.class_data.get_key_value(raw_name)
         {
             return k.as_str();
@@ -6507,7 +6517,7 @@ impl TypeRegistry {
         // Absolute reference (`include ::Foo::Bar`): the leading `::` is not part
         // of the stored key, so retry against the canonical (unprefixed) name.
         if let Some(stripped) = raw_name.strip_prefix("::")
-            && stripped != scope_class
+            && (allow_self || stripped != scope_class)
             && let Some((k, _)) = self.class_data.get_key_value(stripped)
         {
             return k.as_str();
@@ -9010,8 +9020,9 @@ impl TypeRegistry {
 
     /// resolve a raw nominal name in lexical scope and return the canonical key that actually
     /// exists in the class graph (no leading `::`). Returns `None` if it doesn't exist (stays pending).
+    /// A type written inside a class body can name that class itself.
     fn resolve_scoped_nominal_name(&self, scope_class: &str, raw_name: &str) -> Option<String> {
-        let resolved = self.resolve_scoped_class_ref(scope_class, raw_name);
+        let resolved = self.resolve_lexical_class_ref_borrow(scope_class, raw_name, true);
         let canonical = resolved.trim_scope_prefix();
         self.class_data
             .contains_key(canonical)
@@ -9619,6 +9630,19 @@ impl TypeRegistry {
                 proc_type.return_type == Type::Untyped
                     || Self::is_concrete_for_global_resolve(&proc_type.return_type)
             }
+            _ => false,
+        }
+    }
+
+    /// An ivar value that waits on another method, alone or as a union member
+    /// (`f ? A.make : nil`).
+    pub(super) fn holds_deferred_ivar_value(ty: &Type) -> bool {
+        match ty {
+            Type::IvarRef(_)
+            | Type::MethodReturnRef(..)
+            | Type::ReceiverMethodRef(..)
+            | Type::DeferredSafeNavigation(..) => true,
+            Type::Union(parts) => parts.iter().any(Self::holds_deferred_ivar_value),
             _ => false,
         }
     }

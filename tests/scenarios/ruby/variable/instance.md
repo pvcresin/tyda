@@ -729,6 +729,35 @@ class Outer::Apu::Pulse
 end
 ```
 
+## A class read before its definition keeps its full name in its own instance variable
+
+### update
+
+```ruby
+class AST
+  def self.create(raw) = SigFuncType.new(raw)
+
+  class SigFuncType
+    attr_reader :blk
+
+    def initialize(raw) = @blk = raw ? AST.create(nil) : nil
+  end
+end
+```
+
+### result
+
+```rbs
+class AST
+  def self.create: (nil raw) -> AST::SigFuncType
+end
+
+class AST::SigFuncType
+  def blk: -> AST::SigFuncType?
+  def initialize: (nil raw) -> void
+end
+```
+
 ## An ivar read of a class defined later in the class body names the nested class
 
 ### update

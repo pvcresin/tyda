@@ -65375,7 +65375,11 @@ impl<'a> InferenceEngine<'a> {
                     return None;
                 }
                 let deferred = Type::MethodReturnRef(Sym::new(class_name), Sym::new(name));
-                if self.is_pure_ivar_reader(class_name, false, name)
+                let is_reader = self.is_pure_ivar_reader(class_name, false, name);
+                if is_reader && !self.reader_writers_are_collected(class_name, name) {
+                    return Some(deferred);
+                }
+                if is_reader
                     && let Some(ty) = self
                         .registry
                         .resolve_attr_reader_return_type(class_name, name, false)
@@ -65399,6 +65403,14 @@ impl<'a> InferenceEngine<'a> {
             NarrowSubject::ConstIndex(key) => scope.self_facts.get(key).cloned(),
             NarrowSubject::HashKey(..) => None,
         }
+    }
+
+    /// A class body in another file (CLI) leaves its ivar writers to that file, so the reader's
+    /// type here has only part of them, as a plain call of it does.
+    fn reader_writers_are_collected(&self, class_name: &str, reader: &str) -> bool {
+        self.registry
+            .first_method_call_owner_cached(class_name, reader, false)
+            .is_some_and(|(owner, _)| self.class_instance_ivar_writes.contains_key(&*owner))
     }
 
     /// A reader's current type only covers the writers seen so far, so it cannot rule out a branch.

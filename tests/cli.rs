@@ -966,6 +966,50 @@ fn diagnostics_replay_truthiness_for_optional_parameters() {
     );
 }
 
+// The reader's writers live in `base.rb`, so `noteable` stays a reference in `notes.rb`
+// whether or not an `is_a?` guard narrows it.
+#[test]
+fn diagnostics_type_guard_on_reader_from_another_file_keeps_it_deferred() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("base.rb"),
+        concat!(
+            "class Base\n",
+            "  attr_reader :noteable\n",
+            "  def initialize(noteable: nil) = @noteable = noteable\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("notes.rb"),
+        concat!(
+            "class Notes < Base\n",
+            "  def plain = noteable.project\n",
+            "  def guarded\n",
+            "    if noteable.is_a?(String)\n",
+            "      1\n",
+            "    else\n",
+            "      noteable.project\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("NilClass#project"),
+        "the guard must not read the reader as the partial `nil` of another file: {stdout}"
+    );
+}
+
 #[test]
 fn diagnostics_class_body_blocks_destructure_a_single_yield() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
@@ -5616,12 +5660,9 @@ fn nested_path_under_namespace_from_another_file() {
     );
 }
 
-// Known issue: the scenario runner and a single file type `blk` as `SigFuncType?`. The CLI
-// analyzes `sig.rb` alone, where `AST.create(raw)` is a reference that keeps no arguments, and
-// only calls that reach a method's return are typed again after the merge, not ivar writes.
-// When the check fails, drop it.
+// `f ? AST.create(nil) : nil` keeps the call to another file as a union member of the ivar.
 #[test]
-fn known_issue_ivar_from_call_with_arguments_in_another_file() {
+fn reader_of_ivar_with_call_to_another_file_in_union() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("ast.rb"),
@@ -5647,8 +5688,8 @@ fn known_issue_ivar_from_call_with_arguments_in_another_file() {
     assert!(output.status.success());
     let rbs = String::from_utf8_lossy(&output.stdout);
     assert!(
-        rbs.contains("def blk: -> untyped\n"),
-        "known issue fixed (ivar from a call with arguments in another file); drop this check: {rbs}"
+        rbs.contains("def blk: -> AST::SigFuncType?\n"),
+        "the reader resolves the deferred union member after the merge: {rbs}"
     );
 }
 
