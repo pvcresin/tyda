@@ -286,6 +286,9 @@ class body に入った時点でその body の `def` を構文で要約し、se
 block には self facts をそのまま持ち込むが、block 本体が書く ivar の facts は block の外でも中でも消える
 （block は繰り返し呼ばれうるため）。要約のない呼び先（RBS、DSL、別ファイル）や `super`、`&blk` は
 何でも書くとみなす。どれかの ivar への書き込みは self 呼び出しの facts もすべて消す。
+呼び先の本体が最上位で ivar に nil にならない値（リテラル、`Const.new`）を代入し、その前に `return` がなく、
+後の文（呼び出す self メソッドを含む）がその ivar に書かない場合、block を渡さないその self 呼び出しの後は
+ivar を非 nil の fact にする（`create_account if @account.nil?` の後の `@account`）。
 引数型と block の戻り値は既存の scan site を共有して hover snapshot に複製せず、scan で得た戻り値を
 再計算しないため、通常の hover は候補数と型構造に比例する bounded な query になる。候補を一意に
 確定できない場合は情報を捨てず、元の overload 群を表示する。Playground は Ruby / RBS の編集ごとに

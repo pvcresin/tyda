@@ -26,6 +26,10 @@ pub(super) struct SelfWrites {
     self_calls: Vec<Sym>,
     /// Code whose writes the syntax does not show, such as `super` or `&blk`.
     opaque: bool,
+    /// The code has a `return`, so later statements may not run.
+    returns: bool,
+    /// Ivars a method body always leaves non-nil, with the self calls made after the write.
+    non_nil_at_end: Vec<(Sym, Vec<Sym>)>,
 }
 
 impl SelfWrites {
@@ -33,6 +37,44 @@ impl SelfWrites {
         let mut collector = SelfWritesCollector::default();
         collector.visit(node);
         collector.writes
+    }
+
+    /// Also finds the ivars the body always leaves non-nil: a top-level write of a value that
+    /// is never `nil`, with no `return` before it and no later write of the same ivar.
+    fn of_method_body(body: &Node<'_>) -> Self {
+        let mut writes = Self::of(body);
+        let Some(statements) = body.as_statements_node() else {
+            return writes;
+        };
+        let statements: Vec<Node<'_>> = statements.body().iter().collect();
+        for (index, statement) in statements.iter().enumerate() {
+            let Some(write) = statement.as_instance_variable_write_node() else {
+                continue;
+            };
+            if !is_never_nil(&write.value())
+                || statements[..index]
+                    .iter()
+                    .any(|earlier| Self::of(earlier).returns)
+            {
+                continue;
+            }
+            let ivar = Sym::new(String::from_utf8_lossy(write.name().as_slice()));
+            let mut later_calls = Vec::new();
+            let mut kept = true;
+            for later in &statements[index + 1..] {
+                let later = Self::of(later);
+                if later.opaque || later.ivars.contains(&ivar) {
+                    kept = false;
+                    break;
+                }
+                later_calls.extend(later.self_calls);
+            }
+            if kept {
+                writes.non_nil_at_end.retain(|(name, _)| *name != ivar);
+                writes.non_nil_at_end.push((ivar, later_calls));
+            }
+        }
+        writes
     }
 
     fn write_ivar(&mut self, name: &[u8]) {
@@ -68,6 +110,31 @@ macro_rules! guarded {
             }
         )*
     };
+}
+
+/// A literal or `Const.new(...)`, whose value is never `nil`.
+fn is_never_nil(node: &Node<'_>) -> bool {
+    match node {
+        Node::StringNode { .. }
+        | Node::InterpolatedStringNode { .. }
+        | Node::SymbolNode { .. }
+        | Node::IntegerNode { .. }
+        | Node::FloatNode { .. }
+        | Node::ArrayNode { .. }
+        | Node::HashNode { .. }
+        | Node::TrueNode { .. }
+        | Node::LambdaNode { .. } => true,
+        Node::CallNode { .. } => node.as_call_node().is_some_and(|call| {
+            call.name().as_slice() == b"new"
+                && call.receiver().is_some_and(|receiver| {
+                    matches!(
+                        receiver,
+                        Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+                    )
+                })
+        }),
+        _ => false,
+    }
 }
 
 fn is_self_receiver(receiver: Option<Node<'_>>) -> bool {
@@ -169,6 +236,11 @@ impl<'pr> Visit<'pr> for SelfWritesCollector {
             self.writes.call_self(b"[]=");
         }
         ruby_prism::visit_index_target_node(self, node);
+    }
+
+    fn visit_return_node(&mut self, node: &ruby_prism::ReturnNode<'pr>) {
+        self.writes.returns = true;
+        ruby_prism::visit_return_node(self, node);
     }
 
     fn visit_super_node(&mut self, node: &ruby_prism::SuperNode<'pr>) {
@@ -322,7 +394,7 @@ impl InferenceEngine<'_> {
             None => {
                 let writes = def_node
                     .body()
-                    .map(|body| SelfWrites::of(&body))
+                    .map(|body| SelfWrites::of_method_body(&body))
                     .unwrap_or_default();
                 self.self_write_summaries
                     .by_def_offset
@@ -444,6 +516,46 @@ impl InferenceEngine<'_> {
             },
             None => SelfFactEffect::any(),
         }
+    }
+
+    /// The ivars a self call always leaves non-nil: its callee writes them at its top level, and
+    /// nothing it calls after that writes them again.
+    pub(super) fn self_call_non_nil_ivars(
+        &self,
+        class_name: &str,
+        singleton_dispatch: bool,
+        method: &str,
+    ) -> Vec<Sym> {
+        let name = Sym::new(method);
+        let own_key = (Sym::new(class_name), name, singleton_dispatch);
+        let summary_key = match self.registry.first_method_call_owner_cached(
+            class_name,
+            method,
+            singleton_dispatch,
+        ) {
+            Some((owner, owner_singleton))
+                if !self.self_write_summaries.by_method.contains_key(&own_key)
+                    || *owner == *class_name =>
+            {
+                (Sym::new(owner), name, owner_singleton)
+            }
+            Some(_) => return Vec::new(),
+            None => own_key,
+        };
+        let Some(writes) = self.self_write_summaries.by_method.get(&summary_key) else {
+            return Vec::new();
+        };
+        writes
+            .non_nil_at_end
+            .iter()
+            .filter(|(ivar, later_calls)| {
+                later_calls.iter().all(|callee| {
+                    let effect = self.self_call_effect(class_name, singleton_dispatch, callee);
+                    !effect.is_any() && !effect.ivars().contains(ivar)
+                })
+            })
+            .map(|(ivar, _)| *ivar)
+            .collect()
     }
 
     /// Follows the self calls a call makes, dispatching each on the same self.

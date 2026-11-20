@@ -1901,31 +1901,67 @@ fn class_name_case_narrows_the_subject_to_matching_classes() {
 }
 
 #[test]
-fn known_issue_self_call_that_assigns_the_ivar_does_not_narrow_it() {
-    let source = concat!(
-        "class Acc\n",
-        "  def self.find(u) = u ? new : nil\n",
-        "  def suspended? = false\n",
-        "end\n",
-        "class Svc\n",
-        "  def call(u)\n",
-        "    @account = Acc.find(u)\n",
-        "    create_account if @account.nil?\n",
-        "    @account.suspended?\n",
-        "  end\n",
-        "  def create_account\n",
-        "    @account = Acc.new\n",
-        "  end\n",
-        "end\n",
-    );
-    // Known issue: `create_account` always leaves `@account` as `Acc`, so `@account` is not nil
-    // after the guard and `NilClass#suspended?` should not be reported.
+fn self_call_that_always_assigns_the_ivar_makes_it_non_nil() {
+    let source = |create_body: &str| {
+        format!(
+            concat!(
+                "class Acc\n",
+                "  def self.find(u) = u ? new : nil\n",
+                "  def suspended? = false\n",
+                "end\n",
+                "class Svc\n",
+                "  def call(u)\n",
+                "    @account = Acc.find(u)\n",
+                "    create_account if @account.nil?\n",
+                "    @account.suspended?\n",
+                "  end\n",
+                "  def create_account\n",
+                "{}",
+                "  end\n",
+                "  def reset = @account = nil\n",
+                "  def ping = 1\n",
+                "end\n",
+            ),
+            create_body
+        )
+    };
+    let non_nil = [
+        ("a top-level write", "    @account = Acc.new\n"),
+        (
+            "a write followed by a call that does not write it",
+            "    @account = Acc.new\n    ping\n",
+        ),
+    ];
+    let maybe_nil = [
+        ("a value that can be nil", "    @account = Acc.find(1)\n"),
+        (
+            "a return before the write",
+            "    return if rand > 0.5\n    @account = Acc.new\n",
+        ),
+        (
+            "a conditional write",
+            "    @account = Acc.new if rand > 0.5\n",
+        ),
+        (
+            "a later call that writes nil",
+            "    @account = Acc.new\n    reset\n",
+        ),
+    ];
     for compact in [false, true] {
-        let missing = missing_methods_in(source, compact);
-        assert_eq!(
-            missing,
-            [(9, "NilClass#suspended?".to_string())],
-            "known issue fixed (compact: {compact}); drop this check and assert no diagnostics"
-        );
+        for (name, body) in non_nil {
+            let missing = missing_methods_in(&source(body), compact);
+            assert!(
+                missing.is_empty(),
+                "{name} (compact: {compact}): {missing:?}"
+            );
+        }
+        for (name, body) in maybe_nil {
+            let missing = missing_methods_in(&source(body), compact);
+            assert_eq!(
+                missing,
+                [(9, "NilClass#suspended?".to_string())],
+                "{name} (compact: {compact})"
+            );
+        }
     }
 }

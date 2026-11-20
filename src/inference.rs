@@ -23708,6 +23708,7 @@ impl<'a> InferenceEngine<'a> {
         if let Some(effect) = deferred_effect {
             scope.apply_self_fact_effect(&effect);
         }
+        self.apply_self_call_non_nil_facts(class_name, node, scope);
         ty
     }
 
@@ -27651,7 +27652,25 @@ impl<'a> InferenceEngine<'a> {
         if let Some(effect) = deferred_effect {
             scope.apply_self_fact_effect(&effect);
         }
+        self.apply_self_call_non_nil_facts(class_name, node, scope);
         statement_exits
+    }
+
+    /// After a self call whose callee always leaves an ivar non-nil, reads of it are non-nil.
+    fn apply_self_call_non_nil_facts(&self, class_name: &str, node: &Node<'_>, scope: &mut Scope) {
+        let Some(call) = node.as_call_node() else {
+            return;
+        };
+        if scope.singleton_dispatch
+            || call.block().is_some()
+            || !matches!(call.receiver(), None | Some(Node::SelfNode { .. }))
+        {
+            return;
+        }
+        let name = String::from_utf8_lossy(call.name().as_slice());
+        for ivar in self.self_call_non_nil_ivars(class_name, false, &name) {
+            scope.set_self_fact(&ivar, Type::project_non_nil(&Type::IvarRef(ivar)));
+        }
     }
 
     fn enter_trace_site(
