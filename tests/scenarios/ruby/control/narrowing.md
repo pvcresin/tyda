@@ -1452,3 +1452,36 @@ class StructNarrow::Scalar < Struct
   def self.members: -> Array[:value]
 end
 ```
+
+## A modifier if passes the narrowed value before the local is reassigned
+
+### update
+
+```ruby
+class Config
+  def initialize(opt = {})
+    opt = Parser.new(opt).options if opt.is_a?(Array)
+    opt
+  end
+
+  class Parser
+    def initialize(argv) = @argv = argv
+    def options = { argv: @argv }
+  end
+end
+
+Config.new(["x"])
+```
+
+### result
+
+```rbs
+class Config
+  def initialize: (?(Hash[untyped, untyped] | Array[String]) opt) -> void
+end
+
+class Config::Parser
+  def initialize: ((Array | Array[String]) argv) -> void
+  def options: -> { argv: Array }
+end
+```

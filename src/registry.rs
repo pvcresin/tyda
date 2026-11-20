@@ -5355,6 +5355,13 @@ impl TypeRegistry {
             } else {
                 Type::from_type_vec(types.clone())
             };
+            if matches!(ivar_ty, Type::Union(_)) && Self::holds_deferred_ivar_value(&ivar_ty) {
+                let resolved = self.resolve_deferred_ivar_value(class_name, is_singleton, &ivar_ty);
+                if resolved != Type::Untyped && Self::is_resolved_attr_return_type(&resolved) {
+                    return Some(resolved);
+                }
+                return Some(ivar_ty);
+            }
             if !matches!(
                 ivar_ty,
                 Type::Untyped
@@ -6081,7 +6088,7 @@ impl TypeRegistry {
     }
 
     /// A call on a constant not seen yet leaves a `class_data` entry that holds only the call.
-    fn has_class_declaration(&self, name: &str) -> bool {
+    pub(super) fn has_class_declaration(&self, name: &str) -> bool {
         self.class_data.get(name).is_some_and(|data| {
             data.user_defined
                 || data.loc.is_some()
@@ -6475,6 +6482,13 @@ impl TypeRegistry {
     ) -> &'a str {
         // Skip on self-match so `class B::A < A` doesn't land on self.
         self.resolve_lexical_class_ref_borrow(scope_class, raw_name, false)
+    }
+
+    /// Lexical lookup that may land on `scope_class` itself (a reference written inside it).
+    pub(crate) fn resolve_lexical_class_ref(&self, scope_class: &str, raw_name: &str) -> String {
+        self.resolve_lexical_class_ref_borrow(scope_class, raw_name, true)
+            .trim_scope_prefix()
+            .to_string()
     }
 
     fn resolve_lexical_class_ref_borrow<'a>(

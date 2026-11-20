@@ -5660,6 +5660,29 @@ fn nested_path_under_namespace_from_another_file() {
     );
 }
 
+// `NES::FPS` names a value constant in another file, not a class.
+#[test]
+fn constant_aliasing_a_value_constant_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("nes.rb"),
+        "module Opt\n  class NES\n    FPS = 60\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("video.rb"),
+        "module Opt\n  class Video\n    MAX_FPS = NES::FPS\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(rbs.contains("  MAX_FPS: 60\n"), "{rbs}");
+}
+
 // `f ? AST.create(nil) : nil` keeps the call to another file as a union member of the ivar.
 #[test]
 fn reader_of_ivar_with_call_to_another_file_in_union() {

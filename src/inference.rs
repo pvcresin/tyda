@@ -1270,6 +1270,9 @@ pub struct InferenceEngine<'a> {
     /// the merged registry, as the files that declare them left them.
     replay_loads_workspace_classes: bool,
     replay_workspace_classes: FxHashSet<String>,
+    /// The value a local write statement just assigned, so the statement's value is not
+    /// inferred again with the scope it changed.
+    last_local_write_value: Option<(usize, Type)>,
     case_when_narrowing_enabled: bool,
     source_base_case_equality_override: bool,
     /// Source of each `===` defined in this file, reparsed when a call site asks how it narrows.
@@ -2984,6 +2987,7 @@ impl<'a> InferenceEngine<'a> {
             suppress_external_merge: false,
             replay_loads_workspace_classes: false,
             replay_workspace_classes: FxHashSet::default(),
+            last_local_write_value: None,
             case_when_narrowing_enabled: false,
             source_base_case_equality_override: false,
             source_case_equality_defs: HashMap::new(),
@@ -3101,6 +3105,7 @@ impl<'a> InferenceEngine<'a> {
             suppress_external_merge: false,
             replay_loads_workspace_classes: false,
             replay_workspace_classes: FxHashSet::default(),
+            last_local_write_value: None,
             case_when_narrowing_enabled: false,
             source_base_case_equality_override: false,
             source_case_equality_defs: HashMap::new(),
@@ -23681,9 +23686,25 @@ impl<'a> InferenceEngine<'a> {
                 return ty;
             }
         }
+        self.last_local_write_value = None;
         let (_, deferred_effect) =
             self.process_statement_keeping_read_facts(class_name, node, parse_result, scope);
-        let ty = self.infer_node_type(class_name, node, parse_result, scope);
+        // Inferring `x = f(x)` again would read the `x` it just wrote. In a loop or block that
+        // value does reach the next pass, so the call sees it there.
+        let in_loop = scope.loop_depth > 0 || scope.jump_entry_locals.is_some();
+        let assigned = self
+            .last_local_write_value
+            .take()
+            .filter(|(offset, _)| {
+                !in_loop
+                    && node.as_local_variable_write_node().is_some()
+                    && *offset == node.location().start_offset()
+            })
+            .map(|(_, ty)| ty);
+        let ty = match assigned {
+            Some(ty) => ty,
+            None => self.infer_node_type(class_name, node, parse_result, scope),
+        };
         if let Some(effect) = deferred_effect {
             scope.apply_self_fact_effect(&effect);
         }
@@ -27819,6 +27840,8 @@ impl<'a> InferenceEngine<'a> {
                 let runtime_fact =
                     self.runtime_fact_from_value(class_name, &value_node, parse_result, scope);
                 let value_type = self.infer_node_type(class_name, node, parse_result, scope);
+                self.last_local_write_value =
+                    Some((write_node.location().start_offset(), value_type.clone()));
                 self.record_assigned_short_circuit_control(
                     class_name,
                     &value_node,
@@ -57752,6 +57775,20 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    fn argument_is_plain_read(argument: &Node<'_>) -> bool {
+        match argument {
+            Node::LocalVariableReadNode { .. } => true,
+            Node::KeywordHashNode { .. } => argument.as_keyword_hash_node().is_some_and(|hash| {
+                hash.elements().iter().all(|element| {
+                    element
+                        .as_assoc_node()
+                        .is_some_and(|assoc| Self::argument_is_plain_read(&assoc.value()))
+                })
+            }),
+            _ => false,
+        }
+    }
+
     /// Records a call on a method reference that kept no arguments or block, when they carry
     /// something a replay could use: a literal block or an argument with a type.
     fn note_reference_call_shape_drop(
@@ -57777,12 +57814,14 @@ impl<'a> InferenceEngine<'a> {
         if !has_block && !has_arguments {
             return;
         }
+        // A call whose arguments are plain reads (`where(user: user)`) may still return a type
+        // that does not depend on them.
         let informative = has_block
             || call_node.arguments().is_some_and(|arguments| {
-                arguments
-                    .arguments()
-                    .iter()
-                    .any(|argument| Self::argument_type_is_known(&argument, scope))
+                arguments.arguments().iter().any(|argument| {
+                    Self::argument_type_is_known(&argument, scope)
+                        || Self::argument_is_plain_read(&argument)
+                })
             });
         if !informative {
             return;
