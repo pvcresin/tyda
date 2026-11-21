@@ -26,3 +26,38 @@ class StateMachineReader
   def status_label: -> String
 end
 ```
+
+## Generate state_machines name and event helpers
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class Vehicle
+  state_machine :status, initial: :parked do
+    state :parked, :idling
+
+    event :ignite do
+      transition parked: :idling
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Vehicle
+  def self.state_machine: -> untyped
+  def status_name: -> Symbol
+  def parked?: -> bool
+  def idling?: -> bool
+  def can_ignite?: -> bool
+  def ignite_transition: -> StateMachines::Transition?
+  def ignite: -> bool
+  def ignite!: -> bool
+end
+```

@@ -102,3 +102,46 @@ class UsersController < ApplicationController
   def show: -> User
 end
 ```
+
+## Current user helper is nilable before sign in
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class ActiveRecord::Base
+end
+
+class ActionController::Base
+end
+
+class User < ActiveRecord::Base
+  devise :database_authenticatable
+end
+
+class UsersController < ActionController::Base
+  def show = current_user
+end
+```
+
+### result
+
+```rbs
+class ActionController::Base
+  def current_user: -> User?
+  def user_signed_in?: -> bool
+  def authenticate_user!: -> void
+  def user_session: -> untyped
+end
+
+class ActiveRecord::Base
+  def self.devise: (*Symbol modules) -> void
+end
+
+class UsersController < ActionController::Base
+  def show: -> User?
+end
+```
