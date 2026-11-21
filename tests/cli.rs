@@ -1011,6 +1011,54 @@ fn diagnostics_type_guard_on_reader_from_another_file_keeps_it_deferred() {
 }
 
 #[test]
+fn known_issue_self_call_into_a_module_from_another_file_drops_ivar_facts() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("helper.rb"),
+        concat!(
+            "module Helper\n",
+            "  def label_of(value) = value.to_s\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("svc.rb"),
+        concat!(
+            "class Acc\n",
+            "  def self.find(u) = u ? new : nil\n",
+            "  def save! = true\n",
+            "end\n",
+            "class Svc\n",
+            "  include Helper\n",
+            "  def call(u) = @account = Acc.find(u)\n",
+            "  def create_account\n",
+            "    @account = Acc.new\n",
+            "    summary\n",
+            "    @account.save!\n",
+            "  end\n",
+            "  def summary = label_of(1)\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `Helper#label_of` writes no ivar, so `@account` is still the `Acc` just
+    // assigned. The same code in one file reports nothing, but the CLI treats a method from
+    // another file as writing any ivar.
+    assert!(
+        stdout.contains("NilClass#save!"),
+        "known issue fixed; drop this check and assert no NilClass#save!: {stdout}"
+    );
+}
+
+#[test]
 fn diagnostics_class_body_blocks_destructure_a_single_yield() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let sig_dir = dir.path().join("sig");

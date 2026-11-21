@@ -1965,3 +1965,141 @@ fn self_call_that_always_assigns_the_ivar_makes_it_non_nil() {
         }
     }
 }
+
+#[test]
+fn known_issue_predicate_self_call_does_not_narrow_the_ivar_it_checks() {
+    let source = concat!(
+        "class Acc\n",
+        "  def self.find(u) = u ? new : nil\n",
+        "  def local? = false\n",
+        "  def suspend! = true\n",
+        "end\n",
+        "class Svc\n",
+        "  def call(u)\n",
+        "    @account = Acc.find(u)\n",
+        "    queue_deletion! if not_yet_deleted?\n",
+        "  end\n",
+        "  def not_yet_deleted? = !@account.nil? && !@account.local?\n",
+        "  def queue_deletion! = @account.suspend!\n",
+        "end\n",
+    );
+    // Known issue: `queue_deletion!` only runs after `not_yet_deleted?` saw a non-nil
+    // `@account`, so `NilClass#suspend!` should not be reported. Tyda does not carry what a
+    // predicate method checks into the methods called under it.
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert_eq!(
+            missing,
+            [(12, "NilClass#suspend!".to_string())],
+            "known issue fixed (compact: {compact}); drop this check and assert no diagnostics"
+        );
+    }
+}
+
+#[test]
+fn known_issue_correlated_conditions_do_not_narrow_a_local() {
+    let source = concat!(
+        "class Mig\n",
+        "  def target = 1\n",
+        "end\n",
+        "class Cli\n",
+        "  def run(replay, target)\n",
+        "    raise ArgumentError if replay.nil? && target.nil?\n",
+        "    migration = nil\n",
+        "    migration = Mig.new if replay\n",
+        "    migration = Mig.new if target\n",
+        "    migration.target\n",
+        "  end\n",
+        "end\n",
+    );
+    // Known issue: the guard leaves `replay` or `target` set, so one of the writes runs and
+    // `migration` is a `Mig`. Tyda does not relate the two conditions.
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert_eq!(
+            missing,
+            [(10, "NilClass#target".to_string())],
+            "known issue fixed (compact: {compact}); drop this check and assert no diagnostics"
+        );
+    }
+}
+
+#[test]
+fn known_issue_pathname_expand_path_rejects_a_pathname_directory() {
+    let source = concat!(
+        "require \"pathname\"\n",
+        "def rel(root) = Pathname.new(\"a\").expand_path(Pathname.new(root))\n",
+        "rel(\"/\")\n",
+    );
+    // Known issue: Ruby accepts a Pathname here, but the bundled RBS (4.1.3) declares
+    // `expand_path: (?String dir)`. RBS master uses `?path? dir`; drop this check and assert no
+    // diagnostics after the RBS update.
+    for compact in [false, true] {
+        let mismatches: Vec<u32> = diagnostics(source, compact)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == "argument_type_mismatch")
+            .map(|diagnostic| diagnostic.line)
+            .collect();
+        assert_eq!(
+            mismatches,
+            [2],
+            "known issue fixed (compact: {compact}); drop this check and assert no diagnostics"
+        );
+    }
+}
+
+#[test]
+fn self_call_into_a_module_method_that_writes_nothing_keeps_ivar_facts() {
+    let source = concat!(
+        "module Helper\n",
+        "  def label_of(value) = value.to_s\n",
+        "end\n",
+        "class Acc\n",
+        "  def self.find(u) = u ? new : nil\n",
+        "  def save! = true\n",
+        "end\n",
+        "class Svc\n",
+        "  include Helper\n",
+        "  def call(u) = @account = Acc.find(u)\n",
+        "  def create_account\n",
+        "    @account = Acc.new\n",
+        "    summary\n",
+        "    @account.save!\n",
+        "  end\n",
+        "  def summary = label_of(1)\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert!(missing.is_empty(), "compact: {compact}: {missing:?}");
+    }
+}
+
+#[test]
+fn known_issue_self_call_named_describe_drops_ivar_facts() {
+    let source = concat!(
+        "class Acc\n",
+        "  def self.find(u) = u ? new : nil\n",
+        "  def save! = true\n",
+        "end\n",
+        "class Svc\n",
+        "  def call(u) = @account = Acc.find(u)\n",
+        "  def create_account\n",
+        "    @account = Acc.new\n",
+        "    describe\n",
+        "    @account.save!\n",
+        "  end\n",
+        "  def describe = 1\n",
+        "end\n",
+    );
+    // Known issue: `Svc#describe` writes no ivar, so `@account` is still the `Acc` just
+    // assigned, as it is after a call with another name. `describe` seems to be read as the
+    // RSpec DSL.
+    for compact in [false, true] {
+        assert_eq!(
+            missing_methods_in(source, compact),
+            [(10, "NilClass#save!".to_string())],
+            "known issue fixed (compact: {compact}); drop this check and assert no diagnostics"
+        );
+    }
+}
