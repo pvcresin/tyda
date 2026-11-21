@@ -35,3 +35,37 @@ class Photo < ActiveRecord::Base
   def thumb_url: -> String
 end
 ```
+
+## Generate nilable readers and changed predicate from an uploader attachment
+
+```yaml
+known_issue: true
+```
+
+### update
+
+```ruby
+class ActiveRecord::Base
+end
+
+class Shrine; end
+
+class ImageUploader < Shrine
+end
+
+class Photo < ActiveRecord::Base
+  include ImageUploader::Attachment(:image)
+end
+```
+
+### result
+
+```rbs
+class Photo < ActiveRecord::Base
+  def image: -> Shrine::UploadedFile?
+  def image=: ((String | Hash[untyped, untyped] | IO) image) -> Shrine::UploadedFile
+  def image_attacher: -> Shrine::Attacher
+  def image_changed?: -> bool
+  def image_url: -> String?
+end
+```
