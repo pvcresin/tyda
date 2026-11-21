@@ -8814,6 +8814,9 @@ impl TypeRegistry {
                         .then(|| {
                             let mut resolved = site.clone();
                             for ty in &mut resolved.arg_types {
+                                if !Self::type_contains_callee_relative_ref(ty) {
+                                    continue;
+                                }
                                 *ty = self.resolve_call_site_type_from_caller_context(
                                     site,
                                     ty,
