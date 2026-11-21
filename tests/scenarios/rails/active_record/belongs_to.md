@@ -163,3 +163,37 @@ class Comment < ApplicationRecord
   def commentable_id: -> Integer?
 end
 ```
+
+## An overriding reader keeps the generated writer's type
+
+### update
+
+```ruby
+class Role
+end
+
+class User < ApplicationRecord
+  belongs_to :role, optional: true
+
+  def role
+    super || Role.new
+  end
+
+  def clear_role
+    self.role = nil
+  end
+end
+```
+
+### result
+
+```rbs
+class User < ApplicationRecord
+  def role: -> Role
+  def role=: (Role? role) -> Role
+  def build_role: (?Hash[String | Symbol, untyped] attributes) -> Role
+  def create_role: (?Hash[String | Symbol, untyped] attributes) -> Role
+  def create_role!: (?Hash[String | Symbol, untyped] attributes) -> Role
+  def clear_role: -> nil
+end
+```

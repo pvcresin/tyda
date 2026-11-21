@@ -134,3 +134,32 @@ class OrganizationSummary
   def first_description: -> String?
 end
 ```
+
+## A reader that falls back to building the record is not nil
+
+### update
+
+```ruby
+class A
+  has_one :item
+
+  def item
+    super || build_item
+  end
+
+  def current_item = item
+end
+```
+
+### result
+
+```rbs
+class A
+  def item: -> Item
+  def item=: (Item item) -> Item
+  def build_item: (?Hash[String | Symbol, untyped] attributes) -> Item
+  def create_item: (?Hash[String | Symbol, untyped] attributes) -> Item
+  def create_item!: (?Hash[String | Symbol, untyped] attributes) -> Item
+  def current_item: -> Item
+end
+```

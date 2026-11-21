@@ -11,7 +11,9 @@ use rustc_hash::FxHashMap;
 use crate::dep_graph::{DependencyGraph, FileDeps};
 use crate::inference::FileAnalysisSnapshot;
 use crate::rbs::stdlib_loader::LazyRbsLoader;
-use crate::registry::{ParamDependentBody, ParamReplayRequest, ParamReplayResult, TypeRegistry};
+use crate::registry::{
+    ParamDependentBody, ParamReplayRequest, ParamReplayResult, ResolutionMemoGuard, TypeRegistry,
+};
 use crate::types::Type;
 
 type FileId = u32;
@@ -728,15 +730,18 @@ impl BatchProjectionBuilder {
             registry.apply_cli_call_site_resolution();
             let requests_started = std::time::Instant::now();
             let shared: &TypeRegistry = registry;
+            // The registry does not change until the replay, so each worker keeps its memos
+            // across the bodies it reads.
             let requests: Vec<(String, Vec<ParamReplayRequest>)> = bodies
                 .par_iter()
-                .filter_map(|(file_path, bodies)| {
+                .map_init(ResolutionMemoGuard::enter, |_memos, (file_path, bodies)| {
                     let requests: Vec<ParamReplayRequest> = bodies
                         .iter()
                         .filter_map(|body| shared.param_replay_request(body))
                         .collect();
                     (!requests.is_empty()).then(|| (file_path.clone(), requests))
                 })
+                .flatten()
                 .collect();
             if std::env::var_os("TYDA_RESOLUTION_TIMING").is_some() {
                 eprintln!(

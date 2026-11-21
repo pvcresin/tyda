@@ -865,6 +865,33 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
+    /// `I18n.t("date.day_names")` returns what the locale holds at that key, which is not
+    /// always a string.
+    pub(super) fn i18n_translation_return(
+        receiver_type: &Type,
+        method_name: &str,
+        call_node: &ruby_prism::CallNode<'_>,
+    ) -> Option<Type> {
+        if !matches!(receiver_type, Type::Singleton(name) if *name == "I18n")
+            || !matches!(method_name, "t" | "translate")
+        {
+            return None;
+        }
+        let arguments = call_node.arguments()?;
+        let mut arguments = arguments.arguments().iter();
+        let key = arguments.next()?;
+        // `scope:` prefixes the key, and a `default:` may answer instead.
+        if arguments.next().is_some() {
+            return None;
+        }
+        let key = if let Some(string) = key.as_string_node() {
+            String::from_utf8_lossy(string.unescaped()).into_owned()
+        } else {
+            String::from_utf8_lossy(key.as_symbol_node()?.unescaped()).into_owned()
+        };
+        plugins::active_support::default_locale_value(&key)
+    }
+
     pub(super) fn synthetic_i18n_method_return(
         &self,
         receiver_type: &Type,
@@ -2963,6 +2990,61 @@ impl<'a> InferenceEngine<'a> {
                         .enum_value_names_from_constant_initializer(class_name, &path, parse_result)
                         .unwrap_or_default(),
                 }
+            }
+            // `enum :source, Enums.sources`: a class method that returns the mapping.
+            Node::CallNode { .. } => {
+                let call = node.as_call_node().expect("must be CallNode");
+                let Some(receiver) = call.receiver() else {
+                    return Vec::new();
+                };
+                if call.arguments().is_some()
+                    || call.block().is_some()
+                    || !matches!(
+                        receiver,
+                        Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+                    )
+                {
+                    return Vec::new();
+                }
+                let path = self.resolve_constant_path(&receiver, parse_result);
+                let method = String::from_utf8_lossy(call.name().as_slice()).to_string();
+                if let Type::Singleton(owner) =
+                    self.resolve_constant_type_in_scope(&path, class_name)
+                {
+                    self.ensure_class_available(owner.as_str());
+                    if let Some(Type::Record(fields)) = self
+                        .registry
+                        .lookup_method_return_type_with_hint(owner.as_str(), &method, true)
+                    {
+                        return fields
+                            .iter()
+                            .filter(|field| !field.optional)
+                            .map(|field| match &field.key {
+                                RecordKey::Symbol(name) | RecordKey::String(name) => name.clone(),
+                            })
+                            .collect();
+                    }
+                }
+                // The CLI reads one file at a time; the method may live in another one.
+                let bare = path.trim_start_matches("::");
+                let mut owners = if path.starts_with("::") {
+                    vec![bare.to_string()]
+                } else {
+                    self.scoped_constant_candidates_in_context(bare, class_name)
+                };
+                owners.push(bare.to_string());
+                owners
+                    .iter()
+                    .find_map(|owner| {
+                        self.registry
+                            .source_literal_hash_keys(owner, &method)
+                            .or_else(|| {
+                                self.external_rbs.and_then(|external| {
+                                    external.source_literal_hash_keys(owner, &method)
+                                })
+                            })
+                    })
+                    .unwrap_or_default()
             }
             _ => Vec::new(),
         }

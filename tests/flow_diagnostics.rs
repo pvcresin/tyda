@@ -1407,7 +1407,7 @@ fn ivar_guard_narrows_before_later_methods_write_the_ivar() {
 }
 
 #[test]
-fn known_issue_nil_false_positives_still_reported() {
+fn self_facts_survive_code_that_does_not_write_them() {
     let cases = [
         (
             "an ivar assigned in the method keeps its value across a self call",
@@ -1459,15 +1459,198 @@ fn known_issue_nil_false_positives_still_reported() {
     ];
 
     for (name, source, method) in cases {
-        let reported = [false, true].into_iter().any(|compact| {
-            diagnostics(source, compact)
-                .iter()
-                .any(|diagnostic| diagnostic.unresolved_method == method)
-        });
-        assert!(
-            reported,
-            "known issue fixed ({name}); move it to a regular test that asserts no {method}"
+        for compact in [false, true] {
+            let missing = missing_methods_in(source, compact);
+            assert!(
+                !missing.iter().any(|(_, missing)| missing == method),
+                "{name} (compact: {compact}): {missing:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn self_facts_end_where_code_may_write_them() {
+    let cases = [
+        (
+            "a self call that writes the ivar",
+            concat!(
+                "class DirectWrite\n",
+                "  def run\n",
+                "    return unless @conn\n",
+                "    reset\n",
+                "    @conn.close\n",
+                "  end\n",
+                "  def reset = @conn = nil\n",
+                "  def open = @conn = File.open(\"x\")\n",
+                "end\n",
+            ),
+        ),
+        (
+            "a self call that writes the ivar through another self call",
+            concat!(
+                "class NestedWrite\n",
+                "  def run\n",
+                "    return unless @conn\n",
+                "    helper\n",
+                "    @conn.close\n",
+                "  end\n",
+                "  def helper = reset\n",
+                "  def reset = @conn = nil\n",
+                "  def open = @conn = File.open(\"x\")\n",
+                "end\n",
+            ),
+        ),
+        (
+            "a block that writes the ivar",
+            concat!(
+                "class BlockWrite\n",
+                "  def run\n",
+                "    return unless @conn\n",
+                "    [1].each { @conn = nil }\n",
+                "    @conn.close\n",
+                "  end\n",
+                "  def open = @conn = File.open(\"x\")\n",
+                "end\n",
+            ),
+        ),
+        (
+            "a block that calls a method writing the reader's ivar",
+            concat!(
+                "class ReaderBlockWrite\n",
+                "  attr_reader :mime\n",
+                "  def initialize(mime) = @mime = mime\n",
+                "  def run\n",
+                "    return false unless mime\n",
+                "    [\"a\"].each { |prefix| clear }\n",
+                "    mime.start_with?(\"a\")\n",
+                "  end\n",
+                "  def clear = @mime = nil\n",
+                "end\n",
+                "ReaderBlockWrite.new(\"x\")\n",
+            ),
+        ),
+    ];
+    for (name, source) in cases {
+        for compact in [false, true] {
+            let missing = missing_methods_in(source, compact);
+            assert!(
+                missing
+                    .iter()
+                    .any(|(_, method)| method.starts_with("NilClass#")),
+                "{name} (compact: {compact}): {missing:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn attr_writer_value_reaches_the_ivar() {
+    let source = concat!(
+        "class WriterCall\n",
+        "  attr_writer :conn\n",
+        "  def open = @conn = File.open(\"x\")\n",
+        "  def run\n",
+        "    self.conn = nil\n",
+        "    @conn.close\n",
+        "  end\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert_eq!(
+            missing,
+            [(6, "NilClass#close".to_string())],
+            "compact: {compact}"
         );
+    }
+}
+
+#[test]
+fn index_or_write_with_call_key_keeps_the_key() {
+    let kept = [
+        concat!(
+            "class Grouping\n",
+            "  def run(item)\n",
+            "    groups = {}\n",
+            "    groups[item.key] ||= []\n",
+            "    groups[item.key] << item\n",
+            "  end\n",
+            "end\n",
+        ),
+        concat!(
+            "class Grouping\n",
+            "  def run(items)\n",
+            "    @groups = {}\n",
+            "    items.each do |item|\n",
+            "      @groups[item.key] ||= []\n",
+            "      @groups[item.key] << item\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    ];
+    for source in kept {
+        for compact in [false, true] {
+            let missing = missing_methods_in(source, compact);
+            assert!(
+                missing.is_empty(),
+                "compact: {compact}: {missing:?}\n{source}"
+            );
+        }
+    }
+    // Another `item` may have another key.
+    let changed = concat!(
+        "class Grouping\n",
+        "  def run(item, other)\n",
+        "    groups = {}\n",
+        "    groups[item.key] ||= []\n",
+        "    item = other\n",
+        "    groups[item.key] << item\n",
+        "  end\n",
+        "end\n",
+    );
+    assert!(
+        missing_methods_in(changed, false)
+            .iter()
+            .any(|(_, method)| method == "NilClass#<<")
+    );
+}
+
+#[test]
+fn computed_define_method_names_are_not_reported_missing() {
+    let cases = [
+        (
+            "names from a small integer range",
+            concat!(
+                "class Flag\n",
+                "  (1..3).each { |v| define_method(\"mode_#{v}?\") { v } }\n",
+                "end\n",
+                "class User\n",
+                "  def run = Flag.new.mode_2?\n",
+                "end\n",
+            ),
+        ),
+        (
+            "names the source does not show",
+            concat!(
+                "class Flag\n",
+                "  NAMES.each { |name| define_method(name) { 1 } }\n",
+                "end\n",
+                "class User\n",
+                "  def run = Flag.new.anything\n",
+                "end\n",
+            ),
+        ),
+    ];
+    for (name, source) in cases {
+        for compact in [false, true] {
+            let missing = missing_methods_in(source, compact);
+            assert!(
+                missing.is_empty(),
+                "{name} (compact: {compact}): {missing:?}"
+            );
+        }
     }
 }
 
@@ -1670,5 +1853,253 @@ fn nil_subject_never_matches_a_class_when() {
             .map(|diagnostic| diagnostic.unresolved_method.as_str())
             .collect();
         assert!(missing.is_empty(), "compact={compact}: {found:?}");
+    }
+}
+
+#[test]
+fn class_name_case_narrows_the_subject_to_matching_classes() {
+    let source = concat!(
+        "class Acct\n",
+        "  def id = 1\n",
+        "end\n",
+        "class Post\n",
+        "  def id = 2\n",
+        "end\n",
+        "class Redirector\n",
+        "  def initialize(flag) = @flag = flag\n",
+        "  def object\n",
+        "    @object ||= @flag ? Acct.new : (rand > 0.5 ? Post.new : nil)\n",
+        "  end\n",
+        "  def path\n",
+        "    case object.class.name\n",
+        "    when 'Acct' then object.id\n",
+        "    end\n",
+        "  end\n",
+        "  def local_path(value)\n",
+        "    item = value ? Acct.new : (value.nil? ? Post.new : nil)\n",
+        "    case item.class.name\n",
+        "    when 'Acct' then item.only_acct\n",
+        "    when 'NilClass' then item.only_nil\n",
+        "    end\n",
+        "  end\n",
+        "end\n",
+        "Redirector.new(true).path\n",
+        "Redirector.new(true).local_path(true)\n",
+    );
+    for compact in [false, true] {
+        let mut missing = missing_methods_in(source, compact);
+        missing.sort();
+        assert_eq!(
+            missing,
+            [
+                (20, "Acct#only_acct".to_string()),
+                (21, "NilClass#only_nil".to_string()),
+            ],
+            "compact: {compact}"
+        );
+    }
+}
+
+#[test]
+fn self_call_that_always_assigns_the_ivar_makes_it_non_nil() {
+    let source = |create_body: &str| {
+        format!(
+            concat!(
+                "class Acc\n",
+                "  def self.find(u) = u ? new : nil\n",
+                "  def suspended? = false\n",
+                "end\n",
+                "class Svc\n",
+                "  def call(u)\n",
+                "    @account = Acc.find(u)\n",
+                "    create_account if @account.nil?\n",
+                "    @account.suspended?\n",
+                "  end\n",
+                "  def create_account\n",
+                "{}",
+                "  end\n",
+                "  def reset = @account = nil\n",
+                "  def ping = 1\n",
+                "end\n",
+            ),
+            create_body
+        )
+    };
+    let non_nil = [
+        ("a top-level write", "    @account = Acc.new\n"),
+        (
+            "a write followed by a call that does not write it",
+            "    @account = Acc.new\n    ping\n",
+        ),
+    ];
+    let maybe_nil = [
+        ("a value that can be nil", "    @account = Acc.find(1)\n"),
+        (
+            "a return before the write",
+            "    return if rand > 0.5\n    @account = Acc.new\n",
+        ),
+        (
+            "a conditional write",
+            "    @account = Acc.new if rand > 0.5\n",
+        ),
+        (
+            "a later call that writes nil",
+            "    @account = Acc.new\n    reset\n",
+        ),
+    ];
+    for compact in [false, true] {
+        for (name, body) in non_nil {
+            let missing = missing_methods_in(&source(body), compact);
+            assert!(
+                missing.is_empty(),
+                "{name} (compact: {compact}): {missing:?}"
+            );
+        }
+        for (name, body) in maybe_nil {
+            let missing = missing_methods_in(&source(body), compact);
+            assert_eq!(
+                missing,
+                [(9, "NilClass#suspended?".to_string())],
+                "{name} (compact: {compact})"
+            );
+        }
+    }
+}
+
+#[test]
+fn known_issue_predicate_self_call_does_not_narrow_the_ivar_it_checks() {
+    let source = concat!(
+        "class Acc\n",
+        "  def self.find(u) = u ? new : nil\n",
+        "  def local? = false\n",
+        "  def suspend! = true\n",
+        "end\n",
+        "class Svc\n",
+        "  def call(u)\n",
+        "    @account = Acc.find(u)\n",
+        "    queue_deletion! if not_yet_deleted?\n",
+        "  end\n",
+        "  def not_yet_deleted? = !@account.nil? && !@account.local?\n",
+        "  def queue_deletion! = @account.suspend!\n",
+        "end\n",
+    );
+    // Known issue: `queue_deletion!` only runs after `not_yet_deleted?` saw a non-nil
+    // `@account`, so `NilClass#suspend!` should not be reported. Tyda does not carry what a
+    // predicate method checks into the methods called under it.
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert_eq!(
+            missing,
+            [(12, "NilClass#suspend!".to_string())],
+            "known issue fixed (compact: {compact}); drop this check and assert no diagnostics"
+        );
+    }
+}
+
+#[test]
+fn known_issue_correlated_conditions_do_not_narrow_a_local() {
+    let source = concat!(
+        "class Mig\n",
+        "  def target = 1\n",
+        "end\n",
+        "class Cli\n",
+        "  def run(replay, target)\n",
+        "    raise ArgumentError if replay.nil? && target.nil?\n",
+        "    migration = nil\n",
+        "    migration = Mig.new if replay\n",
+        "    migration = Mig.new if target\n",
+        "    migration.target\n",
+        "  end\n",
+        "end\n",
+    );
+    // Known issue: the guard leaves `replay` or `target` set, so one of the writes runs and
+    // `migration` is a `Mig`. Tyda does not relate the two conditions.
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert_eq!(
+            missing,
+            [(10, "NilClass#target".to_string())],
+            "known issue fixed (compact: {compact}); drop this check and assert no diagnostics"
+        );
+    }
+}
+
+#[test]
+fn known_issue_pathname_expand_path_rejects_a_pathname_directory() {
+    let source = concat!(
+        "require \"pathname\"\n",
+        "def rel(root) = Pathname.new(\"a\").expand_path(Pathname.new(root))\n",
+        "rel(\"/\")\n",
+    );
+    // Known issue: Ruby accepts a Pathname here, but the bundled RBS (4.1.3) declares
+    // `expand_path: (?String dir)`. RBS master uses `?path? dir`; drop this check and assert no
+    // diagnostics after the RBS update.
+    for compact in [false, true] {
+        let mismatches: Vec<u32> = diagnostics(source, compact)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == "argument_type_mismatch")
+            .map(|diagnostic| diagnostic.line)
+            .collect();
+        assert_eq!(
+            mismatches,
+            [2],
+            "known issue fixed (compact: {compact}); drop this check and assert no diagnostics"
+        );
+    }
+}
+
+#[test]
+fn self_call_into_a_module_method_that_writes_nothing_keeps_ivar_facts() {
+    let source = concat!(
+        "module Helper\n",
+        "  def label_of(value) = value.to_s\n",
+        "end\n",
+        "class Acc\n",
+        "  def self.find(u) = u ? new : nil\n",
+        "  def save! = true\n",
+        "end\n",
+        "class Svc\n",
+        "  include Helper\n",
+        "  def call(u) = @account = Acc.find(u)\n",
+        "  def create_account\n",
+        "    @account = Acc.new\n",
+        "    summary\n",
+        "    @account.save!\n",
+        "  end\n",
+        "  def summary = label_of(1)\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        let missing = missing_methods_in(source, compact);
+        assert!(missing.is_empty(), "compact: {compact}: {missing:?}");
+    }
+}
+
+#[test]
+fn known_issue_self_call_named_describe_drops_ivar_facts() {
+    let source = concat!(
+        "class Acc\n",
+        "  def self.find(u) = u ? new : nil\n",
+        "  def save! = true\n",
+        "end\n",
+        "class Svc\n",
+        "  def call(u) = @account = Acc.find(u)\n",
+        "  def create_account\n",
+        "    @account = Acc.new\n",
+        "    describe\n",
+        "    @account.save!\n",
+        "  end\n",
+        "  def describe = 1\n",
+        "end\n",
+    );
+    // Known issue: `Svc#describe` writes no ivar, so `@account` is still the `Acc` just
+    // assigned, as it is after a call with another name. `describe` seems to be read as the
+    // RSpec DSL.
+    for compact in [false, true] {
+        assert_eq!(
+            missing_methods_in(source, compact),
+            [(10, "NilClass#save!".to_string())],
+            "known issue fixed (compact: {compact}); drop this check and assert no diagnostics"
+        );
     }
 }

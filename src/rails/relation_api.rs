@@ -327,6 +327,32 @@ pub fn lookup(method_name: &str, receiver: Receiver) -> Option<RelationMethod> {
     (method.receivers & receiver.bit() != 0).then_some(method)
 }
 
+/// A query method only Active Record defines, whose result type does not depend on its
+/// arguments (`where(...)`, `find_by(...)`). Names other classes also use (`merge`, `select`,
+/// `count`) are left out.
+pub fn result_ignores_arguments(method_name: &str) -> bool {
+    matches!(
+        method_name,
+        "where"
+            | "rewhere"
+            | "find_by"
+            | "find_by!"
+            | "order"
+            | "reorder"
+            | "includes"
+            | "preload"
+            | "eager_load"
+            | "joins"
+            | "left_joins"
+            | "left_outer_joins"
+            | "references"
+            | "unscope"
+            | "limit"
+            | "offset"
+            | "not"
+    )
+}
+
 /// `pluck` / `pick` / `minimum` / `maximum`: call sites read the literal column arguments.
 pub fn reads_columns(method_name: &str) -> bool {
     lookup(method_name, Receiver::Model).is_some_and(|method| method.reads_columns())

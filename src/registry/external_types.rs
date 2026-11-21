@@ -198,6 +198,7 @@ impl TypeRegistry {
         self.has_source_numeric_case_equality_override |=
             rbs_registry.has_source_numeric_case_equality_override;
         self.has_source_block_given_override |= rbs_registry.has_source_block_given_override;
+        self.carry_source_namespaces(rbs_registry);
         // carry over unresolved method aliases; finalize once ancestors are complete.
         for pending in &rbs_registry.pending_method_aliases {
             self.push_pending_method_alias(pending.clone());
@@ -300,6 +301,7 @@ impl TypeRegistry {
         self.has_source_numeric_case_equality_override |=
             rbs_registry.has_source_numeric_case_equality_override;
         self.has_source_block_given_override |= rbs_registry.has_source_block_given_override;
+        self.carry_source_namespaces(rbs_registry);
         for (alias_name, ty) in &rbs_registry.tail().type_aliases {
             self.tail_mut()
                 .type_aliases
@@ -693,8 +695,8 @@ impl TypeRegistry {
             }
         }
         if let Some(src_cold) = rbs_data.cold_opt() {
-            if src_cold.has_dynamic_mixin {
-                data.cold_mut().has_dynamic_mixin = true;
+            if src_cold.has_dynamic_method_surface {
+                data.cold_mut().has_dynamic_method_surface = true;
             }
             for entry in &src_cold.macro_forwarded_params {
                 if !data.cold().macro_forwarded_params.contains(entry) {

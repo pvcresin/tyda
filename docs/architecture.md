@@ -204,7 +204,9 @@ workspace context を分ける。
    待たずに次のファイルへ進み、解析中または merge 待ちのファイル数を一定数に抑えるので、全ファイルの
    snapshot を同時に保持しない。`Batch` resolution は全ファイル投入後に一度だけ行う。
 4. RBS 出力ではソースもファイルごとに読み、merge 後に破棄する。preload の並列読み込みは
-   DSL 検出だけを行い本文を残さない。`--diagnostics` は message 生成が target の本文を再度
+   DSL 検出と、名前空間の下に宣言された class / module 名（`module Core; class Ctx` の `Core::Ctx`）の
+   収集だけを行い本文を残さない。ファイル単位の解析は、他のファイルの宣言を読まずにこの名前で
+   `Ctx` を lexical scope から `Core::Ctx` と解決する。中身は従来どおり遅延参照のまま merge 後に解決する。`--diagnostics` は message 生成が target の本文を再度
    使うため、targets のソースだけ保持する。
 5. diagnostics は targets にだけ出力する。
 6. RBS / coverage 出力の `Batch` resolution は、call site をそろえた後・戻り値を解決する前に
@@ -216,6 +218,15 @@ workspace context を分ける。
    merge 済み registry が解決する。型の決まらない引数と、workspace のクラスを含む引数は parameter 参照
    のまま渡す（再推論の文脈は workspace のソースを読まないため）。再推論の戻り値が `untyped` を含み、
    最初の解析の戻り値が含まない場合は最初の解析を残す。再推論はそうした method を含むファイルだけを読み直す。
+   別ファイルのメソッドに由来する遅延参照（`ctx.get(2)` の `ctx`、`Ctx.make.get(2)`）への引数付き・
+   block 付きの呼び出しも同じく引数を失うので、その受け手と呼んだ method を記録する。記録するのは、
+   型の分かる引数（literal、定数、型の分かる local）か literal の block を持ち、結果が戻り値に届く
+   （`untyped` になった呼び出しは戻り値が `untyped` を含む、参照のまま残った呼び出しはその参照が戻り値に
+   残る）呼び出しだけである。merge 済み registry で受け手が型に決まり、かつ呼び出しが `untyped` に
+   なったか呼び先の戻り値が引数・block・型引数に依存する場合だけ再推論する。この再推論の走査では、
+   そのファイルが宣言していないクラスを merge 済み registry から読み込む（ファイル自身のクラスは最初の
+   解析と同じ文脈のまま）。再推論の要求を計算する間は registry が変わらないので、worker ごとに解決の
+   memo を保つ。
 7. `Batch` resolution のうち registry を読むだけの段階（未解決 receiver のクラス集め、call site を
    method の所有者へ伝える先の計算）はクラスごとに並列に計算し、書き込みは元のクラス順で行う。
    前のクラスの更新を読む段階（呼び出し側から戻り値や ivar を決める段階）と、そこで使う
@@ -261,10 +272,23 @@ snapshot に置き換える（block 内の `n.to_s` や `n * 2` も型あり走�
 snapshot は `first_walk_call_snapshots` に残し、`missing_method` 診断はそちらで判定する。block 内の推論には
 `reduce` の累積値などまだ粗い部分があり、hover の改善で診断を変えない（誤検出を増やさない）ためである。
 `proc` / `lambda` の block 引数は、型なし走査でも `untyped` として束縛する（未束縛のまま `nil` にしない）。
-受け手が `untyped` の block 付き呼び出しは値の推論で block に入らない。それが呼び出しの連鎖の途中にある場合
-（`x.then { }.tap { |a| a.y }.tap { }`）は、文の走査がその呼び出しを文と同じように 1 回走査する。
+受け手が `untyped` や遅延参照（`Marshal.load(s)` のように後で解決する呼び出し）の block 付き呼び出しは、
+値の推論で block に入らない。それが呼び出しの連鎖の途中にある場合（`x.then { }.tap { |a| a.y }.tap { }`）は、
+文の走査がその呼び出しを文と同じように 1 回走査する。受け手が後で決まると呼び出し元の型で再走査するが、
+coverage は hover と同じく型の付いた走査の結果を数えるので、重なっても悪いほうにならない。
 引数なしの self 呼び出しへの nil ガードは、後続の文が self facts を無効化するまで同じ呼び出しに効く。定義が後方にある
 メソッドも遅延参照のまま絞り込む。
+
+self facts（ivar と引数なし self 呼び出しの絞り込み）は、ivar に書く可能性のある文で終わる
+（`inference/self_effects.rs`）。文の ivar 代入と、self 呼び出しの呼び先が書く ivar を見る。呼び先は
+class body に入った時点でその body の `def` を構文で要約し、self 呼び出しを推移的にたどる（後方で定義する
+メソッドも見える）。別の受け手への呼び出しは self の ivar に届かないので、渡した block の本体だけを見る。
+block には self facts をそのまま持ち込むが、block 本体が書く ivar の facts は block の外でも中でも消える
+（block は繰り返し呼ばれうるため）。要約のない呼び先（RBS、DSL、別ファイル）や `super`、`&blk` は
+何でも書くとみなす。どれかの ivar への書き込みは self 呼び出しの facts もすべて消す。
+呼び先の本体が最上位で ivar に nil にならない値（リテラル、`Const.new`）を代入し、その前に `return` がなく、
+後の文（呼び出す self メソッドを含む）がその ivar に書かない場合、block を渡さないその self 呼び出しの後は
+ivar を非 nil の fact にする（`create_account if @account.nil?` の後の `@account`）。
 引数型と block の戻り値は既存の scan site を共有して hover snapshot に複製せず、scan で得た戻り値を
 再計算しないため、通常の hover は候補数と型構造に比例する bounded な query になる。候補を一意に
 確定できない場合は情報を捨てず、元の overload 群を表示する。Playground は Ruby / RBS の編集ごとに

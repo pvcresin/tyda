@@ -729,6 +729,35 @@ class Outer::Apu::Pulse
 end
 ```
 
+## A class read before its definition keeps its full name in its own instance variable
+
+### update
+
+```ruby
+class AST
+  def self.create(raw) = SigFuncType.new(raw)
+
+  class SigFuncType
+    attr_reader :blk
+
+    def initialize(raw) = @blk = raw ? AST.create(nil) : nil
+  end
+end
+```
+
+### result
+
+```rbs
+class AST
+  def self.create: (nil raw) -> AST::SigFuncType
+end
+
+class AST::SigFuncType
+  def blk: -> AST::SigFuncType?
+  def initialize: (nil raw) -> void
+end
+```
+
 ## An ivar read of a class defined later in the class body names the nested class
 
 ### update
@@ -834,5 +863,45 @@ class SpecList
   def initialize: (?bool development) -> void
   def add: (*untyped specs) -> Array[untyped]
   def specs: -> Array[untyped]
+end
+```
+
+## A value read back from the same parameter adds nothing to it
+
+### update
+
+```ruby
+class FileCtx; end
+
+class LocalEnv
+  def initialize(file_context)
+    @file_context = file_context
+  end
+
+  attr_reader :file_context
+end
+
+class Node
+  def initialize(lenv)
+    @lenv = lenv
+  end
+
+  def child = LocalEnv.new(@lenv.file_context)
+end
+
+Node.new(LocalEnv.new(FileCtx.new))
+```
+
+### result
+
+```rbs
+class LocalEnv
+  def initialize: (FileCtx file_context) -> void
+  def file_context: -> FileCtx
+end
+
+class Node
+  def initialize: (LocalEnv lenv) -> void
+  def child: -> LocalEnv
 end
 ```

@@ -826,3 +826,32 @@ class User
   def name: -> String
 end
 ```
+
+## A call with arguments on a method from another file keeps its argument
+
+### update
+
+### file: lib/ctx.rb
+
+```ruby
+class Ctx
+  def self.make = new
+  def get(x) = [x]
+end
+```
+
+```ruby
+class User
+  def ctx = Ctx.make
+  def value = ctx.get(2)
+end
+```
+
+### result
+
+```rbs
+class User
+  def ctx: -> Ctx
+  def value: -> [2]
+end
+```

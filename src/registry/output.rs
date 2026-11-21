@@ -200,12 +200,54 @@ impl TypeRegistry {
     }
 
     fn output_constant_sig(&self, class_name: &str, constant: &ConstantDef) -> ConstantSig {
+        // A file read alone takes `X = NES::FPS` from another file for a class reference;
+        // once all files are known, `NES::FPS` may name a value constant instead.
+        if let Type::Singleton(target) = &constant.const_type
+            && let Some(value_type) = self.value_constant_type(class_name, target.as_str())
+        {
+            return ConstantSig {
+                name: constant.name.to_string(),
+                const_type: self.proc_with_called_param_types(class_name, &value_type),
+                alias_kind: None,
+                loc: constant.loc,
+                file_path: constant.file_path.as_deref().map(str::to_string),
+            };
+        }
         ConstantSig {
             name: constant.name.to_string(),
             const_type: self.proc_with_called_param_types(class_name, &constant.const_type),
             alias_kind: self.namespace_alias_kind(constant),
             loc: constant.loc,
             file_path: constant.file_path.as_deref().map(str::to_string),
+        }
+    }
+
+    /// The type of the value constant `path` names from `scope`, when no class or module is
+    /// declared there.
+    fn value_constant_type(&self, scope: &str, path: &str) -> Option<Type> {
+        let (mut scope, mut path) = (scope.to_string(), path.to_string());
+        let mut seen = FxHashSet::default();
+        loop {
+            let (owner, name) = path.rsplit_once("::")?;
+            let owner = self.resolve_lexical_class_ref(&scope, owner);
+            let full = crate::sym::join_scope(&owner, name);
+            if self.has_class_declaration(&full) || !seen.insert(full) {
+                return None;
+            }
+            let ty = self
+                .class_data
+                .get(owner.as_str())?
+                .constants
+                .get(name)?
+                .const_type
+                .clone();
+            match ty {
+                Type::Singleton(next) => {
+                    scope = owner;
+                    path = next.to_string();
+                }
+                ty => return Some(ty),
+            }
         }
     }
 
@@ -925,6 +967,24 @@ impl TypeRegistry {
                     match from_init {
                         Some(ref ty) if Self::is_concrete_for_global_resolve(ty) => ty.clone(),
                         _ => method.raw_return_type.clone(),
+                    }
+                }
+                // `f ? A.make : nil` keeps the call as a union member. One that stays unknown
+                // keeps the value unresolved, as before.
+                Some(ref deferred @ Type::Union(_))
+                    if Self::holds_deferred_ivar_value(deferred) =>
+                {
+                    let resolved = self.resolve_deferred_ivar_value(
+                        receiver_class,
+                        method.is_singleton,
+                        ivar,
+                        deferred,
+                    );
+                    if resolved != Type::Untyped && Self::is_concrete_for_global_resolve(&resolved)
+                    {
+                        resolved
+                    } else {
+                        deferred.clone()
                     }
                 }
                 Some(

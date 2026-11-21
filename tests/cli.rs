@@ -599,22 +599,10 @@ fn coverage_walks_blocks_chained_on_untyped_receivers() {
     assert_eq!(report["by_kind"]["method_call"]["total"], 7);
 }
 
-#[test]
-fn known_issue_coverage_skips_blocks_chained_on_unresolved_receivers() {
+fn coverage_by_kind(source: &str) -> serde_json::Value {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
-    let rb_file = dir.path().join("deferred_chain.rb");
-    fs::write(
-        &rb_file,
-        concat!(
-            "class Chain\n",
-            "  def run\n",
-            "    Marshal.load(\"\").tap { |item| item.save }.tap { |item| item.log }\n",
-            "  end\n",
-            "end\n",
-        ),
-    )
-    .expect("failed to write");
-
+    let rb_file = dir.path().join("coverage.rb");
+    fs::write(&rb_file, source).expect("failed to write");
     let output = tyda_bin()
         .arg("--coverage")
         .arg(rb_file.to_str().unwrap())
@@ -623,12 +611,44 @@ fn known_issue_coverage_skips_blocks_chained_on_unresolved_receivers() {
     assert!(output.status.success());
     let report: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("coverage output should be JSON");
-    // Known issue: the first `tap` block is never walked, because its receiver is still a
-    // reference when the chain is typed. `item` and `item.save` in it should count too.
-    assert_eq!(
-        report["by_kind"]["value"]["total"], 1,
-        "the first block is walked now: drop this check and expect 2 values"
-    );
+    report["by_kind"].clone()
+}
+
+#[test]
+fn coverage_walks_blocks_chained_on_deferred_receivers() {
+    let by_kind = coverage_by_kind(concat!(
+        "class Chain\n",
+        "  def run\n",
+        "    Marshal.load(\"\").tap { |item| item.save }.tap { |item| item.log }\n",
+        "  end\n",
+        "end\n",
+    ));
+    // `Marshal.load` stays a reference until the end, and both blocks still count.
+    assert_eq!(by_kind["value"]["total"], 2);
+    assert_eq!(by_kind["method_call"]["total"], 5);
+}
+
+#[test]
+fn coverage_counts_the_typed_walk_of_a_block() {
+    // The first walk of each block does not know `item` yet: the `map` block is walked once
+    // without its declared parameter types, and the `tap` blocks wait for `later`.
+    for source in [
+        "class Chain\n  def run = [1].map { |item| item.to_s }\nend\n",
+        concat!(
+            "class Chain\n",
+            "  def run = later.tap { |item| item.size }.tap { |item| item.size }\n",
+            "  def later = \"x\"\n",
+            "end\n",
+        ),
+    ] {
+        let by_kind = coverage_by_kind(source);
+        for kind in ["value", "method_call"] {
+            assert_eq!(
+                by_kind[kind]["typed"], by_kind[kind]["total"],
+                "{kind} in {source}: {by_kind}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -943,6 +963,98 @@ fn diagnostics_replay_truthiness_for_optional_parameters() {
             diagnostic["code"] == "missing_method" && diagnostic["method_name"] == "text"
         }),
         "a known method on the narrowed receiver must remain resolved: {diagnostics:?}"
+    );
+}
+
+// The reader's writers live in `base.rb`, so `noteable` stays a reference in `notes.rb`
+// whether or not an `is_a?` guard narrows it.
+#[test]
+fn diagnostics_type_guard_on_reader_from_another_file_keeps_it_deferred() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("base.rb"),
+        concat!(
+            "class Base\n",
+            "  attr_reader :noteable\n",
+            "  def initialize(noteable: nil) = @noteable = noteable\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("notes.rb"),
+        concat!(
+            "class Notes < Base\n",
+            "  def plain = noteable.project\n",
+            "  def guarded\n",
+            "    if noteable.is_a?(String)\n",
+            "      1\n",
+            "    else\n",
+            "      noteable.project\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("NilClass#project"),
+        "the guard must not read the reader as the partial `nil` of another file: {stdout}"
+    );
+}
+
+#[test]
+fn known_issue_self_call_into_a_module_from_another_file_drops_ivar_facts() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("helper.rb"),
+        concat!(
+            "module Helper\n",
+            "  def label_of(value) = value.to_s\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("svc.rb"),
+        concat!(
+            "class Acc\n",
+            "  def self.find(u) = u ? new : nil\n",
+            "  def save! = true\n",
+            "end\n",
+            "class Svc\n",
+            "  include Helper\n",
+            "  def call(u) = @account = Acc.find(u)\n",
+            "  def create_account\n",
+            "    @account = Acc.new\n",
+            "    summary\n",
+            "    @account.save!\n",
+            "  end\n",
+            "  def summary = label_of(1)\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `Helper#label_of` writes no ivar, so `@account` is still the `Acc` just
+    // assigned. The same code in one file reports nothing, but the CLI treats a method from
+    // another file as writing any ivar.
+    assert!(
+        stdout.contains("NilClass#save!"),
+        "known issue fixed; drop this check and assert no NilClass#save!: {stdout}"
     );
 }
 
@@ -5462,11 +5574,10 @@ fn range_with_parameter_end_keeps_element_type_in_a_single_file() {
     );
 }
 
-// Known issue: the scenario runner analyzes the other files first and resolves `Ctx` to
-// `Core::Ctx` (`ruby/variable/constant_resolution.md`). The CLI analyzes each file alone, keeps
-// the bare `Ctx`, and loses the call. When the check fails, drop it.
+// Each file is analyzed alone, so `Ctx` inside `module Core` names the `Core::Ctx` another file
+// declares, as the scenario runner resolves it (`ruby/variable/constant_resolution.md`).
 #[test]
-fn known_issue_namespace_constant_from_another_file() {
+fn namespace_constant_from_another_file() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("ctx.rb"),
@@ -5498,7 +5609,271 @@ fn known_issue_namespace_constant_from_another_file() {
     assert!(output.status.success());
     let rbs = String::from_utf8_lossy(&output.stdout);
     assert!(
-        rbs.contains("def make: -> untyped\n"),
-        "known issue fixed (namespace constant from another file); drop this check: {rbs}"
+        rbs.contains("def initialize: (String src) -> void\n"),
+        "got: {rbs}"
     );
+    assert!(rbs.contains("def make: -> String\n"), "got: {rbs}");
+}
+
+// `::Tool` names the top-level module even inside `module Core`, which also has a `Tool`.
+#[test]
+fn absolute_constant_skips_nested_name_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("core_tool.rb"),
+        "module Core\n  module Tool\n    def self.t = 1\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("tool.rb"),
+        "module Tool\n  def self.t = \"s\"\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("user.rb"),
+        concat!(
+            "module Core\n",
+            "  class User\n",
+            "    def top = ::Tool.t\n",
+            "    def nested = Tool.t\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(rbs.contains("def top: -> \"s\"\n"), "got: {rbs}");
+    assert!(rbs.contains("def nested: -> 1\n"), "got: {rbs}");
+}
+
+// `ctx` is still a reference when `user.rb` is analyzed alone, so `get(2)` is typed again once
+// the other files are merged, as the scenario runner types it (`ruby/method/call_return.md`).
+#[test]
+fn call_with_arguments_on_method_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("ctx.rb"),
+        "class Ctx\n  def self.make = new\n  def get(x) = [x]\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("user.rb"),
+        concat!(
+            "class User\n",
+            "  def ctx = Ctx.make\n",
+            "  def value = ctx.get(2)\n",
+            "  def direct = Ctx.make.get(2)\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(rbs.contains("def value: -> [2]\n"), "got: {rbs}");
+    assert!(rbs.contains("def direct: -> [2]\n"), "got: {rbs}");
+}
+
+// `Source` names `Bundler::Source` from another file, and `Source::Rubygems` its nested class.
+#[test]
+fn nested_path_under_namespace_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("source.rb"),
+        "module Bundler\n  class Source\n    class Rubygems < Source\n    end\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("source_list.rb"),
+        "module Bundler\n  class SourceList\n    def source_class = Source::Rubygems\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def source_class: -> singleton(Bundler::Source::Rubygems)\n"),
+        "got: {rbs}"
+    );
+}
+
+// The enum values come from a method in another file, and a relation of the model in a
+// third file reaches the generated scope.
+#[test]
+fn enum_from_method_and_relation_scope_across_files() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+    let files = [
+        (
+            "base.rb",
+            "class ActiveRecord::Base; end\nclass ApplicationRecord < ActiveRecord::Base; end\n",
+        ),
+        (
+            "enums.rb",
+            "module PipelineEnums\n  def self.sources\n    { push: 1, external: 6 }\n  end\nend\n",
+        ),
+        (
+            "pipeline.rb",
+            "class Pipeline < ApplicationRecord\n  enum :source, PipelineEnums.sources\nend\n",
+        ),
+        (
+            "project.rb",
+            concat!(
+                "class Project < ApplicationRecord\n",
+                "  has_many :pipelines\n",
+                "  def external_pipelines = pipelines.external\n",
+                "end\n",
+            ),
+        ),
+    ];
+    for (name, source) in files {
+        fs::write(dir.path().join(name), source).expect("failed to write source");
+    }
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("  def self.external: -> ActiveRecord::Relation[Pipeline]\n"),
+        "{rbs}"
+    );
+    assert!(
+        rbs.contains("  def external_pipelines: -> ActiveRecord::Relation[Pipeline]\n"),
+        "{rbs}"
+    );
+}
+
+// A scope chain from another file ends in `find_by`, so the value may be nil; `nil?` on it is
+// a `bool`, not the `false` of `Object#nil?`.
+#[test]
+fn nil_predicate_on_a_nilable_scope_chain_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(dir.path().join("Gemfile"), "gem \"rails\"\n").expect("write Gemfile");
+    fs::write(
+        dir.path().join("act.rb"),
+        concat!(
+            "class ActiveRecord::Base; end\n",
+            "class ApplicationRecord < ActiveRecord::Base; end\n",
+            "class Act < ApplicationRecord\n",
+            "  scope :recent, -> { order(:id) }\n",
+            "  scope :upto, ->(v) { where(v: v) }\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("dv.rb"),
+        concat!(
+            "class Dv\n",
+            "  def action = Act.recent.upto(1).find_by(d: 1)\n",
+            "  def none? = action.nil?\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(rbs.contains("  def action: -> Act?\n"), "{rbs}");
+    assert!(rbs.contains("  def none?: -> bool\n"), "{rbs}");
+}
+
+// `NES::FPS` names a value constant in another file, not a class.
+#[test]
+fn constant_aliasing_a_value_constant_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("nes.rb"),
+        "module Opt\n  class NES\n    FPS = 60\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("video.rb"),
+        "module Opt\n  class Video\n    MAX_FPS = NES::FPS\n  end\nend\n",
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(rbs.contains("  MAX_FPS: 60\n"), "{rbs}");
+}
+
+// `f ? AST.create(nil) : nil` keeps the call to another file as a union member of the ivar.
+#[test]
+fn reader_of_ivar_with_call_to_another_file_in_union() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("ast.rb"),
+        "class AST\n  def self.create(raw) = SigFuncType.new(raw)\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("sig.rb"),
+        concat!(
+            "class AST\n",
+            "  class SigFuncType\n",
+            "    attr_reader :blk\n",
+            "    def initialize(raw) = @blk = raw ? AST.create(nil) : nil\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rbs.contains("def blk: -> AST::SigFuncType?\n"),
+        "the reader resolves the deferred union member after the merge: {rbs}"
+    );
+}
+
+// The reader's `@src` belongs to `Ctx`; the caller in another file reads it through the reader.
+#[test]
+fn ivar_reader_return_from_another_file() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("ctx.rb"),
+        concat!(
+            "class Ctx\n",
+            "  def initialize(src) = @src = src\n",
+            "  def raw = @src\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("user.rb"),
+        "class User\n  def make = Ctx.new(\"q\").raw\nend\n",
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let rbs = String::from_utf8_lossy(&output.stdout);
+    assert!(rbs.contains("def make: -> String\n"), "got: {rbs}");
 }

@@ -817,3 +817,23 @@ class Policy
   def avo_show?: -> false
 end
 ```
+
+## A small integer range names each defined method
+
+### update
+
+```ruby
+class Flag
+  (1..3).each { |v| define_method("mode_#{v}?") { v } }
+end
+```
+
+### result
+
+```rbs
+class Flag
+  def mode_1?: -> 1
+  def mode_2?: -> 2
+  def mode_3?: -> 3
+end
+```

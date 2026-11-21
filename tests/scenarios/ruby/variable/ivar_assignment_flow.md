@@ -120,7 +120,7 @@ class IvarCallValue
 end
 ```
 
-## A self call after a no-argument call write ends the local value
+## A self call that may write the instance variable ends the local value
 
 ### update
 
@@ -136,7 +136,14 @@ class IvarCallValueAfterSelfCall
     @items
   end
 
-  def helper = 1
+  def build_kept
+    @items = [1, nil].compact
+    ping
+    @items
+  end
+
+  def helper = reset
+  def ping = 1
 end
 ```
 
@@ -146,7 +153,9 @@ end
 class IvarCallValueAfterSelfCall
   def reset: -> nil
   def build: -> [1]?
-  def helper: -> 1
+  def build_kept: -> [1]
+  def helper: -> nil
+  def ping: -> 1
 end
 ```
 
@@ -208,5 +217,63 @@ end
 class MemoGuard
   def ignored?: -> true
   def missing?: -> true
+end
+```
+
+## An in-place change keeps the values other writes leave in the instance variable
+
+### update
+
+```ruby
+class Collector
+  attr_reader :items
+
+  def initialize(enabled)
+    @items = nil
+    if enabled
+      @items = []
+      [1, 2].each { |n| @items << n }
+    end
+  end
+end
+
+Collector.new(true)
+```
+
+### result
+
+```rbs
+class Collector
+  def items: -> Array[1 | 2]?
+  def initialize: (bool enabled) -> void
+end
+```
+
+## A call with arguments to a class method types the instance variable
+
+### update
+
+```ruby
+class Factory
+  def self.create(raw) = Node.new(raw)
+end
+
+class Node
+  attr_reader :child
+
+  def initialize(raw) = @child = raw ? Factory.create(nil) : nil
+end
+```
+
+### result
+
+```rbs
+class Factory
+  def self.create: (nil raw) -> Node
+end
+
+class Node
+  def child: -> Node?
+  def initialize: (nil raw) -> void
 end
 ```

@@ -682,6 +682,29 @@ impl<'e, 'src> PluginCx<'e, 'src> {
             .collect_has_many(class_name, call_node, parse_result);
     }
 
+    /// Rails defines association methods in a module the model includes, so a `def` of the
+    /// same name in the model overrides them and reaches them with `super`.
+    pub(in crate::inference) fn collect_into_generated_module(
+        &mut self,
+        class_name: &str,
+        collect: impl FnOnce(&mut Self),
+    ) {
+        let before = self.engine.registry.get_methods(class_name).len();
+        collect(self);
+        let added = self.engine.registry.get_methods(class_name)[before..]
+            .iter()
+            .map(|method| {
+                (
+                    (method.name, method.is_singleton),
+                    method.raw_return_type.clone(),
+                )
+            })
+            .collect();
+        self.engine
+            .registry
+            .record_generated_module_methods(class_name, added);
+    }
+
     pub(in crate::inference) fn collect_has_one(
         &mut self,
         class_name: &str,

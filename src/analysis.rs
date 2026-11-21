@@ -568,47 +568,64 @@ pub fn replay_param_dependent_bodies(
                     )
                 })
                 .collect();
-            settled.then(|| ParamReplayRequest {
+            (settled || request.reads_other_files).then(|| ParamReplayRequest {
                 body: request.body.clone(),
                 positional,
                 keywords,
+                reads_other_files: request.reads_other_files,
             })
         })
         .collect();
     if requests.is_empty() {
         return Vec::new();
     }
-    let offsets: HashSet<usize> = requests
-        .iter()
-        .map(|request| request.body.def_offset)
-        .collect();
+    // A call on a method reference needs the other files' classes, so that replay also reads
+    // them from the merged registry.
+    let (on_references, on_params): (Vec<_>, Vec<_>) = requests
+        .into_iter()
+        .partition(|request| request.reads_other_files);
     let parse_result = prism::parse(source.as_bytes());
-    let (mut engine, _timings) = build_engine_from_parse(
-        AnalysisRequest {
-            source,
-            rbs_registry,
-            lazy_loader: Some(lazy_loader),
-            lazy_rbi_loader,
-            file_path: Some(file_path),
-            options: &options,
-            dependency_collection: DependencyCollection::Disabled,
-            hover_snapshot_mode: HoverSnapshotMode::Skip,
-            annotated_body_hover_mode: AnnotatedBodyHoverMode::Disabled,
-            external_rbs_loading: ExternalRbsLoading::OnDemand,
-            resolution_depth: ResolutionDepth::ExportedFactsOnly,
-            rbi_declaration_source: false,
-            replay_bodies: Some(ReplayBodies {
-                offsets: &offsets,
-                workspace,
-            }),
-        },
-        &parse_result,
-    );
-    let root = parse_result.node();
-    let Some(program) = root.as_program_node() else {
-        return Vec::new();
+    let replay = |context: Option<&TypeRegistry>, requests: &[ParamReplayRequest], loads: bool| {
+        if requests.is_empty() {
+            return Vec::new();
+        }
+        let offsets: HashSet<usize> = requests
+            .iter()
+            .map(|request| request.body.def_offset)
+            .collect();
+        let (mut engine, _timings) = build_engine_from_parse(
+            AnalysisRequest {
+                source,
+                rbs_registry: context,
+                lazy_loader: Some(lazy_loader),
+                lazy_rbi_loader,
+                file_path: Some(file_path),
+                options: &options,
+                dependency_collection: DependencyCollection::Disabled,
+                hover_snapshot_mode: HoverSnapshotMode::Skip,
+                annotated_body_hover_mode: AnnotatedBodyHoverMode::Disabled,
+                external_rbs_loading: ExternalRbsLoading::OnDemand,
+                resolution_depth: ResolutionDepth::ExportedFactsOnly,
+                rbi_declaration_source: false,
+                replay_bodies: Some(ReplayBodies {
+                    offsets: &offsets,
+                    workspace,
+                }),
+            },
+            &parse_result,
+        );
+        if loads {
+            engine.load_workspace_classes_in_replay();
+        }
+        let root = parse_result.node();
+        let Some(program) = root.as_program_node() else {
+            return Vec::new();
+        };
+        engine.replay_param_dependent_bodies(&program, &parse_result, requests)
     };
-    engine.replay_param_dependent_bodies(&program, &parse_result, &requests)
+    let mut results = replay(rbs_registry, &on_params, false);
+    results.extend(replay(rbs_registry, &on_references, true));
+    results
 }
 
 fn type_mentions_class(ty: &Type, matches: &impl Fn(&str) -> bool) -> bool {
@@ -2088,6 +2105,250 @@ fn source_case_equality_overrides_in_root(root: &Node<'_>) -> SourceCaseEquality
     };
     prism::Visit::visit(&mut scan, root);
     scan.overrides
+}
+
+/// The classes and modules a source declares under a namespace (`Core::Ctx` from
+/// `module Core; class Ctx`). A top-level name needs no entry: a file analyzed alone keeps it
+/// as written, which is already the full name.
+/// Class and module names declared under another one (`Core::Ctx`). The preload reads every
+/// file, so this follows the declaration lines and their indentation instead of parsing:
+/// a declaration's parent is the nearest less-indented one above it.
+pub fn source_nested_namespaces(source: &str) -> Vec<String> {
+    // (indent, name); `None` marks `class << self`, whose body declares nothing visible.
+    let mut open: Vec<(usize, Option<String>)> = Vec::new();
+    let mut names = Vec::new();
+    let mut heredoc_end: Option<String> = None;
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if let Some(terminator) = &heredoc_end {
+            if trimmed.trim_end() == terminator {
+                heredoc_end = None;
+            }
+            continue;
+        }
+        let first = trimmed.as_bytes().first().copied();
+        if first == Some(b'#') {
+            continue;
+        }
+        heredoc_end = heredoc_terminator(line);
+        if !matches!(first, Some(b'c' | b'm' | b'e')) {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        // `end` closes what was opened at its indentation or deeper.
+        if first == Some(b'e') {
+            if !open.is_empty()
+                && (trimmed == "end" || trimmed.starts_with("end ") || trimmed.starts_with("end;"))
+            {
+                while open
+                    .last()
+                    .is_some_and(|(open_indent, _)| *open_indent >= indent)
+                {
+                    open.pop();
+                }
+            }
+            continue;
+        }
+        let Some(rest) = trimmed
+            .strip_prefix("class ")
+            .or_else(|| trimmed.strip_prefix("module "))
+        else {
+            continue;
+        };
+        while open
+            .last()
+            .is_some_and(|(open_indent, _)| *open_indent >= indent)
+        {
+            open.pop();
+        }
+        let rest = rest.trim_start();
+        if rest.starts_with("<<") {
+            open.push((indent, None));
+            continue;
+        }
+        let written: &str = rest
+            .split(|c: char| c.is_whitespace() || c == ';' || c == '<' || c == '(')
+            .next()
+            .unwrap_or_default();
+        if written.is_empty()
+            || !written
+                .trim_start_matches("::")
+                .starts_with(|c: char| c.is_ascii_uppercase())
+        {
+            continue;
+        }
+        let outer = match open.last() {
+            Some((_, Some(outer))) => Some(outer.as_str()),
+            Some((_, None)) => {
+                open.push((indent, None));
+                continue;
+            }
+            None => None,
+        };
+        let name = match (written.strip_prefix("::"), outer) {
+            (Some(absolute), _) => absolute.to_string(),
+            (None, Some(outer)) => crate::sym::join_scope(outer, written),
+            (None, None) => written.to_string(),
+        };
+        if name.contains("::") {
+            names.push(name.clone());
+        }
+        // `module Bundler; end` is closed on its own line.
+        let closed = rest.trim_end().ends_with(" end") || rest.trim_end().ends_with(";end");
+        if !closed {
+            open.push((indent, Some(name)));
+        }
+    }
+    names
+}
+
+/// The terminator of a heredoc that starts on this line (`<<~'END'`, `<<-SQL`, `<<EOS`).
+fn heredoc_terminator(line: &str) -> Option<String> {
+    let start = line.find("<<")?;
+    let rest = line[start + 2..].trim_start_matches(['~', '-']);
+    let rest = rest.trim_start_matches(['\'', '"']);
+    if !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return None;
+    }
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    Some(name)
+}
+
+/// What one source file declares that another file's analysis may read before the merge.
+#[derive(Debug, Default)]
+pub struct SourceDeclarations {
+    pub namespaces: Vec<String>,
+    pub literal_hash_methods: Vec<(String, Vec<String>)>,
+}
+
+impl SourceDeclarations {
+    pub fn of(source: &str) -> Self {
+        Self {
+            namespaces: source_nested_namespaces(source),
+            literal_hash_methods: source_literal_hash_methods(source),
+        }
+    }
+
+    pub fn extend(&mut self, other: Self) {
+        self.namespaces.extend(other.namespaces);
+        self.literal_hash_methods.extend(other.literal_hash_methods);
+    }
+}
+
+/// Class methods whose body is a literal Hash, as `Owner.method` with the Hash keys
+/// (`def self.sources = { push: 1 }`). An enum in another file can read its values from them.
+pub fn source_literal_hash_methods(source: &str) -> Vec<(String, Vec<String>)> {
+    if !may_define_literal_hash_method(source) {
+        return Vec::new();
+    }
+    let parse_result = prism::parse(source.as_bytes());
+    let mut methods = Vec::new();
+    if let Some(program) = parse_result.node().as_program_node() {
+        collect_literal_hash_methods(&program.statements().as_node(), None, &mut methods);
+    }
+    methods
+}
+
+/// A `def self.` line followed by a line that opens a Hash, or one that opens it itself.
+fn may_define_literal_hash_method(source: &str) -> bool {
+    if !source.contains("def self.") {
+        return false;
+    }
+    let mut after_def = false;
+    for line in source.lines() {
+        let line = line.trim();
+        if after_def && !line.is_empty() {
+            if line.starts_with('{') {
+                return true;
+            }
+            after_def = false;
+        }
+        if let Some(rest) = line.strip_prefix("def self.") {
+            if rest.contains("= {") {
+                return true;
+            }
+            after_def = !rest.contains('=');
+        }
+    }
+    false
+}
+
+fn collect_literal_hash_methods(
+    node: &Node<'_>,
+    outer: Option<&str>,
+    methods: &mut Vec<(String, Vec<String>)>,
+) {
+    let mut declare = |constant_path: Node<'_>, body: Option<Node<'_>>| {
+        let written = String::from_utf8_lossy(constant_path.location().as_slice());
+        let name = match (written.strip_prefix("::"), outer) {
+            (Some(absolute), _) => absolute.to_string(),
+            (None, Some(outer)) => crate::sym::join_scope(outer, &written),
+            (None, None) => written.into_owned(),
+        };
+        if let Some(body) = body {
+            collect_literal_hash_methods(&body, Some(&name), methods);
+        }
+    };
+    match node {
+        Node::StatementsNode { .. } => {
+            let statements = node.as_statements_node().expect("must be StatementsNode");
+            for statement in statements.body().iter() {
+                collect_literal_hash_methods(&statement, outer, methods);
+            }
+        }
+        Node::ClassNode { .. } => {
+            let class = node.as_class_node().expect("must be ClassNode");
+            declare(class.constant_path(), class.body());
+        }
+        Node::ModuleNode { .. } => {
+            let module = node.as_module_node().expect("must be ModuleNode");
+            declare(module.constant_path(), module.body());
+        }
+        Node::DefNode { .. } => {
+            let def = node.as_def_node().expect("must be DefNode");
+            let (Some(owner), Some(Node::SelfNode { .. }), None) =
+                (outer, def.receiver(), def.parameters())
+            else {
+                return;
+            };
+            let body = match def.body() {
+                Some(Node::StatementsNode { .. }) => {
+                    let statements = def.body().and_then(|body| body.as_statements_node());
+                    let mut body = statements.into_iter().flat_map(|s| s.body().iter());
+                    match (body.next(), body.next()) {
+                        (Some(only), None) => only,
+                        _ => return,
+                    }
+                }
+                Some(other) => other,
+                None => return,
+            };
+            let Some(hash) = body.as_hash_node() else {
+                return;
+            };
+            let mut keys = Vec::new();
+            for element in hash.elements().iter() {
+                let Some(key) = element.as_assoc_node().map(|assoc| assoc.key()) else {
+                    return;
+                };
+                let key = match &key {
+                    Node::SymbolNode { .. } => key.as_symbol_node().map(|s| s.unescaped().to_vec()),
+                    Node::StringNode { .. } => key.as_string_node().map(|s| s.unescaped().to_vec()),
+                    _ => None,
+                };
+                let Some(key) = key else {
+                    return;
+                };
+                keys.push(String::from_utf8_lossy(&key).into_owned());
+            }
+            let method = String::from_utf8_lossy(def.name().as_slice());
+            methods.push((format!("{owner}.{method}"), keys));
+        }
+        _ => {}
+    }
 }
 
 pub fn source_case_equality_overrides(source: &str) -> SourceCaseEqualityOverrides {
@@ -4163,6 +4424,76 @@ end
                 .lookup_class_variable_type("Source", "@@value"),
             Some(Type::LiteralString("stored".to_string()))
         );
+    }
+
+    #[test]
+    fn nested_namespaces_follow_the_declaration_nesting() {
+        let source = concat!(
+            "module Core\n",
+            "  class Ctx\n",
+            "    class << self\n",
+            "      class Hidden; end\n",
+            "    end\n",
+            "    def build = 1\n",
+            "  end\n",
+            "  module Deep::Inner; end\n",
+            "  class ::Top::Abs; end\n",
+            "end\n",
+            "class Plain; end\n",
+        );
+        assert_eq!(
+            super::source_nested_namespaces(source),
+            ["Core::Ctx", "Core::Deep::Inner", "Top::Abs"]
+        );
+        assert!(super::source_nested_namespaces("class Plain < Base\nend\n").is_empty());
+        let closed = concat!(
+            "module Bundler; end\n",
+            "if defined?(X)\n",
+            "  module Gem\n",
+            "  end\n",
+            "end\n",
+            "module Outer\n",
+            "  class A\n",
+            "  end\n",
+            "  if cond\n",
+            "    class B; end\n",
+            "  end\n",
+            "  CODE = <<~'End'\n",
+            "    module Kernel\n",
+            "    end\n",
+            "  End\n",
+            "  # s.description = <<-EOF\n",
+            "  class C < Err; end\n",
+            "end\n",
+        );
+        assert_eq!(
+            super::source_nested_namespaces(closed),
+            ["Outer::A", "Outer::B", "Outer::C"]
+        );
+    }
+
+    #[test]
+    fn source_literal_hash_methods_reads_class_methods_returning_a_hash() {
+        let source = concat!(
+            "module Enums\n",
+            "  module Ci\n",
+            "    def self.sources\n",
+            "      { push: 1, \"web\" => 2 }\n",
+            "    end\n",
+            "    def self.computed = sources.except(:push)\n",
+            "    def self.with_arg(x) = { a: x }\n",
+            "    def instance_hash = { b: 1 }\n",
+            "  end\n",
+            "end\n",
+        );
+        assert_eq!(
+            super::source_literal_hash_methods(source),
+            [(
+                "Enums::Ci.sources".to_string(),
+                vec!["push".to_string(), "web".to_string()]
+            )]
+        );
+        assert!(super::source_literal_hash_methods("def self.x = 1\n").is_empty());
     }
 
     #[test]
