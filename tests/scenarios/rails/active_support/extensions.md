@@ -340,3 +340,25 @@ class Roles
   def nested: -> ActiveSupport::HashWithIndifferentAccess[String, ActiveSupport::HashWithIndifferentAccess[String, 1]]
 end
 ```
+
+## Float has no ordinalize
+
+```yaml
+rails_version: 7.1.0
+```
+
+### update
+
+```ruby
+class Probe
+  def ordinal = 1.5.ordinalize
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def ordinal: -> untyped
+end
+```

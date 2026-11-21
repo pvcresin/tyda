@@ -43,7 +43,8 @@ impl Plugin for DeclarativePolicy {
 
 const POLICY_BASES: &[&str] = &["DeclarativePolicy::Base", "BasePolicy", "::BasePolicy"];
 
-const RULE_DSL_CLASS: &str = "DeclarativePolicy::RuleDsl";
+// `rule { ... }` returns a PolicyDsl; its actions return the policy state, not the DSL.
+const POLICY_DSL_CLASS: &str = "DeclarativePolicy::PolicyDsl";
 
 const POLICY_METHODS: &[&str] = &[
     "condition",
@@ -60,7 +61,7 @@ const POLICY_METHODS: &[&str] = &[
     "scope",
 ];
 
-const RULE_CHAIN_METHODS: &[&str] = &["enable", "prevent", "prevent_all", "policy"];
+const POLICY_DSL_METHODS: &[&str] = &["enable", "prevent", "prevent_all", "policy"];
 
 fn is_policy_class(engine: &PluginCx<'_, '_>, class_name: &str) -> bool {
     engine.dsl_enabled(DslLibrary::DeclarativePolicy)
@@ -76,16 +77,14 @@ pub(in crate::inference) fn synthetic_method_return(
         Type::Class(name) | Type::Singleton(name) => name.as_str(),
         _ => return None,
     };
-    if class_name == RULE_DSL_CLASS {
-        if !engine.dsl_enabled(DslLibrary::DeclarativePolicy) {
-            return None;
-        }
-        return RULE_CHAIN_METHODS
-            .contains(&method_name)
-            .then(|| Type::Class(Sym::new(RULE_DSL_CLASS)));
+    if class_name == POLICY_DSL_CLASS {
+        return (engine.dsl_enabled(DslLibrary::DeclarativePolicy)
+            && POLICY_DSL_METHODS.contains(&method_name))
+        .then_some(Type::Untyped);
     }
     if method_name == "rule" {
-        return is_policy_class(engine, class_name).then(|| Type::Class(Sym::new(RULE_DSL_CLASS)));
+        return is_policy_class(engine, class_name)
+            .then(|| Type::Class(Sym::new(POLICY_DSL_CLASS)));
     }
     if matches!(method_name, "can?" | "cannot?") {
         return is_policy_class(engine, class_name).then_some(Type::Bool);

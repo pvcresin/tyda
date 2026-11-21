@@ -2,10 +2,6 @@
 
 ## GraphQL arguments do not define writers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -38,10 +34,6 @@ end
 ```
 
 ## GraphQL object fields do not define readers
-
-```yaml
-known_issue: true
-```
 
 ### update
 

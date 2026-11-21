@@ -111,6 +111,27 @@ const ACTIVE_RECORD_CALCULATION_METHODS: &[&str] = &[
 const ACTIVE_RECORD_BOOL_RELATION_METHODS: &[&str] = &["exists?", "include?"];
 const ACTIVE_RECORD_BATCH_METHODS: &[&str] = &["find_each", "find_in_batches", "in_batches"];
 
+/// `connects_to(database: {}, shards: {})` returns the connection pools it establishes.
+pub(super) fn connects_to_params() -> Vec<ParamInfo> {
+    ["database", "shards"]
+        .into_iter()
+        .map(|name| ParamInfo {
+            name: name.to_string(),
+            kind: ParamKind::KeywordOptional,
+            default_type: Some(Type::Hash(
+                Some(Box::new(Type::Symbol)),
+                Some(Box::new(Type::Untyped)),
+            )),
+        })
+        .collect()
+}
+
+pub(super) fn connects_to_return_type() -> Type {
+    Type::Array(Some(Box::new(Type::Class(Sym::new(
+        "ActiveRecord::ConnectionAdapters::ConnectionPool",
+    )))))
+}
+
 #[derive(Clone, Default)]
 pub(super) struct AssociationOptions {
     pub(super) class_name: Option<String>,
@@ -382,12 +403,8 @@ impl<'a> InferenceEngine<'a> {
                 class_name,
                 MethodDef {
                     name: Sym::new("connects_to"),
-                    param_infos: vec![ParamInfo {
-                        name: "database".to_string(),
-                        kind: ParamKind::Required,
-                        default_type: Some(Type::Untyped),
-                    }],
-                    raw_return_type: Type::Void,
+                    param_infos: connects_to_params(),
+                    raw_return_type: connects_to_return_type(),
                     sorbet_modifier_comments: Vec::new(),
                     rbs_annotated: true,
                     origin: MethodOrigin::SyntheticDsl,
@@ -1501,7 +1518,11 @@ impl<'a> InferenceEngine<'a> {
             );
         }
 
+        let has_sole = self.rails_at_least(7, 0);
         for name in ACTIVE_RECORD_REQUIRED_FINDER_METHODS {
+            if *name == "sole" && !has_sole {
+                continue;
+            }
             self.registry.add_method_def_if_missing(
                 class_name,
                 MethodDef {
@@ -1539,7 +1560,10 @@ impl<'a> InferenceEngine<'a> {
             );
         }
 
-        for name in ACTIVE_RECORD_FIND_BY_ATTRS_METHODS {
+        for name in ACTIVE_RECORD_FIND_BY_ATTRS_METHODS
+            .iter()
+            .filter(|_| has_sole)
+        {
             self.registry.add_method_def_if_missing(
                 class_name,
                 MethodDef {

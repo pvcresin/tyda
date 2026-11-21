@@ -193,16 +193,16 @@ routes、schema と、主要な gem plugin を扱う。対応 gem の正本は `
 - association の対象 class は Rails の `compute_type` と同じく owner の namespace から外側へ解決する。polymorphic `belongs_to` の `*_type` / `*_id` は schema の nullability に従う
 - `normalizes` の `with:` lambda を `normalize_value_for` の本体として扱い、`value` 引数の型から戻り値を推論する
 - ActiveRecord model の `reflections` / `base_class` と instance の `readonly!` は既知 API として扱い、返り値は未解決なら `untyped` にする
-- StateMachines は `state_machine` reader、`<attribute>_name`、state predicate、event method を追加する。machine descriptor の内部 API は `untyped` にする
-- Devise は `devise` に指定した module に対応する model instance method を追加し、Paperclip は ActiveRecord model の `has_attached_file` から attachment reader を追加する。Rack::Attack が有効な場合、`Rack::Attack::Request` は `Rack::Request` の request method surface を継承する
+- StateMachines は `state_machine` reader、`<attribute>_name`（`Symbol`）、state predicate、event method（`can_<event>?`、`<event>_transition` を含む）を追加する。machine descriptor の内部 API は `untyped` にする
+- Devise は `devise` に指定した module に対応する model instance method を追加し、`current_<scope>` はサインイン前に `nil` を返すため `Model?` にする。Paperclip は ActiveRecord model の `has_attached_file` から attachment reader を追加する。Rack::Attack が有効な場合、`Rack::Attack::Request` は `Rack::Request` の request method surface を継承する
 - `config/routes.rb` から `*_path` / `*_url` helper を生成する。ActionDispatch の命名規則に沿って `namespace` / `scope`（`as:`、動的 segment）/ `resources` / `resource`（`as:`、`only:` / `except:`、`shallow`）/ `member` / `collection` / `new` / `concern` / `concerns` / `direct` を合成し、除外された action の helper は生成しない。`config/routes/*.rb` の `draw` は未対応
-- ActionView helper の `dom_id` / `dom_class` は `String`、`truncate` は nil を受けると nil を返すため `String?` を返す
+- ActionView helper の `dom_id` / `dom_class` は `String`、`truncate` と `number_to_*` / `number_with_*` は nil を受けると nil を返すため `String?`、`sanitize` は `ActiveSupport::SafeBuffer?` を返す。controller / helper / mailer の `t` / `translate` は scope の key で Hash などを返すため `untyped` にする。`can?` / `cannot?` は Gemfile に CanCanCan がある場合だけ `bool` にする
 - ActionMailer の action は class method から `ActionMailer::MessageDelivery` を返し、`deliver_now` / `message` は別ファイルの mailer でも `Mail::Message` を返す。`Mailer.with(...)` は `ActionMailer::Parameterized::Mailer` を返し、その上の mailer action 名の呼び出しは `ActionMailer::Parameterized::MessageDelivery` を返す（どの mailer かは追跡しないため、既知の mailer action 名だけを受け付ける）
 - Concern などの module 内の self call は、別ファイルで include するクラスの定義から戻り値を解決する（controller concern の `params.permit(...)` は `ActionController::Parameters`）
 - `Rails.application.configure` の block では、receiver のない呼び出しを application の `self` で推論する
 - ActiveJob の `perform_later` と ActionMailer の `deliver_later` は Rails 7.0 以降 enqueue callback の中断で `false` を返し、`perform_now` は perform callback の中断で `false` を返す。Sidekiq の `perform_async` などは client middleware の中断で `nil` を返す。ActiveJob の判定は継承関係を優先し、名前が `Job` で終わることによる補完は superclass が未解決のクラスに限る（`Sidekiq::Job` を include するクラスや既知の ActiveRecord / controller / mailer の基底を継承するクラスは対象外）
 - ActiveSupport の core extension は `active_support_core_ext`、時刻系は `active_support_time_ext` で有効化し、plugin の戻り値テーブルで補う。引数の型で戻り値が決まるもの（`Array#including` / `in_groups` など）は plugin が名前を宣言した呼び出しだけ引数を推論する。`String#to_date` などは空白だけの文字列で `nil` を返す。`humanize` などの文字列 inflection は、別ファイルの includer から解決した遅延 receiver でも Rails project では `String` を返す。`with_indifferent_access` は key を文字列にした `ActiveSupport::HashWithIndifferentAccess[K, V]` を返し、`Hash` の method をその型引数で解決する
-- Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM などを plugin で補う
+- Grape、GraphQL-Ruby、Devise、Doorkeeper、Sidekiq、Draper、AASM、CanCanCan などを plugin で補う。gem が生成しないメソッドは追加しない（GraphQL の `field` と resolver / mutation の `argument`、AMS 0.10 の serializer の association、Kredis の writer）
 - Rake が有効な project では、`String#ext` / `String#pathmap` の戻り値を `String` として扱う。Gemfile の引数なし `gemspec` は root の唯一の `*.gemspec` の gem 名も宣言済み gem として扱う
 - GitLab in-tree の Presenter / CurrentSettings / Metrics / EE 拡張を検出する
 - Redmine の `acts_as_*` など、ライブラリ内部の実行時登録は展開しない。必要なら手書き

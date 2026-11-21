@@ -8,6 +8,7 @@ pub(super) mod active_resource;
 pub(super) mod active_storage;
 pub(super) mod active_support;
 pub(super) mod ams;
+pub(super) mod cancancan;
 pub(super) mod declarative_policy;
 pub(super) mod devise;
 pub(super) mod discard;
@@ -185,6 +186,7 @@ static PLUGINS: &[&dyn Plugin] = &[
     &doorkeeper::Doorkeeper,
     &sidekiq::Sidekiq,
     &action_controller::ActionController,
+    &cancancan::Cancancan,
     &rails_configure::RailsConfigure,
     &active_support::ActiveSupport,
     &gettext::Gettext,
@@ -793,26 +795,6 @@ impl<'e, 'src> PluginCx<'e, 'src> {
             .collect_attributes_dsl(class_name, call_node, parse_result);
     }
 
-    pub(in crate::inference) fn collect_active_model_serializer_belongs_to(
-        &mut self,
-        class_name: &str,
-        call_node: &CallNode<'_>,
-        parse_result: &ParseResult<'_>,
-    ) {
-        self.engine
-            .collect_active_model_serializer_belongs_to(class_name, call_node, parse_result);
-    }
-
-    pub(in crate::inference) fn collect_active_model_serializer_has_many(
-        &mut self,
-        class_name: &str,
-        call_node: &CallNode<'_>,
-        parse_result: &ParseResult<'_>,
-    ) {
-        self.engine
-            .collect_active_model_serializer_has_many(class_name, call_node, parse_result);
-    }
-
     pub(in crate::inference) fn collect_store_accessor_dsl(
         &mut self,
         class_name: &str,
@@ -1157,17 +1139,6 @@ impl<'e, 'src> PluginCx<'e, 'src> {
     ) {
         self.engine
             .collect_argument_like_dsl(class_name, call_node, method_name, parse_result);
-    }
-
-    pub(in crate::inference) fn collect_field_like_dsl(
-        &mut self,
-        class_name: &str,
-        call_node: &CallNode<'_>,
-        method_name: &str,
-        parse_result: &ParseResult<'_>,
-    ) {
-        self.engine
-            .collect_field_like_dsl(class_name, call_node, method_name, parse_result);
     }
 
     pub(in crate::inference) fn register_current_attributes_class_methods(

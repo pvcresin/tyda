@@ -20,7 +20,7 @@ end
 
 ```rbs
 class Settings::SessionsController < Devise::SessionsController
-  def show: -> String
+  def show: -> untyped
   def info: -> ActionDispatch::Request
   def messages: -> ActionDispatch::Flash::FlashHash
   def link: -> String
@@ -45,7 +45,7 @@ class OAuth::TokensController < Doorkeeper::TokensController
 end
 ```
 
-## Resolve translation helpers in view helper modules
+## Translation helpers in view helper modules return untyped
 
 ### update
 
@@ -59,7 +59,7 @@ end
 
 ```rbs
 module UsersHelper
-  def user_label: -> String
+  def user_label: -> untyped
 end
 ```
 
@@ -176,13 +176,13 @@ end
 ```rbs
 module FormatHelper
   def ago: (untyped time) -> String
-  def count: -> String
+  def count: -> String?
   def posts_label: -> String
   def joined: -> String
   def box: -> String
   def logo: -> String
   def body: -> String
-  def clean: -> String
+  def clean: -> ActiveSupport::SafeBuffer?
 end
 ```
 

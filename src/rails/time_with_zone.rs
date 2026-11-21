@@ -28,6 +28,23 @@ pub fn own_method_return(method_name: &str) -> Option<Type> {
 
 /// ActiveSupport calendar extensions shared by `Time`, `Date`, `DateTime` and `TimeWithZone`.
 pub fn calendar_method_return(method_name: &str, receiver: &Type) -> Option<Type> {
+    let receiver_name = match receiver {
+        Type::Class(name) => name.as_str(),
+        _ => "",
+    };
+    if receiver_name == "Date" {
+        // `Date` has no hour or minute helpers, and its day and second helpers go through
+        // `in_time_zone`, which returns a `Time` when `Time.zone` is not set.
+        if DATE_ZONED_METHODS.contains(&method_name) {
+            return Some(Type::from_type_vec(vec![
+                Type::Class(Sym::new(TIME_WITH_ZONE_CLASS)),
+                Type::Class(Sym::new("Time")),
+            ]));
+        }
+        if TIME_ONLY_METHODS.contains(&method_name) {
+            return None;
+        }
+    }
     match method_name {
         "beginning_of_day"
         | "end_of_day"
@@ -44,6 +61,7 @@ pub fn calendar_method_return(method_name: &str, receiver: &Type) -> Option<Type
         | "beginning_of_minute"
         | "end_of_minute"
         | "midnight"
+        | "middle_of_day"
         | "midday"
         | "noon"
         | "at_midnight"
@@ -73,11 +91,39 @@ pub fn calendar_method_return(method_name: &str, receiver: &Type) -> Option<Type
         | "on_weekend?" => Some(Type::Bool),
         "in_time_zone" => Some(Type::Class(Sym::new(TIME_WITH_ZONE_CLASS))),
         "to_fs" | "to_formatted_s" => Some(Type::String),
+        // `DateTime` adds whole seconds; `Time` adds the fraction from `usec`.
+        "seconds_since_midnight" if receiver_name == "DateTime" => Some(Type::Integer),
         "seconds_since_midnight" => Some(Type::Float),
         "all_day" | "all_week" | "all_month" | "all_year" => Some(Type::Untyped),
         _ => None,
     }
 }
+
+const DATE_ZONED_METHODS: &[&str] = &[
+    "beginning_of_day",
+    "midnight",
+    "at_midnight",
+    "at_beginning_of_day",
+    "middle_of_day",
+    "midday",
+    "noon",
+    "at_midday",
+    "at_noon",
+    "at_middle_of_day",
+    "end_of_day",
+    "at_end_of_day",
+    "ago",
+    "since",
+    "in",
+];
+
+const TIME_ONLY_METHODS: &[&str] = &[
+    "beginning_of_hour",
+    "end_of_hour",
+    "beginning_of_minute",
+    "end_of_minute",
+    "seconds_since_midnight",
+];
 
 /// The receiver a method missing on `class_name` is forwarded to.
 pub fn method_missing_target(class_name: &str, method_name: &str) -> Option<Type> {

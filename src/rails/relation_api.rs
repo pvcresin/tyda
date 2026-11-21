@@ -296,7 +296,7 @@ pub fn lookup(method_name: &str, receiver: Receiver) -> Option<RelationMethod> {
             | "build"
             | "create"
             | "create!" => model(R::Model),
-            "sole" | "find_sole_by" => model(R::Model).since(6, 1),
+            "sole" | "find_sole_by" => model(R::Model).since(7, 0),
             "create_or_find_by" | "create_or_find_by!" => model(R::Model).since(6, 0),
             "any?" | "many?" | "none?" | "one?" => model(R::Bool).block(B::Records),
             "exists?" | "include?" | "member?" => model(R::Bool),

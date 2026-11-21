@@ -323,24 +323,26 @@ impl<'a> InferenceEngine<'a> {
             false,
             loc,
         );
-        self.add_method_with_param_if_missing(
-            class_name,
-            "authenticate",
-            "unencrypted_password",
-            Type::String,
-            Type::Union(vec![Type::SelfType, Type::Bool]),
-            false,
-            loc,
-        );
-        self.add_method_with_param_if_missing(
-            class_name,
-            &format!("authenticate_{password_name}"),
-            "unencrypted_password",
-            Type::String,
-            Type::Union(vec![Type::SelfType, Type::Bool]),
-            false,
-            loc,
-        );
+        // `authenticate` is an alias only for the default `password` attribute.
+        let authenticators = if password_name == "password" {
+            vec![
+                "authenticate".to_string(),
+                "authenticate_password".to_string(),
+            ]
+        } else {
+            vec![format!("authenticate_{password_name}")]
+        };
+        for name in &authenticators {
+            self.add_method_with_param_if_missing(
+                class_name,
+                name,
+                "unencrypted_password",
+                Type::String,
+                Type::Union(vec![Type::SelfType, Type::False]),
+                false,
+                loc,
+            );
+        }
         if self.rails_at_least(7, 1) {
             self.add_method_with_param_if_missing(
                 class_name,
