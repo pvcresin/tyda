@@ -54,15 +54,34 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
     ) {
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
-        let Some(name) = self.first_symbol_or_string_arg(call_node) else {
+        // `optional <type>, :name, <tag>`: the type can be a Symbol too, so read the second argument.
+        let Some(name) = call_node
+            .arguments()
+            .and_then(|args| args.arguments().iter().nth(1))
+            .and_then(|arg| arg.as_symbol_node())
+            .map(|symbol| String::from_utf8_lossy(symbol.unescaped()).to_string())
+        else {
             return;
         };
-        let base = Type::Untyped;
-        let ty = if method_name == "repeated" {
-            Type::Array(Some(Box::new(base)))
+        let (reader, bang) = if method_name == "repeated" {
+            let field_array = Type::Class(Sym::new("Protobuf::Field::FieldArray"));
+            (
+                field_array.clone(),
+                Type::Union(vec![field_array, Type::Nil]),
+            )
         } else {
-            base
+            (Type::Untyped, Type::Untyped)
         };
-        self.add_accessor_methods(class_name, &name, ty, false, loc);
+        self.add_simple_method_if_missing(class_name, &name, reader, false, loc);
+        self.add_method_with_param_if_missing(
+            class_name,
+            &format!("{name}="),
+            &name,
+            Type::Untyped,
+            Type::Untyped,
+            false,
+            loc,
+        );
+        self.add_simple_method_if_missing(class_name, &format!("{name}!"), bang, false, loc);
     }
 }

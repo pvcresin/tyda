@@ -110,7 +110,7 @@ impl Plugin for ActionController {
     }
 }
 
-fn is_controller_context(engine: &PluginCx<'_, '_>, class_name: &str) -> bool {
+pub(super) fn is_controller_context(engine: &PluginCx<'_, '_>, class_name: &str) -> bool {
     engine.is_action_controller_class(class_name)
         || (class_name.ends_with("Helper") && engine.rails_feature_enabled())
         || engine.class_or_ancestors_include_module(class_name, "ActionController::Helpers")
@@ -121,8 +121,9 @@ const MAILER_BASES: &[&str] = &["ActionMailer::Base", "ApplicationMailer"];
 fn response_method_return(method_name: &str) -> Option<Type> {
     match method_name {
         "status" => Some(Type::Integer),
-        "body" | "code" | "message" | "status_message" => Some(Type::String),
-        "media_type" | "content_type" | "charset" => Some(Type::String.union_with(Type::Nil)),
+        // `charset` falls back to the default charset.
+        "body" | "code" | "message" | "status_message" | "charset" => Some(Type::String),
+        "media_type" | "content_type" => Some(Type::String.union_with(Type::Nil)),
         "headers" | "cookies" | "set_header" | "get_header" | "location" => Some(Type::Untyped),
         "successful?" | "redirection?" | "committed?" | "sending?" | "sent?" => Some(Type::Bool),
         _ => None,
@@ -208,7 +209,9 @@ pub(in crate::inference) fn synthetic_method_return(
                 return Some(Type::Untyped);
             }
             "render_to_string" => return Some(Type::String),
-            "t" | "translate" | "l" | "localize" => return Some(Type::String),
+            // `t` can return a Hash or an Array for a scope key.
+            "t" | "translate" => return Some(Type::Untyped),
+            "l" | "localize" => return Some(Type::String),
             "locale" => return Some(Type::Symbol),
             name if (name.ends_with("_path") || name.ends_with("_url")) && name.len() > 5 => {
                 return Some(Type::String);
@@ -220,7 +223,8 @@ pub(in crate::inference) fn synthetic_method_return(
         "request" => Type::Class(Sym::new("ActionDispatch::Request")),
         "response" => Type::Class(Sym::new("ActionDispatch::Response")),
         "flash" => Type::Class(Sym::new("ActionDispatch::Flash::FlashHash")),
-        "t" | "translate" | "l" | "localize" => Type::String,
+        "t" | "translate" => Type::Untyped,
+        "l" | "localize" => Type::String,
         "locale" => Type::Symbol,
         "render_to_string" => Type::String,
         "render" => Type::Untyped,
@@ -229,28 +233,20 @@ pub(in crate::inference) fn synthetic_method_return(
         "url_for" => Type::String,
         "performed?" => Type::Bool,
         "stale?" => Type::Bool,
-        // Authorization predicates (CanCan / policy frameworks mix these in).
-        "can?" | "cannot?" => Type::Bool,
         "tag" => Type::Class(Sym::new(TAG_BUILDER)),
-        "content_tag"
-        | "link_to"
-        | "button_to"
-        | "image_tag"
-        | "sanitize"
-        | "safe_join"
-        | "asset_path"
-        | "asset_url"
-        | "image_path"
+        "content_tag" | "link_to" | "button_to" | "image_tag" | "safe_join" | "asset_path"
+        | "asset_url" | "image_path" | "time_ago_in_words" | "pluralize" | "simple_format"
+        | "dom_id" | "dom_class" => Type::String,
+        // These return nil for nil input.
+        "truncate"
         | "number_to_human"
         | "number_to_human_size"
         | "number_with_delimiter"
-        | "time_ago_in_words"
-        | "pluralize"
-        | "simple_format"
-        | "dom_id"
-        | "dom_class" => Type::String,
-        // `truncate(nil)` returns nil.
-        "truncate" => Type::String.union_with(Type::Nil),
+        | "number_to_currency"
+        | "number_to_percentage"
+        | "number_with_precision"
+        | "number_to_phone" => Type::String.union_with(Type::Nil),
+        "sanitize" => Type::Class(Sym::new("ActiveSupport::SafeBuffer")).union_with(Type::Nil),
         "session"
         | "cookies"
         | "headers"

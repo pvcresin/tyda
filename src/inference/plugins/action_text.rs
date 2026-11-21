@@ -15,7 +15,7 @@ static MANIFEST: PluginManifest = PluginManifest {
     rails_default: true,
 };
 
-const RICH_TEXT_METHODS: &[&str] = &["has_rich_text", "has_many_rich_texts"];
+const RICH_TEXT_METHODS: &[&str] = &["has_rich_text"];
 
 impl Plugin for ActionText {
     fn manifest(&self) -> &'static PluginManifest {
@@ -45,30 +45,46 @@ impl Plugin for ActionText {
 
 use super::super::*;
 
-const ACTION_TEXT_RICH_TEXT_CLASS: &str = "ActionText::RichText";
-
 impl<'a> InferenceEngine<'a> {
     pub(in crate::inference) fn collect_action_text_dsl(
         &mut self,
         class_name: &str,
         call_node: &ruby_prism::CallNode<'_>,
-        method_name: &str,
+        _method_name: &str,
         parse_result: &ParseResult<'_>,
     ) {
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
         let Some(name) = self.first_symbol_or_string_arg(call_node) else {
             return;
         };
-        let ty = if method_name == "has_many_rich_texts" {
-            Type::Array(Some(Box::new(Type::Class(Sym::new(
-                ACTION_TEXT_RICH_TEXT_CLASS,
-            )))))
+        // The reader builds the record when it is missing, so it is never nil.
+        let rich_text_class = if self.hash_option_bool(call_node, "encrypted", parse_result) {
+            "ActionText::EncryptedRichText"
         } else {
-            Type::Union(vec![
-                Type::Class(Sym::new(ACTION_TEXT_RICH_TEXT_CLASS)),
-                Type::Nil,
-            ])
+            "ActionText::RichText"
         };
-        self.add_accessor_methods(class_name, &name, ty, false, loc);
+        self.add_simple_method_if_missing(
+            class_name,
+            &name,
+            Type::Class(Sym::new(rich_text_class)),
+            false,
+            loc,
+        );
+        self.add_simple_method_if_missing(class_name, &format!("{name}?"), Type::Bool, false, loc);
+        let body = Type::Union(vec![
+            Type::Class(Sym::new("ActionText::Content")),
+            Type::Class(Sym::new("ActionText::RichText")),
+            Type::String,
+            Type::Nil,
+        ]);
+        self.add_method_with_param_if_missing(
+            class_name,
+            &format!("{name}="),
+            &name,
+            body.clone(),
+            body,
+            false,
+            loc,
+        );
     }
 }

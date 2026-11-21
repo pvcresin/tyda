@@ -105,6 +105,7 @@ pub enum DslLibrary {
     ActiveSupportCurrentAttributes,
     ActiveSupportEnvironmentInquirer,
     ActiveSupportTimeExt,
+    Cancancan,
     Config,
     Devise,
     Discard,
@@ -240,6 +241,7 @@ impl DslLibrary {
             Self::ActiveSupportCurrentAttributes => "active_support_current_attributes",
             Self::ActiveSupportEnvironmentInquirer => "active_support_environment_inquirer",
             Self::ActiveSupportTimeExt => "active_support_time_ext",
+            Self::Cancancan => "cancancan",
             Self::Config => "config",
             Self::Devise => "devise",
             Self::Discard => "discard",
@@ -305,6 +307,7 @@ impl DslLibrary {
             Self::ActiveSupportCurrentAttributes,
             Self::ActiveSupportEnvironmentInquirer,
             Self::ActiveSupportTimeExt,
+            Self::Cancancan,
             Self::Config,
             Self::Devise,
             Self::Discard,
@@ -391,6 +394,7 @@ impl DslLibrary {
         } else {
             match self {
                 Self::Aasm
+                | Self::Cancancan
                 | Self::Config
                 | Self::Devise
                 | Self::Discard
@@ -960,7 +964,6 @@ const DSL_MARKERS: &[&str] = &[
     "has_attached_file",
     "has_many ",
     "has_many_attached",
-    "has_many_rich_texts",
     "has_one ",
     "has_one_attached",
     "has_rich_text",
@@ -968,6 +971,7 @@ const DSL_MARKERS: &[&str] = &[
     "has_secure_token",
     "helper_method",
     "include AASM",
+    "include CanCan::Ability",
     "include Discard::Model",
     "include Shrine::Attachment",
     "include Sidekiq::Job",
@@ -975,6 +979,7 @@ const DSL_MARKERS: &[&str] = &[
     "include SmartProperties",
     "included do",
     "kredis_",
+    "load_and_authorize_resource",
     "optional :",
     "plugin :shrine",
     "property :",
@@ -1125,7 +1130,7 @@ fn detect_dsl_libraries_from_source_text(source: &str, detected: &mut BTreeSet<D
     if contains_any(&["has_one_attached", "has_many_attached"]) {
         detected.insert(DslLibrary::ActiveStorage);
     }
-    if contains_any(&["has_rich_text", "has_many_rich_texts"]) {
+    if hits.contains("has_rich_text", haystack) {
         detected.insert(DslLibrary::ActionText);
     }
     if contains_any(&[
@@ -1175,6 +1180,9 @@ fn detect_dsl_libraries_from_source_text(source: &str, detected: &mut BTreeSet<D
     }
     if contains_any(&["cache_index", "cache_has_many", "cache_belongs_to"]) {
         detected.insert(DslLibrary::IdentityCache);
+    }
+    if contains_any(&["include CanCan::Ability", "load_and_authorize_resource"]) {
+        detected.insert(DslLibrary::Cancancan);
     }
     if hits.contains("kredis_", haystack) {
         detected.insert(DslLibrary::Kredis);

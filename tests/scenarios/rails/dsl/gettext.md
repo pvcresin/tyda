@@ -26,10 +26,6 @@ end
 
 ## Nn_ returns the marked keys
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -48,10 +44,6 @@ end
 
 ## np is not a translation helper
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -69,10 +61,6 @@ end
 ```
 
 ## Resolve nsgettext and npgettext to String
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -94,10 +82,6 @@ end
 ```
 
 ## N_ returns its argument
-
-```yaml
-known_issue: true
-```
 
 ### update
 

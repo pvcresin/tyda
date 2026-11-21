@@ -246,7 +246,6 @@ fn core_ext_return(receiver_type: &Type, method_name: &str) -> Option<Type> {
             "ordinalize" => Some(Type::String),
             _ => None,
         },
-        Type::Float | Type::LiteralFloat(_) if method_name == "ordinalize" => Some(Type::String),
         Type::String | Type::LiteralString(_) => match method_name {
             "constantize" | "safe_constantize" => Some(Type::Untyped),
             "truncate" => Some(Type::String),
@@ -692,7 +691,7 @@ impl<'a> InferenceEngine<'a> {
             self.add_simple_method_if_missing(
                 class_name,
                 "attributes",
-                Type::Hash(Some(Box::new(Type::String)), Some(Box::new(Type::Untyped))),
+                Type::Hash(Some(Box::new(Type::Symbol)), Some(Box::new(Type::Untyped))),
                 true,
                 loc,
             );

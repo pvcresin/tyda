@@ -1,8 +1,5 @@
 use super::*;
-use crate::rails::classify;
 use crate::types::MethodOrigin;
-
-const COLLECTION_PROXY: &str = "ActiveRecord::Associations::CollectionProxy";
 
 impl TypeRegistry {
     pub fn push_includer_bound_dsl(&mut self, class_name: &str, dsl: IncluderBoundDsl) {
@@ -120,22 +117,6 @@ impl TypeRegistry {
                     self.register_devise_controller_helpers(includer, *loc);
                 }
             }
-            IncluderBoundDsl::AmsBelongsTo { name, loc } => {
-                if self.inherits_any(includer, &["ActiveModel::Serializer"]) {
-                    let target = classify(name);
-                    self.add_simple_reader(includer, name, Type::Class(Sym::new(target)), *loc);
-                }
-            }
-            IncluderBoundDsl::AmsHasMany { name, loc } => {
-                if self.inherits_any(includer, &["ActiveModel::Serializer"]) {
-                    let target = classify(name);
-                    let ty = Type::Generic {
-                        base: Sym::new(COLLECTION_PROXY),
-                        args: vec![Type::Class(Sym::new(target))].into(),
-                    };
-                    self.add_simple_reader(includer, name, ty, *loc);
-                }
-            }
             IncluderBoundDsl::AmsModelAttributes { names, loc } => {
                 if self.inherits_any(includer, &["ActiveModelSerializers::Model"]) {
                     for name in names {
@@ -243,7 +224,8 @@ impl TypeRegistry {
         loc: SourceLocation,
     ) {
         let resource_name = underscore_tail(resource_class);
-        let resource_type = Type::Class(Sym::new(resource_class));
+        // `current_<scope>` is nil until the scope signs in.
+        let resource_type = Type::Union(vec![Type::Class(Sym::new(resource_class)), Type::Nil]);
         self.add_simple_reader(
             "ActionController::Base",
             &format!("current_{resource_name}"),

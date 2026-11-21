@@ -157,7 +157,7 @@ class A::B < ActiveModelSerializers::Model
 end
 ```
 
-## Resolve ActiveModel::Serializer object and association DSL
+## Resolve ActiveModel::Serializer object; associations define no readers
 
 ### update
 
@@ -194,11 +194,9 @@ end
 
 ```rbs
 class ASerializer < ActiveModel::Serializer
-  def item: -> Item
-  def items: -> ActiveRecord::Associations::CollectionProxy[Item]
   def label: -> ("x" | "y")
   def item_name: -> untyped
-  def first_item_name: -> "x"?
+  def first_item_name: -> untyped
 end
 ```
 
@@ -235,66 +233,6 @@ class Presenter < ActiveModelSerializers::Model
   def label: -> String
   def label=: (String label) -> "default"
   def initialize: (untyped account) -> void
-end
-```
-
-## Serializer associations in a concern included block resolve on the includer
-
-### update
-
-```ruby
-class Item
-  def x = "x"
-end
-
-module ItemAssociations
-  extend ActiveSupport::Concern
-
-  included do
-    belongs_to :item
-    has_many :items
-  end
-end
-
-class ASerializer < ActiveModel::Serializer
-  include ItemAssociations
-end
-
-def item_name = ASerializer.new.item.x
-def first_item_name = ASerializer.new.items.first.x
-```
-
-### result
-
-```rbs
-class ASerializer < ActiveModel::Serializer
-  include ItemAssociations
-
-  def item: -> Item
-  def items: -> ActiveRecord::Associations::CollectionProxy[Item]
-end
-
-class Item
-  def x: -> "x"
-end
-
-module ItemAssociations
-  extend ActiveSupport::Concern
-
-  def item: -> Item
-  def item=: (Item item) -> Item
-  def build_item: (?Hash[String | Symbol, untyped] attributes) -> Item
-  def create_item: (?Hash[String | Symbol, untyped] attributes) -> Item
-  def create_item!: (?Hash[String | Symbol, untyped] attributes) -> Item
-  def items: -> ActiveRecord::Associations::CollectionProxy[Item]
-  def item_ids: -> Array[Integer]
-  def item_ids=: (Array[Integer] item_ids) -> Array[Integer]
-  def items=: (Array[Item] items) -> ActiveRecord::Associations::CollectionProxy[Item]
-end
-
-class Object < BasicObject
-  def item_name: -> "x"
-  def first_item_name: -> "x"
 end
 ```
 
@@ -335,5 +273,34 @@ class Row < ActiveModelSerializers::Model
   include Presentable
 
   def label: -> untyped
+end
+```
+
+## Serializer associations do not define readers
+
+```yaml
+rails_version: "8.1"
+```
+
+### update
+
+```ruby
+class ActiveModel::Serializer
+end
+
+class PostSerializer < ActiveModel::Serializer
+  belongs_to :author
+  has_one :cover
+  has_many :comments
+
+  def kind = :post
+end
+```
+
+### result
+
+```rbs
+class PostSerializer < ActiveModel::Serializer
+  def kind: -> :post
 end
 ```

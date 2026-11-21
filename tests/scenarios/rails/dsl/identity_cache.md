@@ -2,10 +2,6 @@
 
 ## cache_index joins fields and returns an array when not unique
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -31,10 +27,6 @@ end
 
 ## Unique cache_index returns a nilable model and adds a bang finder
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -55,15 +47,11 @@ class User < ActiveRecord::Base
 
   def self.fetch_by_email: (untyped email) -> User?
   def self.fetch_by_email!: (untyped email) -> User
-  def self.fetch_multi_by_email: (Array[untyped] email) -> Array[User]
+  def self.fetch_multi_by_email: (Array[untyped] index_values) -> Array[User]
 end
 ```
 
 ## cache_has_many defines an instance fetch method
-
-```yaml
-known_issue: true
-```
 
 ### update
 
@@ -91,5 +79,37 @@ class User < ActiveRecord::Base
   def order_ids=: (Array[Integer] order_ids) -> Array[Integer]
   def orders=: (Array[Order] orders) -> ActiveRecord::Associations::CollectionProxy[Order]
   def fetch_orders: -> Array[Order]
+end
+```
+
+## cache_belongs_to defines a nilable instance fetch method
+
+### update
+
+```ruby
+class ActiveRecord::Base; end
+
+class Author < ActiveRecord::Base; end
+
+class Post < ActiveRecord::Base
+  include IdentityCache
+
+  belongs_to :author
+  cache_belongs_to :author
+end
+```
+
+### result
+
+```rbs
+class Post < ActiveRecord::Base
+  include IdentityCache
+
+  def author: -> Author
+  def author=: (Author author) -> Author
+  def build_author: (?Hash[String | Symbol, untyped] attributes) -> Author
+  def create_author: (?Hash[String | Symbol, untyped] attributes) -> Author
+  def create_author!: (?Hash[String | Symbol, untyped] attributes) -> Author
+  def fetch_author: -> Author?
 end
 ```

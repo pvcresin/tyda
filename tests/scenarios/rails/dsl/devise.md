@@ -29,7 +29,7 @@ end
 
 ```rbs
 class ActionController::Base
-  def current_user: -> User
+  def current_user: -> User?
   def user_signed_in?: -> bool
   def authenticate_user!: -> void
   def user_session: -> untyped
@@ -40,7 +40,7 @@ class ActiveRecord::Base
 end
 
 class UsersController < ApplicationController
-  def show: -> User
+  def show: -> User?
   def require_login: -> void
 end
 ```
@@ -80,7 +80,7 @@ end
 
 ```rbs
 class ActionController::Base
-  def current_user: -> User
+  def current_user: -> User?
   def user_signed_in?: -> bool
   def authenticate_user!: -> void
   def user_session: -> untyped
@@ -99,15 +99,11 @@ class User < ActiveRecord::Base
 end
 
 class UsersController < ApplicationController
-  def show: -> User
+  def show: -> User?
 end
 ```
 
 ## Current user helper is nilable before sign in
-
-```yaml
-known_issue: true
-```
 
 ### update
 

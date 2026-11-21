@@ -22,11 +22,11 @@ end
 
 ```rbs
 class ActionController::Base
-  def current_user: -> User
+  def current_user: -> User?
   def user_signed_in?: -> bool
   def authenticate_user!: -> void
   def user_session: -> untyped
-  def current_password_user: -> PasswordUser
+  def current_password_user: -> PasswordUser?
   def password_user_signed_in?: -> bool
   def authenticate_password_user!: -> void
   def password_user_session: -> untyped
