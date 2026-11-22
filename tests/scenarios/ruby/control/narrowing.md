@@ -1433,7 +1433,7 @@ end
 ### result
 
 ```rbs
-class StructNarrow::Mapping < Struct
+class StructNarrow::Mapping < Struct[untyped]
   def tag: -> untyped
   def tag=: (untyped tag) -> untyped
   def initialize: (tag: untyped) -> void
@@ -1445,7 +1445,7 @@ class StructNarrow::Parser
   def run: -> StructNarrow::Mapping?
 end
 
-class StructNarrow::Scalar < Struct
+class StructNarrow::Scalar < Struct[untyped]
   def value: -> untyped
   def value=: (untyped value) -> untyped
   def initialize: (value: untyped) -> void
@@ -1481,7 +1481,59 @@ class Config
 end
 
 class Config::Parser
-  def initialize: ((Array | Array[String]) argv) -> void
-  def options: -> { argv: Array }
+  def initialize: ((Array[untyped] | Array[String]) argv) -> void
+  def options: -> { argv: Array[untyped] }
+end
+```
+
+## Array and Hash narrowed by is_a? or when get type arguments
+
+### update
+
+```ruby
+class G
+  def a(v) = v.is_a?(Hash) ? v : nil
+  def c(v)
+    case v
+    when Array then v
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class G
+  def a: (untyped v) -> Hash[untyped, untyped]?
+  def c: (untyped v) -> Array[untyped]?
+end
+```
+
+## An Array narrowed by is_a? stays an argument type
+
+### update
+
+```ruby
+class Picker
+  def pick(v) = v.is_a?(Array) ? v : 200
+end
+class Resp
+  def initialize(status = 200)
+    @status = status
+  end
+end
+Resp.new(Picker.new.pick(eval("1")))
+```
+
+### result
+
+```rbs
+class Picker
+  def pick: (untyped v) -> (200 | Array[untyped])
+end
+
+class Resp
+  def initialize: (?(Integer | Array[untyped]) status) -> void
 end
 ```

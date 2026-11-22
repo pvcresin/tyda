@@ -746,8 +746,13 @@ impl<'a> InferenceEngine<'a> {
                         self.record_reference(&module_name);
                     }
                     self.registry.mark_user_defined(&target_class);
-                    self.registry
-                        .add_mixin(&target_class, &module_name, kind.clone());
+                    let arity = self.untyped_type_args_for(&module_name).len();
+                    self.registry.add_mixin_with_untyped_arity(
+                        &target_class,
+                        &module_name,
+                        kind.clone(),
+                        u8::try_from(arity).unwrap_or(u8::MAX),
+                    );
                     collected = true;
                     if kind == MixinKind::Include && module_name == "Singleton" {
                         self.registry.add_method_def(
@@ -2477,6 +2482,9 @@ impl<'a> InferenceEngine<'a> {
         let superclass = if generate_writer { "Struct" } else { "Data" };
         self.ensure_external_class(superclass);
         self.registry.set_superclass(class_name, superclass);
+        let type_args = self.untyped_type_args_for(superclass);
+        self.registry
+            .set_superclass_type_args(class_name, type_args);
         let data_constructor_members = if generate_writer {
             None
         } else {

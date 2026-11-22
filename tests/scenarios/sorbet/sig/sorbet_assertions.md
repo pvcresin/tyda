@@ -151,7 +151,7 @@ end
 
 ```rbs
 class ComplexLet
-  def with_array: -> Array
+  def with_array: -> Array[untyped]
 end
 ```
 

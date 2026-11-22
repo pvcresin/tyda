@@ -502,7 +502,7 @@ class Holder
   def make: -> Holder::Tuple
 end
 
-class Holder::Tuple < Struct
+class Holder::Tuple < Struct[untyped]
   def spec: -> String
   def spec=: (String spec) -> String
   def source: -> Integer

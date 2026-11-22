@@ -1596,6 +1596,10 @@ pub struct Mixin {
     pub type_args: Vec<rbs_ir::RbsType>,
     pub kind: MixinKind,
     pub external_source: bool,
+    /// Type parameters of a generic module that the source names without arguments
+    /// (`include Enumerable`). Inference leaves them open; the RBS output fills them with
+    /// `untyped`, because RBS rejects a generic module without arguments.
+    pub untyped_type_arity: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -13549,6 +13553,28 @@ impl TypeRegistry {
         self.add_mixin_with_source(class_name, module_name, kind, Vec::new(), false)
     }
 
+    /// Adds a source mixin that names a generic module with `untyped_type_arity` type
+    /// parameters and no arguments.
+    pub fn add_mixin_with_untyped_arity(
+        &mut self,
+        class_name: &str,
+        module_name: &str,
+        kind: MixinKind,
+        untyped_type_arity: u8,
+    ) -> bool {
+        let changed = self.add_mixin(class_name, module_name, kind.clone());
+        let module_name = self.intern_name(module_name);
+        if let Some(mixin) = self
+            .class_data_mut(class_name)
+            .mixins
+            .iter_mut()
+            .find(|m| m.module_name == module_name && m.kind == kind && !m.external_source)
+        {
+            mixin.untyped_type_arity = untyped_type_arity;
+        }
+        changed
+    }
+
     pub fn add_external_mixin(
         &mut self,
         class_name: &str,
@@ -13600,6 +13626,7 @@ impl TypeRegistry {
                     type_args,
                     kind,
                     external_source,
+                    untyped_type_arity: 0,
                 });
                 self.invalidate_reverse_indexes();
                 self.mixin_hook_mixins_applied = false;
@@ -13612,6 +13639,7 @@ impl TypeRegistry {
                 type_args,
                 kind,
                 external_source,
+                untyped_type_arity: 0,
             });
             self.invalidate_reverse_indexes();
             self.mixin_hook_mixins_applied = false;
@@ -13642,6 +13670,7 @@ impl TypeRegistry {
             type_args: Vec::new(),
             kind,
             external_source: false,
+            untyped_type_arity: 0,
         });
         self.has_mixin_hook_mixins = true;
         self.invalidate_reverse_indexes();

@@ -11,7 +11,7 @@ Point = Struct.new(:x, :y)
 ### result
 
 ```rbs
-class Point < Struct
+class Point < Struct[untyped]
   def x: -> untyped
   def x=: (untyped x) -> untyped
   def y: -> untyped
@@ -34,7 +34,7 @@ end
 ### result
 
 ```rbs
-class Line < Struct
+class Line < Struct[untyped]
   def start_point: -> untyped
   def start_point=: (untyped start_point) -> untyped
   def end_point: -> untyped
@@ -56,7 +56,7 @@ Config = Struct.new(:host, :port, keyword_init: true)
 ### result
 
 ```rbs
-class Config < Struct
+class Config < Struct[untyped]
   def host: -> untyped
   def host=: (untyped host) -> untyped
   def port: -> untyped
@@ -85,7 +85,7 @@ class Object < BasicObject
   def option_value: -> Integer
 end
 
-class Option < Struct
+class Option < Struct[untyped]
   def name: -> String
   def name=: (String name) -> String
   def value: -> Integer
@@ -113,7 +113,7 @@ def entry_count = Entry.new(name: "a", count: 1).count
 ```rbs
 MEMBERS: [:name, :count]
 
-class Entry < Struct
+class Entry < Struct[untyped]
   def name: -> String
   def name=: (String name) -> String
   def count: -> Integer
@@ -150,7 +150,7 @@ def read_reset = Item.new("b", 2).reset_value
 ### result
 
 ```rbs
-class Item < Struct
+class Item < Struct[untyped]
   def name: -> String
   def name=: (String name) -> String
   def count: -> Integer
@@ -179,7 +179,7 @@ Wrapper = Struct.new(:value)
 ### result
 
 ```rbs
-class Wrapper < Struct
+class Wrapper < Struct[untyped]
   def value: -> untyped
   def value=: (untyped value) -> untyped
   def initialize: (untyped value) -> void
@@ -208,7 +208,7 @@ class Object < BasicObject
   def pair_value: -> Integer
 end
 
-class Store::Pair < Struct
+class Store::Pair < Struct[untyped]
   def key: -> Symbol
   def key=: (Symbol key) -> Symbol
   def value: -> Integer
@@ -236,7 +236,7 @@ class Object < BasicObject
   def foo: -> Integer
 end
 
-class Point < Struct
+class Point < Struct[untyped]
   def x: -> Integer
   def x=: (Integer x) -> Integer
   def y: -> String
@@ -265,12 +265,33 @@ class Builder
   def build: -> Pair
 end
 
-class Pair < Struct
+class Pair < Struct[untyped]
   def left: -> Integer
   def left=: (Integer left) -> Integer
   def right: -> Integer
   def right=: (Integer right) -> Integer
   def initialize: (Integer left, Integer right) -> void
   def self.members: -> Array[:left | :right]
+end
+```
+
+## Struct member names ending with a question mark
+
+### update
+
+```ruby
+Pair = Struct.new(:quoted?, :name)
+```
+
+### result
+
+```rbs
+class Pair < Struct[untyped]
+  def quoted?: -> untyped
+  def `quoted?=`: (untyped) -> untyped
+  def name: -> untyped
+  def name=: (untyped name) -> untyped
+  def initialize: (untyped, untyped name) -> void
+  def self.members: -> Array[:name | :quoted?]
 end
 ```

@@ -969,11 +969,11 @@ end
 class User < ApplicationRecord
   include SerializedAttributes
 
-  def tags: -> Array
-  def tags=: (Array tags) -> Array
+  def tags: -> Array[untyped]
+  def tags=: (Array[untyped] tags) -> Array[untyped]
   def position: -> Position
   def position=: (Position position) -> Position
-  def self.read_tags: -> Array
+  def self.read_tags: -> Array[untyped]
   def self.read_position: -> Position
 end
 ```
@@ -1053,7 +1053,7 @@ class RbsSerializedAttributeRecord < ApplicationRecord
 end
 
 class SourceSerializedAttribute < ApplicationRecord
-  def payload=: (Array payload) -> Array
+  def payload=: (Array[untyped] payload) -> Array[untyped]
   def payload: -> :source_payload
 end
 ```

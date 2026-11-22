@@ -18,6 +18,15 @@ pub(crate) fn escape_rbs_string_literal(value: &str) -> std::string::String {
             '\n' => escaped.push_str("\\n"),
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
+            '\u{07}' => escaped.push_str("\\a"),
+            '\u{08}' => escaped.push_str("\\b"),
+            '\u{0b}' => escaped.push_str("\\v"),
+            '\u{0c}' => escaped.push_str("\\f"),
+            '\u{1b}' => escaped.push_str("\\e"),
+            // RBS reads `\xHH` but not `\uHHHH`, and rejects raw control characters.
+            ch if ch.is_ascii_control() => {
+                escaped.push_str(&format!("\\x{:02X}", u32::from(ch)));
+            }
             _ => escaped.push(ch),
         }
     }
@@ -42,6 +51,53 @@ impl fmt::Display for RecordKey {
 
 /// Whether RBS accepts the symbol as a bare `name:` record key. Other ASCII symbols take the
 /// `:"name" =>` form; RBS has no form for non-ASCII symbols, so they stay bare.
+const RBS_OPERATOR_NAMES: &[&str] = &[
+    "+", "-", "*", "/", "%", "**", "==", "===", "!=", "=~", "!~", "<", ">", "<=", ">=", "<=>",
+    "<<", ">>", "!", "~", "+@", "-@", "[]", "[]=", "&", "|", "^", "`",
+];
+
+fn is_rbs_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_alphabetic() || first == '_' || !first.is_ascii())
+        && chars.all(|ch| ch.is_alphanumeric() || ch == '_' || !ch.is_ascii())
+}
+
+/// The method name as RBS can read it: names that are neither an identifier with an optional
+/// `?` / `!` / `=` nor an operator (`define_method("a-b")`) are quoted with backticks.
+pub fn rbs_method_name(name: &str) -> std::borrow::Cow<'_, str> {
+    let body = name.strip_suffix(['?', '!', '=']).unwrap_or(name);
+    if RBS_OPERATOR_NAMES.contains(&name) || is_rbs_identifier(body) || name.contains('`') {
+        std::borrow::Cow::Borrowed(name)
+    } else {
+        std::borrow::Cow::Owned(format!("`{name}`"))
+    }
+}
+
+/// Whether `name` can follow a positional parameter type; RBS has no syntax for `x?`.
+pub fn is_rbs_param_name(name: &str) -> bool {
+    is_rbs_identifier(name)
+}
+
+/// Whether RBS reads `:name` as this symbol; any other symbol needs the quoted `:"name"` form.
+fn is_plain_rbs_symbol(name: &str) -> bool {
+    if RBS_OPERATOR_NAMES.contains(&name) {
+        return true;
+    }
+    let ident = name
+        .strip_prefix("@@")
+        .or_else(|| name.strip_prefix(['@', '$']))
+        .unwrap_or(name);
+    let is_variable = ident.len() != name.len();
+    let body = if is_variable {
+        ident
+    } else {
+        ident.strip_suffix(['?', '!', '=']).unwrap_or(ident)
+    };
+    is_rbs_identifier(body)
+}
+
 fn is_plain_record_key(name: &str) -> bool {
     if !name.is_ascii() {
         return true;
@@ -1539,10 +1595,11 @@ impl fmt::Display for Type {
             Type::LiteralString(v) => {
                 write!(f, "\"{}\"", escape_rbs_string_literal(v))
             }
-            Type::LiteralSymbol(v) => write!(f, ":{v}"),
-            Type::Array(None) => write!(f, "Array"),
+            Type::LiteralSymbol(v) if is_plain_rbs_symbol(v) => write!(f, ":{v}"),
+            Type::LiteralSymbol(v) => write!(f, ":\"{}\"", escape_rbs_string_literal(v)),
+            Type::Array(None) => write!(f, "Array[untyped]"),
             Type::Array(Some(inner)) => write!(f, "Array[{inner}]"),
-            Type::Hash(None, None) => write!(f, "Hash"),
+            Type::Hash(None, None) => write!(f, "Hash[untyped, untyped]"),
             Type::Hash(Some(k), Some(v)) => write!(f, "Hash[{k}, {v}]"),
             Type::Hash(Some(k), None) => write!(f, "Hash[{k}, untyped]"),
             Type::Hash(None, Some(v)) => write!(f, "Hash[untyped, {v}]"),
@@ -1607,6 +1664,9 @@ impl fmt::Display for Type {
                 }
             }
             Type::Class(name) if name.starts_with("MatchData[") => write!(f, "MatchData"),
+            // `Array` / `Hash` instances with unknown elements: RBS rejects the bare names.
+            Type::Class(name) if name.as_ref() == "Array" => write!(f, "Array[untyped]"),
+            Type::Class(name) if name.as_ref() == "Hash" => write!(f, "Hash[untyped, untyped]"),
             Type::Class(name) => write!(f, "{name}"),
             Type::Singleton(name) => write!(f, "singleton({name})"),
             Type::ParamRef(_) => write!(f, "untyped"),

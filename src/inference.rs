@@ -3507,6 +3507,22 @@ impl<'a> InferenceEngine<'a> {
         self.registry.set_generated_artifacts_present(true);
     }
 
+    /// `untyped` for each type parameter of `class_name`: a source reference such as
+    /// `class Pairs < Hash` names no arguments, but RBS rejects a generic class without them.
+    pub(crate) fn untyped_type_args_for(&mut self, class_name: &str) -> Vec<rbs_ir::RbsType> {
+        let class_name = class_name.trim_scope_prefix();
+        self.ensure_stdlib_class(class_name);
+        vec![rbs_ir::RbsType::Untyped; self.registry.get_class_type_params(class_name).len()]
+    }
+
+    fn set_source_superclass(&mut self, class_name: &str, superclass: &str, is_absolute: bool) {
+        self.registry
+            .set_superclass_with_absolute(class_name, superclass, is_absolute);
+        let type_args = self.untyped_type_args_for(superclass);
+        self.registry
+            .set_superclass_type_args(class_name, type_args);
+    }
+
     fn ensure_stdlib_class(&mut self, class_name: &str) {
         if let Some(loader) = self.lazy_loader {
             for stdlib_class in [class_name, "Kernel"] {
@@ -14478,7 +14494,7 @@ impl<'a> InferenceEngine<'a> {
                                 .follow_namespace_alias(&superclass_name, "Object")
                                 .unwrap_or(superclass_name);
                             self.record_reference(&superclass_name);
-                            self.registry.set_superclass_with_absolute(
+                            self.set_source_superclass(
                                 &class_name,
                                 &superclass_name,
                                 superclass_is_absolute,
@@ -15799,7 +15815,7 @@ impl<'a> InferenceEngine<'a> {
                 absolute,
             );
             self.record_reference(&superclass);
-            self.registry.set_superclass(&full_name, &superclass);
+            self.set_source_superclass(&full_name, &superclass, superclass.starts_with("::"));
         } else if superclass_is_unknown {
             self.registry.mark_superclass_unknown(&full_name);
         }
@@ -16116,7 +16132,7 @@ impl<'a> InferenceEngine<'a> {
                                     let superclass_name = self
                                         .follow_namespace_alias(&superclass_name, class_name)
                                         .unwrap_or(superclass_name);
-                                    self.registry.set_superclass_with_absolute(
+                                    self.set_source_superclass(
                                         &full_name,
                                         &superclass_name,
                                         superclass_is_absolute,

@@ -236,7 +236,7 @@ class Rack::Directory
   def filesize_format: (Integer int) -> String
 end
 
-class Rack::Directory::DirectoryBody < Struct
+class Rack::Directory::DirectoryBody < Struct[untyped]
   def root: -> untyped
   def root=: (untyped root) -> untyped
   def path: -> untyped

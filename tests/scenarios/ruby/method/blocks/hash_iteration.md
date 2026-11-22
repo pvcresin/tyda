@@ -231,8 +231,8 @@ end
 ```rbs
 class RecursiveContainerTraversal
   def visit: (untyped value) -> untyped
-  def visit_hash: (Hash hash) -> Hash
-  def visit_array: (Array array) -> Array
+  def visit_hash: (Hash[untyped, untyped] hash) -> Hash[untyped, untyped]
+  def visit_array: (Array[untyped] array) -> Array[untyped]
 end
 ```
 

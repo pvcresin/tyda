@@ -1,100 +1,5 @@
 # Known Issues / RBS Output
 
-## Symbol literal types that need quotes
-
-### update
-
-```ruby
-class S
-  def a = :"&nil"
-  def b = :"foo bar"
-  def c = :"a-b"
-  def d = :"9x"
-  def e = :"Foo::Bar"
-  def f = :"}"
-  def g = :+
-  def h = :x?
-end
-```
-
-### result
-
-```rbs
-class S
-  def a: -> :"&nil"
-  def b: -> :"foo bar"
-  def c: -> :"a-b"
-  def d: -> :"9x"
-  def e: -> :"Foo::Bar"
-  def f: -> :"}"
-  def g: -> :+
-  def h: -> :x?
-end
-```
-
-## String literal types escape control characters
-
-### update
-
-```ruby
-class S
-  ESC = { bell: "\a", esc: "\e[0m", nul: "\0", del: "\x7f", tab: "\t" }
-end
-```
-
-### result
-
-```rbs
-class S
-  ESC: { bell: "\a", esc: "\e[0m", nul: "\x00", del: "\x7F", tab: "\t" }
-end
-```
-
-## Struct member names ending with a question mark
-
-### update
-
-```ruby
-Pair = Struct.new(:quoted?, :name)
-```
-
-### result
-
-```rbs
-class Pair < Struct[untyped]
-  def quoted?: -> untyped
-  def `quoted?=`: (untyped) -> untyped
-  def name: -> untyped
-  def name=: (untyped name) -> untyped
-  def initialize: (untyped, untyped name) -> void
-  def self.members: -> Array[:name | :quoted?]
-end
-```
-
-## Method names that are not identifiers
-
-### update
-
-```ruby
-class Conv
-  define_method("to_x::string") { 1 }
-  define_method("skip-it") { 2 }
-  def inverted = 3
-  alias_method "scan_^", :inverted
-end
-```
-
-### result
-
-```rbs
-class Conv
-  def `to_x::string`: -> 1
-  def `skip-it`: -> 2
-  def inverted: -> 3
-  alias `scan_^` inverted
-end
-```
-
 ## define_method with a computed name in a multi-line call
 
 ### update
@@ -115,127 +20,6 @@ end
 module Worker
   def do_work: (untyped msg) -> untyped
   def process_work: (untyped msg) -> untyped
-end
-```
-
-## void from RBS used as a value
-
-```rbs
-class Lib
-  def run: () -> void
-end
-```
-
-### update
-
-```ruby
-class V
-  def initialize
-    @calls = []
-  end
-  def a = [1].map { Lib.new.run }
-  def b = [Lib.new.run, "s"]
-  def c = yield(1, Lib.new.run)
-  def d(cb = nil) = cb
-  def e = d(-> { Lib.new.run if rand > 0.5 })
-  def from_void = on_call(Lib.new.run)
-  def on_call(node)
-    @calls << node
-    node
-  end
-end
-```
-
-### result
-
-```rbs
-class V
-  def initialize: -> void
-  def a: -> Array[untyped]
-  def b: -> [untyped, "s"]
-  def c: [R] { (Integer, untyped) -> R } -> R
-  def d: (?(^() -> void)? cb) -> (^() -> void)?
-  def e: -> (^() -> void)?
-  def from_void: -> void
-  def on_call: [N] (N node) -> N
-end
-```
-
-## Generic superclass and mixin get type arguments
-
-### update
-
-```ruby
-class Coll
-  include Enumerable
-  def each = yield 1
-end
-class MyHash < Hash
-  def x = 1
-end
-class MyArr < Array
-  def x = 1
-end
-class MyErr < NameError
-  def x = 1
-end
-class Pt < Struct.new(:a)
-  def x = 1
-end
-```
-
-### result
-
-```rbs
-class Coll
-  include Enumerable[untyped]
-
-  def each: [R] { (Integer) -> R } -> R
-end
-
-class MyArr < Array[untyped]
-  def x: -> 1
-end
-
-class MyErr < NameError[untyped]
-  def x: -> 1
-end
-
-class MyHash < Hash[untyped, untyped]
-  def x: -> 1
-end
-
-class Pt < Struct[untyped]
-  def a: -> untyped
-  def a=: (untyped a) -> untyped
-  def initialize: (untyped a) -> void
-  def self.members: -> Array[:a]
-  def x: -> 1
-end
-```
-
-## Generic class narrowed by is_a? or when gets type arguments
-
-### update
-
-```ruby
-class G
-  def a(v) = v.is_a?(Hash) ? v : nil
-  def c(v)
-    case v
-    when Array then v
-    when Range then v
-    end
-  end
-end
-```
-
-### result
-
-```rbs
-class G
-  def a: (untyped v) -> Hash[untyped, untyped]?
-  def c: (untyped v) -> (Array[untyped] | Range[untyped])?
 end
 ```
 
@@ -793,5 +577,29 @@ end
 
 module EventMachine::Protocols
   def self.x: -> 1
+end
+```
+
+## Generic class narrowed by is_a? or when gets type arguments
+
+### update
+
+```ruby
+class G
+  def a(v) = v.is_a?(Set) ? v : nil
+  def c(v)
+    case v
+    when Range then v
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class G
+  def a: (untyped v) -> Set[untyped]?
+  def c: (untyped v) -> Range[untyped]?
 end
 ```

@@ -343,3 +343,53 @@ class Config
   def connection: -> { host: String, "port" => Integer }
 end
 ```
+
+## Symbol literal types that need quotes
+
+### update
+
+```ruby
+class S
+  def a = :"&nil"
+  def b = :"foo bar"
+  def c = :"a-b"
+  def d = :"9x"
+  def e = :"Foo::Bar"
+  def f = :"}"
+  def g = :+
+  def h = :x?
+end
+```
+
+### result
+
+```rbs
+class S
+  def a: -> :"&nil"
+  def b: -> :"foo bar"
+  def c: -> :"a-b"
+  def d: -> :"9x"
+  def e: -> :"Foo::Bar"
+  def f: -> :"}"
+  def g: -> :+
+  def h: -> :x?
+end
+```
+
+## String literal types escape control characters
+
+### update
+
+```ruby
+class S
+  ESC = { bell: "\a", esc: "\e[0m", nul: "\0", del: "\x7f", tab: "\t" }
+end
+```
+
+### result
+
+```rbs
+class S
+  ESC: { bell: "\a", esc: "\e[0m", nul: "\x00", del: "\x7F", tab: "\t" }
+end
+```
