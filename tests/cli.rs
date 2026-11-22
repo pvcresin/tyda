@@ -6112,3 +6112,32 @@ fn known_issue_singleton_calling_same_named_instance_method_does_not_finish() {
         "known issue fixed; drop this check and assert the analysis finishes"
     );
 }
+
+#[test]
+fn known_issue_recursion_passing_its_block_overflows_the_stack() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("w.rb"),
+        concat!(
+            "class W\n",
+            "  def walk(i, &block)\n",
+            "    yield i\n",
+            "    walk(i - 1, &block)\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().join("w.rb").to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Known issue: a method that yields and passes its block to a recursive call of itself
+    // crashes the CLI with a stack overflow (sass `Sass::Util#lcs_backtrace`). The same
+    // method outside a class is analyzed fine. It should render `walk` without crashing.
+    assert!(
+        !output.status.success() && stderr.contains("overflowed its stack"),
+        "known issue fixed; drop this check and assert `def walk` is rendered: {stderr}"
+    );
+}
