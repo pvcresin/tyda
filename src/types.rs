@@ -1540,9 +1540,9 @@ impl fmt::Display for Type {
                 write!(f, "\"{}\"", escape_rbs_string_literal(v))
             }
             Type::LiteralSymbol(v) => write!(f, ":{v}"),
-            Type::Array(None) => write!(f, "Array"),
+            Type::Array(None) => write!(f, "Array[untyped]"),
             Type::Array(Some(inner)) => write!(f, "Array[{inner}]"),
-            Type::Hash(None, None) => write!(f, "Hash"),
+            Type::Hash(None, None) => write!(f, "Hash[untyped, untyped]"),
             Type::Hash(Some(k), Some(v)) => write!(f, "Hash[{k}, {v}]"),
             Type::Hash(Some(k), None) => write!(f, "Hash[{k}, untyped]"),
             Type::Hash(None, Some(v)) => write!(f, "Hash[untyped, {v}]"),
@@ -1607,6 +1607,9 @@ impl fmt::Display for Type {
                 }
             }
             Type::Class(name) if name.starts_with("MatchData[") => write!(f, "MatchData"),
+            // `Array` / `Hash` instances with unknown elements: RBS rejects the bare names.
+            Type::Class(name) if name.as_ref() == "Array" => write!(f, "Array[untyped]"),
+            Type::Class(name) if name.as_ref() == "Hash" => write!(f, "Hash[untyped, untyped]"),
             Type::Class(name) => write!(f, "{name}"),
             Type::Singleton(name) => write!(f, "singleton({name})"),
             Type::ParamRef(_) => write!(f, "untyped"),

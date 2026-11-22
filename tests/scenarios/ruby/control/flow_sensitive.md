@@ -2800,7 +2800,7 @@ module AlwaysEmptyArray
 end
 using AlwaysEmptyArray
 
-class NeverEmptyArray < Array
+class NeverEmptyArray < Array[untyped]
   def empty? = false
 end
 
@@ -2817,7 +2817,7 @@ subclass_method_wins
 ### result
 
 ```rbs
-class NeverEmptyArray < Array
+class NeverEmptyArray < Array[untyped]
   def empty?: -> false
 end
 

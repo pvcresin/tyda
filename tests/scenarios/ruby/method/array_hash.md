@@ -146,7 +146,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def empty_array_new: -> Array
+  def empty_array_new: -> Array[untyped]
   def nil_array_new: -> Array[nil]
   def filled_array_new: -> Array["x"]
   def block_array_new: -> Array[String]
@@ -2405,7 +2405,7 @@ end
 
 ```rbs
 class PluginBlockMap
-  def definitions: -> Hash
+  def definitions: -> Hash[untyped, untyped]
   def find_block: (untyped name) -> untyped
   def partial: (untyped name) -> untyped
 end

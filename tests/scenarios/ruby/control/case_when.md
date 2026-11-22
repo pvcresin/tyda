@@ -463,7 +463,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def unknown_class_case: (untyped value) -> ("other" | Integer)
+  def unknown_class_case: (untyped value) -> (Integer | "other")
 end
 ```
 
@@ -586,7 +586,7 @@ StructParentMatcher.new.match(Person.new("Ada"))
 ### result
 
 ```rbs
-class Person < Struct
+class Person < Struct[untyped]
   def name: -> String
   def name=: (String name) -> String
   def initialize: (String name) -> void

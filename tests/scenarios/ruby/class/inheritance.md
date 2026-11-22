@@ -326,3 +326,56 @@ class B < A
   def foo: (Integer x) -> Integer
 end
 ```
+
+## Generic superclass and mixin get type arguments
+
+### update
+
+```ruby
+class Coll
+  include Enumerable
+  def each = yield 1
+end
+class MyHash < Hash
+  def x = 1
+end
+class MyArr < Array
+  def x = 1
+end
+class MyErr < NameError
+  def x = 1
+end
+class Pt < Struct.new(:a)
+  def x = 1
+end
+```
+
+### result
+
+```rbs
+class Coll
+  include Enumerable[untyped]
+
+  def each: [R] { (Integer) -> R } -> R
+end
+
+class MyArr < Array[untyped]
+  def x: -> 1
+end
+
+class MyErr < NameError[untyped]
+  def x: -> 1
+end
+
+class MyHash < Hash[untyped, untyped]
+  def x: -> 1
+end
+
+class Pt < Struct[untyped]
+  def a: -> untyped
+  def a=: (untyped a) -> untyped
+  def initialize: (untyped a) -> void
+  def self.members: -> Array[:a]
+  def x: -> 1
+end
+```

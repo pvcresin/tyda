@@ -405,6 +405,7 @@ impl TypeRegistry {
                 type_args: mixin.type_args.clone(),
                 kind: mixin.kind.clone(),
                 external_source: mixin.external_source,
+                untyped_type_arity: mixin.untyped_type_arity,
             })
             .collect();
         let shared_included_hook_mixins: Vec<Mixin> = rbs_data
@@ -415,6 +416,7 @@ impl TypeRegistry {
                 type_args: mixin.type_args.clone(),
                 kind: mixin.kind.clone(),
                 external_source: mixin.external_source,
+                untyped_type_arity: mixin.untyped_type_arity,
             })
             .collect();
         let shared_extended_hook_mixins: Vec<Mixin> = rbs_data
@@ -425,6 +427,7 @@ impl TypeRegistry {
                 type_args: mixin.type_args.clone(),
                 kind: mixin.kind.clone(),
                 external_source: mixin.external_source,
+                untyped_type_arity: mixin.untyped_type_arity,
             })
             .collect();
         let shared_prepended_hook_mixins: Vec<Mixin> = rbs_data
@@ -435,6 +438,7 @@ impl TypeRegistry {
                 type_args: mixin.type_args.clone(),
                 kind: mixin.kind.clone(),
                 external_source: mixin.external_source,
+                untyped_type_arity: mixin.untyped_type_arity,
             })
             .collect();
         if !shared_included_hook_mixins.is_empty()

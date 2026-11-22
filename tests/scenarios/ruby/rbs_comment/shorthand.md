@@ -280,7 +280,7 @@ def convert(list) = {}
 
 ```rbs
 class Object < BasicObject
-  def convert: (Array list) -> Hash
+  def convert: (Array[untyped] list) -> Hash[untyped, untyped]
 end
 ```
 

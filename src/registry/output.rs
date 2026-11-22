@@ -380,7 +380,13 @@ impl TypeRegistry {
                     MixinKind::Extend => "extend",
                     MixinKind::Prepend => "prepend",
                 };
-                (kind_str.to_string(), m.module_name.to_string())
+                let module_name = if m.type_args.is_empty() && m.untyped_type_arity > 0 {
+                    let args = vec!["untyped"; usize::from(m.untyped_type_arity)];
+                    format!("{}[{}]", m.module_name, args.join(", "))
+                } else {
+                    self.name_with_type_args(name, m.module_name.as_ref(), &m.type_args)
+                };
+                (kind_str.to_string(), module_name)
             })
             .collect();
 
@@ -408,7 +414,9 @@ impl TypeRegistry {
             constants,
             sorbet_modifier_comments: data.cold().sorbet_modifier_comments.clone(),
             embedded_rbs: data.cold().embedded_rbs.clone(),
-            superclass: data.superclass.as_ref().map(ToString::to_string),
+            superclass: data.superclass.as_ref().map(|superclass| {
+                self.name_with_type_args(name, superclass, &data.cold().superclass_type_args)
+            }),
             mixins,
             is_module: data.is_module,
             loc: data.loc,
@@ -494,6 +502,20 @@ impl TypeRegistry {
 
     /// `[unchecked out T < Bound = Default]` entries for the class header. RBS rejects a class
     /// redeclared with different type parameters, so these follow the declaration exactly.
+    fn name_with_type_args(&self, owner: &str, name: &str, args: &[rbs_ir::RbsType]) -> String {
+        if args.is_empty() {
+            return name.to_string();
+        }
+        let args: Vec<String> = args
+            .iter()
+            .map(|arg| {
+                crate::rbs::import::convert_imported_rbs_type(arg, self.type_aliases(), Some(owner))
+                    .to_string()
+            })
+            .collect();
+        format!("{name}[{}]", args.join(", "))
+    }
+
     fn class_type_param_decls(&self, class_name: &str, data: &ClassData) -> Vec<String> {
         let cold = data.cold();
         cold.class_type_params

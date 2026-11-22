@@ -180,6 +180,7 @@ fn hash_mixin(mixin: &Mixin) -> u64 {
         hash_rbs_type(arg).hash(&mut hasher);
     }
     std::mem::discriminant(&mixin.kind).hash(&mut hasher);
+    mixin.untyped_type_arity.hash(&mut hasher);
     hasher.finish()
 }
 

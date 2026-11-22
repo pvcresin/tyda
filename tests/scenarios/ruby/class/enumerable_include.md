@@ -6,7 +6,7 @@
 
 ```ruby
 class Bag
-  include Enumerable
+  include Enumerable[untyped]
 
   def initialize = @items = [1, 2, 3]
   def each(&block) = @items.each(&block)
@@ -27,7 +27,7 @@ end
 
 ```rbs
 class Bag
-  include Enumerable
+  include Enumerable[untyped]
 
   def initialize: -> void
   def each: () ?{ (?) -> untyped } -> untyped
@@ -50,7 +50,7 @@ end
 
 ```ruby
 class NumberBag
-  include Enumerable
+  include Enumerable[untyped]
 
   def each
     yield 1
@@ -78,7 +78,7 @@ class Client
 end
 
 class NumberBag
-  include Enumerable
+  include Enumerable[untyped]
 
   def each: [R] { (Integer) -> R } -> R
 end
@@ -88,7 +88,7 @@ end
 
 ```ruby
 class Items
-  include Enumerable
+  include Enumerable[untyped]
 
   def initialize = @items = [1, 2, 3]
   def each(&block) = @items.each(&block)
@@ -103,7 +103,7 @@ end
 
 ```rbs
 class Items
-  include Enumerable
+  include Enumerable[untyped]
 
   def initialize: -> void
   def each: () ?{ (?) -> untyped } -> untyped
@@ -118,7 +118,7 @@ end
 
 ```ruby
 class Pair
-  include Enumerable
+  include Enumerable[untyped]
 
   def each
     yield 1
@@ -138,7 +138,7 @@ end
 
 ```rbs
 class Pair
-  include Enumerable
+  include Enumerable[untyped]
 
   def each: [R] { (Integer) -> R } -> R
 end
