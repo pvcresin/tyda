@@ -1646,8 +1646,10 @@ unsafe fn get_constant_pool(parser: *mut ffi::rbs_parser_t) -> *const ffi::rbs_c
 
 /// `pEOF` in `enum RBSTokenType` (lexer.h). bindgen does not emit the enum on wasm.
 const RBS_TOKEN_EOF: c_int = 1;
+// The enum is `u32` on Unix and `i32` on Windows.
 #[cfg(not(target_arch = "wasm32"))]
-const _: () = assert!(RBS_TOKEN_EOF as u32 == ffi::RBSTokenType_pEOF);
+#[allow(clippy::unnecessary_cast)]
+const _: () = assert!(ffi::RBSTokenType_pEOF as c_int == RBS_TOKEN_EOF);
 
 /// Partial representation of rbs_parser_t to access constant_pool.
 /// Must match the exact layout of the C struct up to and including constant_pool.
