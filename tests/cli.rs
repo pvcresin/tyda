@@ -6018,9 +6018,10 @@ fn known_issue_inherited_ivar_across_files_grows_quadratically() {
     let ratio = large_merge / small_merge;
     // Known issue: `@version` in `Base` becomes a union of one parameter reference per
     // subclass, and each method slot walks it again, so with 8x the files the merge phase
-    // takes 25x to 50x the time (twilio-ruby takes 44s). Linear growth stays near 8x.
+    // takes about 15x (Windows CI) to 50x the time (twilio-ruby takes 44s). Linear growth
+    // stays at or below 8x, because the per-file cost only lowers the ratio.
     assert!(
-        ratio > 16.0,
+        ratio > 12.0,
         "known issue fixed (merge ratio {ratio:.1}, {small_merge:.3}s -> {large_merge:.3}s); \
          add a bounded-time check instead"
     );
