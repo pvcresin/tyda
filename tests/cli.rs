@@ -5987,14 +5987,22 @@ fn write_inherited_ivar_subclasses(dir: &std::path::Path, count: usize) {
     }
 }
 
-fn cli_time(dir: &std::path::Path) -> std::time::Duration {
-    let start = std::time::Instant::now();
+/// The `merge` phase time the CLI reports on stderr. It leaves out stdlib loading and file
+/// reading, whose cost differs a lot between machines (a cold first run on Windows CI).
+fn cli_merge_seconds(dir: &std::path::Path) -> f64 {
     let output = tyda_bin()
         .arg(dir.to_str().unwrap())
         .output()
         .expect("failed to run");
     assert!(output.status.success());
-    start.elapsed()
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let seconds = stderr
+        .split("merge ")
+        .nth(1)
+        .and_then(|rest| rest.split('s').next())
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no merge time in the summary: {stderr}"));
+    seconds.max(0.002)
 }
 
 #[test]
@@ -6003,16 +6011,17 @@ fn known_issue_inherited_ivar_across_files_grows_quadratically() {
     let large = tempfile::tempdir().expect("failed to create tempdir");
     write_inherited_ivar_subclasses(small.path(), 100);
     write_inherited_ivar_subclasses(large.path(), 800);
-    let _ = cli_time(small.path());
-    let small_time = cli_time(small.path());
-    let large_time = cli_time(large.path());
-    let ratio = large_time.as_secs_f64() / small_time.as_secs_f64();
+    let small_merge = (0..3)
+        .map(|_| cli_merge_seconds(small.path()))
+        .fold(f64::INFINITY, f64::min);
+    let large_merge = cli_merge_seconds(large.path());
+    let ratio = large_merge / small_merge;
     // Known issue: `@version` in `Base` becomes a union of one parameter reference per
-    // subclass, and each method slot walks it again, so 8x the files take about 20x the
-    // time (twilio-ruby takes 44s). Linear growth stays at or below 8x.
+    // subclass, and each method slot walks it again, so with 8x the files the merge phase
+    // takes 25x to 50x the time (twilio-ruby takes 44s). Linear growth stays near 8x.
     assert!(
-        ratio > 12.0,
-        "known issue fixed (ratio {ratio:.1}, {small_time:?} -> {large_time:?}); \
+        ratio > 16.0,
+        "known issue fixed (merge ratio {ratio:.1}, {small_merge:.3}s -> {large_merge:.3}s); \
          add a bounded-time check instead"
     );
 }
