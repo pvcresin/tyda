@@ -1,8 +1,5 @@
 # Known Issues / RBS Output
 
-Each case is valid Ruby whose rendered RBS is rejected by the official RBS parser or
-by `RBS::DefinitionBuilder`. Found by analyzing the `lib/` of popular gems.
-
 ## Symbol literal types that need quotes
 
 ### update
@@ -294,8 +291,6 @@ end
 
 ## Superclass in a compact class declaration is fully qualified
 
-RBS resolves the superclass of `class Fx::ServerError` from the top level, not from `Fx`.
-
 ### update
 
 ```ruby
@@ -544,8 +539,6 @@ end
 
 ## Redefined core method is not declared again
 
-The core RBS already declares `String#to_s`; RBS rejects a second definition.
-
 ### update
 
 ```ruby
@@ -564,8 +557,6 @@ end
 ```
 
 ## Module included into Object has a BasicObject self type
-
-Otherwise RBS sees `Trap < Object < Trap` as recursive ancestors.
 
 ### update
 

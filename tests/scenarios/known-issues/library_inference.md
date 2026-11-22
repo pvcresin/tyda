@@ -1,7 +1,5 @@
 # Known Issues / Library Inference
 
-Wrong inference found by analyzing the `lib/` of popular gems.
-
 ## Singleton new declared in RBS overrides the constructor
 
 ```rbs
@@ -92,8 +90,6 @@ end
 ```
 
 ## super under an unknown superclass does not use Kernel methods
-
-The unknown superclass may define `select` and `format` itself.
 
 ### update
 
