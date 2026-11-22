@@ -746,3 +746,239 @@ fn pathological_inputs_stay_bounded() {
 fn pathological_inputs_stay_bounded_aggressive() {
     assert_corpus_bounded(1500, Duration::from_secs(25), PROD_PROBE_STACK);
 }
+
+// Known issues: inputs whose analysis time grows much faster than their size. Each test
+// compares two sizes of the same input. The assertion holds while the blowup remains; when a
+// fix makes the growth roughly linear, it fails on purpose: then move the input into
+// `corpus` and delete the test.
+
+/// Analysis time of `source` on the full display path, run on a production-sized stack.
+fn analysis_time(loader: &Arc<LazyRbsLoader>, source: String) -> Duration {
+    match run_probe(loader, PROD_PROBE_STACK, move |l| {
+        let _ = tyda::analysis::playground_analyze(&source, "", l, "m.rb");
+    }) {
+        Outcome::Completed(elapsed) => elapsed,
+        Outcome::Panicked => panic!("probe panicked"),
+        Outcome::Hang => panic!("probe did not finish within {HANG_TIMEOUT:?}"),
+    }
+}
+
+/// Ratio of the analysis time of `large` to that of `small`. The small input is warmed once
+/// so the ratio reflects analysis work rather than stdlib loading, and its fastest of three
+/// runs is used so that noise cannot shrink the ratio.
+fn growth_ratio(small: String, large: String) -> f64 {
+    let loader = loader();
+    let _ = analysis_time(&loader, small.clone());
+    let small_time = (0..3)
+        .map(|_| analysis_time(&loader, small.clone()))
+        .min()
+        .unwrap()
+        .max(Duration::from_millis(1));
+    let large_time = analysis_time(&loader, large);
+    eprintln!("growth: small {small_time:?}, large {large_time:?}");
+    large_time.as_secs_f64() / small_time.as_secs_f64()
+}
+
+/// `def update(a: self.a, ...) = self.class.new(a: a, ...)`: the copy-with-changes method of
+/// immutable value objects (`RBS::AST::Members::MethodDefinition#update`).
+fn keyword_defaults_from_readers(fields: usize) -> String {
+    let names: Vec<String> = (1..=fields).map(|i| format!("f{i}")).collect();
+    let mut src = String::from("class P\n");
+    for name in &names {
+        src.push_str(&format!("  attr_reader :{name}\n"));
+    }
+    let required: Vec<String> = names.iter().map(|n| format!("{n}:")).collect();
+    src.push_str(&format!("  def initialize({})\n", required.join(", ")));
+    for name in &names {
+        src.push_str(&format!("    @{name} = {name}\n"));
+    }
+    src.push_str("  end\n");
+    let defaults: Vec<String> = names.iter().map(|n| format!("{n}: self.{n}")).collect();
+    let passed: Vec<String> = names.iter().map(|n| format!("{n}: {n}")).collect();
+    src.push_str(&format!(
+        "  def update({}) = self.class.new({})\nend\n",
+        defaults.join(", "),
+        passed.join(", ")
+    ));
+    src
+}
+
+#[test]
+fn known_issue_keyword_defaults_from_readers_grow_exponentially() {
+    let ratio = growth_ratio(
+        keyword_defaults_from_readers(2),
+        keyword_defaults_from_readers(6),
+    );
+    // Known issue: each extra field multiplies the time by about 10 (rbs gem `lib/rbs/ast`
+    // does not finish). Linear growth would keep this ratio near 1.
+    assert!(
+        ratio > 10.0,
+        "known issue fixed (ratio {ratio:.1}); move keyword_defaults_from_readers into the corpus"
+    );
+}
+
+/// `r = [r, *items]` inside `depth` nested `while` loops, with `items` untyped: the shape of a
+/// kpeg-generated parser (rdoc `lib/rdoc/markdown.rb`, which runs out of memory).
+fn nested_loops_growing_splat(depth: usize) -> String {
+    let mut src = String::from("class C\n  def m(items, c)\n    r = nil\n");
+    for level in 0..depth {
+        src.push_str(&format!("{}while c\n", "  ".repeat(level + 2)));
+    }
+    src.push_str(&format!("{}r = [r, *items]\n", "  ".repeat(depth + 2)));
+    for level in (0..depth).rev() {
+        src.push_str(&format!("{}end\n", "  ".repeat(level + 2)));
+    }
+    src.push_str("    r\n  end\nend\n");
+    src
+}
+
+#[test]
+fn known_issue_nested_loops_growing_a_splat_grow_exponentially() {
+    let ratio = growth_ratio(nested_loops_growing_splat(1), nested_loops_growing_splat(2));
+    // Known issue: the loop fixpoint stops after a fixed number of passes without widening,
+    // and each nested loop repeats them for every outer pass, so the type size grows
+    // exponentially with the depth. Depth 3 runs out of memory.
+    assert!(
+        ratio > 6.0,
+        "known issue fixed (ratio {ratio:.1}); move nested_loops_growing_splat into the corpus"
+    );
+}
+
+/// `loops` sibling `while` loops in one method, each assigning a fresh local and breaking.
+fn sibling_loops_with_fresh_locals(loops: usize) -> String {
+    let mut src = String::from("class C\n  def m(c)\n");
+    for i in 0..loops {
+        src.push_str(&format!(
+            "    while c\n      s{i} = 1\n      break if c\n    end\n"
+        ));
+    }
+    src.push_str("    c\n  end\nend\n");
+    src
+}
+
+#[test]
+fn known_issue_sibling_loops_grow_with_locals_squared() {
+    let ratio = growth_ratio(
+        sibling_loops_with_fresh_locals(50),
+        sibling_loops_with_fresh_locals(400),
+    );
+    // Known issue: every loop pass and every `break` walks all locals of the method, so time
+    // is O(loops * locals). 8x the input takes 20x to 60x the time; linear would be about 8x.
+    assert!(
+        ratio > 16.0,
+        "known issue fixed (ratio {ratio:.1}); move sibling_loops_with_fresh_locals into the corpus"
+    );
+}
+
+/// A base class with keyword `initialize`, two subclasses forwarding the keywords with
+/// `super`, and one expression that chains every reader (`Base#hash` in the steep gem).
+fn forwarded_keywords_with_reader_chain(fields: usize) -> String {
+    let names: Vec<String> = (1..=fields).map(|i| format!("f{i}")).collect();
+    let symbols: Vec<String> = names.iter().map(|n| format!(":{n}")).collect();
+    let required: Vec<String> = names.iter().map(|n| format!("{n}:")).collect();
+    let passed: Vec<String> = names.iter().map(|n| format!("{n}: {n}")).collect();
+    let mut src = format!(
+        "class Base\n  attr_reader {}\n  def initialize({})\n",
+        symbols.join(", "),
+        required.join(", ")
+    );
+    for name in &names {
+        src.push_str(&format!("    @{name} = {name}\n"));
+    }
+    src.push_str(&format!("  end\n  def use = {}\nend\n", names.join(" ^ ")));
+    for sub in 0..2 {
+        src.push_str(&format!(
+            "class Sub{sub} < Base\n  def initialize({})\n    super({})\n  end\nend\n",
+            required.join(", "),
+            passed.join(", ")
+        ));
+    }
+    src
+}
+
+#[test]
+fn known_issue_forwarded_keywords_with_reader_chain_grow_exponentially() {
+    let ratio = growth_ratio(
+        forwarded_keywords_with_reader_chain(2),
+        forwarded_keywords_with_reader_chain(5),
+    );
+    // Known issue: each reader in the chain resolves its type from the `initialize`
+    // keyword again through every `super` call site, without a memo, so each extra field
+    // multiplies the time by about 10.
+    assert!(
+        ratio > 10.0,
+        "known issue fixed (ratio {ratio:.1}); move forwarded_keywords_with_reader_chain into the corpus"
+    );
+}
+
+/// `t&.a0&.a1...` on an unknown receiver.
+fn safe_navigation_chain(links: usize) -> String {
+    let chain: String = (0..links).map(|i| format!("&.a{i}")).collect();
+    format!("class C\n  def m(t) = t{chain}\nend\n")
+}
+
+#[test]
+fn known_issue_safe_navigation_chain_grows_exponentially() {
+    let ratio = growth_ratio(safe_navigation_chain(4), safe_navigation_chain(9));
+    // Known issue: the deferred type of each `&.` keeps a copy of its receiver, so every
+    // link doubles the type tree (21 links take about 20s and 1.2GB).
+    assert!(
+        ratio > 10.0,
+        "known issue fixed (ratio {ratio:.1}); move safe_navigation_chain into the corpus"
+    );
+}
+
+/// A loop whose `case` has `arms` arms that each `break`, while a local grows every pass
+/// (the Ragel-generated lexers of the parser gem, which run out of memory).
+fn loop_case_with_breaking_arms(arms: usize) -> String {
+    let mut src = String::from(
+        "class L\n  def advance\n    acts = nil\n    while c\n      acts += 1\n      case x\n",
+    );
+    for i in 1..=arms {
+        src.push_str(&format!("      when {i}\n        break\n"));
+    }
+    src.push_str("      end\n    end\n  end\nend\n");
+    src
+}
+
+#[test]
+fn known_issue_loop_case_with_breaking_arms_grows_cubically() {
+    let ratio = growth_ratio(
+        loop_case_with_breaking_arms(8),
+        loop_case_with_breaking_arms(32),
+    );
+    // Known issue: the jump locals of every arm are merged and cloned again on each loop
+    // pass, so time and memory grow about with the cube of the arm count (64 arms run out
+    // of memory). Linear growth would keep this ratio near 4.
+    assert!(
+        ratio > 16.0,
+        "known issue fixed (ratio {ratio:.1}); move loop_case_with_breaking_arms into the corpus"
+    );
+}
+
+/// An attr_reader whose ivar starts unknown, and `writers` methods that each write the ivar
+/// back from its own reader (`Honeybadger::Config`, `self.ruby = ruby.merge(...).freeze`).
+fn ivar_rewritten_from_its_reader(writers: usize) -> String {
+    let mut src =
+        String::from("class C\n  def initialize\n    @h = foo\n  end\n  attr_reader :h\n");
+    for i in 1..=writers {
+        src.push_str(&format!("  def m{i} = @h = h.dup.dup.dup\n"));
+    }
+    src.push_str("end\n");
+    src
+}
+
+#[test]
+fn known_issue_ivar_rewritten_from_its_reader_grows_exponentially() {
+    let ratio = growth_ratio(
+        ivar_rewritten_from_its_reader(2),
+        ivar_rewritten_from_its_reader(3),
+    );
+    // Known issue: the receiver method references fan out over every union member and the
+    // memo is keyed on a type that grows each level, so one more writer multiplies the time
+    // (4 writers take about 10s and 1.2GB). Linear growth would keep this ratio near 1.5.
+    assert!(
+        ratio > 8.0,
+        "known issue fixed (ratio {ratio:.1}); move ivar_rewritten_from_its_reader into the corpus"
+    );
+}

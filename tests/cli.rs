@@ -1011,6 +1011,85 @@ fn diagnostics_type_guard_on_reader_from_another_file_keeps_it_deferred() {
 }
 
 #[test]
+fn known_issue_setter_call_on_a_parameter_does_not_reach_the_ivar() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        concat!(
+            "class Conn\n",
+            "  attr_accessor :session\n",
+            "  def initialize\n",
+            "    @session = nil\n",
+            "  end\n",
+            "end\n",
+            "class Session\n",
+            "  def attach(conn)\n",
+            "    conn.session = self\n",
+            "  end\n",
+            "end\n",
+            "Session.new.attach(Conn.new)\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `conn` is a `Conn`, so `conn.session = self` writes a `Session` into
+    // `@session` and the reader is `Session?` (the scenario path gets this right). The CLI
+    // keeps only the `nil` from `initialize`, so the reader is `nil`, which is unsound.
+    assert!(
+        stdout.contains("  def session: -> nil\n"),
+        "known issue fixed; drop this check and assert `def session: -> Session?`: {stdout}"
+    );
+}
+
+#[test]
+fn known_issue_constant_declared_in_project_rbs_is_rendered_again() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::create_dir_all(dir.path().join("sig")).expect("failed to create sig");
+    fs::create_dir_all(dir.path().join("lib")).expect("failed to create lib");
+    fs::write(dir.path().join("Gemfile"), "").expect("failed to write Gemfile");
+    fs::write(
+        dir.path().join("sig/hp.rbs"),
+        "module Hp\n  VERSION: String\n  def self.x: () -> Integer\nend\n",
+    )
+    .expect("failed to write rbs");
+    fs::write(
+        dir.path().join("lib/hp.rb"),
+        concat!(
+            "module Hp\n",
+            "  VERSION = \"1\"\n",
+            "  LIMIT = 5\n",
+            "  def self.x = 1\n",
+            "  def self.y = 2\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().join("lib").to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("def self.x:"),
+        "a method declared in sig/ is left out: {stdout}"
+    );
+    assert!(stdout.contains("  LIMIT: 5\n"), "missing LIMIT: {stdout}");
+    // Known issue: `sig/` already declares `Hp::VERSION`, so loading the output next to
+    // `sig/` fails with RBS::DuplicatedDeclarationError. Methods declared in `sig/` are left
+    // out, but constants are rendered again (seen with the http and alba gems).
+    assert!(
+        stdout.contains("  VERSION: String\n"),
+        "known issue fixed; drop this check and assert VERSION is not rendered: {stdout}"
+    );
+}
+
+#[test]
 fn known_issue_self_call_into_a_module_from_another_file_drops_ivar_facts() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
@@ -5876,4 +5955,189 @@ fn ivar_reader_return_from_another_file() {
     assert!(output.status.success());
     let rbs = String::from_utf8_lossy(&output.stdout);
     assert!(rbs.contains("def make: -> String\n"), "got: {rbs}");
+}
+
+/// A base class stores an `initialize` argument in an ivar, and each subclass in its own
+/// file passes that ivar back to its own constructor (the List / Context / Instance classes
+/// of the twilio-ruby gem).
+fn write_inherited_ivar_subclasses(dir: &std::path::Path, count: usize) {
+    fs::write(dir.join("Gemfile"), "").expect("failed to write Gemfile");
+    fs::write(
+        dir.join("base.rb"),
+        "class Base\n  def initialize(version)\n    @version = version\n  end\nend\n",
+    )
+    .expect("failed to write base");
+    for i in 0..count {
+        fs::write(
+            dir.join(format!("x{i}.rb")),
+            format!(
+                concat!(
+                    "class X{i} < Base\n",
+                    "  def initialize(version)\n",
+                    "    super(version)\n",
+                    "  end\n",
+                    "  def dup = X{i}.new(@version)\n",
+                    "  def op = @version.op\n",
+                    "end\n",
+                ),
+                i = i
+            ),
+        )
+        .expect("failed to write subclass");
+    }
+}
+
+/// The `merge` phase time the CLI reports on stderr. It leaves out stdlib loading and file
+/// reading, whose cost differs a lot between machines (a cold first run on Windows CI).
+fn cli_merge_seconds(dir: &std::path::Path) -> f64 {
+    let output = tyda_bin()
+        .arg(dir.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let seconds = stderr
+        .split("merge ")
+        .nth(1)
+        .and_then(|rest| rest.split('s').next())
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no merge time in the summary: {stderr}"));
+    seconds.max(0.002)
+}
+
+#[test]
+fn known_issue_inherited_ivar_across_files_grows_quadratically() {
+    let small = tempfile::tempdir().expect("failed to create tempdir");
+    let large = tempfile::tempdir().expect("failed to create tempdir");
+    write_inherited_ivar_subclasses(small.path(), 100);
+    write_inherited_ivar_subclasses(large.path(), 800);
+    let small_merge = (0..3)
+        .map(|_| cli_merge_seconds(small.path()))
+        .fold(f64::INFINITY, f64::min);
+    let large_merge = cli_merge_seconds(large.path());
+    let ratio = large_merge / small_merge;
+    // Known issue: `@version` in `Base` becomes a union of one parameter reference per
+    // subclass, and each method slot walks it again, so with 8x the files the merge phase
+    // takes about 15x (Windows CI) to 50x the time (twilio-ruby takes 44s). Linear growth
+    // stays at or below 8x, because the per-file cost only lowers the ratio.
+    assert!(
+        ratio > 12.0,
+        "known issue fixed (merge ratio {ratio:.1}, {small_merge:.3}s -> {large_merge:.3}s); \
+         add a bounded-time check instead"
+    );
+}
+
+/// Whether the CLI finishes analyzing `dir` within `limit`; the process is killed otherwise.
+fn finishes_within(dir: &std::path::Path, limit: std::time::Duration) -> bool {
+    let mut child = tyda_bin()
+        .arg(dir.to_str().unwrap())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to run");
+    let deadline = std::time::Instant::now() + limit;
+    let mut finished = false;
+    while std::time::Instant::now() < deadline {
+        if child.try_wait().expect("failed to wait").is_some() {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    finished
+}
+
+#[test]
+fn known_issue_mutual_recursion_through_safe_navigation_does_not_finish() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(dir.path().join("Gemfile"), "").expect("failed to write Gemfile");
+    fs::write(
+        dir.path().join("b.rb"),
+        concat!(
+            "class B\n",
+            "  def r(t)\n",
+            "    t ? s(t)&.x : o.x(t)\n",
+            "  end\n",
+            "  def s(t)\n",
+            "    o.x(t)\n",
+            "    t ? s(t)&.y : r(t)\n",
+            "  end\n",
+            "  def o = 1\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let finished = finishes_within(dir.path(), std::time::Duration::from_secs(5));
+    // Known issue: resolving the receiver classes of `s(t)&.x` follows each method return
+    // reference into the callee again without a memo, so this 10-line file does not finish
+    // (seen in steep `lib/steep/interface/builder.rb`). It should take milliseconds.
+    assert!(
+        !finished,
+        "known issue fixed; drop this check and assert the analysis finishes"
+    );
+}
+
+#[test]
+fn known_issue_singleton_calling_same_named_instance_method_does_not_finish() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(dir.path().join("Gemfile"), "").expect("failed to write Gemfile");
+    fs::write(
+        dir.path().join("s.rb"),
+        concat!(
+            "class S\n",
+            "  def self.m(d)\n",
+            "    new.m(d)\n",
+            "  end\n",
+            "  def m(d)\n",
+            "    if d\n",
+            "      v = m(d)\n",
+            "      v = v.dup if d\n",
+            "      [v, v]\n",
+            "    else\n",
+            "      bar\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    // Known issue: the return reference of `m` is tried as both the instance and the
+    // singleton method, and once the type is too large for the memo the cycle is not
+    // detected, so the type doubles at each level until memory runs out (honeybadger
+    // `Honeybadger::Util::Sanitizer`). The limit is short because memory keeps growing.
+    assert!(
+        !finishes_within(dir.path(), std::time::Duration::from_secs(2)),
+        "known issue fixed; drop this check and assert the analysis finishes"
+    );
+}
+
+#[test]
+fn known_issue_recursion_passing_its_block_overflows_the_stack() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("w.rb"),
+        concat!(
+            "class W\n",
+            "  def walk(i, &block)\n",
+            "    yield i\n",
+            "    walk(i - 1, &block)\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().join("w.rb").to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Known issue: a method that yields and passes its block to a recursive call of itself
+    // crashes the CLI with a stack overflow (sass `Sass::Util#lcs_backtrace`). The same
+    // method outside a class is analyzed fine. It should render `walk` without crashing.
+    assert!(
+        !output.status.success() && stderr.contains("overflowed its stack"),
+        "known issue fixed; drop this check and assert `def walk` is rendered: {stderr}"
+    );
 }

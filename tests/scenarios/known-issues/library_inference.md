@@ -1,0 +1,156 @@
+# Known Issues / Library Inference
+
+## Singleton new declared in RBS overrides the constructor
+
+```rbs
+module Fx
+  def self.new: () -> Fx::Conn
+  class Conn
+  end
+end
+class Kx
+  def self.new: () -> String
+end
+```
+
+### update
+
+```ruby
+class A
+  def c = Fx.new
+  def k = Kx.new
+end
+```
+
+### result
+
+```rbs
+class A
+  def c: -> Fx::Conn
+  def k: -> String
+end
+```
+
+## module_function makes a singleton and a private instance method
+
+### update
+
+```ruby
+module Mf
+  def make = 1
+  module_function :make
+end
+```
+
+### result
+
+```rbs
+module Mf
+  def self?.make: -> 1
+end
+```
+
+## Memoized array keeps elements pushed by other methods
+
+### update
+
+```ruby
+class T
+  def store = @store ||= []
+  def add(v) = store << v
+  def add_s = add("s")
+end
+class U
+  def initialize = @items = []
+  def items = @items
+end
+class V
+  def fill(u) = u.items << 1
+end
+V.new.fill(U.new)
+```
+
+### result
+
+```rbs
+class T
+  def store: -> Array[String]
+  def add: (String v) -> Array[String]
+  def add_s: -> Array[String]
+end
+
+class U
+  def initialize: -> void
+  def items: -> Array[Integer]
+end
+
+class V
+  def fill: (U u) -> Array[Integer]
+end
+```
+
+## super under an unknown superclass does not use Kernel methods
+
+### update
+
+```ruby
+class Info < Ext::Mash
+  def select = super
+  def format = super
+end
+```
+
+### result
+
+```rbs
+class Info < Ext::Mash
+  def select: -> untyped
+  def format: -> untyped
+end
+```
+
+## Hash merged with an untyped hash keeps its keys
+
+### update
+
+```ruby
+class Cl
+  attr_reader :options
+  def initialize(opts = {})
+    @options = { url: "x", connection_opts: {} }.merge(opts)
+    @options[:connection_opts][:ssl] = 1
+  end
+  def m(opts) = { url: "x" }.merge(opts)
+end
+```
+
+### result
+
+```rbs
+class Cl
+  def options: -> Hash[untyped, untyped]
+  def initialize: (?Hash[untyped, untyped] opts) -> void
+  def m: (untyped opts) -> Hash[untyped, untyped]
+end
+```
+
+## Splat of a union of arrays spreads the elements
+
+### update
+
+```ruby
+class Sp
+  def d(c)
+    items = c ? [1].map { _1 } : ["s"].map { _1 }
+    [0, *items]
+  end
+end
+```
+
+### result
+
+```rbs
+class Sp
+  def d: (untyped c) -> Array[0 | 1 | "s"]
+end
+```
