@@ -811,3 +811,56 @@ fn known_issue_keyword_defaults_from_readers_grow_exponentially() {
         "known issue fixed (ratio {ratio:.1}); move keyword_defaults_from_readers into the corpus"
     );
 }
+
+/// `r = [r, *items]` inside `depth` nested `while` loops, with `items` untyped: the shape of a
+/// kpeg-generated parser (rdoc `lib/rdoc/markdown.rb`, which runs out of memory).
+fn nested_loops_growing_splat(depth: usize) -> String {
+    let mut src = String::from("class C\n  def m(items, c)\n    r = nil\n");
+    for level in 0..depth {
+        src.push_str(&format!("{}while c\n", "  ".repeat(level + 2)));
+    }
+    src.push_str(&format!("{}r = [r, *items]\n", "  ".repeat(depth + 2)));
+    for level in (0..depth).rev() {
+        src.push_str(&format!("{}end\n", "  ".repeat(level + 2)));
+    }
+    src.push_str("    r\n  end\nend\n");
+    src
+}
+
+#[test]
+fn known_issue_nested_loops_growing_a_splat_grow_exponentially() {
+    let ratio = growth_ratio(nested_loops_growing_splat(1), nested_loops_growing_splat(2));
+    // Known issue: the loop fixpoint stops after a fixed number of passes without widening,
+    // and each nested loop repeats them for every outer pass, so the type size grows
+    // exponentially with the depth. Depth 3 runs out of memory.
+    assert!(
+        ratio > 6.0,
+        "known issue fixed (ratio {ratio:.1}); move nested_loops_growing_splat into the corpus"
+    );
+}
+
+/// `loops` sibling `while` loops in one method, each assigning a fresh local and breaking.
+fn sibling_loops_with_fresh_locals(loops: usize) -> String {
+    let mut src = String::from("class C\n  def m(c)\n");
+    for i in 0..loops {
+        src.push_str(&format!(
+            "    while c\n      s{i} = 1\n      break if c\n    end\n"
+        ));
+    }
+    src.push_str("    c\n  end\nend\n");
+    src
+}
+
+#[test]
+fn known_issue_sibling_loops_grow_with_locals_squared() {
+    let ratio = growth_ratio(
+        sibling_loops_with_fresh_locals(50),
+        sibling_loops_with_fresh_locals(400),
+    );
+    // Known issue: every loop pass and every `break` walks all locals of the method, so time
+    // is O(loops * locals). 8x the input takes 20x to 60x the time; linear would be about 8x.
+    assert!(
+        ratio > 16.0,
+        "known issue fixed (ratio {ratio:.1}); move sibling_loops_with_fresh_locals into the corpus"
+    );
+}

@@ -5956,3 +5956,63 @@ fn ivar_reader_return_from_another_file() {
     let rbs = String::from_utf8_lossy(&output.stdout);
     assert!(rbs.contains("def make: -> String\n"), "got: {rbs}");
 }
+
+/// A base class stores an `initialize` argument in an ivar, and each subclass in its own
+/// file passes that ivar back to its own constructor (the List / Context / Instance classes
+/// of the twilio-ruby gem).
+fn write_inherited_ivar_subclasses(dir: &std::path::Path, count: usize) {
+    fs::write(dir.join("Gemfile"), "").expect("failed to write Gemfile");
+    fs::write(
+        dir.join("base.rb"),
+        "class Base\n  def initialize(version)\n    @version = version\n  end\nend\n",
+    )
+    .expect("failed to write base");
+    for i in 0..count {
+        fs::write(
+            dir.join(format!("x{i}.rb")),
+            format!(
+                concat!(
+                    "class X{i} < Base\n",
+                    "  def initialize(version)\n",
+                    "    super(version)\n",
+                    "  end\n",
+                    "  def dup = X{i}.new(@version)\n",
+                    "  def op = @version.op\n",
+                    "end\n",
+                ),
+                i = i
+            ),
+        )
+        .expect("failed to write subclass");
+    }
+}
+
+fn cli_time(dir: &std::path::Path) -> std::time::Duration {
+    let start = std::time::Instant::now();
+    let output = tyda_bin()
+        .arg(dir.to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    start.elapsed()
+}
+
+#[test]
+fn known_issue_inherited_ivar_across_files_grows_quadratically() {
+    let small = tempfile::tempdir().expect("failed to create tempdir");
+    let large = tempfile::tempdir().expect("failed to create tempdir");
+    write_inherited_ivar_subclasses(small.path(), 100);
+    write_inherited_ivar_subclasses(large.path(), 800);
+    let _ = cli_time(small.path());
+    let small_time = cli_time(small.path());
+    let large_time = cli_time(large.path());
+    let ratio = large_time.as_secs_f64() / small_time.as_secs_f64();
+    // Known issue: `@version` in `Base` becomes a union of one parameter reference per
+    // subclass, and each method slot walks it again, so 8x the files take about 20x the
+    // time (twilio-ruby takes 44s). Linear growth stays at or below 8x.
+    assert!(
+        ratio > 12.0,
+        "known issue fixed (ratio {ratio:.1}, {small_time:?} -> {large_time:?}); \
+         add a bounded-time check instead"
+    );
+}

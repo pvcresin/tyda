@@ -133,3 +133,24 @@ class Cl
   def m: (untyped opts) -> Hash[untyped, untyped]
 end
 ```
+
+## Splat of a union of arrays spreads the elements
+
+### update
+
+```ruby
+class Sp
+  def d(c)
+    items = c ? [1].map { _1 } : ["s"].map { _1 }
+    [0, *items]
+  end
+end
+```
+
+### result
+
+```rbs
+class Sp
+  def d: (untyped c) -> Array[0 | 1 | "s"]
+end
+```
