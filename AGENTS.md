@@ -17,6 +17,9 @@ parser FFI), `vscode/` (editor extension), `playground/` (wasm demo), `docs/` (l
 - Preserve inference quality, speed, and memory. Do not add fixed depth limits as a
   performance fix. Safety guards are for pathological input; return `untyped` and a
   diagnostic for the affected part.
+- Never tune for the benchmark subjects. Do not narrow general inference to the
+  methods, classes, or patterns a subject happens to use just to pass the performance
+  gate. Meet it with general, consistent optimizations that hold for any Ruby code.
 - Scenarios define user-facing behavior; unit tests cover internal invariants.
   Reproduce regressions and flaky tests; never hide them with retries or skips.
 - When you find wrong inference that you do not fix now, record it as a known-issue

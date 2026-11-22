@@ -11,6 +11,9 @@ Baselines and full rules: `docs/performance.md` (基準値テーブル / 継続�
 
 - Build release first: `cargo build --release`.
 - Heavy subjects (gitlab): always `nice -n 19`, minimum runs (1 is fine), never parallelize.
+- Subjects are samples, not targets. When a gate fails, do not special-case what a
+  subject uses or limit general inference to it; find the cause and fix it in a way
+  that holds for any Ruby code (`docs/performance.md`).
 - Reference scale: full gitlab render ≈ 7.5s / ~1GB peak. Compare against the table in
   `docs/performance.md`, not against memory.
 
