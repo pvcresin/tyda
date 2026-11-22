@@ -12,7 +12,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
     型注釈のない `&block` は `?{ (?) -> untyped }`、Float literal は `Float` で出す。RBS がそのまま読めない
     Symbol literal は `:"a-b"` と引用し、String / Symbol literal の制御文字は `\e` や `\x00` とエスケープする。識別子でも
     演算子でもないメソッド名（`define_method("a-b")`）は `` `a-b` `` と囲み、RBS が書けない位置引数の名前（`x?`）は省く。戻り値の `void` を含む
-    union は使える値がないため `void` にまとめる
+    union は使える値がないため `void` にまとめ、引数・要素・bound など値の位置の `void` は `untyped` にする
   - 型引数を書かずに参照した generic class（`class Pairs < Hash`、`include Enumerable`、要素型が分からない
     `Array` / `Hash`）は、型パラメータの数だけ `untyped` を補って出す（`Hash[untyped, untyped]`）。
     mixin の型引数は出力でだけ補い、推論では `each` などから要素型を決める

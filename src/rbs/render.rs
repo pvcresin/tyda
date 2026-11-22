@@ -229,7 +229,12 @@ fn write_constant<W: Write>(
             kind.keyword(),
             constant.name
         ),
-        _ => writeln!(writer, "{indent}{}: {}", constant.name, constant.const_type),
+        _ => writeln!(
+            writer,
+            "{indent}{}: {}",
+            constant.name,
+            rbs_value_type(&constant.const_type)
+        ),
     }
 }
 
@@ -385,9 +390,17 @@ fn write_type_param_list<W: Write>(
     if type_params.is_empty() {
         return Ok(());
     }
+    let type_params: Vec<crate::types::TypeParamSig> = type_params
+        .iter()
+        .map(|param| crate::types::TypeParamSig {
+            name: param.name.clone(),
+            upper_bound: param.upper_bound.as_ref().and_then(rbs_bound_type),
+            lower_bound: param.lower_bound.as_ref().and_then(rbs_bound_type),
+        })
+        .collect();
     let mut list = String::new();
     // Writing into a String cannot fail.
-    let _ = crate::types::write_type_params(&mut list, type_params);
+    let _ = crate::types::write_type_params(&mut list, &type_params);
     writer.write_all(list.as_bytes())
 }
 
@@ -440,6 +453,7 @@ fn write_param<W: Write>(writer: &mut W, param: &Param, widen_param: bool) -> io
     } else {
         param.param_type.clone()
     };
+    let param_type = rbs_value_type(&param_type).into_owned();
     match param.kind {
         ParamKind::Required => {
             write!(writer, "{param_type:#}")?;
@@ -503,9 +517,9 @@ fn write_block_signature_body<W: Write>(
             writer.write_all(b", ")?;
         }
         if widen_params {
-            write!(writer, "{:#}", param.param_type.widen())?;
+            write!(writer, "{:#}", rbs_value_type(&param.param_type.widen()))?;
         } else {
-            write!(writer, "{:#}", param.param_type)?;
+            write!(writer, "{:#}", rbs_value_type(&param.param_type))?;
         }
     }
     writer.write_all(b") -> ")?;
@@ -516,10 +530,74 @@ fn write_block_signature_body<W: Write>(
 // RBS rejects a bare union or intersection after `->` (`| B` reads as another overload).
 // It also rejects `void` as a union member; a return that may be `void` has no usable value.
 fn write_return_type<W: Write>(writer: &mut W, ty: &Type) -> io::Result<()> {
+    let ty = rbs_return_type(ty);
+    let ty = ty.as_ref();
     match ty {
         Type::Union(types) if types.contains(&Type::Void) => writer.write_all(b"void"),
         Type::Intersection(types) if types.len() > 1 => write!(writer, "({ty})"),
         _ => write!(writer, "{ty:#}"),
+    }
+}
+
+// RBS allows `void` only as a return type. A value that may be `void` has no usable value,
+// so a value position (a parameter, an element, a bound) gets `untyped` instead.
+fn rbs_value_type(ty: &Type) -> std::borrow::Cow<'_, Type> {
+    if !mentions_void(ty) {
+        return std::borrow::Cow::Borrowed(ty);
+    }
+    std::borrow::Cow::Owned(value_without_void(ty))
+}
+
+fn rbs_return_type(ty: &Type) -> std::borrow::Cow<'_, Type> {
+    match ty {
+        Type::Void => std::borrow::Cow::Borrowed(ty),
+        Type::Union(types) if types.contains(&Type::Void) => std::borrow::Cow::Owned(Type::Void),
+        _ => rbs_value_type(ty),
+    }
+}
+
+// A `void` bound places no constraint, so the bound is dropped.
+fn rbs_bound_type(ty: &Type) -> Option<Type> {
+    (!matches!(rbs_return_type(ty).as_ref(), Type::Void)).then(|| rbs_value_type(ty).into_owned())
+}
+
+fn value_without_void(ty: &Type) -> Type {
+    match ty {
+        Type::Void => Type::Untyped,
+        Type::Array(Some(inner)) => Type::Array(Some(Box::new(value_without_void(inner)))),
+        Type::Union(types) => Type::Union(types.iter().map(value_without_void).collect()),
+        Type::Proc(proc_type) => Type::Proc(Box::new(crate::types::ProcType {
+            params: proc_type.params.iter().map(value_without_void).collect(),
+            return_type: rbs_return_type(&proc_type.return_type).into_owned(),
+            kind: proc_type.kind,
+            exact_params: proc_type.exact_params,
+            literal: proc_type.literal,
+        })),
+        other => other.map_children(value_without_void),
+    }
+}
+
+fn mentions_void(ty: &Type) -> bool {
+    match ty {
+        Type::Void => true,
+        Type::Array(Some(inner)) => mentions_void(inner),
+        Type::Hash(key, value) => {
+            key.as_deref().is_some_and(mentions_void) || value.as_deref().is_some_and(mentions_void)
+        }
+        Type::Union(types) | Type::Intersection(types) | Type::Tuple(types) => {
+            types.iter().any(mentions_void)
+        }
+        Type::Generic { args, .. } => args.iter().any(mentions_void),
+        Type::Record(fields) => fields.iter().any(|field| mentions_void(&field.value)),
+        Type::Proc(proc_type) => {
+            proc_type.params.iter().any(mentions_void)
+                || match &proc_type.return_type {
+                    Type::Void => false,
+                    Type::Union(types) => types.iter().any(mentions_void),
+                    other => mentions_void(other),
+                }
+        }
+        _ => false,
     }
 }
 

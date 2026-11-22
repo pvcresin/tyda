@@ -23,49 +23,6 @@ module Worker
 end
 ```
 
-## void from RBS used as a value
-
-```rbs
-class Lib
-  def run: () -> void
-end
-```
-
-### update
-
-```ruby
-class V
-  def initialize
-    @calls = []
-  end
-  def a = [1].map { Lib.new.run }
-  def b = [Lib.new.run, "s"]
-  def c = yield(1, Lib.new.run)
-  def d(cb = nil) = cb
-  def e = d(-> { Lib.new.run if rand > 0.5 })
-  def from_void = on_call(Lib.new.run)
-  def on_call(node)
-    @calls << node
-    node
-  end
-end
-```
-
-### result
-
-```rbs
-class V
-  def initialize: -> void
-  def a: -> Array[untyped]
-  def b: -> [untyped, "s"]
-  def c: [R] { (Integer, untyped) -> R } -> R
-  def d: (?(^() -> void)? cb) -> (^() -> void)?
-  def e: -> (^() -> void)?
-  def from_void: -> void
-  def on_call: [N] (N node) -> N
-end
-```
-
 ## Classes and namespaces without members are still declared
 
 ### update
