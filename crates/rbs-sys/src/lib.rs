@@ -266,7 +266,9 @@ pub fn parse_whole_type(input: &str) -> Result<RbsType, ParseError> {
     if !ok || type_ptr.is_null() {
         return Err(ParseError::ParseFailed);
     }
-    if unsafe { (*parser.parser).next_token.type_ } != ffi::RBSTokenType_pEOF {
+    // `PartialParser` reads the token on wasm too, where `rbs_parser_t` is opaque.
+    let next_token = unsafe { (*(parser.parser as *const PartialParser)).next_token.type_ };
+    if next_token != RBS_TOKEN_EOF {
         return Err(ParseError::ParseFailed);
     }
     unsafe { convert_type_node(type_ptr, parser.parser, &UseContext::default()) }
@@ -1641,6 +1643,11 @@ unsafe fn get_constant_pool(parser: *mut ffi::rbs_parser_t) -> *const ffi::rbs_c
     let partial = &*(parser as *const PartialParser);
     &partial.constant_pool as *const _
 }
+
+/// `pEOF` in `enum RBSTokenType` (lexer.h). bindgen does not emit the enum on wasm.
+const RBS_TOKEN_EOF: c_int = 1;
+#[cfg(not(target_arch = "wasm32"))]
+const _: () = assert!(RBS_TOKEN_EOF as u32 == ffi::RBSTokenType_pEOF);
 
 /// Partial representation of rbs_parser_t to access constant_pool.
 /// Must match the exact layout of the C struct up to and including constant_pool.
