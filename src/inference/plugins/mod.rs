@@ -8,6 +8,7 @@ pub(super) mod active_resource;
 pub(super) mod active_storage;
 pub(super) mod active_support;
 pub(super) mod ams;
+pub(super) mod cancancan;
 pub(super) mod declarative_policy;
 pub(super) mod devise;
 pub(super) mod discard;
@@ -184,6 +185,8 @@ static PLUGINS: &[&dyn Plugin] = &[
     &devise::Devise,
     &doorkeeper::Doorkeeper,
     &sidekiq::Sidekiq,
+    // Before ActionController, which answers `can?` with `untyped` without CanCanCan.
+    &cancancan::Cancancan,
     &action_controller::ActionController,
     &rails_configure::RailsConfigure,
     &active_support::ActiveSupport,
@@ -791,26 +794,6 @@ impl<'e, 'src> PluginCx<'e, 'src> {
     ) {
         self.engine
             .collect_attributes_dsl(class_name, call_node, parse_result);
-    }
-
-    pub(in crate::inference) fn collect_active_model_serializer_belongs_to(
-        &mut self,
-        class_name: &str,
-        call_node: &CallNode<'_>,
-        parse_result: &ParseResult<'_>,
-    ) {
-        self.engine
-            .collect_active_model_serializer_belongs_to(class_name, call_node, parse_result);
-    }
-
-    pub(in crate::inference) fn collect_active_model_serializer_has_many(
-        &mut self,
-        class_name: &str,
-        call_node: &CallNode<'_>,
-        parse_result: &ParseResult<'_>,
-    ) {
-        self.engine
-            .collect_active_model_serializer_has_many(class_name, call_node, parse_result);
     }
 
     pub(in crate::inference) fn collect_store_accessor_dsl(

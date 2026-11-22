@@ -2,10 +2,6 @@
 
 ## Name protobuf accessors from the field name argument
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -31,10 +27,6 @@ end
 ```
 
 ## Type repeated protobuf fields as FieldArray
-
-```yaml
-known_issue: true
-```
 
 ### update
 

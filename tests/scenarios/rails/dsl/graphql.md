@@ -2,10 +2,6 @@
 
 ## GraphQL arguments do not define writers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -39,10 +35,6 @@ end
 
 ## GraphQL object fields do not define readers
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -62,5 +54,23 @@ end
 ```rbs
 class Types::UserType < Types::BaseObject
   def kind: -> :user
+end
+```
+
+## Non-GraphQL field macros keep a reader
+
+### update
+
+```ruby
+class Integration
+  field :username
+end
+```
+
+### result
+
+```rbs
+class Integration
+  def username: -> untyped
 end
 ```

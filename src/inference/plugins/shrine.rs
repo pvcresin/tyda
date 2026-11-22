@@ -66,7 +66,7 @@ impl<'a> InferenceEngine<'a> {
         self.add_simple_method_if_missing(
             class_name,
             &name,
-            uploaded_file_type.clone(),
+            Type::Union(vec![uploaded_file_type.clone(), Type::Nil]),
             false,
             loc,
         );
@@ -103,7 +103,7 @@ impl<'a> InferenceEngine<'a> {
         );
         self.add_simple_method_if_missing(
             class_name,
-            &format!("{name}_changed"),
+            &format!("{name}_changed?"),
             Type::Bool,
             false,
             loc,
@@ -111,7 +111,7 @@ impl<'a> InferenceEngine<'a> {
         self.add_simple_method_if_missing(
             class_name,
             &format!("{name}_url"),
-            Type::String,
+            Type::Union(vec![Type::String, Type::Nil]),
             false,
             loc,
         );

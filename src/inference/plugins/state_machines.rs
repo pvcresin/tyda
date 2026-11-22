@@ -47,6 +47,12 @@ impl Plugin for StateMachines {
 
 use super::super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::inference) enum StateMachineFlavor {
+    Aasm,
+    StateMachines,
+}
+
 impl<'a> InferenceEngine<'a> {
     pub(in crate::inference) fn collect_state_machine_dsl(
         &mut self,
@@ -62,18 +68,23 @@ impl<'a> InferenceEngine<'a> {
         self.add_simple_method_if_missing(
             class_name,
             &format!("{machine_name}_name"),
-            Type::String,
+            Type::Symbol,
             false,
             loc,
         );
-        self.collect_state_machine_block_like(class_name, call_node, parse_result, loc);
+        self.collect_state_machine_block_like(
+            class_name,
+            call_node,
+            StateMachineFlavor::StateMachines,
+            loc,
+        );
     }
 
     pub(in crate::inference) fn collect_state_machine_block_like(
         &mut self,
         class_name: &str,
         call_node: &ruby_prism::CallNode<'_>,
-        _parse_result: &ParseResult<'_>,
+        flavor: StateMachineFlavor,
         loc: SourceLocation,
     ) {
         if let Some(block_raw) = call_node.block()
@@ -100,13 +111,29 @@ impl<'a> InferenceEngine<'a> {
                         }
                         "event" => {
                             if let Some(name) = self.first_symbol_or_string_arg(&inner) {
+                                let check = match flavor {
+                                    StateMachineFlavor::Aasm => format!("may_{name}?"),
+                                    StateMachineFlavor::StateMachines => format!("can_{name}?"),
+                                };
                                 self.add_simple_method_if_missing(
                                     class_name,
-                                    &format!("may_{name}?"),
+                                    &check,
                                     Type::Bool,
                                     false,
                                     loc,
                                 );
+                                if flavor == StateMachineFlavor::StateMachines {
+                                    self.add_simple_method_if_missing(
+                                        class_name,
+                                        &format!("{name}_transition"),
+                                        Type::Union(vec![
+                                            Type::Class(Sym::new("StateMachines::Transition")),
+                                            Type::Nil,
+                                        ]),
+                                        false,
+                                        loc,
+                                    );
+                                }
                                 self.add_simple_method_if_missing(
                                     class_name,
                                     &name,

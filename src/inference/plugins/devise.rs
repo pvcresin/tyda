@@ -75,11 +75,11 @@ fn camelize(scope: &str) -> String {
         .collect()
 }
 
-fn scope_model_or_nil(engine: &mut PluginCx<'_, '_>, scope: &str) -> Type {
+fn current_scope_model(engine: &mut PluginCx<'_, '_>, scope: &str) -> Type {
     let model_name = camelize(scope);
     if engine.registry().class_data_for(&model_name).is_some() {
         engine.record_reference(&model_name);
-        Type::Class(model_name.into())
+        Type::Union(vec![Type::Class(model_name.into()), Type::Nil])
     } else {
         Type::Untyped
     }
@@ -112,7 +112,7 @@ pub(in crate::inference) fn synthetic_method_return(
     }
     if let Some(scope) = method_name.strip_prefix("current_") {
         if !scope.is_empty() && scope.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
-            return Some(scope_model_or_nil(engine, scope));
+            return Some(current_scope_model(engine, scope));
         }
         return None;
     }

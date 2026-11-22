@@ -2212,14 +2212,6 @@ pub enum IncluderBoundDsl {
     Devise {
         loc: SourceLocation,
     },
-    AmsBelongsTo {
-        name: String,
-        loc: SourceLocation,
-    },
-    AmsHasMany {
-        name: String,
-        loc: SourceLocation,
-    },
     AmsModelAttributes {
         names: Vec<String>,
         loc: SourceLocation,

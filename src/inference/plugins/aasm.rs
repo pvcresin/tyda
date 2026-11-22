@@ -51,6 +51,11 @@ impl<'a> InferenceEngine<'a> {
         parse_result: &ParseResult<'_>,
     ) {
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
-        self.collect_state_machine_block_like(class_name, call_node, parse_result, loc);
+        self.collect_state_machine_block_like(
+            class_name,
+            call_node,
+            super::state_machines::StateMachineFlavor::Aasm,
+            loc,
+        );
     }
 }

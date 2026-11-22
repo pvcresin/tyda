@@ -198,7 +198,13 @@ impl<'a> InferenceEngine<'a> {
         let Some(name) = self.first_symbol_or_string_arg(call_node) else {
             return;
         };
-        self.add_accessor_methods(class_name, &name, Type::Untyped, false, loc);
+        // GraphQL input objects define only a reader, and resolver / mutation arguments
+        // are passed to `resolve` as keywords. Thor generator arguments are accessors.
+        if self.class_matches_or_inherits(class_name, &["GraphQL::Schema::InputObject"]) {
+            self.add_simple_method_if_missing(class_name, &name, Type::Untyped, false, loc);
+        } else if !self.class_matches_or_inherits(class_name, TYPE_MEMBER_BASES) {
+            self.add_accessor_methods(class_name, &name, Type::Untyped, false, loc);
+        }
     }
 
     pub(in crate::inference) fn collect_field_like_dsl(
@@ -208,6 +214,11 @@ impl<'a> InferenceEngine<'a> {
         _method_name: &str,
         parse_result: &ParseResult<'_>,
     ) {
+        // GraphQL fields resolve on the underlying object and define no method on the
+        // type class. Other `field` macros (such as GitLab integrations) define a reader.
+        if self.class_matches_or_inherits(class_name, TYPE_MEMBER_BASES) {
+            return;
+        }
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
         let Some(name) = self.first_symbol_or_string_arg(call_node) else {
             return;

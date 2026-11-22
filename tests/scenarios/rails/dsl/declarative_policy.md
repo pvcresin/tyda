@@ -28,10 +28,6 @@ end
 
 ## Rule returns a PolicyDsl whose actions do not chain
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby

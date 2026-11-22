@@ -2,10 +2,6 @@
 
 ## Kredis scalar attributes return Scalar without a setter
 
-```yaml
-known_issue: true
-```
-
 ### update
 
 ```ruby
@@ -37,10 +33,6 @@ end
 ```
 
 ## kredis_slot returns Slots and kredis_flag adds a predicate
-
-```yaml
-known_issue: true
-```
 
 ### update
 

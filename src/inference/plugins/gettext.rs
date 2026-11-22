@@ -30,8 +30,18 @@ impl Plugin for Gettext {
 }
 
 const TRANSLATION_METHODS: &[&str] = &[
-    "_", "s_", "n_", "N_", "Nn_", "ns_", "np_", "np", "p_", "pgettext", "sgettext", "ngettext",
+    "_",
+    "s_",
+    "n_",
+    "ns_",
+    "np_",
+    "p_",
     "gettext",
+    "sgettext",
+    "pgettext",
+    "ngettext",
+    "nsgettext",
+    "npgettext",
 ];
 
 pub(in crate::inference) fn synthetic_method_return(
@@ -39,9 +49,12 @@ pub(in crate::inference) fn synthetic_method_return(
     receiver_type: &Type,
     method_name: &str,
 ) -> Option<Type> {
-    if !TRANSLATION_METHODS.contains(&method_name) {
-        return None;
-    }
+    // `N_` returns its argument as is, so it stays untyped here.
+    let return_type = match method_name {
+        "Nn_" => Type::Array(Some(Box::new(Type::String))),
+        name if TRANSLATION_METHODS.contains(&name) => Type::String,
+        _ => return None,
+    };
     if !matches!(
         receiver_type,
         Type::Class(_) | Type::Generic { .. } | Type::Singleton(_)
@@ -50,5 +63,5 @@ pub(in crate::inference) fn synthetic_method_return(
     }
     engine
         .dsl_enabled(DslLibrary::Gettext)
-        .then_some(Type::String)
+        .then_some(return_type)
 }

@@ -53,15 +53,26 @@ impl<'a> InferenceEngine<'a> {
     ) {
         let loc = offset_to_location(parse_result.source(), call_node.location().start_offset());
         let type_suffix = method_name.trim_start_matches("kredis_");
-        let type_name = format!("Kredis::Types::{}", self.camelize(type_suffix));
+        // Kredis defines only readers; the reader returns `Kredis.<type>(...)`.
+        let type_name = match type_suffix {
+            "string" | "integer" | "decimal" | "float" | "boolean" | "datetime" | "json" => {
+                "Scalar".to_string()
+            }
+            "slot" | "slots" => "Slots".to_string(),
+            other => self.camelize(other),
+        };
+        let return_type = Type::Class(Sym::new(format!("Kredis::Types::{type_name}")));
         for name in self.symbol_or_string_args(call_node) {
-            self.add_accessor_methods(
-                class_name,
-                &name,
-                Type::Class(Sym::new(&type_name)),
-                false,
-                loc,
-            );
+            self.add_simple_method_if_missing(class_name, &name, return_type.clone(), false, loc);
+            if type_suffix == "flag" {
+                self.add_simple_method_if_missing(
+                    class_name,
+                    &format!("{name}?"),
+                    Type::Bool,
+                    false,
+                    loc,
+                );
+            }
         }
     }
 }

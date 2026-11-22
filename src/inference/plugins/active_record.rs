@@ -162,21 +162,18 @@ impl Plugin for ActiveRecord {
                 cx.collect_into_generated_module(class_name, |engine| {
                     engine.collect_belongs_to(class_name, call_node, parse_result)
                 });
-                cx.collect_active_model_serializer_belongs_to(class_name, call_node, parse_result);
                 true
             }
             "has_many" if cx.dsl_enabled(DslLibrary::ActiveRecordAssociations) => {
                 cx.collect_into_generated_module(class_name, |engine| {
                     engine.collect_has_many(class_name, call_node, parse_result)
                 });
-                cx.collect_active_model_serializer_has_many(class_name, call_node, parse_result);
                 true
             }
             "has_one" if cx.dsl_enabled(DslLibrary::ActiveRecordAssociations) => {
                 cx.collect_into_generated_module(class_name, |engine| {
                     engine.collect_has_one(class_name, call_node, parse_result)
                 });
-                cx.collect_active_model_serializer_belongs_to(class_name, call_node, parse_result);
                 true
             }
             "has_and_belongs_to_many" if cx.dsl_enabled(DslLibrary::ActiveRecordAssociations) => {
@@ -278,10 +275,23 @@ pub(in crate::inference) fn synthetic_method_return(
             instance_method_return(receiver_type, method_name)
         }
         Type::Singleton(name) if engine.is_active_record_model_class(name) => {
+            if method_name == "primary_key" {
+                return Some(primary_key_type(engine));
+            }
             dynamic_finder_return(name.as_str(), method_name)
         }
         _ => None,
     }
+}
+
+// Tables without a primary key return nil; Rails 7.1 adds composite keys.
+fn primary_key_type(engine: &PluginCx<'_, '_>) -> Type {
+    let mut members = vec![Type::String];
+    if engine.rails_at_least(7, 1) {
+        members.push(Type::Array(Some(Box::new(Type::String))));
+    }
+    members.push(Type::Nil);
+    Type::Union(members)
 }
 
 fn batch_enumerator_method_return(method_name: &str) -> Option<Type> {
@@ -312,7 +322,7 @@ fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Typ
     let changes_hash = || Type::Hash(Some(Box::new(Type::String)), Some(Box::new(Type::Untyped)));
     match method_name {
         "save" | "save!" | "update" | "update!" | "update_attribute" | "update_column"
-        | "update_columns" | "touch" | "increment!" | "decrement!" | "toggle!" => Some(Type::Bool),
+        | "update_columns" | "touch" | "toggle!" => Some(Type::Bool),
         "persisted?"
         | "new_record?"
         | "destroyed?"
@@ -323,7 +333,7 @@ fn instance_method_return(receiver_type: &Type, method_name: &str) -> Option<Typ
         | "has_changes_to_save?"
         | "saved_changes?" => Some(Type::Bool),
         "destroy" | "destroy!" | "delete" | "reload" | "lock!" | "increment" | "decrement"
-        | "toggle" | "tap_reload" => Some(receiver_type.clone()),
+        | "increment!" | "decrement!" | "toggle" | "tap_reload" => Some(receiver_type.clone()),
         "assign_attributes" | "attributes=" => Some(Type::Nil),
         "attributes" | "saved_changes" | "previous_changes" | "changes" | "changes_to_save"
         | "slice" => Some(changes_hash()),
@@ -373,20 +383,17 @@ fn dynamic_finder_return(model_name: &str, method_name: &str) -> Option<Type> {
     ) {
         return Some(Type::Untyped);
     }
-    if matches!(
-        method_name,
-        "sanitize_sql"
-            | "sanitize_sql_like"
-            | "sanitize_sql_for_conditions"
-            | "sanitize_sql_for_assignment"
-            | "sanitize_sql_array"
-    ) {
-        return Some(Type::String);
+    // `sanitize_sql_for_conditions` (aliased as `sanitize_sql`) returns nil for blank input.
+    if matches!(method_name, "sanitize_sql" | "sanitize_sql_for_conditions") {
+        return Some(Type::String.union_with(Type::Nil));
     }
     if matches!(
         method_name,
-        "table_name" | "primary_key" | "quoted_table_name"
+        "sanitize_sql_like" | "sanitize_sql_for_assignment" | "sanitize_sql_array"
     ) {
+        return Some(Type::String);
+    }
+    if matches!(method_name, "table_name" | "quoted_table_name") {
         return Some(Type::String);
     }
     if matches!(
@@ -1431,12 +1438,8 @@ impl<'a> InferenceEngine<'a> {
             class_name,
             MethodDef {
                 name: Sym::new("connects_to"),
-                param_infos: vec![ParamInfo {
-                    name: "database".to_string(),
-                    kind: ParamKind::Required,
-                    default_type: Some(Type::Untyped),
-                }],
-                raw_return_type: Type::Void,
+                param_infos: super::super::rails_dsl::connects_to_params(),
+                raw_return_type: super::super::rails_dsl::connects_to_return_type(),
                 sorbet_modifier_comments: Vec::new(),
                 rbs_annotated: true,
                 origin: MethodOrigin::RubySource,

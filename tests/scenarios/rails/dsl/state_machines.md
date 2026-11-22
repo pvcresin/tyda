@@ -20,18 +20,14 @@ end
 ```rbs
 class StateMachineReader
   def self.state_machine: -> untyped
-  def status_name: -> String
+  def status_name: -> Symbol
   def ready?: -> bool
   def machine_states: -> untyped
-  def status_label: -> String
+  def status_label: -> Symbol
 end
 ```
 
 ## Generate state_machines name and event helpers
-
-```yaml
-known_issue: true
-```
 
 ### update
 
