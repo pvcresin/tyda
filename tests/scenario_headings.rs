@@ -115,11 +115,11 @@ fn scenario_code_blocks_have_only_semantic_comments() {
             }
 
             let trimmed = line.trim_start();
-            // An `# @rbs!` block embeds RBS declarations in the indented comment lines after it.
+            // An `# @rbs!` block embeds RBS declarations in the indented and blank comment lines after it.
             in_rbs_embed = if trimmed.starts_with("# @rbs!") {
                 true
             } else {
-                in_rbs_embed && trimmed.starts_with("#  ")
+                in_rbs_embed && (trimmed.starts_with("#  ") || trimmed == "#")
             };
             if !trimmed.starts_with('#') || in_rbs_embed || is_semantic_comment(trimmed) {
                 continue;

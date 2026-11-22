@@ -539,6 +539,39 @@ class Account
 end
 ```
 
+## attr_accessor getter reflects a setter call on a parameter
+
+### update
+
+```ruby
+class Conn
+  attr_accessor :session
+  def initialize
+    @session = nil
+  end
+end
+class Session
+  def attach(conn)
+    conn.session = self
+  end
+end
+Session.new.attach(Conn.new)
+```
+
+### result
+
+```rbs
+class Conn
+  def session: -> Session?
+  def session=: (Session session) -> Session
+  def initialize: -> void
+end
+
+class Session
+  def attach: (Conn conn) -> Session
+end
+```
+
 ## Local receiver setter refines a later getter
 
 ### update

@@ -1011,6 +1011,85 @@ fn diagnostics_type_guard_on_reader_from_another_file_keeps_it_deferred() {
 }
 
 #[test]
+fn known_issue_setter_call_on_a_parameter_does_not_reach_the_ivar() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        concat!(
+            "class Conn\n",
+            "  attr_accessor :session\n",
+            "  def initialize\n",
+            "    @session = nil\n",
+            "  end\n",
+            "end\n",
+            "class Session\n",
+            "  def attach(conn)\n",
+            "    conn.session = self\n",
+            "  end\n",
+            "end\n",
+            "Session.new.attach(Conn.new)\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `conn` is a `Conn`, so `conn.session = self` writes a `Session` into
+    // `@session` and the reader is `Session?` (the scenario path gets this right). The CLI
+    // keeps only the `nil` from `initialize`, so the reader is `nil`, which is unsound.
+    assert!(
+        stdout.contains("  def session: -> nil\n"),
+        "known issue fixed; drop this check and assert `def session: -> Session?`: {stdout}"
+    );
+}
+
+#[test]
+fn known_issue_constant_declared_in_project_rbs_is_rendered_again() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::create_dir_all(dir.path().join("sig")).expect("failed to create sig");
+    fs::create_dir_all(dir.path().join("lib")).expect("failed to create lib");
+    fs::write(dir.path().join("Gemfile"), "").expect("failed to write Gemfile");
+    fs::write(
+        dir.path().join("sig/hp.rbs"),
+        "module Hp\n  VERSION: String\n  def self.x: () -> Integer\nend\n",
+    )
+    .expect("failed to write rbs");
+    fs::write(
+        dir.path().join("lib/hp.rb"),
+        concat!(
+            "module Hp\n",
+            "  VERSION = \"1\"\n",
+            "  LIMIT = 5\n",
+            "  def self.x = 1\n",
+            "  def self.y = 2\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().join("lib").to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("def self.x:"),
+        "a method declared in sig/ is left out: {stdout}"
+    );
+    assert!(stdout.contains("  LIMIT: 5\n"), "missing LIMIT: {stdout}");
+    // Known issue: `sig/` already declares `Hp::VERSION`, so loading the output next to
+    // `sig/` fails with RBS::DuplicatedDeclarationError. Methods declared in `sig/` are left
+    // out, but constants are rendered again (seen with the http and alba gems).
+    assert!(
+        stdout.contains("  VERSION: String\n"),
+        "known issue fixed; drop this check and assert VERSION is not rendered: {stdout}"
+    );
+}
+
+#[test]
 fn known_issue_self_call_into_a_module_from_another_file_drops_ivar_facts() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(

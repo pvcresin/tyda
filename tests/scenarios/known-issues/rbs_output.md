@@ -1,0 +1,688 @@
+# Known Issues / RBS Output
+
+Each case is valid Ruby whose rendered RBS is rejected by the official RBS parser or
+by `RBS::DefinitionBuilder`. Found by analyzing the `lib/` of popular gems.
+
+## Symbol literal types that need quotes
+
+### update
+
+```ruby
+class S
+  def a = :"&nil"
+  def b = :"foo bar"
+  def c = :"a-b"
+  def d = :"9x"
+  def e = :"Foo::Bar"
+  def f = :"}"
+  def g = :+
+  def h = :x?
+end
+```
+
+### result
+
+```rbs
+class S
+  def a: -> :"&nil"
+  def b: -> :"foo bar"
+  def c: -> :"a-b"
+  def d: -> :"9x"
+  def e: -> :"Foo::Bar"
+  def f: -> :"}"
+  def g: -> :+
+  def h: -> :x?
+end
+```
+
+## String literal types escape control characters
+
+### update
+
+```ruby
+class S
+  ESC = { bell: "\a", esc: "\e[0m", nul: "\0", del: "\x7f", tab: "\t" }
+end
+```
+
+### result
+
+```rbs
+class S
+  ESC: { bell: "\a", esc: "\e[0m", nul: "\x00", del: "\x7F", tab: "\t" }
+end
+```
+
+## Struct member names ending with a question mark
+
+### update
+
+```ruby
+Pair = Struct.new(:quoted?, :name)
+```
+
+### result
+
+```rbs
+class Pair < Struct[untyped]
+  def quoted?: -> untyped
+  def `quoted?=`: (untyped) -> untyped
+  def name: -> untyped
+  def name=: (untyped name) -> untyped
+  def initialize: (untyped, untyped name) -> void
+  def self.members: -> Array[:name | :quoted?]
+end
+```
+
+## Method names that are not identifiers
+
+### update
+
+```ruby
+class Conv
+  define_method("to_x::string") { 1 }
+  define_method("skip-it") { 2 }
+  def inverted = 3
+  alias_method "scan_^", :inverted
+end
+```
+
+### result
+
+```rbs
+class Conv
+  def `to_x::string`: -> 1
+  def `skip-it`: -> 2
+  def inverted: -> 3
+  alias `scan_^` inverted
+end
+```
+
+## define_method with a computed name in a multi-line call
+
+### update
+
+```ruby
+module Worker
+  define_method(
+    ::Other::Worker.method_defined?(:process_work) ? :process_work : :do_work,
+  ) do |msg|
+    msg
+  end
+end
+```
+
+### result
+
+```rbs
+module Worker
+  def do_work: (untyped msg) -> untyped
+  def process_work: (untyped msg) -> untyped
+end
+```
+
+## void from RBS used as a value
+
+```rbs
+class Lib
+  def run: () -> void
+end
+```
+
+### update
+
+```ruby
+class V
+  def initialize
+    @calls = []
+  end
+  def a = [1].map { Lib.new.run }
+  def b = [Lib.new.run, "s"]
+  def c = yield(1, Lib.new.run)
+  def d(cb = nil) = cb
+  def e = d(-> { Lib.new.run if rand > 0.5 })
+  def from_void = on_call(Lib.new.run)
+  def on_call(node)
+    @calls << node
+    node
+  end
+end
+```
+
+### result
+
+```rbs
+class V
+  def initialize: -> void
+  def a: -> Array[untyped]
+  def b: -> [untyped, "s"]
+  def c: [R] { (Integer, untyped) -> R } -> R
+  def d: (?(^() -> void)? cb) -> (^() -> void)?
+  def e: -> (^() -> void)?
+  def from_void: -> void
+  def on_call: [N] (N node) -> N
+end
+```
+
+## Generic superclass and mixin get type arguments
+
+### update
+
+```ruby
+class Coll
+  include Enumerable
+  def each = yield 1
+end
+class MyHash < Hash
+  def x = 1
+end
+class MyArr < Array
+  def x = 1
+end
+class MyErr < NameError
+  def x = 1
+end
+class Pt < Struct.new(:a)
+  def x = 1
+end
+```
+
+### result
+
+```rbs
+class Coll
+  include Enumerable[untyped]
+
+  def each: [R] { (Integer) -> R } -> R
+end
+
+class MyArr < Array[untyped]
+  def x: -> 1
+end
+
+class MyErr < NameError[untyped]
+  def x: -> 1
+end
+
+class MyHash < Hash[untyped, untyped]
+  def x: -> 1
+end
+
+class Pt < Struct[untyped]
+  def a: -> untyped
+  def a=: (untyped a) -> untyped
+  def initialize: (untyped a) -> void
+  def self.members: -> Array[:a]
+  def x: -> 1
+end
+```
+
+## Generic class narrowed by is_a? or when gets type arguments
+
+### update
+
+```ruby
+class G
+  def a(v) = v.is_a?(Hash) ? v : nil
+  def c(v)
+    case v
+    when Array then v
+    when Range then v
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class G
+  def a: (untyped v) -> Hash[untyped, untyped]?
+  def c: (untyped v) -> (Array[untyped] | Range[untyped])?
+end
+```
+
+## Classes and namespaces without members are still declared
+
+### update
+
+```ruby
+module Fx
+  class Error < StandardError; end
+  class Env; end
+  class Builder
+    def build_env = Env.new
+  end
+  class ServerError < Error
+    def code = 500
+  end
+  module Logging
+    class Formatter
+      def x = 1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+module Fx
+end
+
+class Fx::Builder
+  def build_env: -> Fx::Env
+end
+
+class Fx::Env
+end
+
+class Fx::Error < StandardError
+end
+
+module Fx::Logging
+end
+
+class Fx::Logging::Formatter
+  def x: -> 1
+end
+
+class Fx::ServerError < Fx::Error
+  def code: -> 500
+end
+```
+
+## Superclass in a compact class declaration is fully qualified
+
+RBS resolves the superclass of `class Fx::ServerError` from the top level, not from `Fx`.
+
+### update
+
+```ruby
+module Fx
+  class Error < StandardError
+    def a = 1
+  end
+  class ServerError < Error
+    def b = 1
+  end
+end
+```
+
+### result
+
+```rbs
+module Fx
+end
+
+class Fx::Error < StandardError
+  def a: -> 1
+end
+
+class Fx::ServerError < Fx::Error
+  def b: -> 1
+end
+```
+
+## Core class name shadowed by a nested module
+
+### update
+
+```ruby
+module Util
+  module Hash
+    def self.deep(h) = h
+  end
+  def self.blank = {}
+end
+```
+
+### result
+
+```rbs
+module Util
+  def self.blank: -> ::Hash[untyped, untyped]
+end
+
+module Util::Hash
+  def self.deep: [H] (H h) -> H
+end
+```
+
+## Unknown constant read through self is not a type
+
+### update
+
+```ruby
+class Proc3
+  def self.call(source)
+    source if source.is_a?(String) || source.is_a?(self::ACCUMULATOR)
+  end
+  def self.setup(k) = const_set(:ACCUMULATOR, k)
+end
+```
+
+### result
+
+```rbs
+class Proc3
+  def self.call: (untyped source) -> untyped
+  def self.setup: (untyped k) -> untyped
+end
+```
+
+## Unknown constant with a method call is not a class
+
+### update
+
+```ruby
+module Es
+  def self.meta
+    match = Ext::VERSION.match(/x/)
+    return "#{match[1]}p" if match[2]
+    Ext::VERSION
+  end
+end
+```
+
+### result
+
+```rbs
+module Es
+  def self.meta: -> untyped
+end
+```
+
+## Constant made by a Struct subclass new holds a class
+
+### update
+
+```ruby
+module Fx
+  class Options < Struct
+    def c = 1
+  end
+  ConnOpts = Options.new(:a, :b)
+  def self.opts = ConnOpts.new
+end
+```
+
+### result
+
+```rbs
+module Fx
+  ConnOpts: singleton(Fx::Options)
+
+  def self.opts: -> Fx::Options
+end
+
+class Fx::Options < Struct[untyped]
+  def c: -> 1
+end
+```
+
+## Data define on a constant path and a reopened class are one declaration
+
+### update
+
+```ruby
+module Lcs
+end
+Lcs::Block = Data.define(:changes, :insert)
+class Lcs::Block
+  def size = 1
+end
+```
+
+### result
+
+```rbs
+module Lcs
+end
+
+class Lcs::Block < Data
+  def changes: -> untyped
+  def insert: -> untyped
+  def initialize: (changes: untyped, insert: untyped) -> void
+  def self.members: -> Array[:changes | :insert]
+  def with: (?changes: untyped, ?insert: untyped) -> Lcs::Block
+  def size: -> 1
+end
+```
+
+## Module in one branch and constant alias in another are one declaration
+
+### update
+
+```ruby
+module Gx
+  if defined?(::Oj)
+    module Js
+      def self.dump(o) = o
+    end
+  else
+    Js = ::JSON
+  end
+end
+```
+
+### result
+
+```rbs
+module Gx
+end
+
+module Gx::Js
+  def self.dump: [O] (O o) -> O
+end
+```
+
+## const_set over an existing class does not add a constant
+
+### update
+
+```ruby
+module Hx
+  class Options
+    def a = 1
+  end
+  unless ENV["X"]
+    k = Options.dup
+    const_set(:Options, k)
+  end
+end
+```
+
+### result
+
+```rbs
+module Hx
+end
+
+class Hx::Options
+  def a: -> 1
+end
+```
+
+## Classes defined in top-level control flow
+
+### update
+
+```ruby
+if RUBY_VERSION > "3"
+  class Kz
+    def a = 1
+  end
+end
+begin
+  class Kb
+    def b = 1
+  end
+end
+[1].each do
+  class Kc
+    def c = 1
+  end
+end
+```
+
+### result
+
+```rbs
+class Kb
+  def b: -> 1
+end
+
+class Kc
+  def c: -> 1
+end
+
+class Kz
+  def a: -> 1
+end
+```
+
+## Redefined core method is not declared again
+
+The core RBS already declares `String#to_s`; RBS rejects a second definition.
+
+### update
+
+```ruby
+class String
+  def to_s = self
+  def shout = upcase
+end
+```
+
+### result
+
+```rbs
+class String
+  def shout: -> String
+end
+```
+
+## Module included into Object has a BasicObject self type
+
+Otherwise RBS sees `Trap < Object < Trap` as recursive ancestors.
+
+### update
+
+```ruby
+module Trap
+  def trap(sig) = sig
+end
+class Object
+  include Trap
+end
+module Kernel
+  prepend Trap
+end
+```
+
+### result
+
+```rbs
+module Kernel
+  prepend Trap
+end
+
+class Object < BasicObject
+  include Trap
+end
+
+module Trap : BasicObject
+  def trap: [S] (S sig) -> S
+end
+```
+
+## Including a module instance does not include its class
+
+### update
+
+```ruby
+module Store
+  class Translatable < Module
+    def initialize(name) = super()
+  end
+  Translation = Translatable.new(:key)
+  class Text
+    include Translation
+  end
+end
+```
+
+### result
+
+```rbs
+module Store
+  Translation: Store::Translatable
+end
+
+class Store::Text
+end
+
+class Store::Translatable < Module
+  def initialize: (Symbol name) -> void
+end
+```
+
+## rbs-inline block with blank comment lines
+
+### update
+
+```ruby
+module Px
+  # @rbs!
+  #   module Tr
+  #     class Rip
+  #       EXPR: Integer
+  #
+  #       def lex: () -> Integer
+  #     end
+  #   end
+
+  class Node
+    def x = 1
+  end
+end
+```
+
+### result
+
+```rbs
+module Px
+  module Tr
+    class Rip
+      EXPR: Integer
+
+      def lex: () -> Integer
+    end
+  end
+end
+
+class Px::Node
+  def x: -> 1
+end
+```
+
+## rdoc nodoc directive is not a type annotation
+
+### update
+
+```ruby
+class H
+  def perform(x) #:nodoc:
+    x
+  end
+end
+```
+
+### result
+
+```rbs
+class H
+  def perform: [X] (X x) -> X
+end
+```

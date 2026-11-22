@@ -203,6 +203,7 @@ mutation test は壊れた入力の graceful degradation、pathological test は
   `known_issue: true` を付ける。最小の Ruby 例と Ruby semantics / RBS に基づく暫定期待値を残し、
   推論が一致したら通常 scenario へ昇格する。解決後は `known_issue` キーを削除し、
   `known_issue: false` は残さない。他の設定もなければ YAML config ブロックごと削除する。
+- 入力の大きさに対して解析時間が急に伸びる未修正の問題は、`tests/pathological_inputs.rs` に同じ入力の小さい版と大きい版の時間比を確かめる `known_issue_*` テストとして残す。時間の絶対値は環境で変わるため使わない。直ったら入力を `corpus` に移す。
 - 大きな推論変更は最小例から始め、対象 scenario、全 suite、OSS subject、benchmark へ段階的に広げる。
 - CI の analysis compatibility で実プロジェクトの出力差分が出たら、原因のコードパターンが既存
   scenario で未カバーか確認し、未カバーなら最小化・一般化して scenario（RBS で表せない

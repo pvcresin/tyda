@@ -746,3 +746,68 @@ fn pathological_inputs_stay_bounded() {
 fn pathological_inputs_stay_bounded_aggressive() {
     assert_corpus_bounded(1500, Duration::from_secs(25), PROD_PROBE_STACK);
 }
+
+// Known issues: inputs whose analysis time grows much faster than their size. Each test
+// compares two sizes of the same input. The assertion holds while the blowup remains; when a
+// fix makes the growth roughly linear, it fails on purpose: then move the input into
+// `corpus` and delete the test.
+
+/// Analysis time of `source` on the full display path, run on a production-sized stack.
+fn analysis_time(loader: &Arc<LazyRbsLoader>, source: String) -> Duration {
+    match run_probe(loader, PROD_PROBE_STACK, move |l| {
+        let _ = tyda::analysis::playground_analyze(&source, "", l, "m.rb");
+    }) {
+        Outcome::Completed(elapsed) => elapsed,
+        Outcome::Panicked => panic!("probe panicked"),
+        Outcome::Hang => panic!("probe did not finish within {HANG_TIMEOUT:?}"),
+    }
+}
+
+/// Ratio of the analysis time of `large` to that of `small`. Both are warmed once so the
+/// ratio reflects analysis work rather than stdlib loading.
+fn growth_ratio(small: String, large: String) -> f64 {
+    let loader = loader();
+    let _ = analysis_time(&loader, small.clone());
+    let small_time = analysis_time(&loader, small).max(Duration::from_millis(1));
+    let large_time = analysis_time(&loader, large);
+    eprintln!("growth: small {small_time:?}, large {large_time:?}");
+    large_time.as_secs_f64() / small_time.as_secs_f64()
+}
+
+/// `def update(a: self.a, ...) = self.class.new(a: a, ...)`: the copy-with-changes method of
+/// immutable value objects (`RBS::AST::Members::MethodDefinition#update`).
+fn keyword_defaults_from_readers(fields: usize) -> String {
+    let names: Vec<String> = (1..=fields).map(|i| format!("f{i}")).collect();
+    let mut src = String::from("class P\n");
+    for name in &names {
+        src.push_str(&format!("  attr_reader :{name}\n"));
+    }
+    let required: Vec<String> = names.iter().map(|n| format!("{n}:")).collect();
+    src.push_str(&format!("  def initialize({})\n", required.join(", ")));
+    for name in &names {
+        src.push_str(&format!("    @{name} = {name}\n"));
+    }
+    src.push_str("  end\n");
+    let defaults: Vec<String> = names.iter().map(|n| format!("{n}: self.{n}")).collect();
+    let passed: Vec<String> = names.iter().map(|n| format!("{n}: {n}")).collect();
+    src.push_str(&format!(
+        "  def update({}) = self.class.new({})\nend\n",
+        defaults.join(", "),
+        passed.join(", ")
+    ));
+    src
+}
+
+#[test]
+fn known_issue_keyword_defaults_from_readers_grow_exponentially() {
+    let ratio = growth_ratio(
+        keyword_defaults_from_readers(2),
+        keyword_defaults_from_readers(6),
+    );
+    // Known issue: each extra field multiplies the time by about 10 (rbs gem `lib/rbs/ast`
+    // does not finish). Linear growth would keep this ratio near 1.
+    assert!(
+        ratio > 10.0,
+        "known issue fixed (ratio {ratio:.1}); move keyword_defaults_from_readers into the corpus"
+    );
+}
