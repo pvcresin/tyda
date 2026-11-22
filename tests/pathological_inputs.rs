@@ -763,12 +763,17 @@ fn analysis_time(loader: &Arc<LazyRbsLoader>, source: String) -> Duration {
     }
 }
 
-/// Ratio of the analysis time of `large` to that of `small`. Both are warmed once so the
-/// ratio reflects analysis work rather than stdlib loading.
+/// Ratio of the analysis time of `large` to that of `small`. The small input is warmed once
+/// so the ratio reflects analysis work rather than stdlib loading, and its fastest of three
+/// runs is used so that noise cannot shrink the ratio.
 fn growth_ratio(small: String, large: String) -> f64 {
     let loader = loader();
     let _ = analysis_time(&loader, small.clone());
-    let small_time = analysis_time(&loader, small).max(Duration::from_millis(1));
+    let small_time = (0..3)
+        .map(|_| analysis_time(&loader, small.clone()))
+        .min()
+        .unwrap()
+        .max(Duration::from_millis(1));
     let large_time = analysis_time(&loader, large);
     eprintln!("growth: small {small_time:?}, large {large_time:?}");
     large_time.as_secs_f64() / small_time.as_secs_f64()
@@ -862,5 +867,63 @@ fn known_issue_sibling_loops_grow_with_locals_squared() {
     assert!(
         ratio > 16.0,
         "known issue fixed (ratio {ratio:.1}); move sibling_loops_with_fresh_locals into the corpus"
+    );
+}
+
+/// A base class with keyword `initialize`, two subclasses forwarding the keywords with
+/// `super`, and one expression that chains every reader (`Base#hash` in the steep gem).
+fn forwarded_keywords_with_reader_chain(fields: usize) -> String {
+    let names: Vec<String> = (1..=fields).map(|i| format!("f{i}")).collect();
+    let symbols: Vec<String> = names.iter().map(|n| format!(":{n}")).collect();
+    let required: Vec<String> = names.iter().map(|n| format!("{n}:")).collect();
+    let passed: Vec<String> = names.iter().map(|n| format!("{n}: {n}")).collect();
+    let mut src = format!(
+        "class Base\n  attr_reader {}\n  def initialize({})\n",
+        symbols.join(", "),
+        required.join(", ")
+    );
+    for name in &names {
+        src.push_str(&format!("    @{name} = {name}\n"));
+    }
+    src.push_str(&format!("  end\n  def use = {}\nend\n", names.join(" ^ ")));
+    for sub in 0..2 {
+        src.push_str(&format!(
+            "class Sub{sub} < Base\n  def initialize({})\n    super({})\n  end\nend\n",
+            required.join(", "),
+            passed.join(", ")
+        ));
+    }
+    src
+}
+
+#[test]
+fn known_issue_forwarded_keywords_with_reader_chain_grow_exponentially() {
+    let ratio = growth_ratio(
+        forwarded_keywords_with_reader_chain(2),
+        forwarded_keywords_with_reader_chain(5),
+    );
+    // Known issue: each reader in the chain resolves its type from the `initialize`
+    // keyword again through every `super` call site, without a memo, so each extra field
+    // multiplies the time by about 10.
+    assert!(
+        ratio > 10.0,
+        "known issue fixed (ratio {ratio:.1}); move forwarded_keywords_with_reader_chain into the corpus"
+    );
+}
+
+/// `t&.a0&.a1...` on an unknown receiver.
+fn safe_navigation_chain(links: usize) -> String {
+    let chain: String = (0..links).map(|i| format!("&.a{i}")).collect();
+    format!("class C\n  def m(t) = t{chain}\nend\n")
+}
+
+#[test]
+fn known_issue_safe_navigation_chain_grows_exponentially() {
+    let ratio = growth_ratio(safe_navigation_chain(4), safe_navigation_chain(9));
+    // Known issue: the deferred type of each `&.` keeps a copy of its receiver, so every
+    // link doubles the type tree (21 links take about 20s and 1.2GB).
+    assert!(
+        ratio > 10.0,
+        "known issue fixed (ratio {ratio:.1}); move safe_navigation_chain into the corpus"
     );
 }

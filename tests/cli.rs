@@ -6016,3 +6016,49 @@ fn known_issue_inherited_ivar_across_files_grows_quadratically() {
          add a bounded-time check instead"
     );
 }
+
+#[test]
+fn known_issue_mutual_recursion_through_safe_navigation_does_not_finish() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(dir.path().join("Gemfile"), "").expect("failed to write Gemfile");
+    fs::write(
+        dir.path().join("b.rb"),
+        concat!(
+            "class B\n",
+            "  def r(t)\n",
+            "    t ? s(t)&.x : o.x(t)\n",
+            "  end\n",
+            "  def s(t)\n",
+            "    o.x(t)\n",
+            "    t ? s(t)&.y : r(t)\n",
+            "  end\n",
+            "  def o = 1\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let mut child = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to run");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut finished = false;
+    while std::time::Instant::now() < deadline {
+        if child.try_wait().expect("failed to wait").is_some() {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    // Known issue: resolving the receiver classes of `s(t)&.x` follows each method return
+    // reference into the callee again without a memo, so this 10-line file does not finish
+    // (seen in steep `lib/steep/interface/builder.rb`). It should take milliseconds.
+    assert!(
+        !finished,
+        "known issue fixed; drop this check and assert the analysis finishes"
+    );
+}
