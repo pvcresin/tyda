@@ -6017,6 +6017,28 @@ fn known_issue_inherited_ivar_across_files_grows_quadratically() {
     );
 }
 
+/// Whether the CLI finishes analyzing `dir` within `limit`; the process is killed otherwise.
+fn finishes_within(dir: &std::path::Path, limit: std::time::Duration) -> bool {
+    let mut child = tyda_bin()
+        .arg(dir.to_str().unwrap())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to run");
+    let deadline = std::time::Instant::now() + limit;
+    let mut finished = false;
+    while std::time::Instant::now() < deadline {
+        if child.try_wait().expect("failed to wait").is_some() {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    finished
+}
+
 #[test]
 fn known_issue_mutual_recursion_through_safe_navigation_does_not_finish() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
@@ -6037,28 +6059,46 @@ fn known_issue_mutual_recursion_through_safe_navigation_does_not_finish() {
         ),
     )
     .expect("failed to write source");
-    let mut child = tyda_bin()
-        .arg(dir.path().to_str().unwrap())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("failed to run");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut finished = false;
-    while std::time::Instant::now() < deadline {
-        if child.try_wait().expect("failed to wait").is_some() {
-            finished = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
+    let finished = finishes_within(dir.path(), std::time::Duration::from_secs(5));
     // Known issue: resolving the receiver classes of `s(t)&.x` follows each method return
     // reference into the callee again without a memo, so this 10-line file does not finish
     // (seen in steep `lib/steep/interface/builder.rb`). It should take milliseconds.
     assert!(
         !finished,
+        "known issue fixed; drop this check and assert the analysis finishes"
+    );
+}
+
+#[test]
+fn known_issue_singleton_calling_same_named_instance_method_does_not_finish() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(dir.path().join("Gemfile"), "").expect("failed to write Gemfile");
+    fs::write(
+        dir.path().join("s.rb"),
+        concat!(
+            "class S\n",
+            "  def self.m(d)\n",
+            "    new.m(d)\n",
+            "  end\n",
+            "  def m(d)\n",
+            "    if d\n",
+            "      v = m(d)\n",
+            "      v = v.dup if d\n",
+            "      [v, v]\n",
+            "    else\n",
+            "      bar\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    // Known issue: the return reference of `m` is tried as both the instance and the
+    // singleton method, and once the type is too large for the memo the cycle is not
+    // detected, so the type doubles at each level until memory runs out (honeybadger
+    // `Honeybadger::Util::Sanitizer`). The limit is short because memory keeps growing.
+    assert!(
+        !finishes_within(dir.path(), std::time::Duration::from_secs(2)),
         "known issue fixed; drop this check and assert the analysis finishes"
     );
 }

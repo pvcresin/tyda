@@ -927,3 +927,58 @@ fn known_issue_safe_navigation_chain_grows_exponentially() {
         "known issue fixed (ratio {ratio:.1}); move safe_navigation_chain into the corpus"
     );
 }
+
+/// A loop whose `case` has `arms` arms that each `break`, while a local grows every pass
+/// (the Ragel-generated lexers of the parser gem, which run out of memory).
+fn loop_case_with_breaking_arms(arms: usize) -> String {
+    let mut src = String::from(
+        "class L\n  def advance\n    acts = nil\n    while c\n      acts += 1\n      case x\n",
+    );
+    for i in 1..=arms {
+        src.push_str(&format!("      when {i}\n        break\n"));
+    }
+    src.push_str("      end\n    end\n  end\nend\n");
+    src
+}
+
+#[test]
+fn known_issue_loop_case_with_breaking_arms_grows_cubically() {
+    let ratio = growth_ratio(
+        loop_case_with_breaking_arms(8),
+        loop_case_with_breaking_arms(32),
+    );
+    // Known issue: the jump locals of every arm are merged and cloned again on each loop
+    // pass, so time and memory grow about with the cube of the arm count (64 arms run out
+    // of memory). Linear growth would keep this ratio near 4.
+    assert!(
+        ratio > 16.0,
+        "known issue fixed (ratio {ratio:.1}); move loop_case_with_breaking_arms into the corpus"
+    );
+}
+
+/// An attr_reader whose ivar starts unknown, and `writers` methods that each write the ivar
+/// back from its own reader (`Honeybadger::Config`, `self.ruby = ruby.merge(...).freeze`).
+fn ivar_rewritten_from_its_reader(writers: usize) -> String {
+    let mut src =
+        String::from("class C\n  def initialize\n    @h = foo\n  end\n  attr_reader :h\n");
+    for i in 1..=writers {
+        src.push_str(&format!("  def m{i} = @h = h.dup.dup.dup\n"));
+    }
+    src.push_str("end\n");
+    src
+}
+
+#[test]
+fn known_issue_ivar_rewritten_from_its_reader_grows_exponentially() {
+    let ratio = growth_ratio(
+        ivar_rewritten_from_its_reader(2),
+        ivar_rewritten_from_its_reader(3),
+    );
+    // Known issue: the receiver method references fan out over every union member and the
+    // memo is keyed on a type that grows each level, so one more writer multiplies the time
+    // (4 writers take about 10s and 1.2GB). Linear growth would keep this ratio near 1.5.
+    assert!(
+        ratio > 8.0,
+        "known issue fixed (ratio {ratio:.1}); move ivar_rewritten_from_its_reader into the corpus"
+    );
+}
