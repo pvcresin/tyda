@@ -1141,6 +1141,17 @@ impl<'e, 'src> PluginCx<'e, 'src> {
             .collect_argument_like_dsl(class_name, call_node, method_name, parse_result);
     }
 
+    pub(in crate::inference) fn collect_field_like_dsl(
+        &mut self,
+        class_name: &str,
+        call_node: &CallNode<'_>,
+        method_name: &str,
+        parse_result: &ParseResult<'_>,
+    ) {
+        self.engine
+            .collect_field_like_dsl(class_name, call_node, method_name, parse_result);
+    }
+
     pub(in crate::inference) fn register_current_attributes_class_methods(
         &mut self,
         class_name: &str,

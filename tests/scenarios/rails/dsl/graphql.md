@@ -56,3 +56,21 @@ class Types::UserType < Types::BaseObject
   def kind: -> :user
 end
 ```
+
+## Non-GraphQL field macros keep a reader
+
+### update
+
+```ruby
+class Integration
+  field :username
+end
+```
+
+### result
+
+```rbs
+class Integration
+  def username: -> untyped
+end
+```
