@@ -233,6 +233,8 @@ pub(in crate::inference) fn synthetic_method_return(
         "url_for" => Type::String,
         "performed?" => Type::Bool,
         "stale?" => Type::Bool,
+        // Authorization predicates come from a gem or the app; `bool` only with CanCanCan.
+        "can?" | "cannot?" => Type::Untyped,
         "tag" => Type::Class(Sym::new(TAG_BUILDER)),
         "content_tag" | "link_to" | "button_to" | "image_tag" | "safe_join" | "asset_path"
         | "asset_url" | "image_path" | "time_ago_in_words" | "pluralize" | "simple_format"

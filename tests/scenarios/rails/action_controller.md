@@ -643,3 +643,21 @@ class PostsController < ActionController::Base
   def encoding: -> String
 end
 ```
+
+## Authorization predicates in helpers are known without CanCanCan
+
+### update
+
+```ruby
+module NavHelper
+  def show_nav? = can?(:read, :nav)
+end
+```
+
+### result
+
+```rbs
+module NavHelper
+  def show_nav?: -> untyped
+end
+```

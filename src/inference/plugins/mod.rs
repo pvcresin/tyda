@@ -185,8 +185,9 @@ static PLUGINS: &[&dyn Plugin] = &[
     &devise::Devise,
     &doorkeeper::Doorkeeper,
     &sidekiq::Sidekiq,
-    &action_controller::ActionController,
+    // Before ActionController, which answers `can?` with `untyped` without CanCanCan.
     &cancancan::Cancancan,
+    &action_controller::ActionController,
     &rails_configure::RailsConfigure,
     &active_support::ActiveSupport,
     &gettext::Gettext,
