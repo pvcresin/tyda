@@ -102,6 +102,12 @@ TYDA_PERF_BASE_REF=origin/main ./scripts/benchmark_ci.sh
 見直して解消する。判断には既存の CI 閾値と大規模 OSS の処理時間・ピーク RSS を使う。CI の並列度は
 GitHub の利用枠に合わせ、検証対象を減らさず待ち時間で調整する。
 
+subject は代表例であり、最適化の対象ではない。gate が落ちたときに、subject で使われるメソッド・
+クラス・gem・ファイル構成だけを特別扱いしたり、本来は一般に行う推論を subject が使うものに限定
+したりして通してはならない。これは性能テストのハックで、ほかのプロジェクトでは推論品質か速度が
+落ちる。原因をアルゴリズムやデータ構造の水準で特定し、どの Ruby コードにも同じように効く改善で
+解消する。一般的な改善で要件を満たせない場合は、劣化と理由を PR に書いて相談する。
+
 GitHub の branch protection では、この workflow の `performance` gateだけを required に設定する。
 gateは対象scopeで `performance-build` と全ての `performance (<subject>)` matrix jobの
 successを要求し、対象外scopeでは分類成功と依存jobの全skipを確認した場合だけsuccessを
