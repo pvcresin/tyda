@@ -1486,7 +1486,7 @@ class Config::Parser
 end
 ```
 
-## Generic class narrowed by is_a? or when gets type arguments
+## Array and Hash narrowed by is_a? or when get type arguments
 
 ### update
 
@@ -1496,7 +1496,6 @@ class G
   def c(v)
     case v
     when Array then v
-    when Range then v
     end
   end
 end
@@ -1507,7 +1506,7 @@ end
 ```rbs
 class G
   def a: (untyped v) -> Hash[untyped, untyped]?
-  def c: (untyped v) -> (Array[untyped] | Range[untyped])?
+  def c: (untyped v) -> Array[untyped]?
 end
 ```
 

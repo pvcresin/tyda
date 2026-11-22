@@ -463,7 +463,7 @@ end
 
 ```rbs
 class Object < BasicObject
-  def unknown_class_case: (untyped value) -> (Integer | "other")
+  def unknown_class_case: (untyped value) -> ("other" | Integer)
 end
 ```
 

@@ -18548,7 +18548,7 @@ impl<'a> InferenceEngine<'a> {
                     Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. } => {
                         let type_name = self.resolve_constant_path(&arg_list[1], parse_result);
                         if type_name != "Unknown" {
-                            let ty = self.class_instance_type(&type_name);
+                            let ty = Self::class_name_to_type(&type_name);
                             // A nominal class (one that wasn't collapsed to a builtin) should resolve in the lexical scope of the class enclosing the declaration. At collection time there may be a forward reference to a nested definition that doesn't exist yet, so hold on to the raw name and write it back at finalize.
                             if matches!(ty, Type::Class(_)) {
                                 scoped_raw_type = Some(ty.clone());
@@ -27547,7 +27547,7 @@ impl<'a> InferenceEngine<'a> {
                 .to_string(),
             _ => return None,
         };
-        Some(self.class_instance_type(&name))
+        Some(Self::class_name_to_type(&name))
     }
 
     fn apply_assertion_narrowing(
@@ -36674,10 +36674,7 @@ impl<'a> InferenceEngine<'a> {
                 .into(),
             };
         }
-        Type::Generic {
-            base: Sym::new("Range"),
-            args: vec![Type::Untyped].into(),
-        }
+        Type::Class(Sym::new("Range"))
     }
 
     fn infer_hash_type(
@@ -37605,11 +37602,11 @@ impl<'a> InferenceEngine<'a> {
                 .and_then(|entry| entry.exception_type.clone())
                 .unwrap_or_else(|| {
                     self.ensure_external_class("StandardError");
-                    self.class_instance_type("StandardError")
+                    Self::class_name_to_type("StandardError")
                 })
         } else if types.is_empty() {
             self.ensure_external_class("Exception");
-            self.class_instance_type("Exception")
+            Self::class_name_to_type("Exception")
         } else if types.len() == 1 {
             types.into_iter().next().unwrap()
         } else {
@@ -37631,14 +37628,14 @@ impl<'a> InferenceEngine<'a> {
                 .map(|constant| {
                     let name = String::from_utf8_lossy(constant.name().as_slice()).to_string();
                     self.ensure_external_class(&name);
-                    self.class_instance_type(&name)
+                    Self::class_name_to_type(&name)
                 })
                 .into_iter()
                 .collect(),
             Node::ConstantPathNode { .. } => {
                 let name = self.resolve_constant_path(node, parse_result);
                 self.ensure_external_class(&name);
-                vec![self.class_instance_type(&name)]
+                vec![Self::class_name_to_type(&name)]
             }
             Node::SplatNode { .. } => {
                 let splat = node.as_splat_node().expect("must be SplatNode");
@@ -38847,7 +38844,7 @@ impl<'a> InferenceEngine<'a> {
         match module_type {
             Some(Type::Singleton(name)) => {
                 self.ensure_class_available(name);
-                self.class_instance_type(name)
+                Self::class_name_to_type(name)
             }
             Some(Type::Union(parts)) => Type::from_type_vec_preserve_untyped(
                 parts
@@ -60290,12 +60287,13 @@ impl<'a> InferenceEngine<'a> {
         }
     }
 
-    fn case_when_targets_type(&mut self, targets: &[CaseWhenClassTarget]) -> Type {
-        let types = targets
-            .iter()
-            .map(|target| self.class_instance_type(&target.name))
-            .collect();
-        Type::from_type_vec_preserve_untyped(types)
+    fn case_when_targets_type(targets: &[CaseWhenClassTarget]) -> Type {
+        Type::from_type_vec_preserve_untyped(
+            targets
+                .iter()
+                .map(|target| Type::Class(Sym::new(&target.name)))
+                .collect(),
+        )
     }
 
     fn case_class_relation(
@@ -60364,7 +60362,7 @@ impl<'a> InferenceEngine<'a> {
             .as_ref()
             .is_some_and(|names| names.iter().any(|name| name.as_ref() == subject_class))
         {
-            return CaseClassRelation::Possible(self.class_instance_type(target_class));
+            return CaseClassRelation::Possible(Type::Class(Sym::new(target_class)));
         }
         if subject_ancestors.is_some() && target_ancestors.is_some() {
             CaseClassRelation::Never
@@ -60647,7 +60645,7 @@ impl<'a> InferenceEngine<'a> {
                         matched_type
                     }),
                 (Some(targets), None) if can_keep_initial_type => {
-                    Some(self.case_when_targets_type(&targets))
+                    Some(Self::case_when_targets_type(&targets))
                 }
                 (None, _) => None,
                 _ => None,
@@ -60662,7 +60660,7 @@ impl<'a> InferenceEngine<'a> {
             return None;
         };
         let Some(subject_type) = remaining_subject_type.clone() else {
-            return Some(self.case_when_targets_type(&targets));
+            return Some(Self::case_when_targets_type(&targets));
         };
         match self.analyze_case_class_when(&subject_type, &targets) {
             Some((matched_type, remaining_type)) => {
@@ -60671,7 +60669,7 @@ impl<'a> InferenceEngine<'a> {
             }
             None => {
                 *remaining_subject_type = None;
-                Some(self.case_when_targets_type(&targets))
+                Some(Self::case_when_targets_type(&targets))
             }
         }
     }
@@ -60825,26 +60823,6 @@ impl<'a> InferenceEngine<'a> {
         Self::class_name_to_type(name)
     }
 
-    /// The instance type of `name`, with `untyped` for each type parameter of a generic class.
-    fn class_instance_type(&mut self, name: &str) -> Type {
-        let ty = Self::class_name_to_type(name);
-        // `Array` / `Hash` instances already render with `untyped` arguments.
-        let Type::Class(base) = &ty else {
-            return ty;
-        };
-        if matches!(base.as_ref(), "Array" | "Hash") {
-            return ty;
-        }
-        let args = self.untyped_type_args_for(name);
-        if args.is_empty() {
-            return ty;
-        }
-        Type::Generic {
-            base: *base,
-            args: args.iter().map(|_| Type::Untyped).collect(),
-        }
-    }
-
     pub(crate) fn class_name_to_type(name: &str) -> Type {
         match name {
             "Integer" => Type::Integer,
@@ -60890,7 +60868,7 @@ impl<'a> InferenceEngine<'a> {
             && (matches!(current, Type::Untyped | Type::Top | Type::Todo)
                 || Self::contains_unresolved_ref(current))
         {
-            return Some(self.class_instance_type(target_name));
+            return Some(Self::class_name_to_type(target_name));
         }
 
         if self.type_matches_kind_of_target(current, target_name) {
@@ -60899,7 +60877,7 @@ impl<'a> InferenceEngine<'a> {
 
         if !target_is_module && let Some(current_class) = self.type_to_class_name(current) {
             match self.class_kind_of_target_relation(target_name, &current_class) {
-                Some(true) => return Some(self.class_instance_type(target_name)),
+                Some(true) => return Some(Self::class_name_to_type(target_name)),
                 None if self.class_superclass_chain_has_unknown(target_name) => {
                     return Some(Type::Untyped);
                 }
@@ -60949,7 +60927,7 @@ impl<'a> InferenceEngine<'a> {
         }
         let current_class = self.type_to_class_name(current)?;
         if self.class_is_or_subclass_of_target(target_name, &current_class, &mut HashSet::new()) {
-            return Some(self.class_instance_type(target_name));
+            return Some(Self::class_name_to_type(target_name));
         }
         None
     }
@@ -61569,7 +61547,7 @@ impl<'a> InferenceEngine<'a> {
                                 if matches!(current, Type::ParamRef(_))
                                     || Self::contains_unresolved_ref(&current) =>
                             {
-                                let narrowed = self.class_instance_type(&target_name);
+                                let narrowed = Self::class_name_to_type(&target_name);
                                 Some(self.narrowing_with_default_negation(
                                     class_name, scope, subject, narrowed,
                                 ))
@@ -61629,12 +61607,12 @@ impl<'a> InferenceEngine<'a> {
                                 else_ty: Some(current),
                             });
                         }
-                        let narrowed = self.class_instance_type(&target_class);
-                        Some(
-                            self.narrowing_with_default_negation(
-                                class_name, scope, subject, narrowed,
-                            ),
-                        )
+                        Some(self.narrowing_with_default_negation(
+                            class_name,
+                            scope,
+                            subject,
+                            Self::class_name_to_type(&target_class),
+                        ))
                     }
                     "even?" | "odd?" => {
                         let var_name = Self::extract_local_var_name_in_scope(&receiver, scope)?;
@@ -64203,14 +64181,14 @@ impl<'a> InferenceEngine<'a> {
                 let target_path = String::from_utf8_lossy(c.name().as_slice()).to_string();
                 let target_class =
                     self.pattern_class_target_name(class_name, &target_path, scope)?;
-                Some(self.class_instance_type(&target_class))
+                Some(Self::class_name_to_type(&target_class))
             }
             Node::ConstantPathNode { .. } => {
                 let target_path =
                     String::from_utf8_lossy(pattern.location().as_slice()).to_string();
                 let target_class =
                     self.pattern_class_target_name(class_name, &target_path, scope)?;
-                Some(self.class_instance_type(&target_class))
+                Some(Self::class_name_to_type(&target_class))
             }
             Node::ArrayPatternNode { .. } | Node::FindPatternNode { .. } => {
                 Some(Type::Array(Some(Box::new(Type::Untyped))))

@@ -717,3 +717,27 @@ module EventMachine::Protocols
   def self.x: -> 1
 end
 ```
+
+## Generic class narrowed by is_a? or when gets type arguments
+
+### update
+
+```ruby
+class G
+  def a(v) = v.is_a?(Set) ? v : nil
+  def c(v)
+    case v
+    when Range then v
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class G
+  def a: (untyped v) -> Set[untyped]?
+  def c: (untyped v) -> Range[untyped]?
+end
+```
