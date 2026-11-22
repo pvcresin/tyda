@@ -51,13 +51,38 @@ impl fmt::Display for RecordKey {
 
 /// Whether RBS accepts the symbol as a bare `name:` record key. Other ASCII symbols take the
 /// `:"name" =>` form; RBS has no form for non-ASCII symbols, so they stay bare.
+const RBS_OPERATOR_NAMES: &[&str] = &[
+    "+", "-", "*", "/", "%", "**", "==", "===", "!=", "=~", "!~", "<", ">", "<=", ">=", "<=>",
+    "<<", ">>", "!", "~", "+@", "-@", "[]", "[]=", "&", "|", "^", "`",
+];
+
+fn is_rbs_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_alphabetic() || first == '_' || !first.is_ascii())
+        && chars.all(|ch| ch.is_alphanumeric() || ch == '_' || !ch.is_ascii())
+}
+
+/// The method name as RBS can read it: names that are neither an identifier with an optional
+/// `?` / `!` / `=` nor an operator (`define_method("a-b")`) are quoted with backticks.
+pub fn rbs_method_name(name: &str) -> std::borrow::Cow<'_, str> {
+    let body = name.strip_suffix(['?', '!', '=']).unwrap_or(name);
+    if RBS_OPERATOR_NAMES.contains(&name) || is_rbs_identifier(body) || name.contains('`') {
+        std::borrow::Cow::Borrowed(name)
+    } else {
+        std::borrow::Cow::Owned(format!("`{name}`"))
+    }
+}
+
+/// Whether `name` can follow a positional parameter type; RBS has no syntax for `x?`.
+pub fn is_rbs_param_name(name: &str) -> bool {
+    is_rbs_identifier(name)
+}
+
 /// Whether RBS reads `:name` as this symbol; any other symbol needs the quoted `:"name"` form.
 fn is_plain_rbs_symbol(name: &str) -> bool {
-    const OPERATORS: &[&str] = &[
-        "+", "-", "*", "/", "%", "**", "==", "===", "!=", "=~", "!~", "<", ">", "<=", ">=", "<=>",
-        "<<", ">>", "!", "~", "+@", "-@", "[]", "[]=", "&", "|", "^", "`",
-    ];
-    if OPERATORS.contains(&name) {
+    if RBS_OPERATOR_NAMES.contains(&name) {
         return true;
     }
     let ident = name
@@ -70,11 +95,7 @@ fn is_plain_rbs_symbol(name: &str) -> bool {
     } else {
         ident.strip_suffix(['?', '!', '=']).unwrap_or(ident)
     };
-    let mut chars = body.chars();
-    chars
-        .next()
-        .is_some_and(|first| first.is_alphabetic() || first == '_' || !first.is_ascii())
-        && chars.all(|ch| ch.is_alphanumeric() || ch == '_' || !ch.is_ascii())
+    is_rbs_identifier(body)
 }
 
 fn is_plain_record_key(name: &str) -> bool {

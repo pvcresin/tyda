@@ -837,3 +837,27 @@ class Flag
   def mode_3?: -> 3
 end
 ```
+
+## Method names that are not identifiers
+
+### update
+
+```ruby
+class Conv
+  define_method("to_x::string") { 1 }
+  define_method("skip-it") { 2 }
+  def inverted = 3
+  alias_method "scan_^", :inverted
+end
+```
+
+### result
+
+```rbs
+class Conv
+  def `to_x::string`: -> 1
+  def `skip-it`: -> 2
+  def inverted: -> 3
+  alias `scan_^` inverted
+end
+```

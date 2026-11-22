@@ -274,3 +274,24 @@ class Pair < Struct[untyped]
   def self.members: -> Array[:left | :right]
 end
 ```
+
+## Struct member names ending with a question mark
+
+### update
+
+```ruby
+Pair = Struct.new(:quoted?, :name)
+```
+
+### result
+
+```rbs
+class Pair < Struct[untyped]
+  def quoted?: -> untyped
+  def `quoted?=`: (untyped) -> untyped
+  def name: -> untyped
+  def name=: (untyped name) -> untyped
+  def initialize: (untyped, untyped name) -> void
+  def self.members: -> Array[:name | :quoted?]
+end
+```

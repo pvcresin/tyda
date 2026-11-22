@@ -1,7 +1,10 @@
 use std::io::{self, Write};
 
 use crate::registry::TypeRegistry;
-use crate::types::{ClassInfo, ConstantSig, MethodAliasSig, MethodSig, Param, ParamKind, Type};
+use crate::types::{
+    ClassInfo, ConstantSig, MethodAliasSig, MethodSig, Param, ParamKind, Type, is_rbs_param_name,
+    rbs_method_name,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RenderOptions {
@@ -231,14 +234,12 @@ fn write_constant<W: Write>(
 }
 
 fn write_alias<W: Write>(writer: &mut W, alias: &MethodAliasSig) -> io::Result<()> {
+    let new_name = rbs_method_name(&alias.new_name);
+    let old_name = rbs_method_name(&alias.old_name);
     if alias.is_singleton {
-        writeln!(
-            writer,
-            "  alias self.{} self.{}",
-            alias.new_name, alias.old_name
-        )
+        writeln!(writer, "  alias self.{new_name} self.{old_name}")
     } else {
-        writeln!(writer, "  alias {} {}", alias.new_name, alias.old_name)
+        writeln!(writer, "  alias {new_name} {old_name}")
     }
 }
 
@@ -345,7 +346,8 @@ fn write_method_sig<W: Write>(writer: &mut W, method: &MethodSig) -> io::Result<
     } else {
         "def "
     };
-    write!(writer, "  {visibility}{prefix}{}: ", method.name)?;
+    let name = rbs_method_name(&method.name);
+    write!(writer, "  {visibility}{prefix}{name}: ")?;
     write_type_param_list(writer, &method.type_params)?;
     write_signature(
         writer,
@@ -359,7 +361,7 @@ fn write_method_sig<W: Write>(writer: &mut W, method: &MethodSig) -> io::Result<
         return Ok(());
     }
     // continuation lines align `|` under the start of the primary signature.
-    let header_len = visibility.len() + prefix.len() + method.name.len();
+    let header_len = visibility.len() + prefix.len() + name.len();
     for overload in &method.overloads {
         write_spaces(writer, header_len + 2)?;
         writer.write_all(b"| ")?;
@@ -441,19 +443,19 @@ fn write_param<W: Write>(writer: &mut W, param: &Param, widen_param: bool) -> io
     match param.kind {
         ParamKind::Required => {
             write!(writer, "{param_type:#}")?;
-            if !param.name.is_empty() {
+            if is_rbs_param_name(&param.name) {
                 write!(writer, " {}", param.name)?;
             }
         }
         ParamKind::Optional => {
             write!(writer, "?{param_type:#}")?;
-            if !param.name.is_empty() {
+            if is_rbs_param_name(&param.name) {
                 write!(writer, " {}", param.name)?;
             }
         }
         ParamKind::Rest => {
             write!(writer, "*{param_type:#}")?;
-            if !param.name.is_empty() {
+            if is_rbs_param_name(&param.name) {
                 write!(writer, " {}", param.name)?;
             }
         }
@@ -461,7 +463,7 @@ fn write_param<W: Write>(writer: &mut W, param: &Param, widen_param: bool) -> io
         ParamKind::KeywordOptional => write!(writer, "?{}: {param_type:#}", param.name)?,
         ParamKind::DoubleRest => {
             write!(writer, "**{param_type:#}")?;
-            if !param.name.is_empty() {
+            if is_rbs_param_name(&param.name) {
                 write!(writer, " {}", param.name)?;
             }
         }

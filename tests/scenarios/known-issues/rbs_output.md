@@ -1,50 +1,5 @@
 # Known Issues / RBS Output
 
-## Struct member names ending with a question mark
-
-### update
-
-```ruby
-Pair = Struct.new(:quoted?, :name)
-```
-
-### result
-
-```rbs
-class Pair < Struct[untyped]
-  def quoted?: -> untyped
-  def `quoted?=`: (untyped) -> untyped
-  def name: -> untyped
-  def name=: (untyped name) -> untyped
-  def initialize: (untyped, untyped name) -> void
-  def self.members: -> Array[:name | :quoted?]
-end
-```
-
-## Method names that are not identifiers
-
-### update
-
-```ruby
-class Conv
-  define_method("to_x::string") { 1 }
-  define_method("skip-it") { 2 }
-  def inverted = 3
-  alias_method "scan_^", :inverted
-end
-```
-
-### result
-
-```rbs
-class Conv
-  def `to_x::string`: -> 1
-  def `skip-it`: -> 2
-  def inverted: -> 3
-  alias `scan_^` inverted
-end
-```
-
 ## define_method with a computed name in a multi-line call
 
 ### update
