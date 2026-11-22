@@ -1510,3 +1510,31 @@ class G
   def c: (untyped v) -> (Array[untyped] | Range[untyped])?
 end
 ```
+
+## An Array narrowed by is_a? stays an argument type
+
+### update
+
+```ruby
+class Picker
+  def pick(v) = v.is_a?(Array) ? v : 200
+end
+class Resp
+  def initialize(status = 200)
+    @status = status
+  end
+end
+Resp.new(Picker.new.pick(eval("1")))
+```
+
+### result
+
+```rbs
+class Picker
+  def pick: (untyped v) -> (200 | Array[untyped])
+end
+
+class Resp
+  def initialize: (?(Integer | Array[untyped]) status) -> void
+end
+```

@@ -60828,9 +60828,13 @@ impl<'a> InferenceEngine<'a> {
     /// The instance type of `name`, with `untyped` for each type parameter of a generic class.
     fn class_instance_type(&mut self, name: &str) -> Type {
         let ty = Self::class_name_to_type(name);
+        // `Array` / `Hash` instances already render with `untyped` arguments.
         let Type::Class(base) = &ty else {
             return ty;
         };
+        if matches!(base.as_ref(), "Array" | "Hash") {
+            return ty;
+        }
         let args = self.untyped_type_args_for(name);
         if args.is_empty() {
             return ty;
@@ -60843,8 +60847,6 @@ impl<'a> InferenceEngine<'a> {
 
     pub(crate) fn class_name_to_type(name: &str) -> Type {
         match name {
-            "Array" => Type::Array(None),
-            "Hash" => Type::Hash(None, None),
             "Integer" => Type::Integer,
             "Float" => Type::Float,
             "String" => Type::String,
