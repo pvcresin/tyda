@@ -44,7 +44,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 
 ### gem の RBS 生成
 
-gem の `lib/` を解析した出力を、そのまま RBS として読み込めるようにする。289 gem の出力を公式 RBS の parser と `RBS::DefinitionBuilder` にかけて見つかった不備を known issue として記録している（`tests/scenarios/known-issues/rbs_output.md`、`library_inference.md`、`tests/pathological_inputs.rs` の `known_issue_*`）。
+gem の `lib/` を解析した出力を、そのまま RBS として読み込めるようにする。ダウンロード数上位 500 gem などの出力を公式 RBS の parser と `RBS::DefinitionBuilder` にかけて見つかった不備を known issue として記録している（`tests/scenarios/known-issues/rbs_output.md`、`library_inference.md`、`tests/pathological_inputs.rs` の `known_issue_*`）。
 
 - [ ] 出力を公式 RBS で読み込めるようにする。リテラル・メソッド名のクォート、型引数のない generic class、値の位置の `void`、メンバーのない class / namespace の宣言漏れ、compact な宣言での相対名、宣言の重複、`#:nodoc:` の誤読など
 - [ ] CLI で、`sig/` などで宣言済みの定数を出力しない（メソッドは出力しない）。重複すると RBS::DuplicatedDeclarationError になる（`tests/cli.rs` の `known_issue_constant_declared_in_project_rbs_is_rendered_again`）

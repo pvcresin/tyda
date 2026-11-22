@@ -658,7 +658,7 @@ class Px::Node
 end
 ```
 
-## rdoc nodoc directive is not a type annotation
+## rdoc directives are not type annotations
 
 ### update
 
@@ -666,6 +666,9 @@ end
 class H
   def perform(x) #:nodoc:
     x
+  end
+  def each_item #:yield: item
+    yield 1
   end
 end
 ```
@@ -675,5 +678,120 @@ end
 ```rbs
 class H
   def perform: [X] (X x) -> X
+  def each_item: [R] { (Integer) -> R } -> R
+end
+```
+
+## Reopened generic core class keeps its type parameters
+
+### update
+
+```ruby
+class Struct
+  def pp_it = 1
+end
+class Hash
+  def pp_it = 2
+end
+```
+
+### result
+
+```rbs
+class Hash[unchecked out K, unchecked out V]
+  def pp_it: -> 2
+end
+
+class Struct[E]
+  def pp_it: -> 1
+end
+```
+
+## Nested module named like a core class is included by its full name
+
+### update
+
+```ruby
+module Xp
+  class Project
+    module Object
+      def uuid = 1
+    end
+    include Object
+  end
+end
+```
+
+### result
+
+```rbs
+module Xp
+end
+
+class Xp::Project
+  include Xp::Project::Object
+end
+
+module Xp::Project::Object
+  def uuid: -> 1
+end
+```
+
+## Constant written through self in a block is not a top-level constant
+
+### update
+
+```ruby
+module OrmAdapter
+  class ActiveRecord
+    def x = 1
+  end
+end
+Hooks.on_load(:ar) do
+  self::OrmAdapter = ::OrmAdapter::ActiveRecord
+end
+```
+
+### result
+
+```rbs
+module OrmAdapter
+end
+
+class OrmAdapter::ActiveRecord
+  def x: -> 1
+end
+```
+
+## Constant written through a module alias in another file
+
+### update
+
+### file: lib/a.rb
+
+```ruby
+module EventMachine
+  module Protocols
+    def self.x = 1
+  end
+end
+EM = EventMachine
+```
+
+```ruby
+EM::P = EventMachine::Protocols
+```
+
+### result
+
+```rbs
+module EM = EventMachine
+
+module EventMachine
+  module P = EventMachine::Protocols
+end
+
+module EventMachine::Protocols
+  def self.x: -> 1
 end
 ```
