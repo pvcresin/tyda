@@ -778,3 +778,27 @@ class Shelf::Book
   def title: -> "t"
 end
 ```
+
+## rdoc directives are not type annotations
+
+### update
+
+```ruby
+class H
+  def perform(x) #:nodoc:
+    x
+  end
+  def each_item #:yield: item
+    yield 1
+  end
+end
+```
+
+### result
+
+```rbs
+class H
+  def perform: [X] (X x) -> X
+  def each_item: [R] { (Integer) -> R } -> R
+end
+```

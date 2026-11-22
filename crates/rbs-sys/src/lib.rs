@@ -257,6 +257,21 @@ pub fn parse_type(input: &str) -> Result<RbsType, ParseError> {
     unsafe { convert_type_node(type_ptr, parser.parser, &UseContext::default()) }
 }
 
+/// Like [`parse_type`], but fails unless the type is the whole input: `nodoc:` is not the
+/// type `nodoc`.
+pub fn parse_whole_type(input: &str) -> Result<RbsType, ParseError> {
+    let parser = Parser::new(input);
+    let mut type_ptr: *mut ffi::rbs_node_t = ptr::null_mut();
+    let ok = unsafe { ffi::rbs_parse_type(parser.parser, &mut type_ptr, true, true, true) };
+    if !ok || type_ptr.is_null() {
+        return Err(ParseError::ParseFailed);
+    }
+    if unsafe { (*parser.parser).next_token.type_ } != ffi::RBSTokenType_pEOF {
+        return Err(ParseError::ParseFailed);
+    }
+    unsafe { convert_type_node(type_ptr, parser.parser, &UseContext::default()) }
+}
+
 /// Parse a `#:` style inline annotation, returning the method type.
 /// Input should be the comment body _without_ the `#` prefix, e.g. `": (String) -> Integer"`.
 pub fn parse_inline_leading(input: &str) -> Result<MethodType, ParseError> {

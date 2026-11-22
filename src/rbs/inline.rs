@@ -285,7 +285,7 @@ pub fn parse_rbs_inline_type_annotation_with_aliases(
     if type_str.is_empty() {
         return None;
     }
-    let rbs_type = rbs_ir::RbsType::from(&rbs_sys::parse_type(type_str).ok()?);
+    let rbs_type = rbs_ir::RbsType::from(&rbs_sys::parse_whole_type(type_str).ok()?);
     Some(convert_imported_rbs_type(
         &rbs_type,
         type_aliases,
