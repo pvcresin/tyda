@@ -9,7 +9,8 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
 - Ruby source と `.rbs` を中心にした query 型推論 engine
 - CLI の RBS 出力、JSON Lines diagnostics、型カバレッジ JSON
   - RBS 出力は公式 parser が受理する構文に限る。戻り値の union / intersection は括弧で囲み、
-    型注釈のない `&block` は `?{ (?) -> untyped }`、Float literal は `Float` で出す。戻り値の `void` を含む
+    型注釈のない `&block` は `?{ (?) -> untyped }`、Float literal は `Float` で出す。RBS がそのまま読めない
+    Symbol literal は `:"a-b"` と引用し、String / Symbol literal の制御文字は `\e` や `\x00` とエスケープする。戻り値の `void` を含む
     union は使える値がないため `void` にまとめる
   - 型引数を書かずに参照した generic class（`class Pairs < Hash`、`include Enumerable`、要素型が分からない
     `Array` / `Hash`）は、型パラメータの数だけ `untyped` を補って出す（`Hash[untyped, untyped]`）。

@@ -18,6 +18,15 @@ pub(crate) fn escape_rbs_string_literal(value: &str) -> std::string::String {
             '\n' => escaped.push_str("\\n"),
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
+            '\u{07}' => escaped.push_str("\\a"),
+            '\u{08}' => escaped.push_str("\\b"),
+            '\u{0b}' => escaped.push_str("\\v"),
+            '\u{0c}' => escaped.push_str("\\f"),
+            '\u{1b}' => escaped.push_str("\\e"),
+            // RBS reads `\xHH` but not `\uHHHH`, and rejects raw control characters.
+            ch if ch.is_ascii_control() => {
+                escaped.push_str(&format!("\\x{:02X}", u32::from(ch)));
+            }
             _ => escaped.push(ch),
         }
     }
@@ -42,6 +51,32 @@ impl fmt::Display for RecordKey {
 
 /// Whether RBS accepts the symbol as a bare `name:` record key. Other ASCII symbols take the
 /// `:"name" =>` form; RBS has no form for non-ASCII symbols, so they stay bare.
+/// Whether RBS reads `:name` as this symbol; any other symbol needs the quoted `:"name"` form.
+fn is_plain_rbs_symbol(name: &str) -> bool {
+    const OPERATORS: &[&str] = &[
+        "+", "-", "*", "/", "%", "**", "==", "===", "!=", "=~", "!~", "<", ">", "<=", ">=", "<=>",
+        "<<", ">>", "!", "~", "+@", "-@", "[]", "[]=", "&", "|", "^", "`",
+    ];
+    if OPERATORS.contains(&name) {
+        return true;
+    }
+    let ident = name
+        .strip_prefix("@@")
+        .or_else(|| name.strip_prefix(['@', '$']))
+        .unwrap_or(name);
+    let is_variable = ident.len() != name.len();
+    let body = if is_variable {
+        ident
+    } else {
+        ident.strip_suffix(['?', '!', '=']).unwrap_or(ident)
+    };
+    let mut chars = body.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_alphabetic() || first == '_' || !first.is_ascii())
+        && chars.all(|ch| ch.is_alphanumeric() || ch == '_' || !ch.is_ascii())
+}
+
 fn is_plain_record_key(name: &str) -> bool {
     if !name.is_ascii() {
         return true;
@@ -1539,7 +1574,8 @@ impl fmt::Display for Type {
             Type::LiteralString(v) => {
                 write!(f, "\"{}\"", escape_rbs_string_literal(v))
             }
-            Type::LiteralSymbol(v) => write!(f, ":{v}"),
+            Type::LiteralSymbol(v) if is_plain_rbs_symbol(v) => write!(f, ":{v}"),
+            Type::LiteralSymbol(v) => write!(f, ":\"{}\"", escape_rbs_string_literal(v)),
             Type::Array(None) => write!(f, "Array[untyped]"),
             Type::Array(Some(inner)) => write!(f, "Array[{inner}]"),
             Type::Hash(None, None) => write!(f, "Hash[untyped, untyped]"),
