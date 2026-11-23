@@ -25,6 +25,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def persist: -> bool
   def persist!: -> bool
@@ -56,6 +59,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class User < ActiveRecord::Base
+end
+
 class UserLookup
   def by_email: (untyped email) -> User?
   def by_email!: (untyped email) -> User
@@ -80,6 +89,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def self.deactivate_all: -> Integer
   def self.purge: -> Integer
@@ -103,6 +115,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def self.bulk_disable: -> Integer
   def self.table: -> String
@@ -128,6 +143,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def association_metadata: -> untyped
   def base_model: -> untyped
@@ -156,6 +174,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def bump: -> User
   def drop: -> User

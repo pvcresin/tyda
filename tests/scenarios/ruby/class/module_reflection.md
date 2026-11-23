@@ -65,4 +65,7 @@ class Probe
   def extended_ancestors: -> 2
   def unknown_ancestors: -> Array[Module]
 end
+
+class UnknownBaseChild < UnknownBase
+end
 ```

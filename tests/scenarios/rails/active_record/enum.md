@@ -326,6 +326,9 @@ class ConstructedEnumReader
   def self.shipped_status: -> ActiveRecord::Relation[ConstructedEnumReader]
   def status_symbol: -> Symbol
 end
+
+class HashWithIndifferentAccess
+end
 ```
 
 ## Ignore namespaced HashWithIndifferentAccess lookalikes
@@ -346,6 +349,12 @@ end
 ### result
 
 ```rbs
+module Alternative
+end
+
+class Alternative::HashWithIndifferentAccess
+end
+
 class NamespacedHashEnum
   ACTIONS: Alternative::HashWithIndifferentAccess
 
@@ -372,11 +381,17 @@ end
 ### result
 
 ```rbs
+module Alternative
+end
+
 class Alternative::BareHashEnum
   ACTIONS: Alternative::HashWithIndifferentAccess
 
   def status: -> String
   def self.statuses: -> Hash[String, untyped]
+end
+
+class Alternative::HashWithIndifferentAccess
 end
 ```
 
@@ -401,6 +416,12 @@ end
 ### result
 
 ```rbs
+module Alternative
+end
+
+class Alternative::HashWithIndifferentAccess
+end
+
 class Alternative::Parent
   ACTIONS: Alternative::HashWithIndifferentAccess
 end
@@ -438,6 +459,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class EnumColumn < ActiveRecord::Base
   def status: -> String
   def self.statuses: -> Hash[String, untyped]
@@ -485,6 +509,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class EnumReader
   def status_of: (EnumReceiver record) -> String
   def count_of: (EnumReceiver record) -> Integer?
@@ -635,6 +662,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Pipeline < ApplicationRecord
   def source: -> String
   def self.sources: -> Hash[String, untyped]

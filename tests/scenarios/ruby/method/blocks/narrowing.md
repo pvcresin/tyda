@@ -399,9 +399,21 @@ end
 ### result
 
 ```rbs
+class Entry
+end
+
+class Flag < Entry
+end
+
+class Note < Entry
+end
+
 class Object < BasicObject
   def grep_entries: -> Array[Flag | Note]
   def grep_non_entries: -> Array[Other]
+end
+
+class Other
 end
 ```
 
@@ -448,6 +460,9 @@ end
 class Object < BasicObject
   def grep_entry_labels: -> Array["flag" | "note"]
 end
+
+class Other
+end
 ```
 
 ## select narrows class predicate
@@ -483,10 +498,22 @@ end
 ### result
 
 ```rbs
+class Entry
+end
+
+class Flag < Entry
+end
+
+class Note < Entry
+end
+
 class Object < BasicObject
   def select_notes: -> Array[Note]
   def find_entry_values_with_numbered_param: -> Array[Flag | Note]
   def select_non_entries: -> Array[Other]
+end
+
+class Other
 end
 ```
 
@@ -519,9 +546,21 @@ end
 ### result
 
 ```rbs
+class Entry
+end
+
+class Flag < Entry
+end
+
+class Note < Entry
+end
+
 class Object < BasicObject
   def reject_entries: -> Array[Other]
   def reject_non_entries_with_numbered_param: -> Array[Flag | Note]
+end
+
+class Other
 end
 ```
 
@@ -554,9 +593,21 @@ end
 ### result
 
 ```rbs
+class Entry
+end
+
+class Flag < Entry
+end
+
+class Note < Entry
+end
+
 class Object < BasicObject
   def partition_entries: -> [Array[Flag | Note], Array[Other]]
   def partition_non_entries_with_numbered_param: -> [Array[Other], Array[Flag | Note]]
+end
+
+class Other
 end
 ```
 
@@ -603,6 +654,12 @@ class Object < BasicObject
   def grep_taggable_values: -> Array[Article | Event]
   def filter_taggable_values: -> Array[Article | Event]
 end
+
+class Plain
+end
+
+module Taggable
+end
 ```
 
 ## reject and partition narrow module predicate
@@ -647,6 +704,12 @@ end
 class Object < BasicObject
   def reject_taggable_values: -> Array[Plain]
   def partition_taggable_values: -> [Array[Article | Event], Array[Plain]]
+end
+
+class Plain
+end
+
+module Taggable
 end
 ```
 
@@ -780,6 +843,12 @@ end
 ```rbs
 module Group
   class ItemAlias = Group::Item
+end
+
+class Group::Base
+end
+
+class Group::Item < Base
 end
 
 class Object < BasicObject

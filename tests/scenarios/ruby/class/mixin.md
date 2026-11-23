@@ -309,6 +309,9 @@ end
 ### result
 
 ```rbs
+module A
+end
+
 class A::B
   include Singleton
 
@@ -384,6 +387,9 @@ end
 ### result
 
 ```rbs
+module Rack
+end
+
 class Rack::ContentType
   include Rack::Utils
 
@@ -497,6 +503,9 @@ def f = Baz.new.hello
 class Baz
   include Foo
   include Foo::Bar
+end
+
+module Foo
 end
 
 module Foo::Bar
@@ -776,6 +785,9 @@ def run = Bar.value
 ### result
 
 ```rbs
+class Bar < Foo
+end
+
 class Foo
   extend Mixin
 end

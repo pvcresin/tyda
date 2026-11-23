@@ -123,6 +123,9 @@ class A < ApplicationRecord
   def foo=: (untyped x) -> B
 end
 
+class ApplicationRecord
+end
+
 class B
   def self.foo: (untyped x) -> [B]
 end
@@ -188,6 +191,9 @@ end
 ### result
 
 ```rbs
+class Role
+end
+
 class User < ApplicationRecord
   def role: -> Role
   def role=: (Role? role) -> Role

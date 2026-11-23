@@ -800,6 +800,9 @@ end
 ### result
 
 ```rbs
+module Redmine
+end
+
 module Redmine::FieldFormat
   def self.all: -> Hash[untyped, untyped]
   def self.as_select: (?nil class_name) -> Array[[String, untyped]]
@@ -1043,10 +1046,22 @@ end
 ### result
 
 ```rbs
+class Entry
+end
+
+class Flag < Entry
+end
+
+class Note < Entry
+end
+
 class Object < BasicObject
   def find_entry: -> (Flag | Note)?
   def detect_non_entry: -> Other?
   def find_entry_or_default: -> (:none | Note)
+end
+
+class Other
 end
 ```
 
@@ -1088,6 +1103,12 @@ end
 class Object < BasicObject
   def find_taggable_value: -> (Article | Event)?
 end
+
+class Plain
+end
+
+module Taggable
+end
 ```
 
 ## detect narrows with constant alias predicate
@@ -1115,6 +1136,12 @@ end
 ```rbs
 module Group
   class ItemAlias = Group::Item
+end
+
+class Group::Base
+end
+
+class Group::Item < Base
 end
 
 class Object < BasicObject

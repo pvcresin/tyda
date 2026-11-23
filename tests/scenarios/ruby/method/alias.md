@@ -220,6 +220,9 @@ def read_create = Group::Item.create
 ### result
 
 ```rbs
+class Group
+end
+
 class Group::Item
   def name: -> "name"
   def self.build: -> :item
@@ -360,6 +363,9 @@ def f = Bar.new.new_to_s
 class Bar
   def to_s: -> "b"
   alias new_to_s to_s
+end
+
+class Foo
 end
 
 class Object < BasicObject

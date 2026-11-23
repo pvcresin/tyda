@@ -27,6 +27,9 @@ class API::Base < Grape::API
   def current_user: -> "user"
   def authenticate!: -> true
 end
+
+class Grape::API
+end
 ```
 
 ## Include helper modules passed to helpers
@@ -67,6 +70,9 @@ end
 class Caller
   def call: (untyped api) -> untyped
 end
+
+class Grape::API
+end
 ```
 
 ## Collect helpers nested inside namespace blocks
@@ -92,5 +98,8 @@ end
 ```rbs
 class API::Projects < Grape::API
   def find_project: -> "project"
+end
+
+class Grape::API
 end
 ```

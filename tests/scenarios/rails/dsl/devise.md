@@ -39,6 +39,12 @@ class ActiveRecord::Base
   def self.devise: (*Symbol modules) -> void
 end
 
+class ApplicationController < ActionController::Base
+end
+
+class User < ActiveRecord::Base
+end
+
 class UsersController < ApplicationController
   def show: -> User?
   def require_login: -> void
@@ -90,6 +96,9 @@ class ActiveRecord::Base
   def self.devise: (*Symbol modules) -> void
 end
 
+class ApplicationController < ActionController::Base
+end
+
 module Authenticatable
   extend ActiveSupport::Concern
 end
@@ -135,6 +144,9 @@ end
 
 class ActiveRecord::Base
   def self.devise: (*Symbol modules) -> void
+end
+
+class User < ActiveRecord::Base
 end
 
 class UsersController < ActionController::Base

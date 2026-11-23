@@ -32,6 +32,12 @@ class UndefBase
   def bar: -> "bar"
 end
 
+class UndefChild < UndefBase
+end
+
+class UndefDirect
+end
+
 class UndefUse
   def base: -> "bar"
   def child: -> untyped

@@ -59,4 +59,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class Post < ActiveRecord::Base
+end
 ```

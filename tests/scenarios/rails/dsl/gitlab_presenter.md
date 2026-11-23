@@ -19,9 +19,15 @@ end
 ### result
 
 ```rbs
+class Ci::Build
+end
+
 class Ci::BuildPresenter < Gitlab::View::Presenter::Base
   def build: -> Ci::Build
   def display_name: -> Ci::Build
+end
+
+class Gitlab::View::Presenter::Base
 end
 ```
 
@@ -42,6 +48,9 @@ end
 ### result
 
 ```rbs
+class Gitlab::View::Presenter::Base
+end
+
 class MergeRequestPresenter < Gitlab::View::Presenter::Base
   def merge_request: -> untyped
   def title: -> untyped
@@ -63,6 +72,9 @@ end
 ### result
 
 ```rbs
+class Gitlab::View::Presenter::Base
+end
+
 class ProjectPresenter < Gitlab::View::Presenter::Base
   def allowed?: -> bool
 end

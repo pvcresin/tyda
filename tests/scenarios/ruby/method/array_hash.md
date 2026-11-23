@@ -1687,11 +1687,17 @@ end
 ### result
 
 ```rbs
+class Entry
+end
+
 class Object < BasicObject
   def delete_nil_values: -> [Array[1 | 2], Array[1 | 2]]
   def keep_truthy_values: -> [Array[1 | 2], Array[1 | 2]]
   def select_entry_values: -> [Array[Entry]?, Array[Entry]]
   def compact_values: -> [Array[1 | 2]?, Array[1 | 2]]
+end
+
+class Other
 end
 ```
 
@@ -2541,6 +2547,9 @@ Box.new.wrap(Item.new)
 ```rbs
 class Box
   def wrap: (Item value) -> Array[Item]
+end
+
+class Item
 end
 ```
 

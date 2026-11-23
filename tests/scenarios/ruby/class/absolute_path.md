@@ -33,6 +33,9 @@ end
 ### result
 
 ```rbs
+module M
+end
+
 class Top
   def t: -> 1
 end
@@ -56,6 +59,9 @@ end
 module Global
   def g: -> :ok
 end
+
+module Outer
+end
 ```
 
 ## Absolute class inside a module nests inner class under the top-level class
@@ -77,8 +83,14 @@ def f = Bar::Baz.ok
 ### result
 
 ```rbs
+class Bar
+end
+
 class Bar::Baz
   def self.ok: -> 1
+end
+
+module Foo
 end
 
 class Object < BasicObject
@@ -141,6 +153,9 @@ def f = Quuux.v
 ```rbs
 module Foo
   CONST: 7
+end
+
+class Foo::Bar
 end
 
 class Object < BasicObject

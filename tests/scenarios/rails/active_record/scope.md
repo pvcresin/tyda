@@ -141,6 +141,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Post < ApplicationRecord
   def self.published: -> ActiveRecord::Relation[Post]
   def self.warm_published: -> ActiveRecord::Relation[Post]
@@ -172,6 +178,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Post < ApplicationRecord
   def self.published: -> ActiveRecord::Relation[Post]
   def self.warm_published: -> ActiveRecord::Relation[Post]

@@ -14457,7 +14457,8 @@ impl<'a> InferenceEngine<'a> {
                 self.record_definition(&class_name);
                 let class_loc =
                     offset_to_location(parse_result.source(), class_node.location().start_offset());
-                self.registry.set_class_location(&class_name, class_loc);
+                self.registry
+                    .record_source_definition(&class_name, class_loc);
                 if let Some(ref fp) = self.file_path {
                     self.registry.set_file_path(&class_name, fp);
                 }
@@ -14535,7 +14536,8 @@ impl<'a> InferenceEngine<'a> {
                     parse_result.source(),
                     module_node.location().start_offset(),
                 );
-                self.registry.set_class_location(&module_name, module_loc);
+                self.registry
+                    .record_source_definition(&module_name, module_loc);
                 if let Some(ref fp) = self.file_path {
                     self.registry.set_file_path(&module_name, fp);
                 }
@@ -14600,7 +14602,7 @@ impl<'a> InferenceEngine<'a> {
                         parse_result.source(),
                         write_node.location().start_offset(),
                     );
-                    self.registry.set_class_location(&const_name, loc);
+                    self.registry.record_source_definition(&const_name, loc);
                     if let Some(ref fp) = self.file_path {
                         self.registry.set_file_path(&const_name, fp);
                     }
@@ -14621,7 +14623,7 @@ impl<'a> InferenceEngine<'a> {
                         parse_result.source(),
                         write_node.location().start_offset(),
                     );
-                    self.registry.set_class_location(&const_name, loc);
+                    self.registry.record_source_definition(&const_name, loc);
                     if let Some(ref fp) = self.file_path {
                         self.registry.set_file_path(&const_name, fp);
                     }
@@ -15294,7 +15296,8 @@ impl<'a> InferenceEngine<'a> {
         if Self::is_struct_new_call(value_node, parse_result) {
             let call = value_node.as_call_node().expect("must be CallNode");
             self.collect_struct_new_members(&full_name, &call, parse_result, comments, true);
-            self.registry.set_class_location(&full_name, class_loc);
+            self.registry
+                .record_source_definition(&full_name, class_loc);
             if let Some(ref fp) = self.file_path {
                 self.registry.set_file_path(&full_name, fp);
             }
@@ -15305,7 +15308,8 @@ impl<'a> InferenceEngine<'a> {
         if self.supports_data_define() && Self::is_data_define_call(value_node, parse_result) {
             let call = value_node.as_call_node().expect("must be CallNode");
             self.collect_struct_new_members(&full_name, &call, parse_result, comments, false);
-            self.registry.set_class_location(&full_name, class_loc);
+            self.registry
+                .record_source_definition(&full_name, class_loc);
             if let Some(ref fp) = self.file_path {
                 self.registry.set_file_path(&full_name, fp);
             }
@@ -15800,7 +15804,8 @@ impl<'a> InferenceEngine<'a> {
         self.record_definition(&full_name);
         let const_loc =
             offset_to_location(parse_result.source(), value_node.location().start_offset());
-        self.registry.set_class_location(&full_name, const_loc);
+        self.registry
+            .record_source_definition(&full_name, const_loc);
         if let Some(ref fp) = self.file_path {
             self.registry.set_file_path(&full_name, fp);
         }
@@ -16095,7 +16100,8 @@ impl<'a> InferenceEngine<'a> {
                             parse_result.source(),
                             class_node.location().start_offset(),
                         );
-                        self.registry.set_class_location(&full_name, nested_loc);
+                        self.registry
+                            .record_source_definition(&full_name, nested_loc);
                         if let Some(ref fp) = self.file_path {
                             self.registry.set_file_path(&full_name, fp);
                         }
@@ -16188,7 +16194,8 @@ impl<'a> InferenceEngine<'a> {
                             parse_result.source(),
                             module_node.location().start_offset(),
                         );
-                        self.registry.set_class_location(&full_name, nested_loc);
+                        self.registry
+                            .record_source_definition(&full_name, nested_loc);
                         if let Some(ref fp) = self.file_path {
                             self.registry.set_file_path(&full_name, fp);
                         }
@@ -17058,7 +17065,8 @@ impl<'a> InferenceEngine<'a> {
                                 comments,
                                 true,
                             );
-                            self.registry.set_class_location(&full_name, const_loc);
+                            self.registry
+                                .record_source_definition(&full_name, const_loc);
                             if let Some(ref fp) = self.file_path {
                                 self.registry.set_file_path(&full_name, fp);
                             }
@@ -17079,7 +17087,8 @@ impl<'a> InferenceEngine<'a> {
                                 comments,
                                 false,
                             );
-                            self.registry.set_class_location(&full_name, const_loc);
+                            self.registry
+                                .record_source_definition(&full_name, const_loc);
                             if let Some(ref fp) = self.file_path {
                                 self.registry.set_file_path(&full_name, fp);
                             }

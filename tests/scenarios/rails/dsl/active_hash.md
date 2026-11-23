@@ -19,6 +19,9 @@ end
 ### result
 
 ```rbs
+class ActiveHash::Base
+end
+
 class Country < ActiveHash::Base
   def code: -> (:fr | :jp)
   def code=: (Symbol code) -> (:fr | :jp)
@@ -64,6 +67,9 @@ end
 ### result
 
 ```rbs
+class ActiveHash::Base
+end
+
 class Team < ActiveHash::Base
   def id: -> 1
   def id=: (Integer id) -> 1

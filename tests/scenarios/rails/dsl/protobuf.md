@@ -16,6 +16,9 @@ end
 ### result
 
 ```rbs
+class Protobuf::Message
+end
+
 class UserMessage < Protobuf::Message
   def name: -> untyped
   def name=: (untyped name) -> untyped
@@ -41,6 +44,9 @@ end
 ### result
 
 ```rbs
+class Protobuf::Message
+end
+
 class UserMessage < Protobuf::Message
   def tags: -> Protobuf::Field::FieldArray
   def tags=: (untyped tags) -> untyped

@@ -242,6 +242,9 @@ end
 class OverridingGuard < EvenGuard
   def self.===: ((Integer | String) _other) -> false
 end
+
+class SubGuard < EvenGuard
+end
 ```
 
 ## Class-specific overrides do not use built-in case equality narrowing

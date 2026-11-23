@@ -21,6 +21,12 @@ end
 ### result
 
 ```rbs
+class BasePolicy < DeclarativePolicy::Base
+end
+
+class DeclarativePolicy::Base
+end
+
 class GroupPolicy < BasePolicy
   def allowed?: -> bool
 end
@@ -47,6 +53,9 @@ end
 ### result
 
 ```rbs
+class DeclarativePolicy::Base
+end
+
 class GroupPolicy < DeclarativePolicy::Base
   def self.admin_rule: -> DeclarativePolicy::PolicyDsl
   def self.enable_read: -> untyped

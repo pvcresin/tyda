@@ -37,6 +37,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Post < ApplicationRecord
   def a: -> untyped
   def b: -> untyped
@@ -80,6 +83,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Post < ApplicationRecord
   def g: -> ActiveSupport::TimeWithZone?
 end
@@ -112,6 +118,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Event < ApplicationRecord
   def happened_at: -> ActiveSupport::TimeWithZone
   def due_date: -> Date?
@@ -154,6 +163,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Post < ApplicationRecord
   def a: -> untyped
   def b: -> untyped
@@ -196,6 +208,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Post < ApplicationRecord
   def g: -> ActiveSupport::TimeWithZone?
 end
@@ -228,6 +243,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Post < ApplicationRecord
   def a: -> BigDecimal
   def b: -> Date
@@ -265,6 +283,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Post < ApplicationRecord
   def a: -> bool
   def b: -> String?
@@ -393,6 +414,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class User < ApplicationRecord
   def key: -> Integer
   def elapsed: -> Float
@@ -443,6 +467,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Host < ApplicationRecord
   def key: -> Integer
   def ip: -> IPAddr
@@ -494,6 +521,9 @@ class AccountStat < ApplicationRecord
   def statuses_count: -> Integer
   def by_index: -> String
 end
+
+class ApplicationRecord
+end
 ```
 
 ## super in an attribute override reaches the generated column method
@@ -532,6 +562,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class CommitStatus < ApplicationRecord
   def before_sha: -> String
   def emails_enabled?: -> bool
@@ -566,6 +599,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Log < ApplicationRecord
   def action: -> String
   def kind: -> String?
@@ -602,6 +638,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Document < ApplicationRecord
   def attachment: -> untyped
   def heading: -> String?
@@ -635,6 +674,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Hook < ApplicationRecord
   def payload: -> { "url" => String? }
 end
@@ -685,6 +727,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Document < ApplicationRecord
   include FileMounter
 
@@ -735,6 +780,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Cluster < ApplicationRecord
   include NullifyIfBlank
 

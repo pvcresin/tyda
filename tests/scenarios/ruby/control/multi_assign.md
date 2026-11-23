@@ -387,6 +387,9 @@ end
 ### result
 
 ```rbs
+module Folder
+end
+
 module Folder::Entry
   NAME: "one"
   TAGS: [:two, :three]

@@ -13378,6 +13378,13 @@ impl TypeRegistry {
         }
     }
 
+    /// A `class` / `module` keyword or a `Class.new` / `Struct.new` constant in the source
+    /// declares the class there, even with an empty body, so the RBS output declares it too.
+    pub fn record_source_definition(&mut self, class_name: &str, loc: SourceLocation) {
+        self.set_class_location(class_name, loc);
+        self.mark_user_defined(class_name);
+    }
+
     pub fn set_file_path(&mut self, class_name: &str, file_path: &str) {
         self.file_contribution_names.insert(class_name.to_string());
         let data = self.class_data_mut(class_name);

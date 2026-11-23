@@ -20,6 +20,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class User < ApplicationRecord
   def regenerate_auth_token: -> bool
 end
@@ -45,8 +51,14 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class ApiKey < ApplicationRecord
   def regenerate_token: -> bool
+end
+
+class ApplicationRecord < ActiveRecord::Base
 end
 ```
 
@@ -70,4 +82,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
+class User < ApplicationRecord
+end
 ```

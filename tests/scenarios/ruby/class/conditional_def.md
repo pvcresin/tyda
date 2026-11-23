@@ -201,6 +201,9 @@ end
 ### result
 
 ```rbs
+module Rake
+end
+
 module Rake::DSL
   def task: [N] (N name) -> N
 end
@@ -232,6 +235,9 @@ end
 ### result
 
 ```rbs
+module App
+end
+
 class App::Base
   def name: -> "app"
 end
@@ -261,6 +267,12 @@ end
 ### result
 
 ```rbs
+module Outer
+end
+
+module Outer::Inner
+end
+
 class Outer::Inner::Root
   def foo: -> 1
 end

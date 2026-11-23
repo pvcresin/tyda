@@ -31,6 +31,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Post < ApplicationRecord
   def foo: -> Integer
   def bar: -> String?
@@ -71,6 +74,9 @@ end
 ```rbs
 class Admin::User < ApplicationRecord
   def foo: -> String
+end
+
+class ApplicationRecord
 end
 ```
 
@@ -121,6 +127,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Post < ApplicationRecord
   def foo: -> String
 end
@@ -153,6 +162,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Variable < ApplicationRecord
   def name: -> String
   def summary: -> String?

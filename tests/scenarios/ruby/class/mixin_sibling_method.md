@@ -123,6 +123,9 @@ end
 ### result
 
 ```rbs
+module Outer
+end
+
 class Outer::Request
   include Env
   include Helpers

@@ -208,6 +208,9 @@ class Object < BasicObject
   def pair_value: -> Integer
 end
 
+module Store
+end
+
 class Store::Pair < Struct[untyped]
   def key: -> Symbol
   def key=: (Symbol key) -> Symbol
