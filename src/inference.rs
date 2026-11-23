@@ -3523,6 +3523,14 @@ impl<'a> InferenceEngine<'a> {
             .set_superclass_type_args(class_name, type_args);
     }
 
+    /// A reopened core class (`class Hash`) is declared with the core type parameters.
+    fn record_source_class_definition(&mut self, class_name: &str, loc: SourceLocation) {
+        self.registry.record_source_definition(class_name, loc);
+        if let Some(loader) = self.lazy_loader {
+            loader.copy_class_type_params_into(class_name, &mut self.registry);
+        }
+    }
+
     fn ensure_stdlib_class(&mut self, class_name: &str) {
         if let Some(loader) = self.lazy_loader {
             for stdlib_class in [class_name, "Kernel"] {
@@ -14457,8 +14465,7 @@ impl<'a> InferenceEngine<'a> {
                 self.record_definition(&class_name);
                 let class_loc =
                     offset_to_location(parse_result.source(), class_node.location().start_offset());
-                self.registry
-                    .record_source_definition(&class_name, class_loc);
+                self.record_source_class_definition(&class_name, class_loc);
                 if let Some(ref fp) = self.file_path {
                     self.registry.set_file_path(&class_name, fp);
                 }
@@ -14536,8 +14543,7 @@ impl<'a> InferenceEngine<'a> {
                     parse_result.source(),
                     module_node.location().start_offset(),
                 );
-                self.registry
-                    .record_source_definition(&module_name, module_loc);
+                self.record_source_class_definition(&module_name, module_loc);
                 if let Some(ref fp) = self.file_path {
                     self.registry.set_file_path(&module_name, fp);
                 }
@@ -16100,8 +16106,7 @@ impl<'a> InferenceEngine<'a> {
                             parse_result.source(),
                             class_node.location().start_offset(),
                         );
-                        self.registry
-                            .record_source_definition(&full_name, nested_loc);
+                        self.record_source_class_definition(&full_name, nested_loc);
                         if let Some(ref fp) = self.file_path {
                             self.registry.set_file_path(&full_name, fp);
                         }
@@ -16194,8 +16199,7 @@ impl<'a> InferenceEngine<'a> {
                             parse_result.source(),
                             module_node.location().start_offset(),
                         );
-                        self.registry
-                            .record_source_definition(&full_name, nested_loc);
+                        self.record_source_class_definition(&full_name, nested_loc);
                         if let Some(ref fp) = self.file_path {
                             self.registry.set_file_path(&full_name, fp);
                         }

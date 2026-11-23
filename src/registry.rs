@@ -12920,6 +12920,23 @@ impl TypeRegistry {
         self.class_data_mut(class_name).cold_mut().class_type_params = params;
     }
 
+    /// Copies the type parameter declarations of `class_name` from `source` unless this
+    /// registry already declares some.
+    pub fn copy_class_type_params_from(&mut self, class_name: &str, source: &TypeRegistry) {
+        let Some(source) = source.class_data_for(class_name).map(ClassData::cold) else {
+            return;
+        };
+        if source.class_type_params.is_empty() || !self.get_class_type_params(class_name).is_empty()
+        {
+            return;
+        }
+        let cold = self.class_data_mut(class_name).cold_mut();
+        cold.class_type_params = source.class_type_params.clone();
+        cold.class_type_param_bounds = source.class_type_param_bounds.clone();
+        cold.class_type_param_modifiers = source.class_type_param_modifiers.clone();
+        cold.class_type_param_defaults = source.class_type_param_defaults.clone();
+    }
+
     pub fn get_class_type_params(&self, class_name: &str) -> &[String] {
         self.class_data
             .get(class_name)

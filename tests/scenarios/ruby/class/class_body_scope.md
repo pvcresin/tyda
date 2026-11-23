@@ -336,7 +336,7 @@ end
 ### result
 
 ```rbs
-class Hash
+class Hash[unchecked out K, unchecked out V]
   def each: -> nil
   def each_value: -> nil
 end

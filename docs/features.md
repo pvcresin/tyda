@@ -15,6 +15,8 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
     union は使える値がないため `void` にまとめ、引数・要素・bound など値の位置の `void` は `untyped` にする
   - ソースの `class` / `module` と `Class.new` / `Struct.new` の定数で宣言した class は、メンバーがなくても
     宣言する（`class A::B` の外側の `module A` を RBS が要求するため）
+  - 再オープンした generic な core class（`class Hash`）は core の型パラメータ付きで宣言する
+    （`class Hash[unchecked out K, unchecked out V]`）。core のメソッドは読み込まず、ソースの定義を優先する
   - superclass と mixin は、ソースで相対名（`class ServerError < Error`）でも完全名（`Fx::Error`）で出す。
     compact な宣言（`class Fx::ServerError`）では RBS が `Fx` から名前を探さないため
   - 型引数を書かずに参照した generic class（`class Pairs < Hash`、`include Enumerable`、要素型が分からない

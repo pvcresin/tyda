@@ -95,3 +95,28 @@ class Object < BasicObject
   def call: -> "x"
 end
 ```
+
+## Reopened generic core class keeps its type parameters
+
+### update
+
+```ruby
+class Struct
+  def pp_it = 1
+end
+class Hash
+  def pp_it = 2
+end
+```
+
+### result
+
+```rbs
+class Hash[unchecked out K, unchecked out V]
+  def pp_it: -> 2
+end
+
+class Struct[E]
+  def pp_it: -> 1
+end
+```
