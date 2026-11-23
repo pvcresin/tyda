@@ -791,6 +791,9 @@ class H
   def each_item #:yield: item
     yield 1
   end
+  def name(override=nil) #:nodoc:
+    override
+  end
 end
 ```
 
@@ -800,5 +803,6 @@ end
 class H
   def perform: [X] (X x) -> X
   def each_item: [R] { (Integer) -> R } -> R
+  def name: (?nil override) -> nil
 end
 ```

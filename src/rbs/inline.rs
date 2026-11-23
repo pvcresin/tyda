@@ -176,7 +176,7 @@ fn parse_inline_assertion(body: &str) -> Option<InlineAssertion> {
 }
 
 fn parse_inline_assertion_type(type_str: &str) -> Option<Type> {
-    let rbs_type = rbs_ir::RbsType::from(&rbs_sys::parse_type(type_str).ok()?);
+    let rbs_type = rbs_ir::RbsType::from(&rbs_sys::parse_whole_type(type_str).ok()?);
     Some(convert_rbs_type(&rbs_type))
 }
 
