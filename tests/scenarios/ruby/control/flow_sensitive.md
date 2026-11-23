@@ -331,11 +331,11 @@ class ScopedClassNarrowing::Checker
   def value: (untyped flag) -> :value?
 end
 
-class ScopedClassNarrowing::LocalRead < Base
+class ScopedClassNarrowing::LocalRead < ScopedClassNarrowing::Base
   def value: -> :value
 end
 
-class ScopedClassNarrowing::Other < Base
+class ScopedClassNarrowing::Other < ScopedClassNarrowing::Base
 end
 ```
 
@@ -425,7 +425,7 @@ end
 class ParentTypePredicate::Base
 end
 
-class ParentTypePredicate::Child < Base
+class ParentTypePredicate::Child < ParentTypePredicate::Base
   def child_only: -> :child
 end
 ```

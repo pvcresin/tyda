@@ -406,3 +406,33 @@ class Pt < Struct[untyped]
   def x: -> 1
 end
 ```
+
+## Superclass in a compact class declaration is fully qualified
+
+### update
+
+```ruby
+module Fx
+  class Error < StandardError
+    def a = 1
+  end
+  class ServerError < Error
+    def b = 1
+  end
+end
+```
+
+### result
+
+```rbs
+module Fx
+end
+
+class Fx::Error < StandardError
+  def a: -> 1
+end
+
+class Fx::ServerError < Fx::Error
+  def b: -> 1
+end
+```

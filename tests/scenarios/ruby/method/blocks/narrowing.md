@@ -848,7 +848,7 @@ end
 class Group::Base
 end
 
-class Group::Item < Base
+class Group::Item < Group::Base
 end
 
 class Object < BasicObject

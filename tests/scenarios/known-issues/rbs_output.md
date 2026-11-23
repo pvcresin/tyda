@@ -23,86 +23,6 @@ module Worker
 end
 ```
 
-## Classes and namespaces without members are still declared
-
-### update
-
-```ruby
-module Fx
-  class Error < StandardError; end
-  class Env; end
-  class Builder
-    def build_env = Env.new
-  end
-  class ServerError < Error
-    def code = 500
-  end
-  module Logging
-    class Formatter
-      def x = 1
-    end
-  end
-end
-```
-
-### result
-
-```rbs
-module Fx
-end
-
-class Fx::Builder
-  def build_env: -> Fx::Env
-end
-
-class Fx::Env
-end
-
-class Fx::Error < StandardError
-end
-
-module Fx::Logging
-end
-
-class Fx::Logging::Formatter
-  def x: -> 1
-end
-
-class Fx::ServerError < Fx::Error
-  def code: -> 500
-end
-```
-
-## Superclass in a compact class declaration is fully qualified
-
-### update
-
-```ruby
-module Fx
-  class Error < StandardError
-    def a = 1
-  end
-  class ServerError < Error
-    def b = 1
-  end
-end
-```
-
-### result
-
-```rbs
-module Fx
-end
-
-class Fx::Error < StandardError
-  def a: -> 1
-end
-
-class Fx::ServerError < Fx::Error
-  def b: -> 1
-end
-```
-
 ## Core class name shadowed by a nested module
 
 ### update
@@ -464,36 +384,6 @@ end
 
 class Struct[E]
   def pp_it: -> 1
-end
-```
-
-## Nested module named like a core class is included by its full name
-
-### update
-
-```ruby
-module Xp
-  class Project
-    module Object
-      def uuid = 1
-    end
-    include Object
-  end
-end
-```
-
-### result
-
-```rbs
-module Xp
-end
-
-class Xp::Project
-  include Xp::Project::Object
-end
-
-module Xp::Project::Object
-  def uuid: -> 1
 end
 ```
 

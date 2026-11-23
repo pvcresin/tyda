@@ -380,11 +380,12 @@ impl TypeRegistry {
                     MixinKind::Extend => "extend",
                     MixinKind::Prepend => "prepend",
                 };
+                let module_name = self.rbs_mixin_name(name, &m.module_name);
                 let module_name = if m.type_args.is_empty() && m.untyped_type_arity > 0 {
                     let args = vec!["untyped"; usize::from(m.untyped_type_arity)];
-                    format!("{}[{}]", m.module_name, args.join(", "))
+                    format!("{module_name}[{}]", args.join(", "))
                 } else {
-                    self.name_with_type_args(name, m.module_name.as_ref(), &m.type_args)
+                    self.name_with_type_args(name, &module_name, &m.type_args)
                 };
                 (kind_str.to_string(), module_name)
             })
@@ -414,7 +415,9 @@ impl TypeRegistry {
             constants,
             sorbet_modifier_comments: data.cold().sorbet_modifier_comments.clone(),
             embedded_rbs: data.cold().embedded_rbs.clone(),
+            // Compact declarations (`class A::B < C`) do not resolve `C` from `A`, so write the full name.
             superclass: data.superclass.as_ref().map(|superclass| {
+                let superclass = self.resolve_superclass_ref_borrow(name, superclass);
                 self.name_with_type_args(name, superclass, &data.cold().superclass_type_args)
             }),
             mixins,
@@ -498,6 +501,24 @@ impl TypeRegistry {
             rebuilt.append(&mut orphan);
         }
         *all_methods = rebuilt;
+    }
+
+    /// RBS looks up a mixin name in the class first, so `include M::M` in `module M` reads as
+    /// `M::M::M`. Such names get a `::` prefix.
+    fn rbs_mixin_name(&self, owner: &str, raw_name: &str) -> String {
+        let full_name = self.resolve_scoped_class_ref_borrow(owner, raw_name);
+        if full_name.starts_with("::") {
+            return full_name.to_string();
+        }
+        let head = full_name.split("::").next().unwrap_or(full_name);
+        if self
+            .class_data
+            .contains_key(format!("{owner}::{head}").as_str())
+        {
+            format!("::{full_name}")
+        } else {
+            full_name.to_string()
+        }
     }
 
     /// `[unchecked out T < Bound = Default]` entries for the class header. RBS rejects a class

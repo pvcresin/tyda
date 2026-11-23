@@ -198,3 +198,53 @@ class Object < BasicObject
   def f: -> 1
 end
 ```
+
+## Classes and namespaces without members are still declared
+
+### update
+
+```ruby
+module Fx
+  class Error < StandardError; end
+  class Env; end
+  class Builder
+    def build_env = Env.new
+  end
+  class ServerError < Error
+    def code = 500
+  end
+  module Logging
+    class Formatter
+      def x = 1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+module Fx
+end
+
+class Fx::Builder
+  def build_env: -> Fx::Env
+end
+
+class Fx::Env
+end
+
+class Fx::Error < StandardError
+end
+
+module Fx::Logging
+end
+
+class Fx::Logging::Formatter
+  def x: -> 1
+end
+
+class Fx::ServerError < Fx::Error
+  def code: -> 500
+end
+```
