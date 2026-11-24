@@ -45453,6 +45453,10 @@ impl<'a> InferenceEngine<'a> {
 
         let (call_arg_types, call_kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
+        let call_arg_types: Vec<Type> = call_arg_types
+            .iter()
+            .map(|ty| self.resolve_known_ivar_ref(ty, class_name, scope))
+            .collect();
         let block_shape = if self.record_hover_snapshots {
             call_node
                 .block()
@@ -51170,11 +51174,16 @@ impl<'a> InferenceEngine<'a> {
             return None;
         }
 
-        let (mut arg_types, kw_arg_types) =
+        let (arg_types, kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
         if arg_types.is_empty() && kw_arg_types.is_empty() {
             return None;
         }
+        // An instance variable whose type is known already picks the overload.
+        let mut arg_types: Vec<Type> = arg_types
+            .iter()
+            .map(|ty| self.resolve_known_ivar_ref(ty, class_name, scope))
+            .collect();
 
         let mut relation_cache = HashMap::new();
         // A `nil` arm that no overload accepts would raise, so the other arms pick the overload.
@@ -53103,6 +53112,17 @@ impl<'a> InferenceEngine<'a> {
 
     fn rbs_method_type_callable_without_block(mt: &rbs_ir::MethodType) -> bool {
         mt.block.as_ref().is_none_or(|block| !block.required)
+    }
+
+    /// The type of an instance variable reference once it is known; otherwise the reference.
+    fn resolve_known_ivar_ref(&self, ty: &Type, class_name: &str, scope: &Scope) -> Type {
+        let Type::IvarRef(name) = ty else {
+            return ty.clone();
+        };
+        match self.current_ivar_type(class_name, scope, name.as_str()) {
+            Some(resolved) if resolved != Type::Untyped && Self::is_concrete(&resolved) => resolved,
+            _ => ty.clone(),
+        }
     }
 
     fn is_unresolved_call_arg_type(ty: &Type) -> bool {
