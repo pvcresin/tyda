@@ -32944,7 +32944,11 @@ impl<'a> InferenceEngine<'a> {
                     let result = 'recv: {
                         // A class another file declares may define the method there, so a
                         // core method found here waits for the merged definitions.
-                        if let Type::Singleton(name) | Type::Class(name) = &safe_nav_receiver_type
+                        // A reference keeps no arguments or block, so only a plain call waits.
+                        if call_node.arguments().is_none()
+                            && call_node.block().is_none()
+                            && let Type::Singleton(name) | Type::Class(name) =
+                                &safe_nav_receiver_type
                             && self.other_file_class_method_waits(
                                 name.as_str(),
                                 &method_name,
@@ -58830,9 +58834,11 @@ impl<'a> InferenceEngine<'a> {
         if self.stdlib_feature_method_unloaded(class_name, &method_name_for_lookup, is_singleton) {
             return Type::Untyped;
         }
-        // A class another file declares may define the method there, so a core method found
-        // here waits for the merged definitions.
-        if self.other_file_class_method_waits(class_name, &method_name_for_lookup, is_singleton) {
+        // A class another file declares may define this class method there, so a core method
+        // found here waits for the merged definitions.
+        if is_singleton
+            && self.other_file_class_method_waits(class_name, &method_name_for_lookup, true)
+        {
             return Type::ReceiverMethodRef(Box::new(receiver_type.clone()), Sym::new(method_name));
         }
         let lookup = self.registry.lookup_method_return_type_with_hint(
