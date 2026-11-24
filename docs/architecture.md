@@ -218,6 +218,8 @@ workspace context を分ける。
    merge 済み registry が解決する。型の決まらない引数と、workspace のクラスを含む引数は parameter 参照
    のまま渡す（再推論の文脈は workspace のソースを読まないため）。再推論の戻り値が `untyped` を含み、
    最初の解析の戻り値が含まない場合は最初の解析を残す。再推論はそうした method を含むファイルだけを読み直す。
+   別ファイルで宣言されたクラスへの引数も block もない呼び出し（`Javascript.constants`）は、このファイルで
+   `Module` などのコアのメソッドしか見つからなくても即決せず参照として残し、merge 済み registry で解決する。
    別ファイルのメソッドに由来する遅延参照（`ctx.get(2)` の `ctx`、`Ctx.make.get(2)`）への引数付き・
    block 付きの呼び出しも同じく引数を失うので、その受け手と呼んだ method を記録する。記録するのは、
    型の分かる引数（literal、定数、型の分かる local）か literal の block を持ち、結果が戻り値に届く
