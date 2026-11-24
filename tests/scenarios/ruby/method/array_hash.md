@@ -2638,3 +2638,31 @@ class Args
   def strings: -> Array["a" | "b"]
 end
 ```
+
+## Empty array concat with an untyped value is not an empty tuple
+
+### update
+
+```ruby
+class Collector
+  def collect(items)
+    result = []
+    result.concat(items)
+  end
+
+  def collect_later(items)
+    result = []
+    result.concat(items)
+    result
+  end
+end
+```
+
+### result
+
+```rbs
+class Collector
+  def collect: (untyped items) -> Array[untyped]
+  def collect_later: (untyped items) -> Array[untyped]
+end
+```

@@ -10550,6 +10550,12 @@ impl<'a> InferenceEngine<'a> {
                 Type::Array(Some(Box::new(Type::from_type_vec(args))))
             }
             (Type::Array(None), Type::Array(Some(inner))) => Type::Array(Some(inner)),
+            // An argument of unknown shape adds elements of unknown type.
+            (existing @ (Type::Tuple(_) | Type::Array(_)), arg_ty)
+                if !matches!(arg_ty, Type::Tuple(_) | Type::Array(_)) =>
+            {
+                Self::apply_array_concat_element(existing, Type::Untyped)
+            }
             (existing, _) => existing,
         }
     }
