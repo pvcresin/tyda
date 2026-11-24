@@ -6234,3 +6234,39 @@ fn known_issue_singleton_method_from_another_file_loses_to_a_module_method() {
         "known issue fixed; drop this check and assert the Set return: {stdout}"
     );
 }
+
+#[test]
+fn known_issue_array_constant_from_another_file_is_a_class() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("env.rb"),
+        "module Spring\n  IGNORE_SIGNALS = %w(INT QUIT)\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("server.rb"),
+        concat!(
+            "module Spring\n",
+            "  class Server\n",
+            "    def ignore_signals\n",
+            "      IGNORE_SIGNALS.each { |sig| sig }\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `IGNORE_SIGNALS` holds an array, so `each` with a block returns
+    // `["INT", "QUIT"]` (the scenario path and a single file get this right). With the
+    // constant in another file, the CLI treats it as a class (seen with the spring gem).
+    assert!(
+        stdout.contains("  def ignore_signals: -> singleton(IGNORE_SIGNALS)\n"),
+        "known issue fixed; drop this check and assert the array return: {stdout}"
+    );
+}

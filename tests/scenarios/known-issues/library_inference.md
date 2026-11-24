@@ -651,3 +651,26 @@ class Buffer
   def flush: -> Array[untyped]
 end
 ```
+
+## super with a Method block argument is not an Enumerator
+
+### update
+
+```ruby
+class IndifferentHash < Hash
+  def convert_value(value) = value
+
+  def transform_values!
+    super(&method(:convert_value))
+  end
+end
+```
+
+### result
+
+```rbs
+class IndifferentHash < Hash[untyped, untyped]
+  def convert_value: [V] (V value) -> V
+  def transform_values!: -> IndifferentHash
+end
+```
