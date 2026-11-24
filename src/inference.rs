@@ -3911,6 +3911,68 @@ impl<'a> InferenceEngine<'a> {
         None
     }
 
+    /// `Point = Struct.new(:x)` / `Data.define` defines the class `Point`. Returns false for
+    /// any other value.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_struct_class_constant(
+        &mut self,
+        class_name: &str,
+        const_name: &str,
+        value: &Node<'_>,
+        loc: SourceLocation,
+        parse_result: &ParseResult<'_>,
+        comments: &[RbsComment],
+    ) -> bool {
+        let generate_writer = if Self::is_struct_new_call(value, parse_result) {
+            true
+        } else if self.supports_data_define() && Self::is_data_define_call(value, parse_result) {
+            false
+        } else {
+            return false;
+        };
+        let full_name = if class_name == "Object" {
+            const_name.to_string()
+        } else {
+            crate::sym::join_scope(class_name, const_name)
+        };
+        let call = value.as_call_node().expect("must be CallNode");
+        self.collect_struct_new_members(&full_name, &call, parse_result, comments, generate_writer);
+        self.registry.record_source_definition(&full_name, loc);
+        if let Some(ref fp) = self.file_path {
+            self.registry.set_file_path(&full_name, fp);
+        }
+        let ty = Type::Singleton(Sym::new(&full_name));
+        if class_name == "Object" {
+            self.constants.insert(full_name, ty);
+        } else {
+            self.insert_class_body_constant(class_name, const_name, ty);
+        }
+        true
+    }
+
+    /// `Point ||= Struct.new(:x)` defines the class like `Point = Struct.new(:x)`.
+    fn collect_struct_or_write_constant(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        comments: &[RbsComment],
+    ) -> bool {
+        let Some(write_node) = node.as_constant_or_write_node() else {
+            return false;
+        };
+        let const_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+        let loc = offset_to_location(parse_result.source(), write_node.location().start_offset());
+        self.collect_struct_class_constant(
+            class_name,
+            &const_name,
+            &write_node.value(),
+            loc,
+            parse_result,
+            comments,
+        )
+    }
+
     fn insert_class_body_constant(&mut self, class_name: &str, const_name: &str, ty: Type) {
         self.constants
             .insert(crate::sym::join_scope(class_name, const_name), ty.clone());
@@ -14595,47 +14657,16 @@ impl<'a> InferenceEngine<'a> {
                     .as_constant_write_node()
                     .expect("must be ConstantWriteNode");
                 let const_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
-                if Self::is_struct_new_call(&write_node.value(), parse_result) {
-                    let call = write_node.value().as_call_node().expect("must be CallNode");
-                    self.collect_struct_new_members(
-                        &const_name,
-                        &call,
-                        parse_result,
-                        comments,
-                        true,
-                    );
-                    let loc = offset_to_location(
-                        parse_result.source(),
-                        write_node.location().start_offset(),
-                    );
-                    self.registry.record_source_definition(&const_name, loc);
-                    if let Some(ref fp) = self.file_path {
-                        self.registry.set_file_path(&const_name, fp);
-                    }
-                    self.constants
-                        .insert(const_name.clone(), Type::Singleton(Sym::new(const_name)));
-                } else if self.supports_data_define()
-                    && Self::is_data_define_call(&write_node.value(), parse_result)
-                {
-                    let call = write_node.value().as_call_node().expect("must be CallNode");
-                    self.collect_struct_new_members(
-                        &const_name,
-                        &call,
-                        parse_result,
-                        comments,
-                        false,
-                    );
-                    let loc = offset_to_location(
-                        parse_result.source(),
-                        write_node.location().start_offset(),
-                    );
-                    self.registry.record_source_definition(&const_name, loc);
-                    if let Some(ref fp) = self.file_path {
-                        self.registry.set_file_path(&const_name, fp);
-                    }
-                    self.constants
-                        .insert(const_name.clone(), Type::Singleton(Sym::new(const_name)));
-                } else if self.collect_dynamic_namespace_constant(
+                let loc =
+                    offset_to_location(parse_result.source(), write_node.location().start_offset());
+                if self.collect_struct_class_constant(
+                    "Object",
+                    &const_name,
+                    &write_node.value(),
+                    loc,
+                    parse_result,
+                    comments,
+                ) || self.collect_dynamic_namespace_constant(
                     "Object",
                     &const_name,
                     &write_node.value(),
@@ -14681,6 +14712,13 @@ impl<'a> InferenceEngine<'a> {
                     );
                 }
             }
+            Node::ConstantOrWriteNode { .. }
+                if self.collect_struct_or_write_constant(
+                    "Object",
+                    node,
+                    parse_result,
+                    comments,
+                ) => {}
             Node::ConstantOrWriteNode { .. }
             | Node::ConstantAndWriteNode { .. }
             | Node::ConstantOperatorWriteNode { .. }
@@ -17059,48 +17097,14 @@ impl<'a> InferenceEngine<'a> {
                             const_loc,
                         );
 
-                        if Self::is_struct_new_call(&write_node.value(), parse_result) {
-                            let full_name = crate::sym::join_scope(class_name, &const_name);
-                            let call = write_node.value().as_call_node().expect("must be CallNode");
-                            self.collect_struct_new_members(
-                                &full_name,
-                                &call,
-                                parse_result,
-                                comments,
-                                true,
-                            );
-                            self.registry
-                                .record_source_definition(&full_name, const_loc);
-                            if let Some(ref fp) = self.file_path {
-                                self.registry.set_file_path(&full_name, fp);
-                            }
-                            self.insert_class_body_constant(
-                                class_name,
-                                &const_name,
-                                Type::Singleton(Sym::new(full_name)),
-                            );
-                        } else if self.supports_data_define()
-                            && Self::is_data_define_call(&write_node.value(), parse_result)
-                        {
-                            let full_name = crate::sym::join_scope(class_name, &const_name);
-                            let call = write_node.value().as_call_node().expect("must be CallNode");
-                            self.collect_struct_new_members(
-                                &full_name,
-                                &call,
-                                parse_result,
-                                comments,
-                                false,
-                            );
-                            self.registry
-                                .record_source_definition(&full_name, const_loc);
-                            if let Some(ref fp) = self.file_path {
-                                self.registry.set_file_path(&full_name, fp);
-                            }
-                            self.insert_class_body_constant(
-                                class_name,
-                                &const_name,
-                                Type::Singleton(Sym::new(full_name)),
-                            );
+                        if self.collect_struct_class_constant(
+                            class_name,
+                            &const_name,
+                            &write_node.value(),
+                            const_loc,
+                            parse_result,
+                            comments,
+                        ) {
                         } else if self.is_type_member_call(&write_node.value(), parse_result) {
                             self.registry
                                 .add_class_type_param(class_name, const_name.clone());
@@ -17199,6 +17203,16 @@ impl<'a> InferenceEngine<'a> {
                                 method_context_singleton_dispatch: None,
                             });
                         }
+                    }
+                    Node::ConstantOrWriteNode { .. }
+                        if self.collect_struct_or_write_constant(
+                            class_name,
+                            &node,
+                            parse_result,
+                            comments,
+                        ) =>
+                    {
+                        pending_sigs.clear();
                     }
                     Node::ConstantOrWriteNode { .. }
                     | Node::ConstantAndWriteNode { .. }

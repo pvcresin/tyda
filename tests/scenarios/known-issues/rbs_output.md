@@ -674,34 +674,6 @@ class Box
 end
 ```
 
-## Struct new assigned with or-assign is a class
-
-### update
-
-```ruby
-module Mu
-  Operator ||= Struct.new(:separator, :prefix)
-  def self.op = Operator.new(",", false)
-end
-```
-
-### result
-
-```rbs
-module Mu
-  def self.op: -> Mu::Operator
-end
-
-class Mu::Operator < Struct[untyped]
-  def separator: -> String
-  def separator=: (String separator) -> String
-  def prefix: -> bool
-  def prefix=: (bool prefix) -> bool
-  def initialize: (String separator, bool prefix) -> void
-  def self.members: -> Array[:prefix | :separator]
-end
-```
-
 ## Rescued generic exception gets type arguments
 
 ### update
