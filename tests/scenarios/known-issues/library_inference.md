@@ -200,25 +200,6 @@ class Table
 end
 ```
 
-## Kernel Rational without the exception keyword is not nilable
-
-### update
-
-```ruby
-class Limits
-  SMALL = Rational(1, 10**12)
-  MAX = 60 - Rational(1, 10**12)
-end
-```
-
-### result
-
-```rbs
-class Limits
-  SMALL: Rational
-  MAX: Rational
-end
-```
 ## Splat of a tuple spreads into generic parameters
 
 ### update

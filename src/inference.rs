@@ -50904,17 +50904,34 @@ impl<'a> InferenceEngine<'a> {
             return None;
         }
 
-        let (arg_types, kw_arg_types) =
+        let (mut arg_types, kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
         if arg_types.is_empty() && kw_arg_types.is_empty() {
             return None;
+        }
+
+        let mut relation_cache = HashMap::new();
+        // A `nil` arm that no overload accepts would raise, so the other arms pick the overload.
+        if arg_types
+            .iter()
+            .any(|ty| matches!(ty, Type::Union(parts) if parts.contains(&Type::Nil)))
+            && !overloads.iter().any(|overload| {
+                self.rbs_method_type_accepts_call(
+                    &overload.method_type,
+                    &arg_types,
+                    &kw_arg_types,
+                    receiver_type,
+                    &mut relation_cache,
+                )
+            })
+        {
+            arg_types = arg_types.iter().map(Self::remove_nil).collect();
         }
 
         let receiver_type_args = Self::extract_type_args(receiver_type);
         let mut type_vars = self.class_type_vars_from_args(&receiver_class, &receiver_type_args);
         Self::seed_enumerable_elem_type_var(&receiver_class, &receiver_type_args, &mut type_vars);
 
-        let mut relation_cache = HashMap::new();
         let call_has_block = call_node.block().is_some();
         let mut skipped_required_block_match = false;
         let args_are_unknown = arg_types.iter().chain(kw_arg_types.values()).any(|ty| {
@@ -55404,6 +55421,25 @@ impl<'a> InferenceEngine<'a> {
             })
             .filter(|mt| call_matches(mt, &mut relation_cache))
             .collect();
+        // An argument that resolves later can still select a plain overload, so a generic one
+        // only answers when no plain overload accepts the call.
+        let args_are_deferred = call_arg_types
+            .iter()
+            .chain(call_kw_arg_types.values())
+            .any(Self::is_unresolved_call_arg_type);
+        let plain_overload_accepts = args_are_deferred
+            && overloads
+                .iter()
+                .filter(|mt| {
+                    Self::rbs_method_type_callable_without_block(&mt.method_type)
+                        && mt.method_type.type_params.is_empty()
+                })
+                .any(|mt| call_matches(&mt, &mut relation_cache));
+        let method_type_param_overloads = if plain_overload_accepts {
+            Vec::new()
+        } else {
+            method_type_param_overloads
+        };
 
         for overload in method_type_param_overloads.iter() {
             let rbs_mt = &overload.method_type;
@@ -55469,10 +55505,6 @@ impl<'a> InferenceEngine<'a> {
             .collect();
 
         // An argument that resolves later can still select any accepted overload.
-        let args_are_deferred = call_arg_types
-            .iter()
-            .chain(call_kw_arg_types.values())
-            .any(Self::is_unresolved_call_arg_type);
         if args_are_deferred
             && let Some((first, rest)) = no_block_overloads.split_first()
             && rest.iter().any(|overload| {

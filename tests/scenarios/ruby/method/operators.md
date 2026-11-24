@@ -574,3 +574,29 @@ class Timer
   def offset: -> untyped
 end
 ```
+
+## Arithmetic with a nilable argument uses the overload of the value
+
+### update
+
+```ruby
+class Limits
+  SMALL = Rational(1, 10**12)
+  MAX = 60 - Rational(1, 10**12)
+
+  def offset(flag) = 60 - (flag ? 1.5 : nil)
+  def ratio(value) = Rational(1, value)
+end
+```
+
+### result
+
+```rbs
+class Limits
+  SMALL: Rational?
+  MAX: Rational
+
+  def offset: (untyped flag) -> Float
+  def ratio: (untyped value) -> Rational
+end
+```
