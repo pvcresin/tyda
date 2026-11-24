@@ -316,3 +316,41 @@ class Foo < Base
   def self.make: -> Foo
 end
 ```
+
+## Singleton method from another file wins over a Module method
+
+### update
+
+### file: lib/javascript.rb
+
+```ruby
+module Rouge
+  module Lexers
+    class Javascript
+      def self.constants
+        @constants ||= Set.new %w(true false)
+      end
+    end
+  end
+end
+```
+
+```ruby
+module Rouge
+  module Lexers
+    class Livescript
+      def self.constants
+        @constants ||= Javascript.constants + %w(yes)
+      end
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Rouge::Lexers::Livescript
+  def self.constants: -> Set["false" | "true" | "yes"]
+end
+```

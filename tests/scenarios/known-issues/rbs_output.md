@@ -444,3 +444,115 @@ class G
   def c: (untyped v) -> Range[untyped]?
 end
 ```
+
+## Top-level constant path is not resolved to a nested constant
+
+### update
+
+```ruby
+module Codec
+  module String
+    def to_codec = 1
+  end
+
+  class Int32
+    TYPE = ::String.new("a")
+    def type = ::String.new("b")
+  end
+end
+```
+
+### result
+
+```rbs
+class Codec::Int32
+  TYPE: ::String
+
+  def type: -> ::String
+end
+
+module Codec::String
+  def to_codec: -> 1
+end
+```
+
+## Constant set to new in a class body is an instance
+
+### update
+
+```ruby
+class Visitor
+  def visit = 1
+
+  INSTANCE = new
+end
+```
+
+### result
+
+```rbs
+class Visitor
+  INSTANCE: Visitor
+
+  def visit: -> 1
+end
+```
+
+## Frozen lambda constant is a Proc
+
+### update
+
+```ruby
+module Consts
+  IDENTITY = ->(x) { x }.freeze
+end
+```
+
+### result
+
+```rbs
+module Consts
+  IDENTITY: Proc
+end
+```
+
+## Constant set to self in a class body is the class
+
+### update
+
+```ruby
+class Timeout
+  RT = self
+end
+```
+
+### result
+
+```rbs
+class Timeout
+  RT: singleton(Timeout)
+end
+```
+
+## Instance variable from an optional parameter is not only its default
+
+### update
+
+```ruby
+class Link
+  attr_reader :href
+
+  def initialize(href = "")
+    @href = href
+  end
+end
+```
+
+### result
+
+```rbs
+class Link
+  def href: -> String
+  def initialize: (?String href) -> void
+end
+```

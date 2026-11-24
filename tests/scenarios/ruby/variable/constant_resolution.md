@@ -1864,3 +1864,37 @@ class Core::User
   def make: -> String
 end
 ```
+
+## Array constant from another file is not a class
+
+### update
+
+### file: lib/env.rb
+
+```ruby
+module Spring
+  IGNORE_SIGNALS = %w(INT QUIT)
+end
+```
+
+```ruby
+module Spring
+  class Server
+    def ignore_signals
+      IGNORE_SIGNALS.each { |sig| sig }
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+module Spring
+  IGNORE_SIGNALS: ["INT", "QUIT"]
+end
+
+class Spring::Server
+  def ignore_signals: -> ["INT", "QUIT"]
+end
+```
