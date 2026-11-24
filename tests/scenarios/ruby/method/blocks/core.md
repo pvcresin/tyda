@@ -744,3 +744,28 @@ class UnionBlockCall
   def then_arm: (untyped x) -> (1 | "a")
 end
 ```
+
+## Block that returns untyped keeps the block overload
+
+### update
+
+```ruby
+class Writer
+  def write(x)
+    File.open("x", "w") { |file| x }
+  end
+
+  def within(x)
+    Dir.chdir("x") { x }
+  end
+end
+```
+
+### result
+
+```rbs
+class Writer
+  def write: (untyped x) -> untyped
+  def within: (untyped x) -> untyped
+end
+```

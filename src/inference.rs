@@ -45831,7 +45831,11 @@ impl<'a> InferenceEngine<'a> {
         }
 
         // Without method type params the return only uses receiver types, which later resolve.
-        if Self::is_concrete(&method_return) || rbs_mt.method_type.type_params.is_empty() {
+        // A return bound from the block keeps its references, which resolve with the block.
+        if Self::is_concrete(&method_return)
+            || rbs_mt.method_type.type_params.is_empty()
+            || (!Self::is_concrete(&block_return_type) && method_return == block_return_type)
+        {
             Some(Self::include_optional_control_type(
                 method_return,
                 &block_break_type,

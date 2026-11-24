@@ -665,7 +665,7 @@ end
 
 ```rbs
 class Timeout
-  RT: singleton(Timeout)
+  class RT = Timeout
 end
 ```
 

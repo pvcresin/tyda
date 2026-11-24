@@ -343,33 +343,9 @@ end
 
 ```rbs
 class Pair
-  def first: -> 1
+  def first: -> Integer
   def pair: -> [1, "a"]
-  def take: [A] (A a, untyped b) -> A
-end
-```
-## Block that returns untyped keeps the block overload
-
-### update
-
-```ruby
-class Writer
-  def write(x)
-    File.open("x", "w") { |file| x }
-  end
-
-  def within(x)
-    Dir.chdir("x") { x }
-  end
-end
-```
-
-### result
-
-```rbs
-class Writer
-  def write: (untyped x) -> untyped
-  def within: (untyped x) -> untyped
+  def take: [A] (A a, String b) -> A
 end
 ```
 ## Own method overrides the method of a core superclass
