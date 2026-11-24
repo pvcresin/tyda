@@ -206,3 +206,32 @@ class DefaultDep
   def double: (Integer base, ?Integer scaled) -> Integer
 end
 ```
+
+## A default from a constant alias of an array keeps the array type
+
+```ruby
+module Haml
+  module Preserver
+    TAGS = %w[a b].freeze
+  end
+
+  module Helpers
+    PRESERVE = Preserver::TAGS
+    def find(tags = PRESERVE) = tags
+  end
+end
+```
+
+### result
+
+```rbs
+module Haml::Helpers
+  PRESERVE: ["a", "b"]
+
+  def find: (?Array[String] tags) -> Array[String]
+end
+
+module Haml::Preserver
+  TAGS: ["a", "b"]
+end
+```
