@@ -17476,6 +17476,12 @@ impl<'a> InferenceEngine<'a> {
                         &late_constant_names,
                         late_constant_unknown,
                     );
+                    // A call before this def resolved to the core method of the same name.
+                    if let Some(name) =
+                        self.def_shadowing_core_method(&def_node, in_singleton_class)
+                    {
+                        Self::push_unique_late_constant_name(&mut late_constant_names, name);
+                    }
                 }
                 Node::IfNode { .. }
                 | Node::UnlessNode { .. }
@@ -17499,6 +17505,9 @@ impl<'a> InferenceEngine<'a> {
             }
 
             for name in self.class_body_node_late_constant_names(&node, parse_result) {
+                Self::push_unique_late_constant_name(&mut late_constant_names, name);
+            }
+            for name in self.attr_reader_names_shadowing_core_methods(&node, in_singleton_class) {
                 Self::push_unique_late_constant_name(&mut late_constant_names, name);
             }
             if Self::class_body_node_may_change_unknown_constant_lookup(&node) {
@@ -17589,6 +17598,63 @@ impl<'a> InferenceEngine<'a> {
             method_context: None,
             method_context_singleton_dispatch: None,
         });
+    }
+
+    /// Readers from `attr_reader` / `attr_accessor` that replace a core method of the same name.
+    fn attr_reader_names_shadowing_core_methods(
+        &mut self,
+        node: &Node<'_>,
+        in_singleton_class: bool,
+    ) -> Vec<String> {
+        let Some(call) = node.as_call_node() else {
+            return Vec::new();
+        };
+        if call.receiver().is_some()
+            || !matches!(call.name().as_slice(), b"attr_reader" | b"attr_accessor")
+        {
+            return Vec::new();
+        }
+        let Some(arguments) = call.arguments() else {
+            return Vec::new();
+        };
+        let names: Vec<String> = arguments
+            .arguments()
+            .iter()
+            .filter_map(|argument| Self::extract_symbol_literal_name(&argument))
+            .collect();
+        names
+            .into_iter()
+            .filter(|name| self.core_method_is_shadowed(name, in_singleton_class))
+            .collect()
+    }
+
+    fn core_method_is_shadowed(&mut self, name: &str, is_singleton: bool) -> bool {
+        let core_owner = if is_singleton { "Class" } else { "Object" };
+        self.ensure_class_available(core_owner);
+        self.registry
+            .resolve_method_call_owners(core_owner, name, false)
+            .iter()
+            .any(|(owner, owner_is_singleton)| {
+                self.registry
+                    .lookup_method_def(owner, name, *owner_is_singleton)
+                    .is_some_and(|method| method.origin.is_rbs_file_source())
+            })
+    }
+
+    /// The name of a def that replaces a method every object has from `Object` or `Kernel`
+    /// (`Class` for a singleton def).
+    fn def_shadowing_core_method(
+        &mut self,
+        def_node: &ruby_prism::DefNode<'_>,
+        in_singleton_class: bool,
+    ) -> Option<String> {
+        let name = String::from_utf8_lossy(def_node.name().as_slice()).to_string();
+        let is_singleton = in_singleton_class
+            || def_node
+                .receiver()
+                .is_some_and(|receiver| matches!(receiver, Node::SelfNode { .. }));
+        self.core_method_is_shadowed(&name, is_singleton)
+            .then_some(name)
     }
 
     fn push_unique_late_constant_name(names: &mut Vec<String>, name: String) {
@@ -18505,13 +18571,25 @@ impl<'a> InferenceEngine<'a> {
             all_types.push(implicit_return);
             Self::merge_reachable_types(all_types)
         };
+        // A call to a later method that replaces a core method was answered by the core
+        // method, so the new return replaces the old one even when it is less precise.
+        let calls_shadowing_method = late_constant_names.iter().any(|name| {
+            name.starts_with(|first: char| first.is_ascii_lowercase() || first == '_')
+                && Self::source_slice_may_contain_constant_name(
+                    parse_result.source(),
+                    body.location().start_offset(),
+                    body.location().end_offset(),
+                    name,
+                )
+        });
         if method_name == "initialize"
-            || new_return_type == Type::Untyped
+            || (new_return_type == Type::Untyped && !calls_shadowing_method)
             || Self::type_contains_pattern_ref(&new_return_type)
         {
             return;
         }
-        if !Self::type_needs_backward_propagation(&method_info.raw_return_type)
+        if !calls_shadowing_method
+            && !Self::type_needs_backward_propagation(&method_info.raw_return_type)
             && !Self::is_concrete(&new_return_type)
         {
             return;
@@ -58598,7 +58676,14 @@ impl<'a> InferenceEngine<'a> {
                 );
             }
         };
-        if ret == Type::Untyped {
+        // A source method that returns `untyped` replaces the declared method of an ancestor.
+        if ret == Type::Untyped
+            && !self.registry.method_call_has_user_source_definition(
+                class_name,
+                &method_name_for_lookup,
+                is_singleton,
+            )
+        {
             if let Some(return_type) = self.resolve_rbs_no_arg_method_return_on_type(
                 receiver_type,
                 effective_method_name,

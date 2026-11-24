@@ -155,30 +155,6 @@ class Sp
 end
 ```
 
-## Own method named like an Enumerable method keeps its untyped return
-
-### update
-
-```ruby
-class Mapper
-  def map(key) = [1][key]
-  def select(key) = [1][key]
-  def from_map(key) = map(key)
-  def from_select(key) = select(key)
-end
-```
-
-### result
-
-```rbs
-class Mapper
-  def map: (untyped key) -> untyped
-  def select: (untyped key) -> untyped
-  def from_map: (untyped key) -> untyped
-  def from_select: (untyped key) -> untyped
-end
-```
-
 ## Hash constant read with an untyped key uses its value types
 
 ### update
@@ -320,32 +296,6 @@ class Hooks
   def self.notify: (untyped key) -> [ ]
 end
 ```
-## attr_reader named like an Object method is used by implicit self calls
-
-### update
-
-```ruby
-class Wrapper
-  attr_reader :hash
-
-  def initialize(hash)
-    @hash = hash
-  end
-
-  def to_hash = hash
-end
-```
-
-### result
-
-```rbs
-class Wrapper
-  def hash: -> untyped
-  def initialize: (untyped hash) -> void
-  def to_hash: -> untyped
-end
-```
-
 ## super with a block in a Hash subclass each is not an Enumerator
 
 ### update
@@ -367,26 +317,6 @@ class Headers < Hash[untyped, untyped]
   def each: { (untyped, untyped) -> untyped } -> Headers
 end
 ```
-## Own method named like a Kernel method is used by implicit self calls
-
-### update
-
-```ruby
-class Page
-  def limit(num) = spawn(num)
-  def spawn(num) = "x"
-end
-```
-
-### result
-
-```rbs
-class Page
-  def limit: (untyped num) -> "x"
-  def spawn: (untyped num) -> "x"
-end
-```
-
 ## Module singleton new defined in Ruby is used by calls to new
 
 ### update

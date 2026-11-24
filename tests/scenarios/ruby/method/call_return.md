@@ -855,3 +855,47 @@ class User
   def value: -> [2]
 end
 ```
+
+## Own method named like a Kernel method is used by implicit self calls
+
+### update
+
+```ruby
+class Page
+  def limit(num) = spawn(num)
+  def spawn(num) = "x"
+end
+```
+
+### result
+
+```rbs
+class Page
+  def limit: (untyped num) -> "x"
+  def spawn: (untyped num) -> "x"
+end
+```
+
+## Own method named like an Enumerable method keeps its untyped return
+
+### update
+
+```ruby
+class Mapper
+  def map(key) = [1][key]
+  def select(key) = [1][key]
+  def from_map(key) = map(key)
+  def from_select(key) = select(key)
+end
+```
+
+### result
+
+```rbs
+class Mapper
+  def map: (untyped key) -> untyped
+  def select: (untyped key) -> untyped
+  def from_map: (untyped key) -> untyped
+  def from_select: (untyped key) -> untyped
+end
+```

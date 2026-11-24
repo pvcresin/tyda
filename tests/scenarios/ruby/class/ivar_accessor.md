@@ -252,3 +252,55 @@ class Overloaded
   def initialize: (Integer n) -> void
 end
 ```
+
+## attr_reader named like an Object method is used by implicit self calls
+
+### update
+
+```ruby
+class Wrapper
+  attr_reader :hash
+
+  def initialize(hash)
+    @hash = hash
+  end
+
+  def to_hash = hash
+end
+```
+
+### result
+
+```rbs
+class Wrapper
+  def hash: -> untyped
+  def initialize: (untyped hash) -> void
+  def to_hash: -> untyped
+end
+```
+
+## attr_reader after the call replaces the Object method
+
+### update
+
+```ruby
+class LateWrapper
+  def initialize(hash)
+    @hash = hash
+  end
+
+  def to_hash = hash
+
+  attr_reader :hash
+end
+```
+
+### result
+
+```rbs
+class LateWrapper
+  def initialize: (untyped hash) -> void
+  def to_hash: -> untyped
+  def hash: -> untyped
+end
+```
