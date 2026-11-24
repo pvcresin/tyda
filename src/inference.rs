@@ -33111,8 +33111,13 @@ impl<'a> InferenceEngine<'a> {
                                 Type::Singleton(name) => *name,
                                 _ => Sym::new(self.resolve_constant_path(&receiver, parse_result)),
                             };
+                            // `::Name` already names the top-level constant.
+                            let receiver_is_top_level_path = receiver
+                                .as_constant_path_node()
+                                .is_some_and(|path| path.parent().is_none());
                             let target_class = if !target_class_from_receiver.contains("::")
                                 && target_class_from_receiver != "Unknown"
+                                && !receiver_is_top_level_path
                             {
                                 match self.resolve_constant_type_in_scope(
                                     &target_class_from_receiver,

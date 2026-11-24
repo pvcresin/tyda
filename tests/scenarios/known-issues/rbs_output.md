@@ -579,34 +579,3 @@ class G
   def c: (untyped v) -> Range[untyped]?
 end
 ```
-
-## Top-level constant path is not resolved to a nested constant
-
-### update
-
-```ruby
-module Codec
-  module String
-    def to_codec = 1
-  end
-
-  class Int32
-    TYPE = ::String.new("a")
-    def type = ::String.new("b")
-  end
-end
-```
-
-### result
-
-```rbs
-class Codec::Int32
-  TYPE: ::String
-
-  def type: -> ::String
-end
-
-module Codec::String
-  def to_codec: -> 1
-end
-```
