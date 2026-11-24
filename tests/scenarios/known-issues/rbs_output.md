@@ -695,27 +695,3 @@ class Rs
   def r: [R] { () -> R } -> (NoMethodError[untyped] | R)
 end
 ```
-
-## Constant path written under an untyped constant is not a top-level class
-
-### update
-
-```ruby
-module Gp
-  module Pb
-    FeatureSet = lookup("fs").msgclass
-    FeatureSet::Limits = lookup("fs.limits").msgclass
-  end
-end
-```
-
-### result
-
-```rbs
-module Gp
-end
-
-module Gp::Pb
-  FeatureSet: untyped
-end
-```

@@ -4184,6 +4184,11 @@ impl<'a> InferenceEngine<'a> {
                 (owner.to_string(), const_name.to_string())
             })
             .unwrap_or_else(|| (class_name.to_string(), normalized.to_string()));
+        // `Holder = lookup(...)` then `Holder::Item = 1`: the owner is an object, not a
+        // namespace, so there is nothing static to declare.
+        if !absolute && self.constant_path_owner_is_value(class_name, &owner) {
+            return;
+        }
         let owner = self.resolve_constant_assignment_owner(class_name, &owner, absolute);
         let full_name = if owner == "Object" {
             const_name.clone()
@@ -4202,6 +4207,33 @@ impl<'a> InferenceEngine<'a> {
             self.file_path.as_deref(),
             alias,
         );
+    }
+
+    /// Whether `owner` or one of its outer names is a constant that holds a value rather than
+    /// a class or module (`Holder::Item` under `Holder = lookup(...)`).
+    fn constant_path_owner_is_value(&mut self, class_name: &str, owner: &str) -> bool {
+        let mut end = 0;
+        while let Some(offset) = owner[end..].find("::") {
+            end += offset;
+            if self.constant_holds_value(class_name, &owner[..end]) {
+                return true;
+            }
+            end += 2;
+        }
+        self.constant_holds_value(class_name, owner)
+    }
+
+    fn constant_holds_value(&mut self, class_name: &str, name: &str) -> bool {
+        for candidate in Self::scoped_constant_candidates(name, class_name) {
+            self.ensure_class_available(&candidate);
+            if Self::is_real_class_data(&self.registry, &candidate) {
+                return false;
+            }
+            if let Some(ty) = self.constants.get(candidate.as_str()) {
+                return !matches!(ty, Type::Singleton(_));
+            }
+        }
+        false
     }
 
     fn resolve_constant_assignment_owner(

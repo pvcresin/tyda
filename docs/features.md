@@ -25,6 +25,7 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
   - class / module を定数参照で代入した定数（`A = B`、alias の連鎖）は、定数宣言ではなく対象の種類に
     合わせた `class A = B` / `module A = B` で出す。
     `Class.new` の結果のように型だけが `singleton(...)` の値定数は従来どおり定数宣言にする
+  - 値を入れた定数の下に書いた定数パス（`Holder = lookup(...)` の後の `Holder::Item = 1`）は、名前空間がないため宣言しない
   - `.rbs`（`sig/` や gem_rbs_collection など）で宣言した定数と `class A = B` / `module A = B` は
     参照の解決にだけ使い、出力しない。Ruby で定義した定数に `.rbs` の宣言があれば、宣言の型で出す
 - TypeProf VSCode 拡張と接続できる LSP server
