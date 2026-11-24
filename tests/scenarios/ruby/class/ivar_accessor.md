@@ -304,3 +304,26 @@ class LateWrapper
   def hash: -> untyped
 end
 ```
+
+## Instance variable from an optional parameter is not only its default
+
+### update
+
+```ruby
+class Link
+  attr_reader :href
+
+  def initialize(href = "")
+    @href = href
+  end
+end
+```
+
+### result
+
+```rbs
+class Link
+  def href: -> String
+  def initialize: (?String href) -> void
+end
+```

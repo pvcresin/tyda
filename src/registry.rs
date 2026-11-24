@@ -8060,8 +8060,9 @@ impl TypeRegistry {
                     && let Some(default_type) = param_info.default_type.as_ref()
                 {
                     let resolved_default = self.resolve_deferred_refs(class_name, default_type);
+                    // A caller may pass another value, so the default widens as an argument does.
                     if resolved_default != Type::Untyped {
-                        return Some(resolved_default);
+                        return Some(resolved_default.widen_arg_for_param());
                     }
                 }
             }
