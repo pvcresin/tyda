@@ -984,3 +984,48 @@ class Object < BasicObject
   def call_keyword_render: -> :ok
 end
 ```
+
+## super with a block in a Hash subclass each is not an Enumerator
+
+### update
+
+```ruby
+class Headers < Hash
+  def each
+    super do |k, v|
+      yield(k, v.to_s)
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Headers < Hash[untyped, untyped]
+  def each: { (untyped, untyped) -> untyped } -> Headers
+end
+```
+
+## super with a Method block argument is not an Enumerator
+
+### update
+
+```ruby
+class IndifferentHash < Hash
+  def convert_value(value) = value
+
+  def transform_values!
+    super(&method(:convert_value))
+  end
+end
+```
+
+### result
+
+```rbs
+class IndifferentHash < Hash[untyped, untyped]
+  def convert_value: [V] (V value) -> V
+  def transform_values!: -> IndifferentHash
+end
+```

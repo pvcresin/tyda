@@ -13684,6 +13684,7 @@ impl<'a> InferenceEngine<'a> {
         let targets =
             self.super_call_targets(class_name, &method_name, scope.singleton_dispatch)?;
         let arguments = self.super_call_arguments(class_name, scope, super_node, parse_result);
+        let self_type = scope.current_self_type(class_name);
         let returns: Vec<Type> = targets
             .iter()
             .filter_map(|(owner, is_singleton)| {
@@ -13693,6 +13694,7 @@ impl<'a> InferenceEngine<'a> {
                     *is_singleton,
                     &arguments,
                     call_has_block,
+                    &self_type,
                 )
             })
             .collect();
@@ -13734,25 +13736,27 @@ impl<'a> InferenceEngine<'a> {
         is_singleton: bool,
         arguments: &SuperCallArguments,
         call_has_block: bool,
+        self_type: &Type,
     ) -> Option<Type> {
         let raw_return = call_has_block
-            .then(|| self.rbs_block_call_return(owner, method_name, is_singleton))
+            .then(|| self.rbs_block_call_return(owner, method_name, is_singleton, self_type))
             .flatten();
         self.super_target_return_with_raw(owner, method_name, is_singleton, arguments, raw_return)
     }
 
-    /// An RBS method that requires a block has no block-less return, so a call with a
-    /// block reads the first overload that takes one.
+    /// A call with a block reads the first RBS overload that takes one, since the block-less
+    /// overloads (such as an `Enumerator` return) do not apply.
     fn rbs_block_call_return(
         &self,
         owner: &str,
         method_name: &str,
         is_singleton: bool,
+        self_type: &Type,
     ) -> Option<Type> {
         let method = self
             .registry
             .lookup_method_def(owner, method_name, is_singleton)?;
-        if !method.origin.is_rbs_file_source() || method.raw_return_type != Type::Untyped {
+        if !method.origin.is_rbs_file_source() {
             return None;
         }
         let method_type = method
@@ -13767,6 +13771,7 @@ impl<'a> InferenceEngine<'a> {
             self.registry.type_aliases(),
             Some(owner),
         );
+        let ty = TypeRegistry::substitute_self_type_pub(&ty, self_type);
         Self::is_concrete(&ty).then_some(ty)
     }
 
@@ -21035,6 +21040,52 @@ impl<'a> InferenceEngine<'a> {
                         &statements.as_node(),
                         parse_result,
                         scope,
+                        summary,
+                    );
+                }
+            }
+            // A yield in the block passed to `super` yields to this method's block.
+            Node::SuperNode { .. } | Node::ForwardingSuperNode { .. } => {
+                let (arguments, block) = match body {
+                    Node::SuperNode { .. } => {
+                        let super_node = body.as_super_node().expect("must be SuperNode");
+                        (super_node.arguments(), super_node.block())
+                    }
+                    _ => {
+                        let super_node = body
+                            .as_forwarding_super_node()
+                            .expect("must be ForwardingSuperNode");
+                        (None, super_node.block().map(|block| block.as_node()))
+                    }
+                };
+                for argument in arguments.iter().flat_map(|args| args.arguments().iter()) {
+                    self.scan_method_body_summary_node(
+                        class_name,
+                        &argument,
+                        parse_result,
+                        scope,
+                        summary,
+                    );
+                }
+                if let Some(block) = block.and_then(|block| block.as_block_node())
+                    && let Some(block_body) = block.body()
+                {
+                    let mut block_scope = scope.fork_for_block();
+                    for name in Self::locals_written_in(&block_body) {
+                        block_scope.set(&name, Type::Untyped);
+                    }
+                    if let Some(params) = block.parameters() {
+                        let mut names = HashSet::new();
+                        Self::collect_block_param_names(&params, &mut names);
+                        for name in names {
+                            block_scope.set(&name, Type::Untyped);
+                        }
+                    }
+                    self.scan_method_body_summary_node(
+                        class_name,
+                        &block_body,
+                        parse_result,
+                        &block_scope,
                         summary,
                     );
                 }
