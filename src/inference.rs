@@ -17478,7 +17478,7 @@ impl<'a> InferenceEngine<'a> {
                     );
                     // A call before this def resolved to the core method of the same name.
                     if let Some(name) =
-                        self.def_shadowing_core_method(&def_node, in_singleton_class)
+                        self.def_shadowing_core_method(class_name, &def_node, in_singleton_class)
                     {
                         Self::push_unique_late_constant_name(&mut late_constant_names, name);
                     }
@@ -17507,7 +17507,9 @@ impl<'a> InferenceEngine<'a> {
             for name in self.class_body_node_late_constant_names(&node, parse_result) {
                 Self::push_unique_late_constant_name(&mut late_constant_names, name);
             }
-            for name in self.attr_reader_names_shadowing_core_methods(&node, in_singleton_class) {
+            for name in
+                self.attr_reader_names_shadowing_core_methods(class_name, &node, in_singleton_class)
+            {
                 Self::push_unique_late_constant_name(&mut late_constant_names, name);
             }
             if Self::class_body_node_may_change_unknown_constant_lookup(&node) {
@@ -17603,6 +17605,7 @@ impl<'a> InferenceEngine<'a> {
     /// Readers from `attr_reader` / `attr_accessor` that replace a core method of the same name.
     fn attr_reader_names_shadowing_core_methods(
         &mut self,
+        class_name: &str,
         node: &Node<'_>,
         in_singleton_class: bool,
     ) -> Vec<String> {
@@ -17624,18 +17627,24 @@ impl<'a> InferenceEngine<'a> {
             .collect();
         names
             .into_iter()
-            .filter(|name| self.core_method_is_shadowed(name, in_singleton_class))
+            .filter(|name| self.core_method_is_shadowed(class_name, name, in_singleton_class))
             .collect()
     }
 
-    fn core_method_is_shadowed(&self, name: &str, is_singleton: bool) -> bool {
-        let core_owner = if is_singleton { "Class" } else { "Object" };
-        // No call resolved to a core method when the core class was never loaded.
-        if self.registry.class_data_for(core_owner).is_none() {
+    /// Whether a source method `name` on `class_name` replaces a method declared in RBS for an
+    /// ancestor (`Object` / `Kernel` for a plain class, `Class` for a singleton method).
+    fn core_method_is_shadowed(&self, class_name: &str, name: &str, is_singleton: bool) -> bool {
+        let ancestor = if is_singleton {
+            "Class"
+        } else {
+            self.registry.get_superclass(class_name).unwrap_or("Object")
+        };
+        // No call resolved to an ancestor method when the ancestor was never loaded.
+        if self.registry.class_data_for(ancestor).is_none() {
             return false;
         }
         self.registry
-            .resolve_method_call_owners(core_owner, name, false)
+            .resolve_method_call_owners(ancestor, name, false)
             .iter()
             .any(|(owner, owner_is_singleton)| {
                 self.registry
@@ -17648,6 +17657,7 @@ impl<'a> InferenceEngine<'a> {
     /// (`Class` for a singleton def).
     fn def_shadowing_core_method(
         &mut self,
+        class_name: &str,
         def_node: &ruby_prism::DefNode<'_>,
         in_singleton_class: bool,
     ) -> Option<String> {
@@ -17656,7 +17666,7 @@ impl<'a> InferenceEngine<'a> {
             || def_node
                 .receiver()
                 .is_some_and(|receiver| matches!(receiver, Node::SelfNode { .. }));
-        self.core_method_is_shadowed(&name, is_singleton)
+        self.core_method_is_shadowed(class_name, &name, is_singleton)
             .then_some(name)
     }
 

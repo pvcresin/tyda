@@ -899,3 +899,23 @@ class Mapper
   def from_select: (untyped key) -> untyped
 end
 ```
+
+## Own method overrides the method of a core superclass
+
+### update
+
+```ruby
+class Server < Socket
+  def accept = accept_nonblock
+  def accept_nonblock = 1
+end
+```
+
+### result
+
+```rbs
+class Server < Socket
+  def accept: -> 1
+  def accept_nonblock: -> 1
+end
+```

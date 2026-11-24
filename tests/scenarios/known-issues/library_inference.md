@@ -197,25 +197,6 @@ class Pair
   def take: [A] (A a, String b) -> A
 end
 ```
-## Own method overrides the method of a core superclass
-
-### update
-
-```ruby
-class Server < Socket
-  def accept = accept_nonblock
-  def accept_nonblock = 1
-end
-```
-
-### result
-
-```rbs
-class Server < Socket
-  def accept: -> 1
-  def accept_nonblock: -> 1
-end
-```
 ## Method defined after def_delegators replaces the delegator
 
 ### update
