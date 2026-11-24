@@ -22613,6 +22613,15 @@ impl<'a> InferenceEngine<'a> {
         positional_types: &mut Vec<Type>,
         open_splat: &mut Option<u16>,
     ) {
+        // A value known only later gives elements known only later; the call site spreads
+        // them once the value resolves.
+        if open_splat.is_none()
+            && Type::splat_elements(inner, &mut |ty| self.splat_to_a(ty)).is_none()
+        {
+            *open_splat = u16::try_from(positional_types.len()).ok();
+            positional_types.push(Type::SplatRef(Box::new(inner.clone())));
+            return;
+        }
         match self.splat_elements(inner) {
             SplatElements::Exact(elems) => positional_types.extend(elems),
             SplatElements::Open(elem) => {

@@ -12672,10 +12672,22 @@ impl TypeRegistry {
                             )
                         })
                         .collect::<Vec<_>>();
+                let mut resolved_arg_types = resolved_arg_types;
+                let mut open_splat = call_site.open_splat;
+                // An open splat of a value known only later spreads once the value is a tuple.
+                if let Some(index) = open_splat.map(usize::from)
+                    && let Some(Type::SplatRef(parts)) = call_site.arg_types.get(index)
+                    && index < resolved_arg_types.len()
+                    && let Type::Tuple(elems) =
+                        self.resolve_call_site_type_from_caller_context(call_site, parts, visiting)
+                {
+                    resolved_arg_types.splice(index..=index, elems);
+                    open_splat = None;
+                }
                 Self::merge_resolved_positional_arg_types(
                     &mut param_types,
                     &resolved_arg_types,
-                    call_site.open_splat,
+                    open_splat,
                     &method.param_infos,
                 );
             }

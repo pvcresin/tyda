@@ -1013,6 +1013,22 @@ impl<'a> InferenceEngine<'a> {
             .map(|context| context.class_name.as_ref())
             .unwrap_or(class_name);
         let mut resolved = call_site.clone();
+        // An open splat of a value known only later spreads once the value is a tuple.
+        if let Some(index) = call_site.open_splat.map(usize::from)
+            && let Some(Type::SplatRef(parts)) = call_site.arg_types.get(index)
+            && !matches!(parts.as_ref(), Type::Tuple(_))
+        {
+            let mut visiting = FxHashSet::default();
+            if let Type::Tuple(elems) = Self::resolve_general_method_refs(
+                &self.registry,
+                context_class,
+                parts,
+                &mut visiting,
+            ) {
+                resolved.arg_types.splice(index..=index, elems);
+                resolved.open_splat = None;
+            }
+        }
         for arg_type in &mut resolved.arg_types {
             let mut visiting = FxHashSet::default();
             *arg_type = Self::resolve_general_method_refs(
