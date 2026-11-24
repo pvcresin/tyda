@@ -584,6 +584,27 @@ impl LazyRbsLoader {
         cache.clear();
     }
 
+    /// The number of type parameters of each generic class whose RBS this loader has read.
+    /// A workspace registry keeps only source facts, so rendering takes generic arity from here.
+    pub fn loaded_class_type_param_counts(&self) -> Vec<(String, usize)> {
+        let mut counts = Vec::new();
+        for shapes in [&self.shared_shapes, &self.shared_features] {
+            let shapes = shapes.lock().expect("stdlib shared shapes poisoned");
+            for slot in shapes.values() {
+                let Some(Some(shape)) = slot.get() else {
+                    continue;
+                };
+                for (name, data) in shape.registry.iter_class_data() {
+                    let count = data.cold().class_type_params.len();
+                    if count > 0 {
+                        counts.push((name.to_string(), count));
+                    }
+                }
+            }
+        }
+        counts
+    }
+
     /// Deep byte attribution of both lazy caches plus the class index, for
     /// `TYDA_MEMORY_BREAKDOWN`. `seen` is shared with the caller's other walks so
     /// chunks reachable from several registries are charged exactly once.

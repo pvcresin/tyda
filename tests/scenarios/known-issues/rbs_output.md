@@ -421,30 +421,6 @@ module EventMachine::Protocols
 end
 ```
 
-## Generic class narrowed by is_a? or when gets type arguments
-
-### update
-
-```ruby
-class G
-  def a(v) = v.is_a?(Set) ? v : nil
-  def c(v)
-    case v
-    when Range then v
-    end
-  end
-end
-```
-
-### result
-
-```rbs
-class G
-  def a: (untyped v) -> Set[untyped]?
-  def c: (untyped v) -> Range[untyped]?
-end
-```
-
 ## Top-level constant path is not resolved to a nested constant
 
 ### update
@@ -648,27 +624,5 @@ end
 
 class Pdf::Reader::Receiver
   def rotate: (Pdf::Reader::Point pt) -> Pdf::Reader::Point
-end
-```
-
-## Rescued generic exception gets type arguments
-
-### update
-
-```ruby
-class Rs
-  def r
-    yield
-  rescue NoMethodError => e
-    e
-  end
-end
-```
-
-### result
-
-```rbs
-class Rs
-  def r: [R] { () -> R } -> (NoMethodError[untyped] | R)
 end
 ```

@@ -3004,6 +3004,9 @@ struct RegistryColdTail {
     module_includer_index: Option<FxHashMap<SharedName, Vec<SharedName>>>,
     /// known gem/Rails namespaces: suppress `unresolved_constant` even without bundled types.
     known_constant_namespaces: HashSet<String>,
+    /// Type parameter counts of generic library classes this registry does not hold, for
+    /// rendering `Set` as `Set[untyped]`.
+    external_type_param_counts: FxHashMap<String, usize>,
 }
 
 fn empty_registry_cold_tail() -> &'static RegistryColdTail {
@@ -3801,6 +3804,26 @@ impl TypeRegistry {
             tail.subclass_index = None;
             tail.module_includer_index = None;
         }
+    }
+
+    pub fn add_external_type_param_counts<I: IntoIterator<Item = (String, usize)>>(
+        &mut self,
+        counts: I,
+    ) {
+        self.tail_mut().external_type_param_counts.extend(counts);
+    }
+
+    /// How many type parameters the class declares, from its own data or a library's RBS.
+    pub fn class_type_param_count(&self, class_name: &str) -> usize {
+        let own = self.get_class_type_params(class_name).len();
+        if own > 0 {
+            return own;
+        }
+        self.cold_tail
+            .as_deref()
+            .and_then(|tail| tail.external_type_param_counts.get(class_name))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// framework (see field docs). Merges into any existing set.

@@ -358,6 +358,10 @@ impl TypeRegistry {
         let all_methods: Vec<MethodSig> = all_methods
             .into_iter()
             .filter(|m| !aliased_out.contains(&(m.name.clone(), m.is_singleton)))
+            .map(|mut m| {
+                self.add_missing_type_args_to_sig(&mut m);
+                m
+            })
             .collect();
         alias_sigs.sort_by(|a, b| {
             a.loc
@@ -398,7 +402,11 @@ impl TypeRegistry {
             .filter(|constant| {
                 file_filter.is_none_or(|file_path| constant.file_path.as_deref() == Some(file_path))
             })
-            .map(|constant| self.output_constant_sig(name, constant))
+            .map(|constant| {
+                let mut sig = self.output_constant_sig(name, constant);
+                sig.const_type = self.with_missing_type_args(&sig.const_type);
+                sig
+            })
             .collect();
         constants.sort_by(|a, b| {
             a.loc
@@ -424,6 +432,61 @@ impl TypeRegistry {
             is_module: data.is_module,
             loc: data.loc,
             file_path: data.file_path.as_deref().map(str::to_string),
+        }
+    }
+
+    /// A generic class written without type arguments (`NoMethodError` from a `rescue`,
+    /// `Set` from `is_a?`) gets `untyped` for each type parameter, as RBS requires.
+    fn with_missing_type_args(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Class(name) => {
+                let arity = self.class_type_param_count(name.trim_scope_prefix());
+                if arity == 0 || matches!(name.as_ref(), "Array" | "Hash") {
+                    ty.clone()
+                } else {
+                    Type::Generic {
+                        base: *name,
+                        args: vec![Type::Untyped; arity].into(),
+                    }
+                }
+            }
+            Type::Union(parts) => Type::Union(
+                parts
+                    .iter()
+                    .map(|part| self.with_missing_type_args(part))
+                    .collect(),
+            ),
+            Type::Array(Some(inner)) => {
+                Type::Array(Some(Box::new(self.with_missing_type_args(inner))))
+            }
+            Type::Proc(proc_type) => Type::Proc(Box::new(
+                proc_type.map_types(|part| self.with_missing_type_args(part)),
+            )),
+            other => other.map_children(|part| self.with_missing_type_args(part)),
+        }
+    }
+
+    fn add_missing_type_args_to_sig(&self, sig: &mut MethodSig) {
+        let fix_params = |params: &mut Vec<Param>| {
+            for param in params {
+                param.param_type = self.with_missing_type_args(&param.param_type);
+            }
+        };
+        let fix_block = |block: &mut Option<HoverBlockSig>| {
+            if let Some(block) = block {
+                for param in &mut block.params {
+                    param.param_type = self.with_missing_type_args(&param.param_type);
+                }
+                block.return_type = self.with_missing_type_args(&block.return_type);
+            }
+        };
+        fix_params(&mut sig.params);
+        sig.return_type = self.with_missing_type_args(&sig.return_type);
+        fix_block(&mut sig.block);
+        for overload in &mut sig.overloads {
+            fix_params(&mut overload.params);
+            overload.return_type = self.with_missing_type_args(&overload.return_type);
+            fix_block(&mut overload.block);
         }
     }
 

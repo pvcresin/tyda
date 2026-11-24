@@ -151,9 +151,9 @@ def make_sq = SizedQueue.new(2)
 ```rbs
 class Object < BasicObject
   def make_mutex: -> Thread::Mutex
-  def make_queue: -> Thread::Queue
+  def make_queue: -> Thread::Queue[untyped]
   def make_cv: -> Thread::ConditionVariable
-  def make_sq: -> Thread::SizedQueue
+  def make_sq: -> Thread::SizedQueue[untyped]
 end
 ```
 

@@ -20,8 +20,9 @@ Tyda は Ruby / Rails のコードから型を推論し、RBS を出力する CL
   - superclass と mixin は、ソースで相対名（`class ServerError < Error`）でも完全名（`Fx::Error`）で出す。
     compact な宣言（`class Fx::ServerError`）では RBS が `Fx` から名前を探さないため
   - 型引数を書かずに参照した generic class（`class Pairs < Hash`、`include Enumerable`、要素型が分からない
-    `Array` / `Hash`）は、型パラメータの数だけ `untyped` を補って出す（`Hash[untyped, untyped]`）。
-    mixin の型引数は出力でだけ補い、推論では `each` などから要素型を決める
+    `Array` / `Hash`、`is_a?(Set)` / `when Range` で絞った値、`rescue NoMethodError => e`）は、型パラメータの数だけ
+    `untyped` を補って出す（`Hash[untyped, untyped]`、`Set[untyped]`）。型引数は出力でだけ補い、推論では
+    `each` などから要素型を決める。CLI はライブラリのクラスの型パラメータ数を、読み込んだ RBS から引く
   - class / module を定数参照で代入した定数（`A = B`、alias の連鎖）は、定数宣言ではなく対象の種類に
     合わせた `class A = B` / `module A = B` で出す。
     `Class.new` の結果のように型だけが `singleton(...)` の値定数は従来どおり定数宣言にする

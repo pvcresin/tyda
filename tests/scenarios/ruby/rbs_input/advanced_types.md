@@ -21,7 +21,7 @@ end
 
 ```rbs
 class App
-  def run: -> (Comparable & Enumerable)
+  def run: -> (Comparable & Enumerable[untyped])
 end
 ```
 
