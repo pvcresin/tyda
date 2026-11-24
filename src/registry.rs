@@ -9059,7 +9059,9 @@ impl TypeRegistry {
     }
 
     /// The inverse of `resolve_scoped_annotation_type`: a name the annotations wrote short is
-    /// written `Name` again when lexical lookup from `scope_class` finds no other `Name` first.
+    /// written `Name` again when it is declared in `scope_class` itself. RBS looks names up in
+    /// the class and at the top level only, not in the outer namespaces of a compact
+    /// `class A::B`, so a name from `A` keeps its full name.
     pub(crate) fn relative_scoped_refs_in_type(&self, scope_class: &str, ty: &Type) -> Type {
         let short_names = self.scoped_annotation_names(scope_class);
         if short_names.is_empty() {
@@ -9070,11 +9072,7 @@ impl TypeRegistry {
                 return None;
             }
             let (outer, tail) = name.rsplit_once("::")?;
-            let encloses = scope_class == outer
-                || scope_class
-                    .strip_prefix(outer)
-                    .is_some_and(|rest| rest.starts_with("::"));
-            if !encloses {
+            if scope_class != outer {
                 return None;
             }
             let found = self.resolve_scoped_class_ref_borrow(scope_class, tail);

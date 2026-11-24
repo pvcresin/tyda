@@ -2996,7 +2996,7 @@ module TypeProf::Core::AST
 end
 
 class TypeProf::Core::AST::LoopNode
-  def initialize: (Node cond) -> void
+  def initialize: (TypeProf::Core::AST::Node cond) -> void
   def value: -> String?
 end
 

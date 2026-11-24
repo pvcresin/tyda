@@ -574,37 +574,3 @@ class Tw::Account::Call::Inst
   def fetch: -> Tw::Account::Call::Inst
 end
 ```
-
-## Short names in an inline signature are fully qualified
-
-### update
-
-```ruby
-module Pdf
-  class Reader
-    class Point
-    end
-    class Receiver
-      #: (Point) -> Point
-      def rotate(pt) = pt
-    end
-  end
-end
-```
-
-### result
-
-```rbs
-module Pdf
-end
-
-class Pdf::Reader
-end
-
-class Pdf::Reader::Point
-end
-
-class Pdf::Reader::Receiver
-  def rotate: (Pdf::Reader::Point pt) -> Pdf::Reader::Point
-end
-```
