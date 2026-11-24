@@ -11275,10 +11275,12 @@ impl<'a> InferenceEngine<'a> {
                     parts.iter().map(Self::widen_literal_for_dispatch).collect();
                 Type::from_type_vec(widened)
             }
+            // A tuple dispatches as the array of its widened elements.
+            Type::Tuple(elems) if elems.is_empty() => Type::Array(None),
             Type::Tuple(elems) => {
                 let widened: Vec<Type> =
                     elems.iter().map(Self::widen_literal_for_dispatch).collect();
-                Type::from_type_vec(widened)
+                Type::Array(Some(Box::new(Type::from_type_vec(widened))))
             }
             _ => ty.clone(),
         }
@@ -55644,6 +55646,26 @@ impl<'a> InferenceEngine<'a> {
             && Self::array_receiver_type(&resolved_current)
         {
             return Type::Array(None);
+        }
+        // `list += other` joins the elements, as `list + other` does.
+        if method_name == "+"
+            && matches!(resolved_current, Type::Tuple(_) | Type::Array(Some(_)))
+            && matches!(value_type, Type::Tuple(_) | Type::Array(Some(_)))
+            && !self
+                .type_to_class_name(&resolved_current)
+                .is_some_and(|class_name| {
+                    self.instance_method_has_source_override(&class_name, method_name)
+                })
+        {
+            let mut elems = Self::static_array_elements(&resolved_current)
+                .unwrap_or_else(|| vec![Self::extract_element_type(&resolved_current)]);
+            elems.extend(
+                Self::static_array_elements(value_type)
+                    .unwrap_or_else(|| vec![Self::extract_element_type(value_type)]),
+            );
+            return Type::Array(Some(Box::new(Self::cap_collection_growth_type(
+                Type::from_type_vec(elems),
+            ))));
         }
         let has_source_override =
             self.type_to_class_name(&resolved_current)

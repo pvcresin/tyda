@@ -200,34 +200,6 @@ class Table
 end
 ```
 
-## Plus-assign of an array literal keeps the array type
-
-### update
-
-```ruby
-class Args
-  def ints
-    r = [1]
-    r += [2]
-    r
-  end
-
-  def strings
-    r = ["a"]
-    r += ["b"]
-  end
-end
-```
-
-### result
-
-```rbs
-class Args
-  def ints: -> Array[1 | 2]
-  def strings: -> Array["a" | "b"]
-end
-```
-
 ## Kernel Rational without the exception keyword is not nilable
 
 ### update
