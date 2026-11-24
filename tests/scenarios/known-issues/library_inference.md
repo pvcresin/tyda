@@ -154,24 +154,3 @@ class Sp
   def d: (untyped c) -> Array[0 | 1 | "s"]
 end
 ```
-
-## Hash constant read with an untyped key uses its value types
-
-### update
-
-```ruby
-class Table
-  DATA = { "a" => "b" }
-  def lookup(key) = DATA[key]
-end
-```
-
-### result
-
-```rbs
-class Table
-  DATA: { "a" => "b" }
-
-  def lookup: (untyped key) -> "b"?
-end
-```

@@ -4166,8 +4166,17 @@ impl<'a> InferenceEngine<'a> {
         // Computed once and reused below instead of re-scanning `bare` for "::" twice.
         let bare_has_double_colon = bare.contains("::");
         let has_root_prefix = bare.len() != path.len();
+        // A constant of the class or an enclosing namespace hides the global of the same name.
+        let lexically_defined = !has_root_prefix
+            && !bare_has_double_colon
+            && std::iter::successors(Some(class_context), |scope| {
+                scope.rsplit_once("::").map(|(outer, _)| outer)
+            })
+            .filter(|scope| *scope != "Object")
+            .any(|scope| self.registry.lookup_constant_type(scope, bare).is_some());
 
         match bare {
+            _ if lexically_defined => {}
             "ARGV" => return Type::Array(Some(Box::new(Type::String))),
             "ARGF" => return Type::Class(Sym::new("RBS::Unnamed::ARGFClass")),
             "DATA" => return Type::Class(Sym::new("IO")),

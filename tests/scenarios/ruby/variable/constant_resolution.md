@@ -1908,3 +1908,24 @@ module Codec::String
   def to_codec: -> 1
 end
 ```
+
+## Class constant named like a global constant hides the global
+
+### update
+
+```ruby
+class Table
+  DATA = { "a" => "b" }
+  def lookup(key) = DATA[key]
+end
+```
+
+### result
+
+```rbs
+class Table
+  DATA: { "a" => "b" }
+
+  def lookup: (untyped key) -> "b"?
+end
+```
