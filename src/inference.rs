@@ -4784,10 +4784,12 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         is_singleton: bool,
     ) -> bool {
-        if self
-            .registry
-            .class_data_for(class_name)
-            .is_some_and(|data| data.user_defined)
+        // `new` builds an instance of the class wherever `initialize` is.
+        if (is_singleton && matches!(method_name, "new" | "allocate"))
+            || self
+                .registry
+                .class_data_for(class_name)
+                .is_some_and(|data| data.user_defined)
             || !self.is_other_source_namespace(class_name)
         {
             return false;
@@ -32550,13 +32552,28 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(block_result) = user_defined_block_call_result {
                             break 'no_recv block_result;
                         }
-                        let generic_block_call_result = if call_node.block().is_some()
-                            && (self.record_hover_snapshots
-                                || !self.registry.method_call_has_user_source_definition(
+                        // A block call that reaches a declared core method resolves through its
+                        // signature; a source method, or one defined later, has its own rules.
+                        if call_node.block().is_some() {
+                            self.ensure_class_available(class_name);
+                        }
+                        let reaches_declared_method = call_node.block().is_some()
+                            && self
+                                .registry
+                                .resolve_method_call_owners(
                                     class_name,
                                     &method_name,
                                     scope.singleton_dispatch,
-                                )) {
+                                )
+                                .first()
+                                .is_some_and(|(owner, owner_is_singleton)| {
+                                    self.registry
+                                        .lookup_method_def(owner, &method_name, *owner_is_singleton)
+                                        .is_some_and(|method| method.origin.is_rbs_file_source())
+                                });
+                        let generic_block_call_result = if call_node.block().is_some()
+                            && (self.record_hover_snapshots || reaches_declared_method)
+                        {
                             self.resolve_block_call_generic(
                                 class_name,
                                 &call_node,
@@ -32571,14 +32588,16 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(block_result) = generic_block_call_result {
                             break 'no_recv block_result;
                         }
-                        if let Some(block_result) = self.resolve_symbol_to_proc(
-                            class_name,
-                            &call_node,
-                            &implicit_self_type,
-                            &method_name,
-                            parse_result,
-                            scope,
-                        ) {
+                        if reaches_declared_method
+                            && let Some(block_result) = self.resolve_symbol_to_proc(
+                                class_name,
+                                &call_node,
+                                &implicit_self_type,
+                                &method_name,
+                                parse_result,
+                                scope,
+                            )
+                        {
                             break 'no_recv block_result;
                         }
                         if let Some(enum_result) = user_defined_no_block_enumerator_result {
