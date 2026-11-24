@@ -459,8 +459,13 @@ impl TypeRegistry {
                 }
             }
             Type::Singleton(name) => {
-                if let Some(value) = self.value_constant_type(owner, name.as_str()) {
-                    return self.finalize_output_type(owner, &value);
+                // A constant read before its file is analyzed stands in for its value. A single
+                // file widens that value as a default, so this does the same.
+                let value = self
+                    .value_constant_type(owner, name.as_str())
+                    .or_else(|| self.lexical_value_constant_type(owner, name.as_str()));
+                if let Some(value) = value {
+                    return self.finalize_output_type(owner, &value.widen().widen_tuple_to_array());
                 }
                 self.output_class_name(owner, name.as_str())
                     .map_or_else(|| ty.clone(), |full| Type::Singleton(Sym::new(&full)))
@@ -555,6 +560,27 @@ impl TypeRegistry {
         self.source_ancestors(owner)
             .iter()
             .find_map(|ancestor| found(&crate::sym::join_scope(ancestor, name)))
+    }
+
+    /// The value of the bare constant `name` written in `owner`, found in its lexical scope.
+    fn lexical_value_constant_type(&self, owner: &str, name: &str) -> Option<Type> {
+        if name.contains("::") || self.declares_output_name(name) {
+            return None;
+        }
+        let mut scope = owner;
+        while !scope.is_empty() && scope != "Object" {
+            let full = crate::sym::join_scope(scope, name);
+            if self.has_class_declaration(&full) {
+                return None;
+            }
+            if let Some(constant) = self.output_constant_def(&full) {
+                return (!constant.alias.is_namespace()
+                    && !matches!(constant.const_type, Type::Singleton(_)))
+                .then(|| constant.const_type.clone());
+            }
+            scope = scope.rsplit_once("::").map_or("", |(outer, _)| outer);
+        }
+        None
     }
 
     /// The superclasses and mixins of `class_name` that the registry declares, nearest first.

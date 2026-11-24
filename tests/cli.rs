@@ -6143,7 +6143,7 @@ fn known_issue_recursion_passing_its_block_overflows_the_stack() {
 }
 
 #[test]
-fn known_issue_constant_alias_of_an_array_from_another_file_is_a_class() {
+fn constant_alias_of_an_array_from_another_file_is_its_value() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("a.rb"),
@@ -6174,15 +6174,10 @@ fn known_issue_constant_alias_of_an_array_from_another_file_is_a_class() {
         .expect("failed to run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Known issue: `PRESERVE` holds the array from `Preserver::TAGS`, so `find` is
-    // `(?Array[String] tags) -> Array[String]` (the scenario path and a single file get this
-    // right). With the alias in another file, the CLI treats it as a class alias (seen with
-    // the haml gem).
+    // `PRESERVE` holds the array from `Preserver::TAGS` in another file, as in a single file.
     assert!(
-        stdout.contains(
-            "  def find: (?singleton(Preserver::TAGS) tags) -> singleton(Preserver::TAGS)\n"
-        ),
-        "known issue fixed; drop this check and assert `find` takes `?Array[String]`: {stdout}"
+        stdout.contains("  def find: (?Array[String] tags) -> Array[String]\n"),
+        "{stdout}"
     );
 }
 
@@ -6236,7 +6231,7 @@ fn known_issue_singleton_method_from_another_file_loses_to_a_module_method() {
 }
 
 #[test]
-fn known_issue_array_constant_from_another_file_is_a_class() {
+fn array_constant_from_another_file_is_not_a_class() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("env.rb"),
@@ -6262,12 +6257,11 @@ fn known_issue_array_constant_from_another_file_is_a_class() {
         .expect("failed to run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Known issue: `IGNORE_SIGNALS` holds an array, so `each` with a block returns
-    // `["INT", "QUIT"]` (the scenario path and a single file get this right). With the
-    // constant in another file, the CLI treats it as a class (seen with the spring gem).
+    // `IGNORE_SIGNALS` holds an array from another file. A single file keeps the tuple
+    // `["INT", "QUIT"]`; the CLI reads the value once the merge sees it, widened.
     assert!(
-        stdout.contains("  def ignore_signals: -> singleton(IGNORE_SIGNALS)\n"),
-        "known issue fixed; drop this check and assert the array return: {stdout}"
+        stdout.contains("  def ignore_signals: -> Array[String]\n"),
+        "{stdout}"
     );
 }
 
@@ -6421,7 +6415,7 @@ fn value_constant_from_a_later_file_is_not_a_class() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // `Nr::UNKNOWN` is a String constant defined in a later file, not a class.
     assert!(
-        stdout.contains("  def self.metric: (?String product) -> \"Unknown\"\n"),
+        stdout.contains("  def self.metric: (?String product) -> String\n"),
         "{stdout}"
     );
 }
