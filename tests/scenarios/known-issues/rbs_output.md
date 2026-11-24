@@ -651,29 +651,6 @@ class Pdf::Reader::Receiver
 end
 ```
 
-## Inline type alias is declared
-
-### update
-
-```ruby
-class Box
-  # @rbs type size = Integer | Float
-
-  #: () -> size
-  def s = 1
-end
-```
-
-### result
-
-```rbs
-class Box
-  type size = Integer | Float
-
-  def s: -> size
-end
-```
-
 ## Rescued generic exception gets type arguments
 
 ### update

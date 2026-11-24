@@ -48,7 +48,6 @@ gem の `lib/` を解析した出力を、そのまま RBS として読み込め
 
 - [ ] 出力を公式 RBS で読み込めるようにする。`is_a?(Range)` などで絞った `Array` / `Hash` 以外の generic class の型引数（推論は `Range` のまま保ち、出力で型パラメータの数を引ける必要がある）、ソースで宣言していない namespace（`class A::B` だけの `A`）の宣言漏れ、宣言の重複など
 - [ ] メソッドの型に出るクラス名を完全名で書く。compact な宣言（`class A::B`）の中では RBS が `A` から名前を探さないため、短い名前は解決できない。後のファイルにある superclass や include したモジュールの定数、別ファイルのクラス alias 定数、stdlib のシグネチャ（`URI.parse` の `FTP`）、inline シグネチャ（`#: (Point) -> Point`）、親と同じインデントで入れ子にしたクラスで短い名前が残る（`tests/cli.rs` の `known_issue_*_keeps_its_short_name` ほか）
-- [ ] inline の型エイリアス（`# @rbs type size = ...`）を出力で宣言する
 - [ ] CLI で、`sig/` などで宣言済みの定数を出力しない（メソッドは出力しない）。重複すると RBS::DuplicatedDeclarationError になる（`tests/cli.rs` の `known_issue_constant_declared_in_project_rbs_is_rendered_again`）
 - [ ] 入力の大きさに対して時間が指数的に伸びるパターンをなくす（`known_issue_*_grow_*`）。固定の深さ制限ではなく、計算の共有や memo 化で直す
 

@@ -806,3 +806,53 @@ class H
   def name: (?nil override) -> nil
 end
 ```
+
+## Inline type alias is declared
+
+### update
+
+```ruby
+class Box
+  # @rbs type size = Integer | Float
+
+  #: () -> size
+  def s = 1
+end
+```
+
+### result
+
+```rbs
+class Box
+  type size = Integer | Float
+
+  def s: -> (Integer | Float)
+end
+```
+
+## Multi-line inline type alias is declared
+
+### update
+
+```ruby
+class Font
+  #: type width = (
+  #|   Integer |
+  #|   Float
+  #| )
+
+  def calc
+    @calc ||= 1 #: width
+  end
+end
+```
+
+### result
+
+```rbs
+class Font
+  type width = (Integer | Float)
+
+  def calc: -> width
+end
+```

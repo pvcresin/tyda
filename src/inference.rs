@@ -66111,9 +66111,26 @@ impl<'a> InferenceEngine<'a> {
                         .iter()
                         .all(|byte| byte.is_ascii_whitespace())
             });
-            if follows && text.starts_with("#  ") {
+            // `# @rbs!` blocks continue with indented lines, `#: type` aliases with `#|` lines.
+            let continuation = current.as_ref().and_then(|(lines, _)| {
+                let prefix = if lines.first().is_some_and(|line| line.starts_with("type ")) {
+                    "#|"
+                } else {
+                    "#  "
+                };
+                text.strip_prefix(prefix)
+            });
+            if follows && let Some(rest) = continuation {
                 if let Some((lines, previous_end)) = current.as_mut() {
-                    lines.push(text[1..].to_string());
+                    if lines.first().is_some_and(|line| line.starts_with("type ")) {
+                        let rest = rest.trim();
+                        if !lines[0].ends_with('(') && !rest.starts_with(')') {
+                            lines[0].push(' ');
+                        }
+                        lines[0].push_str(rest);
+                    } else {
+                        lines.push(text[1..].to_string());
+                    }
                     *previous_end = comment_end;
                 }
                 continue;
@@ -66125,6 +66142,8 @@ impl<'a> InferenceEngine<'a> {
             }
             if text.trim_end() == "# @rbs!" {
                 current = Some((Vec::new(), comment_end));
+            } else if let Some(alias) = Self::inline_type_alias_head(&text) {
+                current = Some((vec![alias.to_string()], comment_end));
             }
         }
         if let Some((lines, _)) = current
@@ -66153,6 +66172,16 @@ impl<'a> InferenceEngine<'a> {
             self.registry.merge_rbs_registry(&embedded);
             self.registry.add_embedded_rbs(class_name, text);
         }
+    }
+
+    /// `type name = ...` from `# @rbs type name = ...` or `#: type name = ...`.
+    fn inline_type_alias_head(comment: &str) -> Option<&str> {
+        let body = comment.strip_prefix('#')?;
+        let body = body
+            .strip_prefix(':')
+            .or_else(|| body.trim_start().strip_prefix("@rbs"))?
+            .trim();
+        body.starts_with("type ").then_some(body)
     }
 
     fn add_class_type_params_from_comment_body(&mut self, class_name: &str, body: &str) {
