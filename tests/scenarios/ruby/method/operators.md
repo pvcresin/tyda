@@ -600,3 +600,26 @@ class Limits
   def ratio: (untyped value) -> Rational
 end
 ```
+
+## Comparable clamp with a range returns the receiver type
+
+### update
+
+```ruby
+class Jitter
+  LIMIT = 0.0..1.0
+  def literal = 0.5.clamp(0.0..1.0)
+  def constant = 0.5.clamp(LIMIT)
+end
+```
+
+### result
+
+```rbs
+class Jitter
+  LIMIT: Range[Float]
+
+  def literal: -> Float
+  def constant: -> Float
+end
+```

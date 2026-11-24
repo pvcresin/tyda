@@ -55190,6 +55190,12 @@ impl<'a> InferenceEngine<'a> {
     ) -> Option<Type> {
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
+        // A generic argument binds method type params through its declared type params.
+        for arg_type in call_arg_types {
+            if let Type::Generic { base, .. } = arg_type {
+                self.ensure_class_available(base);
+            }
+        }
 
         if receiver_class == "Kernel"
             && method_name == "Array"
