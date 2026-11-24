@@ -3004,8 +3004,8 @@ struct RegistryColdTail {
     module_includer_index: Option<FxHashMap<SharedName, Vec<SharedName>>>,
     /// known gem/Rails namespaces: suppress `unresolved_constant` even without bundled types.
     known_constant_namespaces: HashSet<String>,
-    /// Type parameter counts of generic library classes this registry does not hold, for
-    /// rendering `Set` as `Set[untyped]`.
+    /// Library classes this registry does not hold, with their type parameter counts, so
+    /// rendering knows the names and writes `Set` as `Set[untyped]`.
     external_type_param_counts: FxHashMap<String, usize>,
 }
 
@@ -3811,6 +3811,13 @@ impl TypeRegistry {
         counts: I,
     ) {
         self.tail_mut().external_type_param_counts.extend(counts);
+    }
+
+    /// Whether a library's RBS that was read declares the class.
+    pub fn is_external_class_name(&self, class_name: &str) -> bool {
+        self.cold_tail
+            .as_deref()
+            .is_some_and(|tail| tail.external_type_param_counts.contains_key(class_name))
     }
 
     /// How many type parameters the class declares, from its own data or a library's RBS.

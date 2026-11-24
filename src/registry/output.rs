@@ -319,14 +319,17 @@ impl TypeRegistry {
         file_filter: Option<&str>,
     ) -> ClassInfo {
         let mut all_methods = self.build_method_sigs_for_class(name, data);
+        // synthesize dirty-family methods from the skeleton pattern to byte-match the old materialized version.
+        self.splice_dirty_pattern_methods(name, data, &mut all_methods);
+        for method in &mut all_methods {
+            self.finalize_sig_types(name, method);
+        }
         for method in all_methods
             .iter_mut()
             .filter(|method| method.rbs_annotated && method.origin.is_rbs_inline())
         {
             self.write_annotated_names_relative_to_class(name, method);
         }
-        // synthesize dirty-family methods from the skeleton pattern to byte-match the old materialized version.
-        self.splice_dirty_pattern_methods(name, data, &mut all_methods);
 
         // emit an RBS `alias` (and skip the `def`) when the alias target is rendered in the same class.
         let mut alias_sigs: Vec<MethodAliasSig> = Vec::new();
@@ -358,10 +361,6 @@ impl TypeRegistry {
         let all_methods: Vec<MethodSig> = all_methods
             .into_iter()
             .filter(|m| !aliased_out.contains(&(m.name.clone(), m.is_singleton)))
-            .map(|mut m| {
-                self.add_missing_type_args_to_sig(&mut m);
-                m
-            })
             .collect();
         alias_sigs.sort_by(|a, b| {
             a.loc
@@ -404,7 +403,7 @@ impl TypeRegistry {
             })
             .map(|constant| {
                 let mut sig = self.output_constant_sig(name, constant);
-                sig.const_type = self.with_missing_type_args(&sig.const_type);
+                sig.const_type = self.finalize_output_type(name, &sig.const_type);
                 sig
             })
             .collect();
@@ -435,59 +434,150 @@ impl TypeRegistry {
         }
     }
 
-    /// A generic class written without type arguments (`NoMethodError` from a `rescue`,
-    /// `Set` from `is_a?`) gets `untyped` for each type parameter, as RBS requires.
-    fn with_missing_type_args(&self, ty: &Type) -> Type {
+    /// The type as RBS reads it from the compact declaration of `owner`:
+    /// - A bare name that no class declares names the class Ruby's constant lookup finds from
+    ///   `owner`: its lexical scope, then its ancestors (`Version` from the superclass
+    ///   `Abstract` is `Abstract::Version`). A method that reads a class defined later keeps
+    ///   the bare name until then.
+    /// - `singleton(X)` of a constant that holds a value is that value's type.
+    /// - A generic class written without type arguments (`NoMethodError` from a `rescue`, `Set`
+    ///   from `is_a?`) gets `untyped` for each type parameter, as RBS requires.
+    fn finalize_output_type(&self, owner: &str, ty: &Type) -> Type {
         match ty {
             Type::Class(name) => {
+                let name = self
+                    .output_class_name(owner, name.as_str())
+                    .map_or(*name, |full| Sym::new(&full));
                 let arity = self.class_type_param_count(name.trim_scope_prefix());
                 if arity == 0 || matches!(name.as_ref(), "Array" | "Hash") {
-                    ty.clone()
+                    Type::Class(name)
                 } else {
                     Type::Generic {
-                        base: *name,
+                        base: name,
                         args: vec![Type::Untyped; arity].into(),
                     }
                 }
             }
+            Type::Singleton(name) => {
+                if let Some(value) = self.value_constant_type(owner, name.as_str()) {
+                    return self.finalize_output_type(owner, &value);
+                }
+                self.output_class_name(owner, name.as_str())
+                    .map_or_else(|| ty.clone(), |full| Type::Singleton(Sym::new(&full)))
+            }
+            Type::Generic { base, args } => Type::Generic {
+                base: self
+                    .output_class_name(owner, base.as_str())
+                    .map_or(*base, |full| Sym::new(&full)),
+                args: args
+                    .iter()
+                    .map(|arg| self.finalize_output_type(owner, arg))
+                    .collect(),
+            },
             Type::Union(parts) => Type::Union(
                 parts
                     .iter()
-                    .map(|part| self.with_missing_type_args(part))
+                    .map(|part| self.finalize_output_type(owner, part))
                     .collect(),
             ),
             Type::Array(Some(inner)) => {
-                Type::Array(Some(Box::new(self.with_missing_type_args(inner))))
+                Type::Array(Some(Box::new(self.finalize_output_type(owner, inner))))
             }
             Type::Proc(proc_type) => Type::Proc(Box::new(
-                proc_type.map_types(|part| self.with_missing_type_args(part)),
+                proc_type.map_types(|part| self.finalize_output_type(owner, part)),
             )),
-            other => other.map_children(|part| self.with_missing_type_args(part)),
+            other => other.map_children(|part| self.finalize_output_type(owner, part)),
         }
     }
 
-    fn add_missing_type_args_to_sig(&self, sig: &mut MethodSig) {
+    fn finalize_sig_types(&self, owner: &str, sig: &mut MethodSig) {
         let fix_params = |params: &mut Vec<Param>| {
             for param in params {
-                param.param_type = self.with_missing_type_args(&param.param_type);
+                param.param_type = self.finalize_output_type(owner, &param.param_type);
             }
         };
         let fix_block = |block: &mut Option<HoverBlockSig>| {
             if let Some(block) = block {
                 for param in &mut block.params {
-                    param.param_type = self.with_missing_type_args(&param.param_type);
+                    param.param_type = self.finalize_output_type(owner, &param.param_type);
                 }
-                block.return_type = self.with_missing_type_args(&block.return_type);
+                block.return_type = self.finalize_output_type(owner, &block.return_type);
             }
         };
         fix_params(&mut sig.params);
-        sig.return_type = self.with_missing_type_args(&sig.return_type);
+        sig.return_type = self.finalize_output_type(owner, &sig.return_type);
         fix_block(&mut sig.block);
         for overload in &mut sig.overloads {
             fix_params(&mut overload.params);
-            overload.return_type = self.with_missing_type_args(&overload.return_type);
+            overload.return_type = self.finalize_output_type(owner, &overload.return_type);
             fix_block(&mut overload.block);
         }
+    }
+
+    /// Whether some class, module or constant is declared under the full name `name`.
+    fn declares_output_name(&self, name: &str) -> bool {
+        self.has_class_declaration(name)
+            || self.class_type_param_count(name) > 0
+            || self.is_external_class_name(name)
+            || self.output_constant_def(name).is_some()
+    }
+
+    fn output_constant_def(&self, full_name: &str) -> Option<&ConstantDef> {
+        let (owner, name) = full_name.rsplit_once("::").unwrap_or(("Object", full_name));
+        self.class_data.get(owner)?.constants.get(name)
+    }
+
+    /// The full name of a bare `name` written in `owner`, when no class declares `name` as
+    /// it is. A namespace alias constant reads as its target.
+    fn output_class_name(&self, owner: &str, name: &str) -> Option<String> {
+        if name.starts_with("::") || self.declares_output_name(name) {
+            return None;
+        }
+        let found = |candidate: &str| -> Option<String> {
+            if self.has_class_declaration(candidate) {
+                return Some(candidate.to_string());
+            }
+            let constant = self.output_constant_def(candidate)?;
+            match (&constant.alias, &constant.const_type) {
+                (alias, Type::Singleton(target)) if alias.is_namespace() => {
+                    Some(target.trim_scope_prefix().to_string())
+                }
+                _ => None,
+            }
+        };
+        let mut scope = owner;
+        while !scope.is_empty() && scope != "Object" {
+            if let Some(full) = found(&crate::sym::join_scope(scope, name)) {
+                return Some(full);
+            }
+            scope = scope.rsplit_once("::").map_or("", |(outer, _)| outer);
+        }
+        self.source_ancestors(owner)
+            .iter()
+            .find_map(|ancestor| found(&crate::sym::join_scope(ancestor, name)))
+    }
+
+    /// The superclasses and mixins of `class_name` that the registry declares, nearest first.
+    fn source_ancestors(&self, class_name: &str) -> Vec<String> {
+        let mut ancestors: Vec<String> = Vec::new();
+        let mut queue = std::collections::VecDeque::from([class_name.to_string()]);
+        while let Some(current) = queue.pop_front() {
+            let Some(data) = self.class_data.get(current.as_str()) else {
+                continue;
+            };
+            let mixins = data
+                .mixins
+                .iter()
+                .map(|mixin| self.resolve_scoped_class_ref(&current, &mixin.module_name));
+            let superclass = self.get_superclass(&current).map(str::to_string);
+            for next in mixins.chain(superclass) {
+                if next != class_name && !ancestors.contains(&next) {
+                    ancestors.push(next.clone());
+                    queue.push_back(next);
+                }
+            }
+        }
+        ancestors
     }
 
     fn splice_dirty_pattern_methods(

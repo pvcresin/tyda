@@ -588,8 +588,8 @@ impl LazyRbsLoader {
         cache.clear();
     }
 
-    /// The number of type parameters of each generic class whose RBS this loader has read.
-    /// A workspace registry keeps only source facts, so rendering takes generic arity from here.
+    /// Each class whose RBS this loader has read, with its number of type parameters. A
+    /// workspace registry keeps only source facts, so rendering takes library names from here.
     pub fn loaded_class_type_param_counts(&self) -> Vec<(String, usize)> {
         let mut counts = Vec::new();
         for shapes in [&self.shared_shapes, &self.shared_features] {
@@ -599,10 +599,7 @@ impl LazyRbsLoader {
                     continue;
                 };
                 for (name, data) in shape.registry.iter_class_data() {
-                    let count = data.cold().class_type_params.len();
-                    if count > 0 {
-                        counts.push((name.to_string(), count));
-                    }
+                    counts.push((name.to_string(), data.cold().class_type_params.len()));
                 }
             }
         }

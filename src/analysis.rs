@@ -2135,14 +2135,24 @@ pub fn source_nested_namespaces(source: &str) -> Vec<String> {
             continue;
         }
         let indent = line.len() - trimmed.len();
-        // `end` closes what was opened at its indentation or deeper.
+        // `end` closes the innermost declaration at its indentation, and any deeper one whose
+        // `end` the scan missed.
         if first == Some(b'e') {
             if !open.is_empty()
-                && (trimmed == "end" || trimmed.starts_with("end ") || trimmed.starts_with("end;"))
+                && (trimmed == "end"
+                    || trimmed.starts_with("end ")
+                    || trimmed.starts_with("end;")
+                    || trimmed.starts_with("end."))
             {
                 while open
                     .last()
-                    .is_some_and(|(open_indent, _)| *open_indent >= indent)
+                    .is_some_and(|(open_indent, _)| *open_indent > indent)
+                {
+                    open.pop();
+                }
+                if open
+                    .last()
+                    .is_some_and(|(open_indent, _)| *open_indent == indent)
                 {
                     open.pop();
                 }
@@ -2155,9 +2165,11 @@ pub fn source_nested_namespaces(source: &str) -> Vec<String> {
         else {
             continue;
         };
+        // A declaration still open at the same indentation is the parent: its `end` has not
+        // come yet (`class Account` directly above `class Call`, as some generated code writes).
         while open
             .last()
-            .is_some_and(|(open_indent, _)| *open_indent >= indent)
+            .is_some_and(|(open_indent, _)| *open_indent > indent)
         {
             open.pop();
         }
@@ -4469,6 +4481,37 @@ end
         assert_eq!(
             super::source_nested_namespaces(closed),
             ["Outer::A", "Outer::B", "Outer::C"]
+        );
+        let same_indent = concat!(
+            "module Tw
+",
+            "  class Account
+",
+            "  class Call
+",
+            "    class Inst
+",
+            "    end
+",
+            "  end
+",
+            "  end
+",
+            "  class Next
+",
+            "  end
+",
+            "end
+",
+        );
+        assert_eq!(
+            super::source_nested_namespaces(same_indent),
+            [
+                "Tw::Account",
+                "Tw::Account::Call",
+                "Tw::Account::Call::Inst",
+                "Tw::Next"
+            ]
         );
     }
 

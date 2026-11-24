@@ -6272,7 +6272,7 @@ fn known_issue_array_constant_from_another_file_is_a_class() {
 }
 
 #[test]
-fn known_issue_constant_of_a_superclass_in_a_later_file_keeps_its_short_name() {
+fn constant_of_a_superclass_in_a_later_file_is_fully_qualified() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("a.rb"),
@@ -6303,17 +6303,16 @@ fn known_issue_constant_of_a_superclass_in_a_later_file_keeps_its_short_name() {
         .expect("failed to run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Known issue: `Version` is `Ca::Abstract::Version`, found through the superclass. When
-    // the superclass is defined in a later file, the name stays short and RBS cannot resolve
-    // it from the compact `class Ca::Mysql` (seen with activerecord).
+    // `Version` is found through the superclass, defined in a later file. RBS cannot resolve
+    // the short name from the compact `class Ca::Mysql`.
     assert!(
-        stdout.contains("  def version: -> Version\n"),
-        "known issue fixed; drop this check and assert `version` returns `Ca::Abstract::Version`: {stdout}"
+        stdout.contains("  def version: -> Ca::Abstract::Version\n"),
+        "{stdout}"
     );
 }
 
 #[test]
-fn known_issue_constant_of_an_included_module_in_a_later_file_keeps_its_short_name() {
+fn constant_of_an_included_module_in_a_later_file_is_fully_qualified() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("a.rb"),
@@ -6345,16 +6344,15 @@ fn known_issue_constant_of_an_included_module_in_a_later_file_keeps_its_short_na
         .expect("failed to run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Known issue: `Group` is `Ad::Nodes::Group`, found through the included module. When the
-    // module is defined in a later file, the name stays short (seen with actionpack).
+    // `Group` is found through the included module, defined in a later file.
     assert!(
-        stdout.contains("  def group: -> Group\n"),
-        "known issue fixed; drop this check and assert `group` returns `Ad::Nodes::Group`: {stdout}"
+        stdout.contains("  def group: -> Ad::Nodes::Group\n"),
+        "{stdout}"
     );
 }
 
 #[test]
-fn known_issue_class_alias_constant_from_another_file_keeps_its_short_name() {
+fn class_alias_constant_from_another_file_is_fully_qualified() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("a.rb"),
@@ -6388,16 +6386,15 @@ fn known_issue_class_alias_constant_from_another_file_keeps_its_short_name() {
         .expect("failed to run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Known issue: `Attr` is the alias `Ar::Attr` of `Ar::Attrs::Attr`. Read from another
-    // file, `Attr.new` returns the short name, which RBS cannot resolve (seen with arel).
+    // `Attr` is the alias `Ar::Attr` of `Ar::Attrs::Attr`, read from another file.
     assert!(
-        stdout.contains("  def build: -> Attr\n"),
-        "known issue fixed; drop this check and assert `build` returns `Ar::Attrs::Attr`: {stdout}"
+        stdout.contains("  def build: -> Ar::Attrs::Attr\n"),
+        "{stdout}"
     );
 }
 
 #[test]
-fn known_issue_value_constant_from_a_later_file_is_a_class() {
+fn value_constant_from_a_later_file_is_not_a_class() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("a.rb"),
@@ -6422,12 +6419,9 @@ fn known_issue_value_constant_from_a_later_file_is_a_class() {
         .expect("failed to run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Known issue: `Nr::UNKNOWN` is a String. Defined in a later file, the alias is read as a
-    // class, so the default is `singleton(Nr::UNKNOWN)` (seen with newrelic_rpm).
+    // `Nr::UNKNOWN` is a String constant defined in a later file, not a class.
     assert!(
-        stdout.contains(
-            "  def self.metric: (?singleton(Nr::UNKNOWN) product) -> singleton(Nr::UNKNOWN)\n"
-        ),
-        "known issue fixed; drop this check and assert `metric` takes `?String`: {stdout}"
+        stdout.contains("  def self.metric: (?String product) -> \"Unknown\"\n"),
+        "{stdout}"
     );
 }
