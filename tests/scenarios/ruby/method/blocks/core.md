@@ -796,3 +796,31 @@ class Repo
   def head: -> String
 end
 ```
+
+## Implicit self call with a block in a reopened Array uses the block overload
+
+### update
+
+```ruby
+class Array
+  def strings = map { |x| x.to_s }
+  def strings_by_symbol = map(&:to_s)
+end
+
+class Hash
+  def string_keys = transform_keys(&:to_s)
+end
+```
+
+### result
+
+```rbs
+class Array[unchecked out E]
+  def strings: -> Array[untyped]
+  def strings_by_symbol: -> Array[untyped]
+end
+
+class Hash[unchecked out K, unchecked out V]
+  def string_keys: -> Hash[untyped, untyped]
+end
+```

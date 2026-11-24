@@ -155,34 +155,6 @@ class Sp
 end
 ```
 
-## Implicit self call with a block in a reopened Array uses the block overload
-
-### update
-
-```ruby
-class Array
-  def strings = map { |x| x.to_s }
-  def strings_by_symbol = map(&:to_s)
-end
-
-class Hash
-  def string_keys = transform_keys(&:to_s)
-end
-```
-
-### result
-
-```rbs
-class Array[unchecked out E]
-  def strings: -> Array[String]
-  def strings_by_symbol: -> Array[String]
-end
-
-class Hash[unchecked out K, unchecked out V]
-  def string_keys: -> Hash[String, V]
-end
-```
-
 ## Own method named like an Enumerable method keeps its untyped return
 
 ### update

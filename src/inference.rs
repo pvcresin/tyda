@@ -32334,20 +32334,35 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(block_result) = user_defined_block_call_result {
                             break 'no_recv block_result;
                         }
-                        let generic_block_call_result =
-                            if self.record_hover_snapshots && call_node.block().is_some() {
-                                self.resolve_block_call_generic(
+                        let generic_block_call_result = if call_node.block().is_some()
+                            && (self.record_hover_snapshots
+                                || !self.registry.method_call_has_user_source_definition(
                                     class_name,
-                                    &call_node,
-                                    &implicit_self_type,
                                     &method_name,
-                                    parse_result,
-                                    scope,
-                                )
-                            } else {
-                                None
-                            };
+                                    scope.singleton_dispatch,
+                                )) {
+                            self.resolve_block_call_generic(
+                                class_name,
+                                &call_node,
+                                &implicit_self_type,
+                                &method_name,
+                                parse_result,
+                                scope,
+                            )
+                        } else {
+                            None
+                        };
                         if let Some(block_result) = generic_block_call_result {
+                            break 'no_recv block_result;
+                        }
+                        if let Some(block_result) = self.resolve_symbol_to_proc(
+                            class_name,
+                            &call_node,
+                            &implicit_self_type,
+                            &method_name,
+                            parse_result,
+                            scope,
+                        ) {
                             break 'no_recv block_result;
                         }
                         if let Some(enum_result) = user_defined_no_block_enumerator_result {
@@ -45834,7 +45849,7 @@ impl<'a> InferenceEngine<'a> {
         // A return bound from the block keeps its references, which resolve with the block.
         if Self::is_concrete(&method_return)
             || rbs_mt.method_type.type_params.is_empty()
-            || (!Self::is_concrete(&block_return_type) && method_return == block_return_type)
+            || !Self::is_concrete(&block_return_type)
         {
             Some(Self::include_optional_control_type(
                 method_return,
