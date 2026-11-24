@@ -8,7 +8,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::project::RubyVersion;
 use crate::rbs::bounded_file_cache::{BoundedFileCache, DEFAULT_FILE_CACHE_CAP};
 use crate::rbs::import::{
-    RawTypeAlias, load_rbs_signature_with_dependency_aliases, signature_type_aliases,
+    RawTypeAlias, load_rbs_signature_with_dependency_aliases, qualify_relative_class_names,
+    signature_type_aliases,
 };
 use crate::registry::{
     ConstantCompletionCandidate, ConstantCompletionKind, RegistryDeepBytes, TypeRegistry,
@@ -224,8 +225,11 @@ impl LazyRbsLoader {
         Arc::clone(slot.get_or_init(|| {
             let mut registry = TypeRegistry::new();
             if let Ok(content) = std::fs::read_to_string(path)
-                && let Ok(sig) = rbs_sys::parse_signature(&content)
+                && let Ok(mut sig) = rbs_sys::parse_signature(&content)
             {
+                qualify_relative_class_names(&mut sig, &|name| {
+                    self.class_to_files.contains_key(name)
+                });
                 let mut visited = HashSet::from([path.to_path_buf()]);
                 let mut dependencies = Vec::new();
                 self.collect_alias_dependencies(

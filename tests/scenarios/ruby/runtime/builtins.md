@@ -200,3 +200,21 @@ class DirProbe
   def home: -> String
 end
 ```
+
+## Class names from a stdlib signature are fully qualified
+
+### update
+
+```ruby
+class Fetcher
+  def uri(s) = URI.parse(s)
+end
+```
+
+### result
+
+```rbs
+class Fetcher
+  def uri: (untyped s) -> (URI::FTP | URI::File | URI::Generic | URI::HTTP | URI::HTTPS | URI::LDAP | URI::LDAPS | URI::MailTo | URI::WS | URI::WSS)
+end
+```
