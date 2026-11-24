@@ -769,3 +769,30 @@ class Writer
   def within: (untyped x) -> untyped
 end
 ```
+
+## Block call with an untyped instance variable argument uses the block overload
+
+### update
+
+```ruby
+class Repo
+  def initialize(path)
+    @path = path
+  end
+
+  def head
+    Dir.chdir(@path) do
+      "x".upcase
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Repo
+  def initialize: (untyped path) -> void
+  def head: -> String
+end
+```

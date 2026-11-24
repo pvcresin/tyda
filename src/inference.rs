@@ -52811,6 +52811,8 @@ impl<'a> InferenceEngine<'a> {
             | Type::Todo
             | Type::ParamRef(_)
             | Type::KeywordParamRef(_)
+            | Type::IvarRef(_)
+            | Type::GlobalVariableRef(_)
             | Type::ReceiverMethodRef(_, _)
             | Type::DeferredSafeNavigation(_, _)
             | Type::MethodReturnRef(_, _)

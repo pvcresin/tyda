@@ -549,3 +549,28 @@ class Pairs
   def first_op: (untyped item) -> untyped
 end
 ```
+
+## Float minus an untyped instance variable stays untyped
+
+### update
+
+```ruby
+class Timer
+  def initialize(start)
+    @start = start
+  end
+
+  def elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - @start
+  def offset = 1.5 - @start
+end
+```
+
+### result
+
+```rbs
+class Timer
+  def initialize: (untyped start) -> void
+  def elapsed: -> untyped
+  def offset: -> untyped
+end
+```

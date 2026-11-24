@@ -155,31 +155,6 @@ class Sp
 end
 ```
 
-## Float minus an untyped instance variable stays untyped
-
-### update
-
-```ruby
-class Timer
-  def initialize(start)
-    @start = start
-  end
-
-  def elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - @start
-  def offset = 1.5 - @start
-end
-```
-
-### result
-
-```rbs
-class Timer
-  def initialize: (untyped start) -> void
-  def elapsed: -> untyped
-  def offset: -> untyped
-end
-```
-
 ## Implicit self call with a block in a reopened Array uses the block overload
 
 ### update
@@ -205,33 +180,6 @@ end
 
 class Hash[unchecked out K, unchecked out V]
   def string_keys: -> Hash[String, V]
-end
-```
-
-## Block call with an untyped instance variable argument uses the block overload
-
-### update
-
-```ruby
-class Repo
-  def initialize(path)
-    @path = path
-  end
-
-  def head
-    Dir.chdir(@path) do
-      "x".upcase
-    end
-  end
-end
-```
-
-### result
-
-```rbs
-class Repo
-  def initialize: (untyped path) -> void
-  def head: -> String
 end
 ```
 
