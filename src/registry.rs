@@ -4111,6 +4111,21 @@ impl TypeRegistry {
             self.mixin_hook_mixins_applied = false;
         }
         let is_user = method.origin.is_user_source();
+        // A real definition replaces a method that a DSL call in the source generated.
+        if is_user
+            && self
+                .lookup_method_def(class_name, method.name.as_str(), method.is_singleton)
+                .is_some_and(|existing| existing.origin == MethodOrigin::SourceDsl)
+            && self.class_data.get(class_name).is_some_and(|data| {
+                !data
+                    .cold()
+                    .generated_module_methods
+                    .iter()
+                    .any(|(key, _)| *key == (method.name, method.is_singleton))
+            })
+        {
+            self.remove_method_variant(class_name, method.name.as_str(), method.is_singleton);
+        }
         if is_user {
             self.file_contribution_names.insert(class_name.to_string());
             self.file_contribution_method_names.insert(method.name);
