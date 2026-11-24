@@ -17628,9 +17628,12 @@ impl<'a> InferenceEngine<'a> {
             .collect()
     }
 
-    fn core_method_is_shadowed(&mut self, name: &str, is_singleton: bool) -> bool {
+    fn core_method_is_shadowed(&self, name: &str, is_singleton: bool) -> bool {
         let core_owner = if is_singleton { "Class" } else { "Object" };
-        self.ensure_class_available(core_owner);
+        // No call resolved to a core method when the core class was never loaded.
+        if self.registry.class_data_for(core_owner).is_none() {
+            return false;
+        }
         self.registry
             .resolve_method_call_owners(core_owner, name, false)
             .iter()
