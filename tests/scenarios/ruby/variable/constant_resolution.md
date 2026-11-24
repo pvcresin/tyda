@@ -1847,3 +1847,33 @@ class Spring::Server
   def ignore_signals: -> ["INT", "QUIT"]
 end
 ```
+
+## self in a class body passed as an argument is the class
+
+### update
+
+```ruby
+module Registry
+  def self.add(klass, name)
+    klass.name
+  end
+end
+
+class Plugin
+  Registry.add(self, :plugin)
+
+  def id = 1
+end
+```
+
+### result
+
+```rbs
+class Plugin
+  def id: -> 1
+end
+
+module Registry
+  def self.add: (singleton(Plugin) klass, Symbol name) -> String?
+end
+```

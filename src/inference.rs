@@ -2032,7 +2032,9 @@ struct YieldedBlockDefinitionContext {
 }
 
 impl ClassBodyCollectionOptions {
-    fn new(in_singleton_class: bool, class_body_scope: Scope) -> Self {
+    fn new(in_singleton_class: bool, mut class_body_scope: Scope) -> Self {
+        // `self` in a class body is the class, and bare calls dispatch on it.
+        class_body_scope.singleton_dispatch = true;
         Self {
             in_singleton_class,
             class_body_scope,
@@ -4960,15 +4962,20 @@ impl<'a> InferenceEngine<'a> {
         let Type::Singleton(target) = value_type else {
             return ConstantAlias::None;
         };
-        if !matches!(
-            value_node,
-            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
-        ) {
-            return ConstantAlias::None;
-        }
-        let raw = self.resolve_constant_path(value_node, parse_result);
-        if !self.constant_reference_names_namespace(&raw, class_context) {
-            return ConstantAlias::None;
+        // `self` in a class body names the class being defined.
+        let names_self =
+            matches!(value_node, Node::SelfNode { .. }) && target.as_str() == class_context;
+        if !names_self {
+            if !matches!(
+                value_node,
+                Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+            ) {
+                return ConstantAlias::None;
+            }
+            let raw = self.resolve_constant_path(value_node, parse_result);
+            if !self.constant_reference_names_namespace(&raw, class_context) {
+                return ConstantAlias::None;
+            }
         }
         self.ensure_class_available(target.as_str());
         match self.class_data_cross_registry(target.as_str()) {

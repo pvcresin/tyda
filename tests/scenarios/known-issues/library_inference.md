@@ -229,35 +229,6 @@ class TaskSet
   def <<: (untyped task) -> TaskSet
 end
 ```
-## self in a class body passed as an argument is the class
-
-### update
-
-```ruby
-module Registry
-  def self.add(klass, name)
-    klass.name
-  end
-end
-
-class Plugin
-  Registry.add(self, :plugin)
-
-  def id = 1
-end
-```
-
-### result
-
-```rbs
-class Plugin
-  def id: -> 1
-end
-
-module Registry
-  def self.add: (singleton(Plugin) klass, Symbol name) -> String?
-end
-```
 ## each with a block on a Hash.new default value is not an Enumerator
 
 ### update

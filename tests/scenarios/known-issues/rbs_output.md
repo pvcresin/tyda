@@ -611,28 +611,6 @@ module Codec::String
 end
 ```
 
-## Constant set to new in a class body is an instance
-
-### update
-
-```ruby
-class Visitor
-  def visit = 1
-
-  INSTANCE = new
-end
-```
-
-### result
-
-```rbs
-class Visitor
-  INSTANCE: Visitor
-
-  def visit: -> 1
-end
-```
-
 ## Frozen lambda constant is a Proc
 
 ### update
@@ -648,24 +626,6 @@ end
 ```rbs
 module Consts
   IDENTITY: Proc
-end
-```
-
-## Constant set to self in a class body is the class
-
-### update
-
-```ruby
-class Timeout
-  RT = self
-end
-```
-
-### result
-
-```rbs
-class Timeout
-  class RT = Timeout
 end
 ```
 
