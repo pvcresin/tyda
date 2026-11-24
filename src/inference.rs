@@ -33746,7 +33746,13 @@ impl<'a> InferenceEngine<'a> {
                                         .with_callable_kind(CallableKind::Proc),
                                 );
                             }
-                            if method_name == "curry" {
+                            if method_name == "curry"
+                                || (matches!(
+                                    method_name.as_str(),
+                                    "freeze" | "dup" | "clone" | "itself"
+                                ) && call_node.arguments().is_none()
+                                    && call_node.block().is_none())
+                            {
                                 break 'recv wrap(safe_nav_receiver_type.clone());
                             }
                             if method_name == "arity" && call_node.arguments().is_none() {

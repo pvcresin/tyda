@@ -611,24 +611,6 @@ module Codec::String
 end
 ```
 
-## Frozen lambda constant is a Proc
-
-### update
-
-```ruby
-module Consts
-  IDENTITY = ->(x) { x }.freeze
-end
-```
-
-### result
-
-```rbs
-module Consts
-  IDENTITY: Proc
-end
-```
-
 ## Instance variable from an optional parameter is not only its default
 
 ### update
