@@ -14,6 +14,9 @@ def make = Foo.allocate
 ### result
 
 ```rbs
+class Foo
+end
+
 class Object < BasicObject
   def make: -> untyped
 end
@@ -61,6 +64,9 @@ def probe = Foo.define_method(:bar) { 1 }
 ### result
 
 ```rbs
+class Foo
+end
+
 class Object < BasicObject
   def probe: -> Symbol
 end

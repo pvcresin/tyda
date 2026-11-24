@@ -555,6 +555,9 @@ dynamic_parent_case("text")
 ### result
 
 ```rbs
+class DynamicCaseChild
+end
+
 class Object < BasicObject
   def runtime_case_parent: -> singleton(Object)
   def dynamic_parent_case: (String value) -> (String | :matched)
@@ -662,6 +665,12 @@ subclass_class_case(CaseWhenChild.new)
 ### result
 
 ```rbs
+class CaseWhenBase
+end
+
+class CaseWhenChild < CaseWhenBase
+end
+
 class Object < BasicObject
   def subclass_class_case: ((CaseWhenBase | CaseWhenChild) value) -> (:base | :child)
 end
@@ -951,6 +960,9 @@ end
 ### result
 
 ```rbs
+module Accounts
+end
+
 class Accounts::User
   def account_id: -> 1
 end
@@ -1199,6 +1211,9 @@ def chained_accept = ChainHolder.instance.accept(Alpha)
 ### result
 
 ```rbs
+class Alpha
+end
+
 class ChainHolder
   include Singleton
 
@@ -1312,6 +1327,9 @@ class DynamicWhenFirst < StandardError
   def detail: -> 1
 end
 
+class DynamicWhenSecond < StandardError
+end
+
 class DynamicWhenSubject
   ERRORS: { first: singleton(DynamicWhenFirst), second: singleton(DynamicWhenSecond) }
 
@@ -1356,6 +1374,15 @@ end
 class WhenClassValue
   def kind: -> singleton(WhenValueAnimal)
   def classify: -> (:cat | :matched)
+end
+
+class WhenValueAnimal
+end
+
+class WhenValueCat < WhenValueAnimal
+end
+
+class WhenValueDog < WhenValueAnimal
 end
 ```
 

@@ -36,6 +36,15 @@ class ADecorator < Draper::Decorator
   def object: -> A
   def a: -> A
 end
+
+module Draper
+end
+
+module Draper::Decoratable
+end
+
+class Draper::Decorator
+end
 ```
 
 ## Decorator applies explicit target and delegate_all
@@ -75,5 +84,11 @@ class ADecorator < Draper::Decorator
   def object: -> A
   def a: -> A
   def foo: -> String
+end
+
+module Draper
+end
+
+class Draper::Decorator
 end
 ```

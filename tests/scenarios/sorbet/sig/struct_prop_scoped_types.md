@@ -17,6 +17,9 @@ end
 ### result
 
 ```rbs
+module NS
+end
+
 class NS::Inner < T::Struct
   def x: -> Integer
   def x=: (Integer x) -> Integer
@@ -45,6 +48,9 @@ end
 ### result
 
 ```rbs
+module NS
+end
+
 class NS::Inner < T::Struct
   def x: -> Integer
   def x=: (Integer x) -> Integer
@@ -75,6 +81,9 @@ end
 ### result
 
 ```rbs
+module NS
+end
+
 class NS::Inner < T::Struct
   def x: -> Integer
   def x=: (Integer x) -> Integer
@@ -116,6 +125,9 @@ class Inner < T::Struct
   def t=: (String t) -> String
 end
 
+module NS
+end
+
 class NS::Inner < T::Struct
   def x: -> Integer
   def x=: (Integer x) -> Integer
@@ -145,6 +157,9 @@ end
 ### result
 
 ```rbs
+module NS
+end
+
 class NS::Inner < T::Struct
   def x: -> Integer
   def x=: (Integer x) -> Integer

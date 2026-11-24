@@ -1184,7 +1184,7 @@ end
 ### result
 
 ```rbs
-class Array
+class Array[unchecked out E]
   def each: [R] { (Symbol) -> R } -> R
 end
 
@@ -1219,7 +1219,7 @@ class ForHashEachOverride
   def result: -> :item
 end
 
-class Hash
+class Hash[unchecked out K, unchecked out V]
   def each: [R] { (Symbol) -> R } -> R
 end
 ```
@@ -1285,7 +1285,7 @@ end
 ### result
 
 ```rbs
-class Array
+class Array[unchecked out E]
   def each: [R] { (Symbol) -> R } -> R?
 end
 
@@ -1316,7 +1316,7 @@ end
 ### result
 
 ```rbs
-class Array
+class Array[unchecked out E]
   def each: [R] { (Symbol) -> R } -> R
 end
 

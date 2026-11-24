@@ -36,6 +36,9 @@ class A::B < ActiveModelSerializers::Model
   def item=: (untyped item) -> untyped
   def initialize: (untyped item, untyped attrs) -> void
 end
+
+class ActiveModelSerializers::Model
+end
 ```
 
 ## Apply super keywords through string-like helpers
@@ -76,6 +79,9 @@ class A::B < ActiveModelSerializers::Model
   def item=: (untyped item) -> untyped
   def initialize: (untyped item, untyped attrs) -> void
   def foo: (untyped s) -> untyped
+end
+
+class ActiveModelSerializers::Model
 end
 ```
 
@@ -124,6 +130,9 @@ class A::B < ActiveModelSerializers::Model
   def mark!: -> Time
   def foo: (untyped s) -> untyped
 end
+
+class ActiveModelSerializers::Model
+end
 ```
 
 ## present? returns bool in Rails context
@@ -154,6 +163,9 @@ class A::B < ActiveModelSerializers::Model
   def z=: (untyped z) -> untyped
   def initialize: (untyped attrs) -> void
   def ok?: -> bool
+end
+
+class ActiveModelSerializers::Model
 end
 ```
 
@@ -227,6 +239,9 @@ class Account
   def name: -> "x"
 end
 
+class ActiveModelSerializers::Model
+end
+
 class Presenter < ActiveModelSerializers::Model
   def account: -> untyped
   def account=: (untyped account) -> untyped
@@ -261,6 +276,9 @@ def result = Row.new.label
 ### result
 
 ```rbs
+class ActiveModelSerializers::Model
+end
+
 class Object < BasicObject
   def result: -> untyped
 end
@@ -300,6 +318,9 @@ end
 ### result
 
 ```rbs
+class ActiveModel::Serializer
+end
+
 class PostSerializer < ActiveModel::Serializer
   def kind: -> :post
 end

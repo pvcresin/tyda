@@ -114,6 +114,9 @@ def g = Box::Item.new.child
 ### result
 
 ```rbs
+class Box
+end
+
 class Box::Item < Box::Parent
   def child: -> :child
 end
@@ -149,6 +152,9 @@ end
 ### result
 
 ```rbs
+class Box
+end
+
 module Box::Shared
   def label: -> "label"
 end
@@ -186,6 +192,9 @@ class Base
   def base: -> :base
 end
 
+module Container
+end
+
 class Container::Item < Base
   def label: -> "item"
 end
@@ -217,6 +226,9 @@ end
 ### result
 
 ```rbs
+class Box
+end
+
 module Box::Shared
   def label: -> "shared"
 end
@@ -249,6 +261,9 @@ def read_name = Box::Entry.new("entry").name
 ### result
 
 ```rbs
+class Box
+end
+
 class Box::Entry
   def name: -> String
   def initialize: (String name) -> void
@@ -277,6 +292,9 @@ def g = Foo::CONST
 ```rbs
 CONST: 2
 
+class Foo
+end
+
 class Object < BasicObject
   def f: -> 2
   def g: -> untyped
@@ -302,6 +320,12 @@ def f = Foo::Baz.v
 ### result
 
 ```rbs
+class Foo
+end
+
+class Foo::Bar
+end
+
 class Foo::Baz
   def self.v: -> 1
 end
@@ -354,6 +378,12 @@ def f = Foo::Bar::Baz.v
 ### result
 
 ```rbs
+class Foo
+end
+
+class Foo::Bar
+end
+
 class Foo::Bar::Baz
   def self.v: -> 1
 end
@@ -382,6 +412,9 @@ def g = Foo::CONST
 
 ```rbs
 CONST: 1
+
+class Foo
+end
 
 class Object < BasicObject
   def f: -> 1
@@ -453,6 +486,12 @@ end
 ### result
 
 ```rbs
+class A
+end
+
+class A::B
+end
+
 class A::B::C
   def foo: -> 1
 end

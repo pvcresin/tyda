@@ -172,6 +172,9 @@ class Object < BasicObject
   def entry_label: -> String
 end
 
+module Store
+end
+
 class Store::Entry < Data
   def name: -> Symbol
   def initialize: (name: Symbol) -> void

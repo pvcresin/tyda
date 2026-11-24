@@ -19,6 +19,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class Report < ActiveRecord::Base
   def issues: -> ActiveModel::Errors
   def ok?: -> bool
@@ -43,6 +46,9 @@ end
 ### result
 
 ```rbs
+module ActiveModel::Model
+end
+
 class SearchForm
   include ActiveModel::Model
 

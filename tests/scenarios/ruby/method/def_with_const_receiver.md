@@ -97,6 +97,9 @@ end
 ### result
 
 ```rbs
+class Bar
+end
+
 class Foo
   def self.get: -> 1
   def self.set: -> 1
@@ -150,6 +153,9 @@ def (Outer::Foo).make = 2
 ### result
 
 ```rbs
+module Outer
+end
+
 class Outer::Foo
   def self.make: -> 2
 end

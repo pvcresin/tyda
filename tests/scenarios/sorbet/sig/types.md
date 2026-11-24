@@ -363,6 +363,9 @@ def foo = Child.make
 ### result
 
 ```rbs
+class Child < Parent
+end
+
 class Module
   include T::Sig
 end

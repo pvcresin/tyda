@@ -312,6 +312,9 @@ class Object < BasicObject
   def result: -> :queued
 end
 
+module Worker
+end
+
 module Worker::ClassMethods
   def perform_async: -> :queued
 end

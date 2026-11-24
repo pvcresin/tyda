@@ -14,6 +14,9 @@ def f = A.new
 ### result
 
 ```rbs
+class A < A
+end
+
 class Object < BasicObject
   def f: -> A
 end

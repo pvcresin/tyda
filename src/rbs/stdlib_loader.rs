@@ -338,6 +338,13 @@ impl LazyRbsLoader {
         true
     }
 
+    /// Copies only the type parameters, so a reopened class keeps its source methods.
+    pub fn copy_class_type_params_into(&self, class_name: &str, target: &mut TypeRegistry) {
+        if let Some(shape) = self.shared_class_shape(class_name) {
+            target.copy_class_type_params_from(class_name, &shape.registry);
+        }
+    }
+
     pub fn merge_feature_into(&self, feature: &str, target: &mut TypeRegistry) -> bool {
         let Some(shape) = self.resolved_feature_shape(feature) else {
             return false;

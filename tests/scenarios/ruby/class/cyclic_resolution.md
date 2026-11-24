@@ -20,6 +20,15 @@ def f = A.new
 ### result
 
 ```rbs
+class A < B
+end
+
+class B < C
+end
+
+class C < A
+end
+
 class Object < BasicObject
   def f: -> A
 end

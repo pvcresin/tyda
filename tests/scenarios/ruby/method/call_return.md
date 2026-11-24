@@ -796,8 +796,14 @@ Factory.new.build(Bar)
 ### result
 
 ```rbs
+class Bar
+end
+
 class Factory
   def build: ((singleton(Bar) | singleton(Foo)) klass) -> (Bar | Foo)
+end
+
+class Foo
 end
 ```
 

@@ -21,8 +21,8 @@ end
 
 ```rbs
 class Container
-  include Reader
-  include User
+  include Container::Reader
+  include Container::User
 end
 
 module Container::Reader
@@ -58,8 +58,8 @@ end
 
 ```rbs
 class Request
-  include Env
-  include Helpers
+  include Request::Env
+  include Request::Helpers
 end
 
 module Request::Env
@@ -91,7 +91,7 @@ end
 
 ```rbs
 class Request
-  include Inner
+  include Request::Inner
 
   def greet: -> "hi"
 end
@@ -123,9 +123,12 @@ end
 ### result
 
 ```rbs
+module Outer
+end
+
 class Outer::Request
-  include Env
-  include Helpers
+  include Outer::Request::Env
+  include Outer::Request::Helpers
 end
 
 module Outer::Request::Env

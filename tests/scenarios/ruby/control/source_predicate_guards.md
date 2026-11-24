@@ -421,4 +421,7 @@ class RespondGuardedCaller
   def run: (RespondGuardedNote note) -> untyped
   def call_run: -> untyped
 end
+
+class RespondGuardedNote
+end
 ```

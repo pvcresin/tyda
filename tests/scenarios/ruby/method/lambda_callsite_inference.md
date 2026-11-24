@@ -227,6 +227,9 @@ class DirectoryBody
   def each: -> untyped
 end
 
+module Rack
+end
+
 class Rack::Directory
   FILESIZE_FORMAT: [["%.1fT", Integer], ["%.1fG", Integer], ["%.1fM", Integer], ["%.1fK", Integer]]
 

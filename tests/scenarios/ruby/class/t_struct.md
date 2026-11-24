@@ -89,6 +89,9 @@ end
 ### result
 
 ```rbs
+module A
+end
+
 class A::B < T::Struct
   def foo: -> A::B::Foo
   def foo=: (A::B::Foo foo) -> A::B::Foo
@@ -97,6 +100,9 @@ end
 class A::B::Foo < T::Struct
   def x: -> Integer
   def x=: (Integer x) -> Integer
+end
+
+module A::Foo
 end
 ```
 
@@ -119,6 +125,9 @@ end
 ### result
 
 ```rbs
+module A
+end
+
 class A::B < T::Struct
   def foo: -> Foo
 end
@@ -151,6 +160,9 @@ end
 ### result
 
 ```rbs
+module A
+end
+
 class A::B < T::Struct
   def foo: -> Foo
 end
@@ -183,6 +195,9 @@ end
 ### result
 
 ```rbs
+module A
+end
+
 class A::B < T::Struct
   def foo: -> A::Foo
 end

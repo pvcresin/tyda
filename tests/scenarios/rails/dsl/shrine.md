@@ -22,6 +22,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class Photo < ActiveRecord::Base
   def image: -> Shrine::UploadedFile?
   def image=: ((String | Hash[untyped, untyped] | IO) image) -> Shrine::UploadedFile
@@ -33,6 +36,12 @@ class Photo < ActiveRecord::Base
   def thumb_attacher: -> Shrine::Attacher
   def thumb_changed?: -> bool
   def thumb_url: -> String?
+end
+
+module Shrine
+end
+
+module Shrine::Attachment
 end
 ```
 
@@ -57,11 +66,20 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ImageUploader < Shrine
+end
+
 class Photo < ActiveRecord::Base
   def image: -> Shrine::UploadedFile?
   def image=: ((String | Hash[untyped, untyped] | IO) image) -> Shrine::UploadedFile
   def image_attacher: -> Shrine::Attacher
   def image_changed?: -> bool
   def image_url: -> String?
+end
+
+class Shrine
 end
 ```

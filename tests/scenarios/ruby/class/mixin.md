@@ -309,6 +309,9 @@ end
 ### result
 
 ```rbs
+module A
+end
+
 class A::B
   include Singleton
 
@@ -384,6 +387,9 @@ end
 ### result
 
 ```rbs
+module Rack
+end
+
 class Rack::ContentType
   include Rack::Utils
 
@@ -497,6 +503,9 @@ def f = Baz.new.hello
 class Baz
   include Foo
   include Foo::Bar
+end
+
+module Foo
 end
 
 module Foo::Bar
@@ -776,6 +785,9 @@ def run = Bar.value
 ### result
 
 ```rbs
+class Bar < Foo
+end
+
 class Foo
   extend Mixin
 end
@@ -943,12 +955,67 @@ class Caller
 end
 
 module Foo
-  extend Util
+  extend Foo::Util
 end
 
 module Foo::Util
   include Foo
 
   def helper: -> "h"
+end
+```
+
+## Nested module named like a core class is included by its full name
+
+### update
+
+```ruby
+module Xp
+  class Project
+    module Object
+      def uuid = 1
+    end
+    include Object
+  end
+end
+```
+
+### result
+
+```rbs
+module Xp
+end
+
+class Xp::Project
+  include Xp::Project::Object
+end
+
+module Xp::Project::Object
+  def uuid: -> 1
+end
+```
+
+## Mixin whose name RBS would read inside the class gets a root prefix
+
+### update
+
+```ruby
+module M
+  module M
+    def x = 1
+  end
+  include M
+end
+```
+
+### result
+
+```rbs
+module M
+  include ::M::M
+end
+
+module M::M
+  def x: -> 1
 end
 ```

@@ -36,6 +36,9 @@ class ActiveRecord::Base
   def self.devise: (*Symbol modules) -> void
 end
 
+class PasswordUser < ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def confirmed?: -> bool
   def resend_confirmation_instructions: -> untyped

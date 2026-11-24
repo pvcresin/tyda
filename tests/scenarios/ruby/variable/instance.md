@@ -715,6 +715,9 @@ end
 ### result
 
 ```rbs
+module Outer
+end
+
 class Outer::Apu
   def initialize: -> void
   def p0: -> Outer::Apu::Pulse
@@ -780,9 +783,15 @@ end
 ### result
 
 ```rbs
+module Outer
+end
+
 class Outer::Holder
   def initialize: -> void
   def part: -> Outer::Holder::Part
+end
+
+class Outer::Holder::Part
 end
 ```
 
@@ -895,6 +904,9 @@ Node.new(LocalEnv.new(FileCtx.new))
 ### result
 
 ```rbs
+class FileCtx
+end
+
 class LocalEnv
   def initialize: (FileCtx file_context) -> void
   def file_context: -> FileCtx

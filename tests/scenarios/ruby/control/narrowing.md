@@ -723,6 +723,9 @@ class FirstNamespace::Foo
   def first_only: -> :first
 end
 
+module SecondNamespace
+end
+
 class SecondNamespace::Foo
   def second_only: -> :second
 end
@@ -766,8 +769,14 @@ module NamespacePath
   def self.narrow: ((NamespacePath::Nested::Child | Nested::Child) value) -> (:nested | :other)
 end
 
+module NamespacePath::Nested
+end
+
 class NamespacePath::Nested::Child
   def nested_only: -> :nested
+end
+
+module Nested
 end
 
 class Nested::Child
@@ -803,6 +812,9 @@ CollisionScope.narrow(eval("CollisionTarget::Child.new"))
 ```rbs
 module CollisionScope
   def self.narrow: (untyped value) -> untyped
+end
+
+module CollisionScope::CollisionTarget
 end
 
 class CollisionTarget::Child
@@ -901,6 +913,9 @@ narrow_with_refined_is_a(eval("RefinedIsATarget.new"))
 ### result
 
 ```rbs
+module AlwaysMatchString
+end
+
 class Object < BasicObject
   def narrow_with_refined_is_a: (untyped value) -> untyped
 end
@@ -1433,6 +1448,9 @@ end
 ### result
 
 ```rbs
+module StructNarrow
+end
+
 class StructNarrow::Mapping < Struct[untyped]
   def tag: -> untyped
   def tag=: (untyped tag) -> untyped

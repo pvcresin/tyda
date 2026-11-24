@@ -111,6 +111,9 @@ class Object < BasicObject
   def f: -> 1
 end
 
+module Outer
+end
+
 module Outer::Inner
   V: 1
 end
@@ -198,6 +201,9 @@ class AliasedBase = Base
 
 class Base
   def hello: -> :hi
+end
+
+class Foo < Base
 end
 
 class Object < BasicObject
@@ -372,6 +378,9 @@ def f = ALIAS::CONST
 ```rbs
 class ALIAS = Bar
 
+class Bar < Foo
+end
+
 class Foo
   CONST: 123
 end
@@ -512,6 +521,9 @@ AnonRef = Anon
 ```rbs
 Anon: singleton(Object)
 AnonRef: singleton(Object)
+
+class Base
+end
 ```
 
 ## `class Alias` reopens the aliased class

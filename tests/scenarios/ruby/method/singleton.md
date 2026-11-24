@@ -350,6 +350,12 @@ end
 ### result
 
 ```rbs
+module Rouge
+end
+
+module Rouge::Lexers
+end
+
 class Rouge::Lexers::Livescript
   def self.constants: -> Set["false" | "true" | "yes"]
 end

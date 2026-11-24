@@ -172,6 +172,12 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
+class Person < ApplicationRecord
+end
+
 class Team < ApplicationRecord
   def people: -> ActiveRecord::Associations::CollectionProxy[Person]
   def person_ids: -> Array[Integer]
