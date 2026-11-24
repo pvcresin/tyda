@@ -19947,7 +19947,13 @@ impl<'a> InferenceEngine<'a> {
             return_type = Type::Void;
         }
 
-        if is_singleton && Self::def_body_returns_only_bare_new(&def_node) {
+        // A bare `new` builds an instance unless the class defines its own `self.new`.
+        if is_singleton
+            && Self::def_body_returns_only_bare_new(&def_node)
+            && !self
+                .registry
+                .method_call_has_user_source_definition(class_name, "new", true)
+        {
             return_type = Type::InstanceType;
         }
 
@@ -31983,7 +31989,14 @@ impl<'a> InferenceEngine<'a> {
                             break 'no_recv loop_type;
                         }
 
-                        if !self_overridden && scope.singleton_dispatch && method_name == "new" {
+                        // A source `def self.new` answers the call instead of the constructor.
+                        if !self_overridden
+                            && scope.singleton_dispatch
+                            && method_name == "new"
+                            && !self
+                                .registry
+                                .method_call_has_user_source_definition(class_name, "new", true)
+                        {
                             let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
                                 node,
                                 parse_result,

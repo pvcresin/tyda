@@ -298,35 +298,6 @@ class Headers < Hash[untyped, untyped]
   def each: { (untyped, untyped) -> untyped } -> Headers
 end
 ```
-## Module singleton new defined in Ruby is used by calls to new
-
-### update
-
-```ruby
-module Mailer
-  class Message
-    def initialize(source)
-      @source = source
-    end
-  end
-
-  def self.new(*args) = Message.new(*args)
-  def self.read(source) = new(source)
-end
-```
-
-### result
-
-```rbs
-module Mailer
-  def self.new: (*untyped args) -> Mailer::Message
-  def self.read: (untyped source) -> Mailer::Message
-end
-
-class Mailer::Message
-  def initialize: (untyped source) -> void
-end
-```
 ## each with a block on a local assigned in a block is not an Enumerator
 
 ### update

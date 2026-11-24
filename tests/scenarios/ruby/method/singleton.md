@@ -354,3 +354,33 @@ class Rouge::Lexers::Livescript
   def self.constants: -> Set["false" | "true" | "yes"]
 end
 ```
+
+## Module singleton new defined in Ruby is used by calls to new
+
+### update
+
+```ruby
+module Mailer
+  class Message
+    def initialize(source)
+      @source = source
+    end
+  end
+
+  def self.new(*args) = Message.new(*args)
+  def self.read(source) = new(source)
+end
+```
+
+### result
+
+```rbs
+module Mailer
+  def self.new: (*untyped args) -> Mailer::Message
+  def self.read: (untyped source) -> Mailer::Message
+end
+
+class Mailer::Message
+  def initialize: (untyped source) -> void
+end
+```
