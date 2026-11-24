@@ -6141,3 +6141,132 @@ fn known_issue_recursion_passing_its_block_overflows_the_stack() {
         "known issue fixed; drop this check and assert `def walk` is rendered: {stderr}"
     );
 }
+
+#[test]
+fn known_issue_constant_alias_of_an_array_from_another_file_is_a_class() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        concat!(
+            "module Haml\n",
+            "  module Preserver\n",
+            "    TAGS = %w[a b].freeze\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("b.rb"),
+        concat!(
+            "module Haml\n",
+            "  module Helpers\n",
+            "    PRESERVE = Preserver::TAGS\n",
+            "    def find(tags = PRESERVE) = tags\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `PRESERVE` holds the array from `Preserver::TAGS`, so `find` is
+    // `(?Array[String] tags) -> Array[String]` (the scenario path and a single file get this
+    // right). With the alias in another file, the CLI treats it as a class alias (seen with
+    // the haml gem).
+    assert!(
+        stdout.contains(
+            "  def find: (?singleton(Preserver::TAGS) tags) -> singleton(Preserver::TAGS)\n"
+        ),
+        "known issue fixed; drop this check and assert `find` takes `?Array[String]`: {stdout}"
+    );
+}
+
+#[test]
+fn known_issue_singleton_method_from_another_file_loses_to_a_module_method() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        concat!(
+            "module Rouge\n",
+            "  module Lexers\n",
+            "    class Javascript\n",
+            "      def self.constants\n",
+            "        @constants ||= Set.new %w(true false)\n",
+            "      end\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("b.rb"),
+        concat!(
+            "module Rouge\n",
+            "  module Lexers\n",
+            "    class Livescript\n",
+            "      def self.constants\n",
+            "        @constants ||= Javascript.constants + %w(yes)\n",
+            "      end\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `Javascript.constants` calls the singleton method defined in a.rb, so
+    // Livescript's `constants` is `Set["false" | "true" | "yes"]` (the scenario path and a
+    // single file get this right). The CLI uses `Module#constants` instead (seen with the
+    // rouge gem).
+    assert!(
+        stdout.contains("  def self.constants: -> Array[Symbol | \"yes\"]\n"),
+        "known issue fixed; drop this check and assert the Set return: {stdout}"
+    );
+}
+
+#[test]
+fn known_issue_array_constant_from_another_file_is_a_class() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("env.rb"),
+        "module Spring\n  IGNORE_SIGNALS = %w(INT QUIT)\nend\n",
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("server.rb"),
+        concat!(
+            "module Spring\n",
+            "  class Server\n",
+            "    def ignore_signals\n",
+            "      IGNORE_SIGNALS.each { |sig| sig }\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `IGNORE_SIGNALS` holds an array, so `each` with a block returns
+    // `["INT", "QUIT"]` (the scenario path and a single file get this right). With the
+    // constant in another file, the CLI treats it as a class (seen with the spring gem).
+    assert!(
+        stdout.contains("  def ignore_signals: -> singleton(IGNORE_SIGNALS)\n"),
+        "known issue fixed; drop this check and assert the array return: {stdout}"
+    );
+}
