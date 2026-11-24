@@ -28,3 +28,9 @@ change per commit.
 ```bash
 gh pr create --title "<English imperative title>" --body-file <body.md>
 ```
+
+## After opening
+
+- Never add `approved-analysis-change` or any other approval label yourself, even
+  when the gate fails only on intended changes. Report the diff and the reason to a
+  human; a human adds the label after review.
