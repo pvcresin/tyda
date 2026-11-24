@@ -5705,6 +5705,13 @@ impl TypeRegistry {
     /// source return that holds a parameter, or an RBS method with overloads, type parameters,
     /// or a block. A method not found is not known to.
     fn call_result_depends_on_arguments(&self, receiver: &Type, method_name: Sym) -> bool {
+        // Inference refines a collection's element types from the arguments (`set + other`).
+        if matches!(
+            receiver,
+            Type::Generic { .. } | Type::Array(Some(_)) | Type::Tuple(_) | Type::Hash(Some(_), _)
+        ) {
+            return true;
+        }
         let Some(class_name) = Self::type_to_class_name(receiver) else {
             return false;
         };

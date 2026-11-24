@@ -4776,6 +4776,34 @@ impl<'a> InferenceEngine<'a> {
 
     /// Another source declares this nested class or module. Its body is merged only later,
     /// so the name is all this file knows.
+    /// Whether a call on `class_name`, which another file declares and this file does not,
+    /// reaches only a core method here.
+    fn other_file_class_method_waits(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        if self
+            .registry
+            .class_data_for(class_name)
+            .is_some_and(|data| data.user_defined)
+            || !self.is_other_source_namespace(class_name)
+        {
+            return false;
+        }
+        self.registry
+            .resolve_method_call_owners(class_name, method_name, is_singleton)
+            .first()
+            .is_some_and(|(owner, owner_is_singleton)| {
+                owner != class_name
+                    && self
+                        .registry
+                        .lookup_method_def(owner, method_name, *owner_is_singleton)
+                        .is_some_and(|method| method.origin.is_rbs_file_source())
+            })
+    }
+
     fn is_other_source_namespace(&self, name: &str) -> bool {
         self.registry.source_declares_namespace(name)
             || self
@@ -32895,6 +32923,20 @@ impl<'a> InferenceEngine<'a> {
                     }
                     let mut block_break_type: Option<Type> = None;
                     let result = 'recv: {
+                        // A class another file declares may define the method there, so a
+                        // core method found here waits for the merged definitions.
+                        if let Type::Singleton(name) | Type::Class(name) = &safe_nav_receiver_type
+                            && self.other_file_class_method_waits(
+                                name.as_str(),
+                                &method_name,
+                                matches!(safe_nav_receiver_type, Type::Singleton(_)),
+                            )
+                        {
+                            break 'recv wrap(Type::ReceiverMethodRef(
+                                Box::new(safe_nav_receiver_type.clone()),
+                                Sym::new(&method_name),
+                            ));
+                        }
                         if receiver_type == Type::Bot
                             && self.node_always_exits_in_method_scope(class_name, scope, &receiver)
                         {
@@ -58749,6 +58791,11 @@ impl<'a> InferenceEngine<'a> {
         if self.stdlib_feature_method_unloaded(class_name, &method_name_for_lookup, is_singleton) {
             return Type::Untyped;
         }
+        // A class another file declares may define the method there, so a core method found
+        // here waits for the merged definitions.
+        if self.other_file_class_method_waits(class_name, &method_name_for_lookup, is_singleton) {
+            return Type::ReceiverMethodRef(Box::new(receiver_type.clone()), Sym::new(method_name));
+        }
         let lookup = self.registry.lookup_method_return_type_with_hint(
             class_name,
             &method_name_for_lookup,
@@ -59274,6 +59321,15 @@ impl<'a> InferenceEngine<'a> {
                         })
                         .collect();
                     return Type::from_type_vec_preserve_untyped(arms);
+                }
+                if let Type::Singleton(name) | Type::Class(name) = &resolved_receiver
+                    && self.other_file_class_method_waits(
+                        name.as_str(),
+                        method_name.as_str(),
+                        matches!(resolved_receiver, Type::Singleton(_)),
+                    )
+                {
+                    return Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name);
                 }
                 if let Some(result) =
                     self.resolve_receiver_ref_overloaded_return(&resolved_receiver, method_name)

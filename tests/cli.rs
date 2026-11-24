@@ -6187,7 +6187,7 @@ fn known_issue_constant_alias_of_an_array_from_another_file_is_a_class() {
 }
 
 #[test]
-fn known_issue_singleton_method_from_another_file_loses_to_a_module_method() {
+fn singleton_method_from_another_file_wins_over_a_module_method() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("a.rb"),
@@ -6225,13 +6225,10 @@ fn known_issue_singleton_method_from_another_file_loses_to_a_module_method() {
         .expect("failed to run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Known issue: `Javascript.constants` calls the singleton method defined in a.rb, so
-    // Livescript's `constants` is `Set["false" | "true" | "yes"]` (the scenario path and a
-    // single file get this right). The CLI uses `Module#constants` instead (seen with the
-    // rouge gem).
+    // `Javascript.constants` calls the singleton method a.rb defines, not `Module#constants`.
     assert!(
-        stdout.contains("  def self.constants: -> Array[Symbol | \"yes\"]\n"),
-        "known issue fixed; drop this check and assert the Set return: {stdout}"
+        stdout.contains("  def self.constants: -> Set[\"false\" | \"true\" | \"yes\"]\n"),
+        "Livescript.constants does not use Javascript.constants: {stdout}"
     );
 }
 
