@@ -824,3 +824,59 @@ class Hash[unchecked out K, unchecked out V]
   def string_keys: -> Hash[untyped, untyped]
 end
 ```
+
+## each with a block on a Hash.new default value is not an Enumerator
+
+### update
+
+```ruby
+class Hooks
+  def self.callbacks = @callbacks ||= Hash.new { |hash, key| hash[key] = [] }
+  def self.notify(key) = callbacks[key].each { |listener| listener.call }
+end
+```
+
+### result
+
+```rbs
+class Hooks
+  def self.callbacks: -> Hash[untyped, [ ]]
+  def self.notify: (untyped key) -> [ ]
+end
+```
+
+## each with a block on a local assigned in a block is not an Enumerator
+
+### update
+
+```ruby
+class Buffer
+  def initialize
+    @lock = Mutex.new
+    @entries = []
+  end
+
+  def push(entry) = @entries << entry
+
+  def flush
+    entries = nil
+    @lock.synchronize do
+      entries = @entries
+      @entries = []
+    end
+    entries.each do |entry|
+      entry.to_s
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Buffer
+  def initialize: -> void
+  def push: (untyped entry) -> Array[untyped]
+  def flush: -> Array[untyped]
+end
+```

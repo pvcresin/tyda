@@ -45285,6 +45285,14 @@ impl<'a> InferenceEngine<'a> {
         }
         let block_node_raw = call_node.block()?;
         let block = block_node_raw.as_block_node()?;
+        // A `nil` arm that has no such method raises, so the other arms decide the result.
+        let receiver_type = &if matches!(receiver_type, Type::Union(parts) if parts.contains(&Type::Nil))
+            && self.type_responds_to_method(&Type::Nil, method_name) == Some(false)
+        {
+            Self::remove_nil(receiver_type)
+        } else {
+            receiver_type.clone()
+        };
         let normalized = Self::normalize_union_receiver(receiver_type);
         // Block-iterating methods (`map`/`select`/...) need the receiver's concrete element type to thread through the block.
         // A deferred instance-variable or method-return receiver (e.g.
