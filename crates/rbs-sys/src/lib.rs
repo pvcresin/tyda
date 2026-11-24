@@ -257,6 +257,23 @@ pub fn parse_type(input: &str) -> Result<RbsType, ParseError> {
     unsafe { convert_type_node(type_ptr, parser.parser, &UseContext::default()) }
 }
 
+/// Like [`parse_type`], but fails unless the type is the whole input: `nodoc:` is not the
+/// type `nodoc`.
+pub fn parse_whole_type(input: &str) -> Result<RbsType, ParseError> {
+    let parser = Parser::new(input);
+    let mut type_ptr: *mut ffi::rbs_node_t = ptr::null_mut();
+    let ok = unsafe { ffi::rbs_parse_type(parser.parser, &mut type_ptr, true, true, true) };
+    if !ok || type_ptr.is_null() {
+        return Err(ParseError::ParseFailed);
+    }
+    // `PartialParser` reads the token on wasm too, where `rbs_parser_t` is opaque.
+    let next_token = unsafe { (*(parser.parser as *const PartialParser)).next_token.type_ };
+    if next_token != RBS_TOKEN_EOF {
+        return Err(ParseError::ParseFailed);
+    }
+    unsafe { convert_type_node(type_ptr, parser.parser, &UseContext::default()) }
+}
+
 /// Parse a `#:` style inline annotation, returning the method type.
 /// Input should be the comment body _without_ the `#` prefix, e.g. `": (String) -> Integer"`.
 pub fn parse_inline_leading(input: &str) -> Result<MethodType, ParseError> {
@@ -1626,6 +1643,13 @@ unsafe fn get_constant_pool(parser: *mut ffi::rbs_parser_t) -> *const ffi::rbs_c
     let partial = &*(parser as *const PartialParser);
     &partial.constant_pool as *const _
 }
+
+/// `pEOF` in `enum RBSTokenType` (lexer.h). bindgen does not emit the enum on wasm.
+const RBS_TOKEN_EOF: c_int = 1;
+// The enum is `u32` on Unix and `i32` on Windows.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::unnecessary_cast)]
+const _: () = assert!(ffi::RBSTokenType_pEOF as c_int == RBS_TOKEN_EOF);
 
 /// Partial representation of rbs_parser_t to access constant_pool.
 /// Must match the exact layout of the C struct up to and including constant_pool.
