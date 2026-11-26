@@ -1174,6 +1174,9 @@ pub struct InferenceEngine<'a> {
     /// Pending constant writes by start offset, with the scope seen at the write.
     pending_constant_writes: FxHashMap<usize, Scope>,
     pending_constant_names: FxHashSet<String>,
+    /// Instance variables a call read before any method wrote them, per class. Methods that
+    /// read them are inferred again after the class body.
+    late_ivar_reads: FxHashSet<(String, String)>,
     external_rbs: Option<&'a TypeRegistry>,
     merged_external_classes: FxHashSet<String>,
     /// Classes whose ancestor walk last changed nothing, valid while the registry's classes
@@ -2922,6 +2925,7 @@ impl<'a> InferenceEngine<'a> {
             unresolved_constant_reads: 0,
             pending_constant_writes: FxHashMap::default(),
             pending_constant_names: FxHashSet::default(),
+            late_ivar_reads: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             ancestor_walk_memo: FxHashSet::default(),
@@ -3040,6 +3044,7 @@ impl<'a> InferenceEngine<'a> {
             unresolved_constant_reads: 0,
             pending_constant_writes: FxHashMap::default(),
             pending_constant_names: FxHashSet::default(),
+            late_ivar_reads: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             ancestor_walk_memo: FxHashSet::default(),
@@ -4792,8 +4797,15 @@ impl<'a> InferenceEngine<'a> {
         method_name: &str,
         is_singleton: bool,
     ) -> bool {
-        // `new` builds an instance of the class wherever `initialize` is.
-        if (is_singleton && matches!(method_name, "new" | "allocate"))
+        // Only a class method in a method body waits, where a replay can type the calls on the
+        // reference: `new` builds an instance wherever `initialize` is, and identity methods
+        // answer with the receiver.
+        if !is_singleton
+            || self.active_method_body.is_none()
+            || matches!(
+                method_name,
+                "new" | "allocate" | "freeze" | "dup" | "clone" | "itself" | "tap" | "then"
+            )
             || self
                 .registry
                 .class_data_for(class_name)
@@ -17527,6 +17539,15 @@ impl<'a> InferenceEngine<'a> {
         let body_nodes: Vec<_> = statements.body().iter().collect();
         let mut late_constant_names = inherited_late_constant_names.to_vec();
         let mut late_constant_unknown = inherited_late_constant_unknown;
+        let late_ivars: Vec<String> = self
+            .late_ivar_reads
+            .iter()
+            .filter(|(owner, _)| owner == class_name)
+            .map(|(_, name)| name.clone())
+            .collect();
+        for name in late_ivars {
+            Self::push_unique_late_constant_name(&mut late_constant_names, name);
+        }
 
         for node in body_nodes.into_iter().rev() {
             match &node {
@@ -32580,9 +32601,19 @@ impl<'a> InferenceEngine<'a> {
                                 )
                                 .first()
                                 .is_some_and(|(owner, owner_is_singleton)| {
-                                    self.registry
-                                        .lookup_method_def(owner, &method_name, *owner_is_singleton)
-                                        .is_some_and(|method| method.origin.is_rbs_file_source())
+                                    // `Kernel` functions are not methods of the receiver's
+                                    // own collection (`select` is `IO.select` there).
+                                    !matches!(owner.as_str(), "Kernel" | "Object" | "BasicObject")
+                                        && self
+                                            .registry
+                                            .lookup_method_def(
+                                                owner,
+                                                &method_name,
+                                                *owner_is_singleton,
+                                            )
+                                            .is_some_and(|method| {
+                                                method.origin.is_rbs_file_source()
+                                            })
                                 });
                         let generic_block_call_result = if call_node.block().is_some()
                             && (self.record_hover_snapshots || reaches_declared_method)
@@ -35333,6 +35364,7 @@ impl<'a> InferenceEngine<'a> {
                         };
                         wrap(result)
                     };
+
                     let result = Self::include_optional_control_type(result, &block_break_type);
                     self.note_param_call_shape_drop(&call_node, &safe_nav_receiver_type, &result);
                     self.note_reference_call_shape_drop(
@@ -45470,9 +45502,15 @@ impl<'a> InferenceEngine<'a> {
 
         let (call_arg_types, call_kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
+        // An instance variable not known yet is an open argument: the block picks the overload.
         let call_arg_types: Vec<Type> = call_arg_types
             .iter()
-            .map(|ty| self.resolve_known_ivar_ref(ty, class_name, scope))
+            .map(
+                |ty| match self.resolve_known_ivar_ref(ty, class_name, scope) {
+                    Type::IvarRef(_) => Type::Untyped,
+                    resolved => resolved,
+                },
+            )
             .collect();
         let block_shape = if self.record_hover_snapshots {
             call_node
@@ -51201,6 +51239,26 @@ impl<'a> InferenceEngine<'a> {
             .iter()
             .map(|ty| self.resolve_known_ivar_ref(ty, class_name, scope))
             .collect();
+        // An instance variable written only later can still select any overload, so the call
+        // is unknown for now and the method is inferred again after the class body.
+        for ty in &mut arg_types {
+            let Type::IvarRef(name) = ty else {
+                continue;
+            };
+            match self.current_ivar_type(class_name, scope, name.as_str()) {
+                // A parameter or `untyped` value can be anything, so the call is unknown.
+                Some(written) if Self::is_unresolved_call_arg_type(&written) => {
+                    *ty = Type::Untyped;
+                }
+                // Writes that resolve later decide the call then.
+                Some(_) => return None,
+                None => {
+                    self.late_ivar_reads
+                        .insert((class_name.to_string(), name.as_str().to_string()));
+                    *ty = Type::Untyped;
+                }
+            }
+        }
 
         let mut relation_cache = HashMap::new();
         // A `nil` arm that no overload accepts would raise, so the other arms pick the overload.
@@ -53148,8 +53206,6 @@ impl<'a> InferenceEngine<'a> {
             | Type::Todo
             | Type::ParamRef(_)
             | Type::KeywordParamRef(_)
-            | Type::IvarRef(_)
-            | Type::GlobalVariableRef(_)
             | Type::ReceiverMethodRef(_, _)
             | Type::DeferredSafeNavigation(_, _)
             | Type::MethodReturnRef(_, _)
