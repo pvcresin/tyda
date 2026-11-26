@@ -32915,6 +32915,29 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         receiver_type
                     };
+                    // In a module, `self.name` reaches whatever the includer defines; a core
+                    // function such as `Kernel#open` is only one guess.
+                    if matches!(receiver, Node::SelfNode { .. })
+                        && let Type::Class(name) = &receiver_type
+                        && self
+                            .registry
+                            .class_data_for(name.as_str())
+                            .is_some_and(|data| data.is_module)
+                        && {
+                            self.ensure_class_available(name.as_str());
+                            self.ensure_class_available("Kernel");
+                            true
+                        }
+                        && self
+                            .registry
+                            .resolve_method_call_owners(name.as_str(), &method_name, false)
+                            .first()
+                            .is_some_and(|(owner, _)| {
+                                matches!(owner.as_str(), "Kernel" | "Object" | "BasicObject")
+                            })
+                    {
+                        return Type::Untyped;
+                    }
                     if let Some(result) = self.dispatch_receiver_union_with_unknown_arm(
                         class_name,
                         node,
