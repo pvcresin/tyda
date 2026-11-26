@@ -4796,8 +4796,6 @@ impl<'a> InferenceEngine<'a> {
         registry.class_data_for(class_name).is_some()
     }
 
-    /// Another source declares this nested class or module. Its body is merged only later,
-    /// so the name is all this file knows.
     /// Whether a call on `class_name`, which another file declares and this file does not,
     /// reaches only a core method here.
     fn other_file_class_method_waits(
@@ -4827,14 +4825,20 @@ impl<'a> InferenceEngine<'a> {
             .resolve_method_call_owners(class_name, method_name, is_singleton)
             .first()
             .is_some_and(|(owner, owner_is_singleton)| {
-                owner != class_name
-                    && self
-                        .registry
-                        .lookup_method_def(owner, method_name, *owner_is_singleton)
-                        .is_some_and(|method| method.origin.is_rbs_file_source())
+                // Only methods every class gets wait; an ancestor the class's own RBS
+                // declares (`extend Enumerable`) answers.
+                matches!(
+                    owner.as_str(),
+                    "Module" | "Class" | "Object" | "Kernel" | "BasicObject"
+                ) && self
+                    .registry
+                    .lookup_method_def(owner, method_name, *owner_is_singleton)
+                    .is_some_and(|method| method.origin.is_rbs_file_source())
             })
     }
 
+    /// Another source declares this nested class or module. Its body is merged only later,
+    /// so the name is all this file knows.
     fn is_other_source_namespace(&self, name: &str) -> bool {
         self.registry.source_declares_namespace(name)
             || self

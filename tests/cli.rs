@@ -1090,6 +1090,44 @@ fn known_issue_constant_declared_in_project_rbs_is_rendered_again() {
 }
 
 #[test]
+fn known_issue_filter_on_a_later_method_return_gives_string_elements() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("repo.rb"),
+        concat!(
+            "class Repo\n",
+            "  def self.matching(key)\n",
+            "    items.filter { |item| item }\n",
+            "  end\n",
+            "  def self.items\n",
+            "    [new]\n",
+            "  end\n",
+            "end\n",
+            "class Probe\n",
+            "  def run(key)\n",
+            "    found = Repo.matching(key).first\n",
+            "    found.name\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `Repo.matching` returns `Array[Repo]`, so `found` is `Repo | nil`. The
+    // CLI diagnostics see `String | nil` for it.
+    assert!(
+        stdout.contains("String#name"),
+        "known issue fixed; drop this check and expect Repo#name and NilClass#name: {stdout}"
+    );
+}
+
+#[test]
 fn known_issue_self_call_into_a_module_from_another_file_drops_ivar_facts() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
