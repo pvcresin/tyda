@@ -233,8 +233,9 @@ enum NarrowSubject {
     Local(String),
     Ivar(String),
     SelfMethod(String),
-    /// A constant index read with a literal key (`ENV["TOKEN"]`), keyed by its source.
-    ConstIndex(String),
+    /// A read keyed by its source: a constant index with a literal key (`ENV["TOKEN"]`), or an
+    /// attribute reader on a local (`uri.host`).
+    SourceRead(String),
     /// A hash index read on a local or `@ivar` with a static key (`opts[:name]`).
     HashKey(String, Type),
 }
@@ -361,6 +362,26 @@ fn const_index_fact_key(node: &Node<'_>) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(node.location().as_slice()).to_string())
+}
+
+/// `local.reader`: a call with no arguments or block on a local, keyed by its source.
+fn local_reader_fact_key(node: &Node<'_>) -> Option<String> {
+    let call = node.as_call_node()?;
+    if call.arguments().is_some() || call.block().is_some() || call.is_safe_navigation() {
+        return None;
+    }
+    let receiver = call.receiver()?.as_local_variable_read_node()?;
+    Some(format!(
+        "{}.{}",
+        String::from_utf8_lossy(receiver.name().as_slice()),
+        String::from_utf8_lossy(call.name().as_slice())
+    ))
+}
+
+/// Whether some fact is keyed by a reader on the local `name` (`name.reader`).
+fn has_local_reader_fact(name: &[u8], fact_keys: &HashMap<String, Type>) -> bool {
+    let prefix = format!("{}.", String::from_utf8_lossy(name));
+    fact_keys.keys().any(|key| key.starts_with(&prefix))
 }
 
 /// Any other call on a constant that holds index facts may change what its index reads return.
@@ -557,6 +578,14 @@ impl<'pr> ruby_prism::Visit<'pr> for LoopExitScan {
 }
 
 impl<'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'_, '_> {
+    fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
+        if has_local_reader_fact(node.name().as_slice(), self.fact_keys) {
+            self.effect = SelfFactEffect::any();
+            return;
+        }
+        ruby_prism::visit_local_variable_write_node(self, node);
+    }
+
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         if self.effect.is_any() {
             return;
@@ -2288,7 +2317,7 @@ impl Scope {
             NarrowSubject::Local(name) => self.narrow_correlated_local(name, ty),
             NarrowSubject::Ivar(name)
             | NarrowSubject::SelfMethod(name)
-            | NarrowSubject::ConstIndex(name) => {
+            | NarrowSubject::SourceRead(name) => {
                 self.set_self_fact(name, ty);
             }
             NarrowSubject::HashKey(receiver, key) => {
@@ -28468,7 +28497,7 @@ impl<'a> InferenceEngine<'a> {
                     .expect("must be CallOrWriteNode");
                 let read_name =
                     String::from_utf8_lossy(write_node.read_name().as_slice()).to_string();
-                self.infer_call_write_result(
+                let result_type = self.infer_call_write_result(
                     class_name,
                     write_node.receiver(),
                     &read_name,
@@ -28479,6 +28508,20 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                // `uri.query ||= ""` leaves the reader truthy until something changes it.
+                if !write_node.is_safe_navigation()
+                    && let Some(local) = write_node
+                        .receiver()
+                        .and_then(|receiver| receiver.as_local_variable_read_node())
+                    && let Some(truthy) = Self::truthy_only(&result_type)
+                {
+                    let key = format!(
+                        "{}.{}",
+                        String::from_utf8_lossy(local.name().as_slice()),
+                        read_name
+                    );
+                    scope.set_self_fact(&key, truthy);
+                }
             }
             Node::CallAndWriteNode { .. } => {
                 let write_node = node
@@ -31104,7 +31147,7 @@ impl<'a> InferenceEngine<'a> {
             return Some(inferred);
         }
         if !scope.self_facts.is_empty()
-            && let Some(key) = const_index_fact_key(node)
+            && let Some(key) = const_index_fact_key(node).or_else(|| local_reader_fact_key(node))
             && let Some(fact) = scope.self_facts.get(&key)
         {
             return Some(fact.clone());
@@ -61496,10 +61539,14 @@ impl<'a> InferenceEngine<'a> {
                     });
                 }
 
-                if let Some(key) = const_index_fact_key(predicate) {
+                if let Some(key) = const_index_fact_key(predicate).or_else(|| {
+                    local_reader_fact_key(predicate).filter(|_| {
+                        self.is_attribute_reader_call(class_name, &call, parse_result, scope)
+                    })
+                }) {
                     let current = self.infer_node_type(class_name, predicate, parse_result, scope);
                     return Some(CondNarrowing {
-                        subject: NarrowSubject::ConstIndex(key),
+                        subject: NarrowSubject::SourceRead(key),
                         then_ty: Self::truthy_only(&current),
                         else_ty: Self::falsy_only(&current),
                     });
@@ -65442,6 +65489,19 @@ impl<'a> InferenceEngine<'a> {
             {
                 SelfFactEffect::any()
             }
+            // Another call on the local may change what its readers return.
+            Some(Node::LocalVariableReadNode { .. })
+                if call
+                    .receiver()
+                    .and_then(|receiver| receiver.as_local_variable_read_node())
+                    .is_some_and(|local| {
+                        has_local_reader_fact(local.name().as_slice(), fact_keys)
+                    })
+                    && !local_reader_fact_key(&call.as_node())
+                        .is_some_and(|key| fact_keys.contains_key(&key)) =>
+            {
+                SelfFactEffect::any()
+            }
             Some(_) => SelfFactEffect::default(),
         };
         if let Some(block) = call.block() {
@@ -65561,6 +65621,43 @@ impl<'a> InferenceEngine<'a> {
             .is_pure_ivar_reader_method(class_name, name, false)
     }
 
+    /// Whether `local.name` calls an attribute reader on every class the local may hold, so
+    /// it reads the same value until something changes the local's object.
+    fn is_attribute_reader_call(
+        &mut self,
+        class_name: &str,
+        call: &ruby_prism::CallNode<'_>,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> bool {
+        let Some(receiver) = call.receiver() else {
+            return false;
+        };
+        let observations = self.suspend_source_observations();
+        let receiver_type = self.infer_node_type(class_name, &receiver, parse_result, scope);
+        self.resume_source_observations(observations);
+        let members = match &receiver_type {
+            Type::Union(parts) => parts.clone(),
+            other => vec![other.clone()],
+        };
+        let mut classes = Vec::new();
+        for member in &members {
+            match member {
+                Type::Nil => {}
+                Type::Class(name) => classes.push(name.to_string()),
+                Type::Generic { base, .. } => classes.push(base.to_string()),
+                _ => return false,
+            }
+        }
+        let method = String::from_utf8_lossy(call.name().as_slice());
+        !classes.is_empty()
+            && classes.iter().all(|name| {
+                self.ensure_class_available(name);
+                self.registry
+                    .is_pure_ivar_reader_method(name, &method, false)
+            })
+    }
+
     /// A no-argument self call reads the same value until a statement invalidates self facts.
     fn self_call_is_narrowable(
         &self,
@@ -65659,7 +65756,7 @@ impl<'a> InferenceEngine<'a> {
                     sig.return_type
                 })
             }),
-            NarrowSubject::ConstIndex(key) => scope.self_facts.get(key).cloned(),
+            NarrowSubject::SourceRead(key) => scope.self_facts.get(key).cloned(),
             NarrowSubject::HashKey(..) => None,
         }
     }

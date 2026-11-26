@@ -2103,3 +2103,46 @@ fn known_issue_self_call_named_describe_drops_ivar_facts() {
         );
     }
 }
+
+#[test]
+fn guarded_attribute_reader_on_a_local_is_not_nil() {
+    let source = concat!(
+        "class ReaderGuard\n",
+        "  def or_assign(s)\n",
+        "    u = URI.parse(s)\n",
+        "    u.query ||= \"\"\n",
+        "    u.query.split(\"&\")\n",
+        "  end\n",
+        "  def raise_unless(s)\n",
+        "    u = URI.parse(s)\n",
+        "    raise \"x\" unless u.host\n",
+        "    u.host.upcase\n",
+        "  end\n",
+        "  def written_after_guard(s)\n",
+        "    u = URI.parse(s)\n",
+        "    raise \"x\" unless u.host\n",
+        "    u.host = nil\n",
+        "    u.host.chomp\n",
+        "  end\n",
+        "  def reassigned_after_guard(s)\n",
+        "    u = URI.parse(s)\n",
+        "    raise \"x\" unless u.host\n",
+        "    u = URI.parse(\"y\")\n",
+        "    u.host.chomp\n",
+        "  end\n",
+        "end\n",
+    );
+    for compact in [false, true] {
+        let actual = diagnostics(source, compact);
+        let missing_lines: Vec<_> = actual
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "missing_method")
+            .map(|diagnostic| (diagnostic.line, diagnostic.unresolved_method.as_str()))
+            .collect();
+        assert_eq!(
+            missing_lines,
+            [(16, "NilClass#chomp"), (22, "NilClass#chomp")],
+            "compact={compact}: {actual:?}"
+        );
+    }
+}
