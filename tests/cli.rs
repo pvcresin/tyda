@@ -899,6 +899,43 @@ fn diagnostics_flag_outputs_json_lines() {
 }
 
 #[test]
+fn rails_app_has_the_stdlib_core_methods_rails_loads_at_boot() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::create_dir_all(dir.path().join("app/models")).expect("failed to create app/models");
+    fs::write(
+        dir.path().join("app/models/setting.rb"),
+        concat!(
+            "class Setting\n",
+            "  def dump(v) = v.to_yaml\n",
+            "end\n",
+            "Setting.new.dump(\"x\")\n",
+        ),
+    )
+    .expect("failed to write source");
+    let diagnostics = |with_rails: bool| {
+        let gemfile = dir.path().join("Gemfile");
+        if with_rails {
+            fs::write(&gemfile, "source \"https://rubygems.org\"\ngem \"rails\"\n")
+                .expect("failed to write Gemfile");
+        } else {
+            let _ = fs::remove_file(&gemfile);
+        }
+        let output = tyda_bin()
+            .arg("--diagnostics")
+            .arg(dir.path().to_str().unwrap())
+            .output()
+            .expect("failed to run");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    // Rails requires `yaml` while it boots, so `String#to_yaml` exists without a require.
+    let with_rails = diagnostics(true);
+    assert!(!with_rails.contains("to_yaml"), "{with_rails}");
+    let without_rails = diagnostics(false);
+    assert!(without_rails.contains("String#to_yaml"), "{without_rails}");
+}
+
+#[test]
 fn diagnostics_replay_truthiness_for_optional_parameters() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("optional_truthiness.rb");
@@ -1133,7 +1170,7 @@ fn known_issue_call_with_arguments_on_a_deferred_module_function_is_untyped() {
 }
 
 #[test]
-fn known_issue_filter_on_a_later_method_return_gives_string_elements() {
+fn filter_with_a_block_in_a_method_with_parameters_is_not_a_forward() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("repo.rb"),
@@ -1162,12 +1199,9 @@ fn known_issue_filter_on_a_later_method_return_gives_string_elements() {
         .expect("failed to run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Known issue: `Repo.matching` returns `Array[Repo]`, so `found` is `Repo | nil`. The
-    // CLI diagnostics see `String | nil` for it.
-    assert!(
-        stdout.contains("String#name"),
-        "known issue fixed; drop this check and expect Repo#name and NilClass#name: {stdout}"
-    );
+    // `matching(key)` does not pass `key` to `filter`, so `filter` is not `Kernel#select`
+    // with that argument: `found` is never a `String`.
+    assert!(!stdout.contains("String#name"), "{stdout}");
 }
 
 #[test]

@@ -454,3 +454,36 @@ class Registry
   def get: (untyped singleton, untyped name) -> Entry
 end
 ```
+
+## Block call on a later method in a method with parameters
+
+### update
+
+```ruby
+class Repo
+  def self.matching(key)
+    items.filter { |item| item }
+  end
+
+  def self.items
+    [:a, 2]
+  end
+end
+
+class Probe
+  def by_key(key) = Repo.matching(key)
+end
+```
+
+### result
+
+```rbs
+class Repo
+  def self.matching: (untyped key) -> Array[2 | :a]
+  def self.items: -> [:a, 2]
+end
+
+class Probe
+  def by_key: (untyped key) -> Array[2 | :a]
+end
+```

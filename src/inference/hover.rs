@@ -455,6 +455,13 @@ impl<'a> InferenceEngine<'a> {
                 unresolved_method,
             });
         }
+        // A Rails app loads stdlib features at boot, so a core method one of them adds
+        // (`to_yaml`) may exist without a require in this file.
+        if self.rails_feature_enabled()
+            && let Some(loader) = self.lazy_loader
+        {
+            calls.retain(|call| !loader.is_any_feature_extension(&call.method_name));
+        }
         calls
     }
 

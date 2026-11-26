@@ -8509,6 +8509,11 @@ impl TypeRegistry {
         }
     }
 
+    /// Whether the RBS overloads of an argument-less call give different returns.
+    pub(crate) fn argless_return_is_ambiguous(&self, class_name: &str, method_name: &str) -> bool {
+        self.argless_overloads_disagree(class_name, method_name, false)
+    }
+
     fn argless_overloads_disagree(
         &self,
         class_name: &str,

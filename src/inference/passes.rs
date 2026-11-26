@@ -570,7 +570,11 @@ impl<'a> InferenceEngine<'a> {
                         .collect();
                     return Type::from_type_vec_preserve_untyped(arms);
                 }
-                if let Some(receiver_class) = Self::static_type_to_class_name(&resolved_receiver) {
+                // Overloads that disagree (a block call's `Array` or a block-less `Enumerator`)
+                // give no single return here.
+                if let Some(receiver_class) = Self::static_type_to_class_name(&resolved_receiver)
+                    && !registry.argless_return_is_ambiguous(&receiver_class, method_name)
+                {
                     let ret = registry
                         .lookup_method_return_type_direct(&receiver_class, method_name)
                         .or_else(|| {

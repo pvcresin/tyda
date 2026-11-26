@@ -46466,6 +46466,14 @@ impl<'a> InferenceEngine<'a> {
         for fallback in fallbacks {
             self.ensure_class_available(fallback);
             for name in &names_to_try {
+                // A private `Kernel` function is not a method of another receiver (`select`
+                // through the `filter` alias is `IO.select` there).
+                if *fallback == "Kernel"
+                    && receiver_class != "Kernel"
+                    && self.is_private_kernel_method(name)
+                {
+                    continue;
+                }
                 if let Some(method) = self.registry.lookup_method_def(fallback, name, false)
                     && !method.rbs_method_types.is_empty()
                     && !self.stdlib_feature_owner_unloaded(fallback, name, false)
@@ -56139,6 +56147,44 @@ impl<'a> InferenceEngine<'a> {
             Self::extract_forwarded_receiver_method(&method.raw_return_type)?;
         let forwarded_receiver = self.try_resolve_receiver_inline(class_name, &forwarded_receiver);
         let forwarded_receiver = self.resolve_receiver_method_refs(&forwarded_receiver);
+        // A forwarded call takes this call's arguments without a block, so a method that no
+        // such call reaches (`items.filter { }`) is not a forward. An unknown receiver cannot
+        // show that.
+        let forwarded_class = self.type_to_class_name(&forwarded_receiver)?;
+        self.ensure_class_available(&forwarded_class);
+        {
+            let arg_count = Self::call_node_positional_arg_count(call_node);
+            let overloads = self.collect_owned_rbs_overloads(
+                &forwarded_class,
+                &forwarded_name,
+                matches!(forwarded_receiver, Type::Singleton(_)),
+                false,
+            );
+            let blockless: Vec<_> = overloads
+                .iter()
+                .filter(|overload| {
+                    Self::rbs_method_type_callable_without_block(&overload.method_type)
+                        && Self::rbs_function_type_accepts_positional_arg_count(
+                            &overload.method_type.function_type,
+                            arg_count,
+                        )
+                })
+                .collect();
+            // An iterator's block-less `Enumerator` says nothing about a call that had a block.
+            let iterator_without_block = overloads
+                .iter()
+                .any(|overload| overload.method_type.block.is_some())
+                && blockless.iter().all(|overload| {
+                    matches!(
+                        &overload.method_type.function_type.return_type,
+                        rbs_ir::RbsType::Class(name, _)
+                            if name.trim_start_matches("::").starts_with("Enumerator")
+                    )
+                });
+            if !overloads.is_empty() && (blockless.is_empty() || iterator_without_block) {
+                return None;
+            }
+        }
 
         let mut result = if forwarded_name == "[]" {
             self.resolve_array_index(

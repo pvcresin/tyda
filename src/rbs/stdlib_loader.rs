@@ -57,6 +57,8 @@ pub struct LazyRbsLoader {
     shared_shapes: Mutex<FxHashMap<String, SharedShapeSlot>>,
     shared_features: Mutex<FxHashMap<String, SharedShapeSlot>>,
     feature_extensions: Mutex<FxHashMap<String, Arc<[FeatureExtension]>>>,
+    /// Names of the methods any stdlib feature adds to a core class.
+    any_feature_extension_names: OnceLock<FxHashSet<String>>,
     stdlib_paths: FxHashSet<PathBuf>,
     alias_dependencies: Mutex<FxHashMap<PathBuf, Arc<AliasDependency>>>,
     prepared_classes: Mutex<crate::registry::PreparedClassPool>,
@@ -150,6 +152,8 @@ impl LazyRbsLoader {
             }
         }
 
+        add_manifest_dependencies(&mut feature_to_files);
+
         // errors.rbs only has the stem "Errors", so each Exception subclass isn't indexed; add them explicitly.
         let error_classes: &[&str] = &[
             "StandardError",
@@ -205,6 +209,7 @@ impl LazyRbsLoader {
             shared_shapes: Mutex::new(FxHashMap::default()),
             shared_features: Mutex::new(FxHashMap::default()),
             feature_extensions: Mutex::new(FxHashMap::default()),
+            any_feature_extension_names: OnceLock::new(),
             stdlib_paths,
             alias_dependencies: Mutex::new(FxHashMap::default()),
             prepared_classes: Mutex::default(),
@@ -379,6 +384,24 @@ impl LazyRbsLoader {
             .expect("stdlib feature extensions poisoned")
             .insert(feature.to_string(), Arc::clone(&extensions));
         extensions
+    }
+
+    /// Whether some stdlib feature adds `method_name` to a core class (`to_yaml` from `psych`).
+    pub fn is_any_feature_extension(&self, method_name: &str) -> bool {
+        self.any_feature_extension_names
+            .get_or_init(|| {
+                let features: Vec<String> = self.feature_to_files.keys().cloned().collect();
+                features
+                    .iter()
+                    .flat_map(|feature| {
+                        self.feature_extensions(feature)
+                            .iter()
+                            .map(|extension| extension.method.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect()
+            })
+            .contains(method_name)
     }
 
     fn collect_feature_extensions(&self, shape: &TypeRegistry) -> Vec<FeatureExtension> {
@@ -927,6 +950,52 @@ fn collect_rbs_type_names(rbs_type: &rbs_sys::RbsType, names: &mut HashSet<Strin
         | rbs_sys::RbsType::SelfType
         | rbs_sys::RbsType::ClassType
         | rbs_sys::RbsType::InstanceType => {}
+    }
+}
+
+/// A feature loads the libraries its `manifest.yaml` depends on (`yaml` loads `psych`).
+fn add_manifest_dependencies(feature_to_files: &mut FxHashMap<String, Vec<PathBuf>>) {
+    let dependencies: FxHashMap<String, Vec<String>> = feature_to_files
+        .iter()
+        .filter_map(|(feature, paths)| {
+            let manifest = paths
+                .iter()
+                .filter_map(|path| path.parent())
+                .map(|dir| dir.join("manifest.yaml"))
+                .find(|manifest| manifest.is_file())?;
+            let content = std::fs::read_to_string(manifest).ok()?;
+            let names: Vec<String> = content
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("- name:"))
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect();
+            (!names.is_empty()).then(|| (feature.clone(), names))
+        })
+        .collect();
+    for (feature, direct) in &dependencies {
+        let mut pending = direct.clone();
+        let mut seen: FxHashSet<String> = FxHashSet::default();
+        let mut extra: Vec<PathBuf> = Vec::new();
+        while let Some(dependency) = pending.pop() {
+            if dependency == *feature || !seen.insert(dependency.clone()) {
+                continue;
+            }
+            extra.extend(
+                feature_to_files
+                    .get(&dependency)
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            );
+            pending.extend(dependencies.get(&dependency).into_iter().flatten().cloned());
+        }
+        let paths = feature_to_files.entry(feature.clone()).or_default();
+        for path in extra {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
     }
 }
 
@@ -1538,6 +1607,36 @@ mod tests {
         assert_eq!(
             registry.lookup_method_return_type("String", "shellescape"),
             Some(crate::types::Type::String)
+        );
+    }
+
+    #[test]
+    fn a_feature_loads_the_features_its_manifest_depends_on() {
+        let dir = tempdir().expect("tempdir");
+        let stdlib = dir.path().join("stdlib");
+        let yaml_dir = stdlib.join("yaml").join("0");
+        let psych_dir = stdlib.join("psych").join("0");
+        std::fs::create_dir_all(&yaml_dir).expect("mkdir yaml feature directory");
+        std::fs::create_dir_all(&psych_dir).expect("mkdir psych feature directory");
+        std::fs::write(yaml_dir.join("yaml.rbs"), "module YAML\nend\n").expect("write yaml rbs");
+        std::fs::write(
+            yaml_dir.join("manifest.yaml"),
+            "dependencies:\n  - name: psych\n",
+        )
+        .expect("write yaml manifest");
+        std::fs::write(
+            psych_dir.join("core_ext.rbs"),
+            "class Object\n  def to_yaml: -> String\nend\n",
+        )
+        .expect("write psych rbs");
+
+        let loader = LazyRbsLoader::new(stdlib);
+        let mut registry = TypeRegistry::new();
+        assert!(loader.merge_feature_into("yaml", &mut registry));
+        assert!(
+            registry
+                .lookup_method_return_type("Object", "to_yaml")
+                .is_some()
         );
     }
 

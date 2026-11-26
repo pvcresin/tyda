@@ -956,3 +956,36 @@ class GoModule
   def path_valid?: (untyped major) -> bool
 end
 ```
+
+## A method that ends in a block call on a later method is not its block-less overload
+
+### update
+
+```ruby
+class Repo
+  def self.all_items
+    items.filter { |item| item }
+  end
+
+  def self.items
+    [:a, 2]
+  end
+end
+
+class Probe
+  def everything = Repo.all_items
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def everything: -> Array[2 | :a]
+end
+
+class Repo
+  def self.all_items: -> Array[2 | :a]
+  def self.items: -> [:a, 2]
+end
+```
