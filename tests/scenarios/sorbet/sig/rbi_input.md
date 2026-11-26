@@ -1043,7 +1043,7 @@ end
 
 ```rbs
 class App
-  def check: -> (Comparable & Enumerable)
+  def check: -> (Comparable & Enumerable[untyped])
 end
 ```
 

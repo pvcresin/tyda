@@ -151,9 +151,9 @@ def make_sq = SizedQueue.new(2)
 ```rbs
 class Object < BasicObject
   def make_mutex: -> Thread::Mutex
-  def make_queue: -> Thread::Queue
+  def make_queue: -> Thread::Queue[untyped]
   def make_cv: -> Thread::ConditionVariable
-  def make_sq: -> Thread::SizedQueue
+  def make_sq: -> Thread::SizedQueue[untyped]
 end
 ```
 
@@ -198,5 +198,23 @@ class DirProbe
   def ruby_files: -> Array[String]
   def inside: -> :done
   def home: -> String
+end
+```
+
+## Class names from a stdlib signature are fully qualified
+
+### update
+
+```ruby
+class Fetcher
+  def uri(s) = URI.parse(s)
+end
+```
+
+### result
+
+```rbs
+class Fetcher
+  def uri: (untyped s) -> (URI::FTP | URI::File | URI::Generic | URI::HTTP | URI::HTTPS | URI::LDAP | URI::LDAPS | URI::MailTo | URI::WS | URI::WSS)
 end
 ```

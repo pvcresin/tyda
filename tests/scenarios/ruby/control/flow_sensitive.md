@@ -2996,7 +2996,7 @@ module TypeProf::Core::AST
 end
 
 class TypeProf::Core::AST::LoopNode
-  def initialize: (Node cond) -> void
+  def initialize: (TypeProf::Core::AST::Node cond) -> void
   def value: -> String?
 end
 
@@ -3108,5 +3108,51 @@ class Parser
   def take_int: (Integer v) -> nil
   def take_str: (String v) -> nil
   def run: ((Integer | String) value) -> nil
+end
+```
+
+## Generic class narrowed by is_a? or when gets type arguments
+
+### update
+
+```ruby
+class G
+  def a(v) = v.is_a?(Set) ? v : nil
+  def c(v)
+    case v
+    when Range then v
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class G
+  def a: (untyped v) -> Set[untyped]?
+  def c: (untyped v) -> Range[untyped]?
+end
+```
+
+## Rescued generic exception gets type arguments
+
+### update
+
+```ruby
+class Rs
+  def r
+    yield
+  rescue NoMethodError => e
+    e
+  end
+end
+```
+
+### result
+
+```rbs
+class Rs
+  def r: [R] { () -> R } -> (NoMethodError[untyped] | R)
 end
 ```

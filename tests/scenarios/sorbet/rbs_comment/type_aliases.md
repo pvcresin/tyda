@@ -52,6 +52,7 @@ end
 
 ```rbs
 class Box
+  type elemish = Integer | String
 end
 
 class Box::Inner

@@ -626,6 +626,7 @@ impl WorkspaceState {
     fn finish_batch_resolution(registry: &mut TypeRegistry, stdlib_loader: Option<&LazyRbsLoader>) {
         if let Some(loader) = stdlib_loader {
             Self::resolve_with_stdlib_declarations(registry, loader);
+            registry.add_external_type_param_counts(loader.loaded_class_type_param_counts());
         }
         registry.prewarm_and_freeze_resolve_params();
         registry.compact_after_batch_freeze();

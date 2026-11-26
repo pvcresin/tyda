@@ -46,9 +46,7 @@ agent が自ら使うのは、grep・ファイル全体の読み込み・テス�
 
 gem の `lib/` を解析した出力を、そのまま RBS として読み込めるようにする。ダウンロード数上位 500 gem などの出力を公式 RBS の parser と `RBS::DefinitionBuilder` にかけて見つかった不備を known issue として記録している（`tests/scenarios/known-issues/rbs_output.md`、`library_inference.md`、`tests/pathological_inputs.rs` の `known_issue_*`）。
 
-- [ ] 出力を公式 RBS で読み込めるようにする。`is_a?(Range)` などで絞った `Array` / `Hash` 以外の generic class の型引数（推論は `Range` のまま保ち、出力で型パラメータの数を引ける必要がある）、ソースで宣言していない namespace（`class A::B` だけの `A`）の宣言漏れ、宣言の重複など
-- [ ] メソッドの型に出るクラス名を完全名で書く。compact な宣言（`class A::B`）の中では RBS が `A` から名前を探さないため、短い名前は解決できない。後のファイルにある superclass や include したモジュールの定数、別ファイルのクラス alias 定数、stdlib のシグネチャ（`URI.parse` の `FTP`）、inline シグネチャ（`#: (Point) -> Point`）、親と同じインデントで入れ子にしたクラスで短い名前が残る（`tests/cli.rs` の `known_issue_*_keeps_its_short_name` ほか）
-- [ ] inline の型エイリアス（`# @rbs type size = ...`）を出力で宣言する
+- [ ] 出力を公式 RBS で読み込めるようにする。ソースで宣言していない namespace（`class A::B` だけの `A`）の宣言漏れ、宣言の重複など
 - [ ] CLI で、`sig/` などで宣言済みの定数を出力しない（メソッドは出力しない）。重複すると RBS::DuplicatedDeclarationError になる（`tests/cli.rs` の `known_issue_constant_declared_in_project_rbs_is_rendered_again`）
 - [ ] 入力の大きさに対して時間が指数的に伸びるパターンをなくす（`known_issue_*_grow_*`）。固定の深さ制限ではなく、計算の共有や memo 化で直す
 
@@ -58,7 +56,7 @@ gem の `lib/` を解析した出力を、そのまま RBS として読み込め
 - [ ] 大規模 Rails での `--diagnostics` context scan を高速化する
 - [ ] block callback の副作用解析を一般化し、外側で nil check 済みのivarがcallback内で誤って `nil` と診断されるケースを見直す（Redmine `Attachment#files_to_final_location` の `sha.update(@temp_file)`）。実際のmutationは引き続きnarrowingを無効化し、クラス・メソッド固有の例外は追加しない
 - [ ] CLI のファイル単位推論で、後のファイルに依存する型を遅延参照として保ち、全体の集約後に解決する。別ファイルの model への `find(1)` が `untyped` になる、後のファイルで定義されるクラスの `when` が引数を `untyped` にする、concern の `included` で定義した scope を別ファイルの model から呼ぶと `ActiveRecord::Relation[self]` が残る、の3件（`known_issue_concern_scope_keeps_self_across_files`）（`tests/cli.rs` の `when_with_class_from_later_file_does_not_leak_other_arguments`）。シナリオ runner は他ファイルを先に解析するため、CLI でのみ再現する
-- [ ] CLI と scenario runner の結果をそろえる。単一ファイルでも `*args` の要素、class 内の再帰が CLI だけ `untyped` になり、別ファイルの値の定数（`LIMIT = 5`）をメソッドから参照するとディレクトリ指定の CLI で `untyped` になる（定数への代入 `MAX = LIMIT` は統合後に解決する）。引数で受け取った receiver への setter 呼び出し（`conn.session = self`）も CLI だけ ivar に届かず、reader が `nil` になる（`tests/cli.rs` の `known_issue_setter_call_on_a_parameter_does_not_reach_the_ivar`）。別ファイルの配列定数を参照すると `singleton(IGNORE_SIGNALS)` のように class として扱われ、その別名（`PRESERVE = Preserver::TAGS`）を既定値にした引数も `singleton(Preserver::TAGS)` になり（`known_issue_array_constant_from_another_file_is_a_class`、`known_issue_constant_alias_of_an_array_from_another_file_is_a_class`））。scenario は CLI 経路を確かめないため、両経路を比べる仕組みも用意する
+- [ ] CLI と scenario runner の結果をそろえる。単一ファイルでも `*args` の要素、class 内の再帰が CLI だけ `untyped` になり、別ファイルの値の定数（`LIMIT = 5`）をメソッドから参照するとディレクトリ指定の CLI で `untyped` になる（定数への代入 `MAX = LIMIT` は統合後に解決する）。引数で受け取った receiver への setter 呼び出し（`conn.session = self`）も CLI だけ ivar に届かず、reader が `nil` になる（`tests/cli.rs` の `known_issue_setter_call_on_a_parameter_does_not_reach_the_ivar`）。scenario は CLI 経路を確かめないため、両経路を比べる仕組みも用意する
 - [ ] Ruby の意味論どおり、未初期化の ivar の値に `nil` を含める。`initialize` のすべての経路（class instance variable は class body）で代入される ivar だけを非 nil とし、それ以外の reader と参照は `T?` にする。この `nil` による `missing_method` は除外せずに報告する。意図して使う箇所は `# tyda: ignore[missing_method]` で抑制する。既存 scenario の期待値も合わせて直す（`known-issues/ruby_methods.md`、`ruby/variable/instance.md` の known issue）
 - [ ] TODO: 未初期化の ivar に由来する `nil` 診断の重さを検討する（他の `nil` と severity を分けて warning にするか、など）
 - [ ] 保存前の ActiveRecord model を推論で区別する。既定は tapioca・rbs_rails と同じく保存済みで valid な model の契約とし、`null: false` のカラムと必須の `belongs_to` は非 nil にする。そのうえで `find` / `where` / association から来た値は非 nil のまま、`new` / `build` から来てまだ保存していない値だけカラムと association を `nil` を含む型にする。値の出どころを追えない RBI 生成ツールは全体を nilable にする設定（tapioca の `ActiveRecordColumnTypes`）しか持てないが、Tyda は推論で実際に危ない箇所だけを捉える。全体を切り替える設定は、要望が出るまで追加しない

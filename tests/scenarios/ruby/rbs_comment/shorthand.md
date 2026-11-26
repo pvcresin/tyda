@@ -806,3 +806,87 @@ class H
   def name: (?nil override) -> nil
 end
 ```
+
+## Inline type alias is declared
+
+### update
+
+```ruby
+class Box
+  # @rbs type size = Integer | Float
+
+  #: () -> size
+  def s = 1
+end
+```
+
+### result
+
+```rbs
+class Box
+  type size = Integer | Float
+
+  def s: -> (Integer | Float)
+end
+```
+
+## Multi-line inline type alias is declared
+
+### update
+
+```ruby
+class Font
+  #: type width = (
+  #|   Integer |
+  #|   Float
+  #| )
+
+  def calc
+    @calc ||= 1 #: width
+  end
+end
+```
+
+### result
+
+```rbs
+class Font
+  type width = (Integer | Float)
+
+  def calc: -> width
+end
+```
+
+## Short names in an inline signature are fully qualified
+
+### update
+
+```ruby
+module Pdf
+  class Reader
+    class Point
+    end
+    class Receiver
+      #: (Point) -> Point
+      def rotate(pt) = pt
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+module Pdf
+end
+
+class Pdf::Reader
+end
+
+class Pdf::Reader::Point
+end
+
+class Pdf::Reader::Receiver
+  def rotate: (Pdf::Reader::Point pt) -> Pdf::Reader::Point
+end
+```

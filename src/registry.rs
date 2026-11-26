@@ -3004,6 +3004,9 @@ struct RegistryColdTail {
     module_includer_index: Option<FxHashMap<SharedName, Vec<SharedName>>>,
     /// known gem/Rails namespaces: suppress `unresolved_constant` even without bundled types.
     known_constant_namespaces: HashSet<String>,
+    /// Library classes this registry does not hold, with their type parameter counts, so
+    /// rendering knows the names and writes `Set` as `Set[untyped]`.
+    external_type_param_counts: FxHashMap<String, usize>,
 }
 
 fn empty_registry_cold_tail() -> &'static RegistryColdTail {
@@ -3801,6 +3804,33 @@ impl TypeRegistry {
             tail.subclass_index = None;
             tail.module_includer_index = None;
         }
+    }
+
+    pub fn add_external_type_param_counts<I: IntoIterator<Item = (String, usize)>>(
+        &mut self,
+        counts: I,
+    ) {
+        self.tail_mut().external_type_param_counts.extend(counts);
+    }
+
+    /// Whether a library's RBS that was read declares the class.
+    pub fn is_external_class_name(&self, class_name: &str) -> bool {
+        self.cold_tail
+            .as_deref()
+            .is_some_and(|tail| tail.external_type_param_counts.contains_key(class_name))
+    }
+
+    /// How many type parameters the class declares, from its own data or a library's RBS.
+    pub fn class_type_param_count(&self, class_name: &str) -> usize {
+        let own = self.get_class_type_params(class_name).len();
+        if own > 0 {
+            return own;
+        }
+        self.cold_tail
+            .as_deref()
+            .and_then(|tail| tail.external_type_param_counts.get(class_name))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// framework (see field docs). Merges into any existing set.
@@ -9065,7 +9095,9 @@ impl TypeRegistry {
     }
 
     /// The inverse of `resolve_scoped_annotation_type`: a name the annotations wrote short is
-    /// written `Name` again when lexical lookup from `scope_class` finds no other `Name` first.
+    /// written `Name` again when it is declared in `scope_class` itself. RBS looks names up in
+    /// the class and at the top level only, not in the outer namespaces of a compact
+    /// `class A::B`, so a name from `A` keeps its full name.
     pub(crate) fn relative_scoped_refs_in_type(&self, scope_class: &str, ty: &Type) -> Type {
         let short_names = self.scoped_annotation_names(scope_class);
         if short_names.is_empty() {
@@ -9076,11 +9108,7 @@ impl TypeRegistry {
                 return None;
             }
             let (outer, tail) = name.rsplit_once("::")?;
-            let encloses = scope_class == outer
-                || scope_class
-                    .strip_prefix(outer)
-                    .is_some_and(|rest| rest.starts_with("::"));
-            if !encloses {
+            if scope_class != outer {
                 return None;
             }
             let found = self.resolve_scoped_class_ref_borrow(scope_class, tail);
