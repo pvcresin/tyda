@@ -9722,6 +9722,46 @@ impl<'a> InferenceEngine<'a> {
                 });
                 statements_require || rescue_requires || else_requires || ensure_requires
             }
+            // A yield in the block passed to `super` yields to this method's block.
+            Node::SuperNode { .. } | Node::ForwardingSuperNode { .. } => {
+                let (arguments, block) = match node {
+                    Node::SuperNode { .. } => {
+                        let super_node = node.as_super_node().expect("must be SuperNode");
+                        (super_node.arguments(), super_node.block())
+                    }
+                    _ => {
+                        let super_node = node
+                            .as_forwarding_super_node()
+                            .expect("must be ForwardingSuperNode");
+                        (None, super_node.block().map(|block| block.as_node()))
+                    }
+                };
+                let mut requires_block = false;
+                for argument in arguments.iter().flat_map(|args| args.arguments().iter()) {
+                    requires_block |= Self::node_yield_requires_block(
+                        &argument,
+                        block_param_name,
+                        guarded_by_block_given,
+                        trust_block_given_guard,
+                        trust_block_param_guard,
+                        found_yield,
+                    );
+                }
+                if let Some(body) = block
+                    .and_then(|block| block.as_block_node())
+                    .and_then(|block| block.body())
+                {
+                    requires_block |= Self::node_yield_requires_block(
+                        &body,
+                        block_param_name,
+                        guarded_by_block_given,
+                        trust_block_given_guard,
+                        trust_block_param_guard,
+                        found_yield,
+                    );
+                }
+                requires_block
+            }
             Node::WhileNode { .. } => {
                 let while_node = node.as_while_node().expect("must be WhileNode");
                 let predicate = while_node.predicate();
@@ -21309,7 +21349,8 @@ impl<'a> InferenceEngine<'a> {
         }
         let end = end.min(source.len());
         let needle = name.as_bytes();
-        // A method name counts only as a call on `self`, not on another receiver or a symbol.
+        // A method name counts only as a call on `self`, not on another receiver, a symbol or
+        // a variable (`@methods`).
         let is_method_name = needle
             .first()
             .is_some_and(|first| first.is_ascii_lowercase() || *first == b'_');
@@ -21329,7 +21370,7 @@ impl<'a> InferenceEngine<'a> {
                             Some(b'.') => {
                                 absolute >= 5 && &source[absolute - 5..absolute] == b"self."
                             }
-                            Some(b':') => false,
+                            Some(b':' | b'@' | b'$') => false,
                             _ => true,
                         })
             })
@@ -22721,7 +22762,8 @@ impl<'a> InferenceEngine<'a> {
             && Type::splat_elements(inner, &mut |ty| self.splat_to_a(ty)).is_none()
         {
             *open_splat = u16::try_from(positional_types.len()).ok();
-            positional_types.push(Type::SplatRef(Box::new(inner.clone())));
+            // A `SplatRef` holds the list of splatted parts, so the return is one part.
+            positional_types.push(Type::SplatRef(Box::new(Type::Tuple(vec![inner.clone()]))));
             return;
         }
         match self.splat_elements(inner) {
@@ -51417,6 +51459,10 @@ impl<'a> InferenceEngine<'a> {
                 // return covering the others is known. A nil-only difference keeps the earlier one.
                 match &mut unknown_arg_return {
                     None => unknown_arg_return = Some((overload.owner_class.clone(), ret)),
+                    // A `nil`-only overload differs from the others only by `nil`.
+                    Some((owner, seen)) if *owner == overload.owner_class && ret == Type::Nil => {
+                        *seen = seen.clone().union_with(Type::Nil);
+                    }
                     Some((owner, seen)) if *owner == overload.owner_class => {
                         let seen_value = Self::remove_nil(seen);
                         let ret_value = Self::remove_nil(&ret);
@@ -51432,10 +51478,10 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
-        if skipped_required_block_match {
-            Some(Type::Untyped)
-        } else {
-            unknown_arg_return.map(|(_, ret)| ret)
+        // A call without a block never takes an overload that requires one.
+        match unknown_arg_return {
+            Some((_, ret)) => Some(ret),
+            None => skipped_required_block_match.then_some(Type::Untyped),
         }
     }
 
@@ -68700,6 +68746,24 @@ impl<'a> InferenceEngine<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn method_name_in_source_counts_only_as_a_self_call() {
+        let found = |source: &str| {
+            InferenceEngine::source_slice_may_contain_constant_name(
+                source.as_bytes(),
+                0,
+                source.len(),
+                "methods",
+            )
+        };
+        assert!(found("methods.size"));
+        assert!(found("self.methods"));
+        assert!(!found("@methods[name]"));
+        assert!(!found("$methods"));
+        assert!(!found("obj.methods"));
+        assert!(!found(":methods"));
+    }
 
     #[test]
     fn primitive_flow_overlap_preserves_ambiguous_values() {

@@ -1029,3 +1029,36 @@ class IndifferentHash < Hash[untyped, untyped]
   def transform_values!: -> IndifferentHash
 end
 ```
+
+## A guarded yield in a super block keeps the block optional
+
+### update
+
+```ruby
+class Fetcher
+  def request(uri)
+    yield uri if block_given?
+    uri
+  end
+end
+
+class LoggingFetcher < Fetcher
+  def request(uri)
+    super do |req|
+      yield req if block_given?
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Fetcher
+  def request: [U] (U uri) ?{ (U) -> untyped } -> U
+end
+
+class LoggingFetcher < Fetcher
+  def request: (untyped uri) ?{ (untyped) -> untyped } -> untyped
+end
+```

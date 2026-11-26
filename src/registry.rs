@@ -5705,10 +5705,6 @@ impl TypeRegistry {
     /// source return that holds a parameter, or an RBS method with overloads, type parameters,
     /// or a block. A method not found is not known to.
     fn call_result_depends_on_arguments(&self, receiver: &Type, method_name: Sym) -> bool {
-        // Inference refines a generic receiver's type arguments from the arguments (`set + other`).
-        if matches!(receiver, Type::Generic { .. }) {
-            return true;
-        }
         let Some(class_name) = Self::type_to_class_name(receiver) else {
             return false;
         };
@@ -5719,9 +5715,22 @@ impl TypeRegistry {
                 self.lookup_method_def(&owner, &method_name, owner_singleton)
             })
         else {
-            return false;
+            // A generic receiver's class that is not loaded yet may still have a method that
+            // takes its type arguments.
+            return matches!(receiver, Type::Generic { .. })
+                && self.class_data_for(&class_name).is_none();
         };
-        !method.extra_overloads.is_empty()
+        // Inference refines a generic receiver's type arguments from arguments that take
+        // them (`set + other`).
+        let refines_type_arguments = matches!(receiver, Type::Generic { .. })
+            && method.rbs_method_types.iter().any(|method_type| {
+                method_type
+                    .function_type
+                    .param_types()
+                    .any(rbs_ir::RbsType::mentions_variable)
+            });
+        refines_type_arguments
+            || !method.extra_overloads.is_empty()
             || method.rbs_method_types.len() > 1
             || method.rbs_method_types.iter().any(|method_type| {
                 !method_type.type_params.is_empty() || method_type.block.is_some()
@@ -12099,9 +12108,14 @@ impl TypeRegistry {
                             if !visiting.insert(key.clone()) {
                                 return None;
                             }
+                            // `self` in the return is the receiver (`dup`, `to_sym`).
                             let resolved = self
                                 .lookup_argless_receiver_return(&receiver_class, method_name, false)
                                 .map(|return_type| {
+                                    let return_type = Self::substitute_self_type(
+                                        &return_type,
+                                        &resolved_receiver,
+                                    );
                                     self.resolve_call_site_type_from_caller_context(
                                         call_site,
                                         &return_type,
@@ -12682,10 +12696,11 @@ impl TypeRegistry {
                 if let Some(index) = open_splat.map(usize::from)
                     && let Some(Type::SplatRef(parts)) = call_site.arg_types.get(index)
                     && index < resolved_arg_types.len()
-                    && let Type::Tuple(elems) =
+                    && let Type::Tuple(resolved_parts) =
                         self.resolve_call_site_type_from_caller_context(call_site, parts, visiting)
+                    && let [Type::Tuple(elems)] = resolved_parts.as_slice()
                 {
-                    resolved_arg_types.splice(index..=index, elems);
+                    resolved_arg_types.splice(index..=index, elems.iter().cloned());
                     open_splat = None;
                 }
                 Self::merge_resolved_positional_arg_types(

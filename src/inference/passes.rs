@@ -1016,13 +1016,14 @@ impl<'a> InferenceEngine<'a> {
         // An open splat of a value known only later spreads once the value is a tuple.
         if let Some(index) = call_site.open_splat.map(usize::from)
             && let Some(Type::SplatRef(parts)) = call_site.arg_types.get(index)
-            && !matches!(parts.as_ref(), Type::Tuple(_))
+            && let Type::Tuple(splatted) = parts.as_ref()
+            && let [part] = splatted.as_slice()
         {
             let mut visiting = FxHashSet::default();
             if let Type::Tuple(elems) = Self::resolve_general_method_refs(
                 &self.registry,
                 context_class,
-                parts,
+                part,
                 &mut visiting,
             ) {
                 resolved.arg_types.splice(index..=index, elems);

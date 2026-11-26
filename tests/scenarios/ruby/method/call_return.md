@@ -925,3 +925,34 @@ class Server < Socket
   def accept_nonblock: -> 1
 end
 ```
+
+## An unknown argument skips overloads that need a block or only take nil
+
+### update
+
+```ruby
+class GoModule
+  def initialize(name)
+    @name = name
+  end
+
+  def major_match
+    /v(\d+)$/.match(@name)
+  end
+
+  def path_valid?(major)
+    m = /v(\d+)$/.match(@name)
+    !m.nil? && m[1].to_i == major
+  end
+end
+```
+
+### result
+
+```rbs
+class GoModule
+  def initialize: (untyped name) -> void
+  def major_match: -> MatchData?
+  def path_valid?: (untyped major) -> bool
+end
+```
