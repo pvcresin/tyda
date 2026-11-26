@@ -8,7 +8,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::project::RubyVersion;
 use crate::rbs::bounded_file_cache::{BoundedFileCache, DEFAULT_FILE_CACHE_CAP};
 use crate::rbs::import::{
-    RawTypeAlias, load_rbs_signature_with_dependency_aliases, signature_type_aliases,
+    RawTypeAlias, load_rbs_signature_with_dependency_aliases, qualify_relative_class_names,
+    signature_type_aliases,
 };
 use crate::registry::{
     ConstantCompletionCandidate, ConstantCompletionKind, RegistryDeepBytes, TypeRegistry,
@@ -224,8 +225,11 @@ impl LazyRbsLoader {
         Arc::clone(slot.get_or_init(|| {
             let mut registry = TypeRegistry::new();
             if let Ok(content) = std::fs::read_to_string(path)
-                && let Ok(sig) = rbs_sys::parse_signature(&content)
+                && let Ok(mut sig) = rbs_sys::parse_signature(&content)
             {
+                qualify_relative_class_names(&mut sig, &|name| {
+                    self.class_to_files.contains_key(name)
+                });
                 let mut visited = HashSet::from([path.to_path_buf()]);
                 let mut dependencies = Vec::new();
                 self.collect_alias_dependencies(
@@ -582,6 +586,24 @@ impl LazyRbsLoader {
     pub fn drop_file_cache(&self) {
         let mut cache = self.file_cache.lock().expect("stdlib file cache poisoned");
         cache.clear();
+    }
+
+    /// Each class whose RBS this loader has read, with its number of type parameters. A
+    /// workspace registry keeps only source facts, so rendering takes library names from here.
+    pub fn loaded_class_type_param_counts(&self) -> Vec<(String, usize)> {
+        let mut counts = Vec::new();
+        for shapes in [&self.shared_shapes, &self.shared_features] {
+            let shapes = shapes.lock().expect("stdlib shared shapes poisoned");
+            for slot in shapes.values() {
+                let Some(Some(shape)) = slot.get() else {
+                    continue;
+                };
+                for (name, data) in shape.registry.iter_class_data() {
+                    counts.push((name.to_string(), data.cold().class_type_params.len()));
+                }
+            }
+        }
+        counts
     }
 
     /// Deep byte attribution of both lazy caches plus the class index, for

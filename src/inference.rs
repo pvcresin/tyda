@@ -233,8 +233,9 @@ enum NarrowSubject {
     Local(String),
     Ivar(String),
     SelfMethod(String),
-    /// A constant index read with a literal key (`ENV["TOKEN"]`), keyed by its source.
-    ConstIndex(String),
+    /// A read keyed by its source: a constant index with a literal key (`ENV["TOKEN"]`), or an
+    /// attribute reader on a local (`uri.host`).
+    SourceRead(String),
     /// A hash index read on a local or `@ivar` with a static key (`opts[:name]`).
     HashKey(String, Type),
 }
@@ -361,6 +362,26 @@ fn const_index_fact_key(node: &Node<'_>) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(node.location().as_slice()).to_string())
+}
+
+/// `local.reader`: a call with no arguments or block on a local, keyed by its source.
+fn local_reader_fact_key(node: &Node<'_>) -> Option<String> {
+    let call = node.as_call_node()?;
+    if call.arguments().is_some() || call.block().is_some() || call.is_safe_navigation() {
+        return None;
+    }
+    let receiver = call.receiver()?.as_local_variable_read_node()?;
+    Some(format!(
+        "{}.{}",
+        String::from_utf8_lossy(receiver.name().as_slice()),
+        String::from_utf8_lossy(call.name().as_slice())
+    ))
+}
+
+/// Whether some fact is keyed by a reader on the local `name` (`name.reader`).
+fn has_local_reader_fact(name: &[u8], fact_keys: &HashMap<String, Type>) -> bool {
+    let prefix = format!("{}.", String::from_utf8_lossy(name));
+    fact_keys.keys().any(|key| key.starts_with(&prefix))
 }
 
 /// Any other call on a constant that holds index facts may change what its index reads return.
@@ -557,6 +578,14 @@ impl<'pr> ruby_prism::Visit<'pr> for LoopExitScan {
 }
 
 impl<'pr> ruby_prism::Visit<'pr> for SelfFactInvalidatorScan<'_, '_> {
+    fn visit_local_variable_write_node(&mut self, node: &ruby_prism::LocalVariableWriteNode<'pr>) {
+        if has_local_reader_fact(node.name().as_slice(), self.fact_keys) {
+            self.effect = SelfFactEffect::any();
+            return;
+        }
+        ruby_prism::visit_local_variable_write_node(self, node);
+    }
+
     fn visit_call_node(&mut self, node: &ruby_prism::CallNode<'pr>) {
         if self.effect.is_any() {
             return;
@@ -2288,7 +2317,7 @@ impl Scope {
             NarrowSubject::Local(name) => self.narrow_correlated_local(name, ty),
             NarrowSubject::Ivar(name)
             | NarrowSubject::SelfMethod(name)
-            | NarrowSubject::ConstIndex(name) => {
+            | NarrowSubject::SourceRead(name) => {
                 self.set_self_fact(name, ty);
             }
             NarrowSubject::HashKey(receiver, key) => {
@@ -3911,6 +3940,68 @@ impl<'a> InferenceEngine<'a> {
         None
     }
 
+    /// `Point = Struct.new(:x)` / `Data.define` defines the class `Point`. Returns false for
+    /// any other value.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_struct_class_constant(
+        &mut self,
+        class_name: &str,
+        const_name: &str,
+        value: &Node<'_>,
+        loc: SourceLocation,
+        parse_result: &ParseResult<'_>,
+        comments: &[RbsComment],
+    ) -> bool {
+        let generate_writer = if Self::is_struct_new_call(value, parse_result) {
+            true
+        } else if self.supports_data_define() && Self::is_data_define_call(value, parse_result) {
+            false
+        } else {
+            return false;
+        };
+        let full_name = if class_name == "Object" {
+            const_name.to_string()
+        } else {
+            crate::sym::join_scope(class_name, const_name)
+        };
+        let call = value.as_call_node().expect("must be CallNode");
+        self.collect_struct_new_members(&full_name, &call, parse_result, comments, generate_writer);
+        self.registry.record_source_definition(&full_name, loc);
+        if let Some(ref fp) = self.file_path {
+            self.registry.set_file_path(&full_name, fp);
+        }
+        let ty = Type::Singleton(Sym::new(&full_name));
+        if class_name == "Object" {
+            self.constants.insert(full_name, ty);
+        } else {
+            self.insert_class_body_constant(class_name, const_name, ty);
+        }
+        true
+    }
+
+    /// `Point ||= Struct.new(:x)` defines the class like `Point = Struct.new(:x)`.
+    fn collect_struct_or_write_constant(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        parse_result: &ParseResult<'_>,
+        comments: &[RbsComment],
+    ) -> bool {
+        let Some(write_node) = node.as_constant_or_write_node() else {
+            return false;
+        };
+        let const_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
+        let loc = offset_to_location(parse_result.source(), write_node.location().start_offset());
+        self.collect_struct_class_constant(
+            class_name,
+            &const_name,
+            &write_node.value(),
+            loc,
+            parse_result,
+            comments,
+        )
+    }
+
     fn insert_class_body_constant(&mut self, class_name: &str, const_name: &str, ty: Type) {
         self.constants
             .insert(crate::sym::join_scope(class_name, const_name), ty.clone());
@@ -4122,6 +4213,11 @@ impl<'a> InferenceEngine<'a> {
                 (owner.to_string(), const_name.to_string())
             })
             .unwrap_or_else(|| (class_name.to_string(), normalized.to_string()));
+        // `Holder = lookup(...)` then `Holder::Item = 1`: the owner is an object, not a
+        // namespace, so there is nothing static to declare.
+        if !absolute && self.constant_path_owner_is_value(class_name, &owner) {
+            return;
+        }
         let owner = self.resolve_constant_assignment_owner(class_name, &owner, absolute);
         let full_name = if owner == "Object" {
             const_name.clone()
@@ -4140,6 +4236,33 @@ impl<'a> InferenceEngine<'a> {
             self.file_path.as_deref(),
             alias,
         );
+    }
+
+    /// Whether `owner` or one of its outer names is a constant that holds a value rather than
+    /// a class or module (`Holder::Item` under `Holder = lookup(...)`).
+    fn constant_path_owner_is_value(&mut self, class_name: &str, owner: &str) -> bool {
+        let mut end = 0;
+        while let Some(offset) = owner[end..].find("::") {
+            end += offset;
+            if self.constant_holds_value(class_name, &owner[..end]) {
+                return true;
+            }
+            end += 2;
+        }
+        self.constant_holds_value(class_name, owner)
+    }
+
+    fn constant_holds_value(&mut self, class_name: &str, name: &str) -> bool {
+        for candidate in Self::scoped_constant_candidates(name, class_name) {
+            self.ensure_class_available(&candidate);
+            if Self::is_real_class_data(&self.registry, &candidate) {
+                return false;
+            }
+            if let Some(ty) = self.constants.get(candidate.as_str()) {
+                return !matches!(ty, Type::Singleton(_));
+            }
+        }
+        false
     }
 
     fn resolve_constant_assignment_owner(
@@ -14595,47 +14718,16 @@ impl<'a> InferenceEngine<'a> {
                     .as_constant_write_node()
                     .expect("must be ConstantWriteNode");
                 let const_name = String::from_utf8_lossy(write_node.name().as_slice()).to_string();
-                if Self::is_struct_new_call(&write_node.value(), parse_result) {
-                    let call = write_node.value().as_call_node().expect("must be CallNode");
-                    self.collect_struct_new_members(
-                        &const_name,
-                        &call,
-                        parse_result,
-                        comments,
-                        true,
-                    );
-                    let loc = offset_to_location(
-                        parse_result.source(),
-                        write_node.location().start_offset(),
-                    );
-                    self.registry.record_source_definition(&const_name, loc);
-                    if let Some(ref fp) = self.file_path {
-                        self.registry.set_file_path(&const_name, fp);
-                    }
-                    self.constants
-                        .insert(const_name.clone(), Type::Singleton(Sym::new(const_name)));
-                } else if self.supports_data_define()
-                    && Self::is_data_define_call(&write_node.value(), parse_result)
-                {
-                    let call = write_node.value().as_call_node().expect("must be CallNode");
-                    self.collect_struct_new_members(
-                        &const_name,
-                        &call,
-                        parse_result,
-                        comments,
-                        false,
-                    );
-                    let loc = offset_to_location(
-                        parse_result.source(),
-                        write_node.location().start_offset(),
-                    );
-                    self.registry.record_source_definition(&const_name, loc);
-                    if let Some(ref fp) = self.file_path {
-                        self.registry.set_file_path(&const_name, fp);
-                    }
-                    self.constants
-                        .insert(const_name.clone(), Type::Singleton(Sym::new(const_name)));
-                } else if self.collect_dynamic_namespace_constant(
+                let loc =
+                    offset_to_location(parse_result.source(), write_node.location().start_offset());
+                if self.collect_struct_class_constant(
+                    "Object",
+                    &const_name,
+                    &write_node.value(),
+                    loc,
+                    parse_result,
+                    comments,
+                ) || self.collect_dynamic_namespace_constant(
                     "Object",
                     &const_name,
                     &write_node.value(),
@@ -14681,6 +14773,13 @@ impl<'a> InferenceEngine<'a> {
                     );
                 }
             }
+            Node::ConstantOrWriteNode { .. }
+                if self.collect_struct_or_write_constant(
+                    "Object",
+                    node,
+                    parse_result,
+                    comments,
+                ) => {}
             Node::ConstantOrWriteNode { .. }
             | Node::ConstantAndWriteNode { .. }
             | Node::ConstantOperatorWriteNode { .. }
@@ -17059,48 +17158,14 @@ impl<'a> InferenceEngine<'a> {
                             const_loc,
                         );
 
-                        if Self::is_struct_new_call(&write_node.value(), parse_result) {
-                            let full_name = crate::sym::join_scope(class_name, &const_name);
-                            let call = write_node.value().as_call_node().expect("must be CallNode");
-                            self.collect_struct_new_members(
-                                &full_name,
-                                &call,
-                                parse_result,
-                                comments,
-                                true,
-                            );
-                            self.registry
-                                .record_source_definition(&full_name, const_loc);
-                            if let Some(ref fp) = self.file_path {
-                                self.registry.set_file_path(&full_name, fp);
-                            }
-                            self.insert_class_body_constant(
-                                class_name,
-                                &const_name,
-                                Type::Singleton(Sym::new(full_name)),
-                            );
-                        } else if self.supports_data_define()
-                            && Self::is_data_define_call(&write_node.value(), parse_result)
-                        {
-                            let full_name = crate::sym::join_scope(class_name, &const_name);
-                            let call = write_node.value().as_call_node().expect("must be CallNode");
-                            self.collect_struct_new_members(
-                                &full_name,
-                                &call,
-                                parse_result,
-                                comments,
-                                false,
-                            );
-                            self.registry
-                                .record_source_definition(&full_name, const_loc);
-                            if let Some(ref fp) = self.file_path {
-                                self.registry.set_file_path(&full_name, fp);
-                            }
-                            self.insert_class_body_constant(
-                                class_name,
-                                &const_name,
-                                Type::Singleton(Sym::new(full_name)),
-                            );
+                        if self.collect_struct_class_constant(
+                            class_name,
+                            &const_name,
+                            &write_node.value(),
+                            const_loc,
+                            parse_result,
+                            comments,
+                        ) {
                         } else if self.is_type_member_call(&write_node.value(), parse_result) {
                             self.registry
                                 .add_class_type_param(class_name, const_name.clone());
@@ -17199,6 +17264,16 @@ impl<'a> InferenceEngine<'a> {
                                 method_context_singleton_dispatch: None,
                             });
                         }
+                    }
+                    Node::ConstantOrWriteNode { .. }
+                        if self.collect_struct_or_write_constant(
+                            class_name,
+                            &node,
+                            parse_result,
+                            comments,
+                        ) =>
+                    {
+                        pending_sigs.clear();
                     }
                     Node::ConstantOrWriteNode { .. }
                     | Node::ConstantAndWriteNode { .. }
@@ -28422,7 +28497,7 @@ impl<'a> InferenceEngine<'a> {
                     .expect("must be CallOrWriteNode");
                 let read_name =
                     String::from_utf8_lossy(write_node.read_name().as_slice()).to_string();
-                self.infer_call_write_result(
+                let result_type = self.infer_call_write_result(
                     class_name,
                     write_node.receiver(),
                     &read_name,
@@ -28433,6 +28508,26 @@ impl<'a> InferenceEngine<'a> {
                     parse_result,
                     scope,
                 );
+                // `uri.query ||= ""` leaves the reader truthy until something changes it.
+                if !write_node.is_safe_navigation()
+                    && let Some(receiver) = write_node.receiver()
+                    && let Some(local) = receiver.as_local_variable_read_node()
+                    && let Some(truthy) = Self::truthy_only(&result_type)
+                    && self.is_attribute_reader_call(
+                        class_name,
+                        &receiver,
+                        &read_name,
+                        parse_result,
+                        scope,
+                    )
+                {
+                    let key = format!(
+                        "{}.{}",
+                        String::from_utf8_lossy(local.name().as_slice()),
+                        read_name
+                    );
+                    scope.set_self_fact(&key, truthy);
+                }
             }
             Node::CallAndWriteNode { .. } => {
                 let write_node = node
@@ -31058,7 +31153,7 @@ impl<'a> InferenceEngine<'a> {
             return Some(inferred);
         }
         if !scope.self_facts.is_empty()
-            && let Some(key) = const_index_fact_key(node)
+            && let Some(key) = const_index_fact_key(node).or_else(|| local_reader_fact_key(node))
             && let Some(fact) = scope.self_facts.get(&key)
         {
             return Some(fact.clone());
@@ -61450,10 +61545,20 @@ impl<'a> InferenceEngine<'a> {
                     });
                 }
 
-                if let Some(key) = const_index_fact_key(predicate) {
+                if let Some(key) = const_index_fact_key(predicate).or_else(|| {
+                    local_reader_fact_key(predicate).filter(|_| {
+                        self.is_attribute_reader_call(
+                            class_name,
+                            &receiver,
+                            &method,
+                            parse_result,
+                            scope,
+                        )
+                    })
+                }) {
                     let current = self.infer_node_type(class_name, predicate, parse_result, scope);
                     return Some(CondNarrowing {
-                        subject: NarrowSubject::ConstIndex(key),
+                        subject: NarrowSubject::SourceRead(key),
                         then_ty: Self::truthy_only(&current),
                         else_ty: Self::falsy_only(&current),
                     });
@@ -65396,6 +65501,19 @@ impl<'a> InferenceEngine<'a> {
             {
                 SelfFactEffect::any()
             }
+            // Another call on the local may change what its readers return.
+            Some(Node::LocalVariableReadNode { .. })
+                if call
+                    .receiver()
+                    .and_then(|receiver| receiver.as_local_variable_read_node())
+                    .is_some_and(|local| {
+                        has_local_reader_fact(local.name().as_slice(), fact_keys)
+                    })
+                    && !local_reader_fact_key(&call.as_node())
+                        .is_some_and(|key| fact_keys.contains_key(&key)) =>
+            {
+                SelfFactEffect::any()
+            }
             Some(_) => SelfFactEffect::default(),
         };
         if let Some(block) = call.block() {
@@ -65515,6 +65633,40 @@ impl<'a> InferenceEngine<'a> {
             .is_pure_ivar_reader_method(class_name, name, false)
     }
 
+    /// Whether `local.name` calls an attribute reader on every class the local may hold, so
+    /// it reads the same value until something changes the local's object.
+    fn is_attribute_reader_call(
+        &mut self,
+        class_name: &str,
+        receiver: &Node<'_>,
+        method: &str,
+        parse_result: &ParseResult<'_>,
+        scope: &Scope,
+    ) -> bool {
+        let observations = self.suspend_source_observations();
+        let receiver_type = self.infer_node_type(class_name, receiver, parse_result, scope);
+        self.resume_source_observations(observations);
+        let members = match &receiver_type {
+            Type::Union(parts) => parts.clone(),
+            other => vec![other.clone()],
+        };
+        let mut classes = Vec::new();
+        for member in &members {
+            match member {
+                Type::Nil => {}
+                Type::Class(name) => classes.push(name.to_string()),
+                Type::Generic { base, .. } => classes.push(base.to_string()),
+                _ => return false,
+            }
+        }
+        !classes.is_empty()
+            && classes.iter().all(|name| {
+                self.ensure_class_available(name);
+                self.registry
+                    .is_pure_ivar_reader_method(name, method, false)
+            })
+    }
+
     /// A no-argument self call reads the same value until a statement invalidates self facts.
     fn self_call_is_narrowable(
         &self,
@@ -65613,7 +65765,7 @@ impl<'a> InferenceEngine<'a> {
                     sig.return_type
                 })
             }),
-            NarrowSubject::ConstIndex(key) => scope.self_facts.get(key).cloned(),
+            NarrowSubject::SourceRead(key) => scope.self_facts.get(key).cloned(),
             NarrowSubject::HashKey(..) => None,
         }
     }
@@ -66065,9 +66217,26 @@ impl<'a> InferenceEngine<'a> {
                         .iter()
                         .all(|byte| byte.is_ascii_whitespace())
             });
-            if follows && text.starts_with("#  ") {
+            // `# @rbs!` blocks continue with indented lines, `#: type` aliases with `#|` lines.
+            let continuation = current.as_ref().and_then(|(lines, _)| {
+                let prefix = if lines.first().is_some_and(|line| line.starts_with("type ")) {
+                    "#|"
+                } else {
+                    "#  "
+                };
+                text.strip_prefix(prefix)
+            });
+            if follows && let Some(rest) = continuation {
                 if let Some((lines, previous_end)) = current.as_mut() {
-                    lines.push(text[1..].to_string());
+                    if lines.first().is_some_and(|line| line.starts_with("type ")) {
+                        let rest = rest.trim();
+                        if !lines[0].ends_with('(') && !rest.starts_with(')') {
+                            lines[0].push(' ');
+                        }
+                        lines[0].push_str(rest);
+                    } else {
+                        lines.push(text[1..].to_string());
+                    }
                     *previous_end = comment_end;
                 }
                 continue;
@@ -66079,6 +66248,8 @@ impl<'a> InferenceEngine<'a> {
             }
             if text.trim_end() == "# @rbs!" {
                 current = Some((Vec::new(), comment_end));
+            } else if let Some(alias) = Self::inline_type_alias_head(&text) {
+                current = Some((vec![alias.to_string()], comment_end));
             }
         }
         if let Some((lines, _)) = current
@@ -66107,6 +66278,16 @@ impl<'a> InferenceEngine<'a> {
             self.registry.merge_rbs_registry(&embedded);
             self.registry.add_embedded_rbs(class_name, text);
         }
+    }
+
+    /// `type name = ...` from `# @rbs type name = ...` or `#: type name = ...`.
+    fn inline_type_alias_head(comment: &str) -> Option<&str> {
+        let body = comment.strip_prefix('#')?;
+        let body = body
+            .strip_prefix(':')
+            .or_else(|| body.trim_start().strip_prefix("@rbs"))?
+            .trim();
+        body.starts_with("type ").then_some(body)
     }
 
     fn add_class_type_params_from_comment_body(&mut self, class_name: &str, body: &str) {

@@ -2389,6 +2389,150 @@ where
     scopes.into_iter().find(|candidate| has_alias(candidate))
 }
 
+/// Writes the class names in a signature's members by their full names. A member type of
+/// `module URI` writes `FTP` for `URI::FTP`, which reads as `::FTP` once the type leaves the
+/// declaration. `is_known` tells whether a full name is declared somewhere; names declared in
+/// `sig` itself count too, and names that nothing declares stay as written.
+pub(crate) fn qualify_relative_class_names(
+    sig: &mut rbs_sys::Signature,
+    is_known: &dyn Fn(&str) -> bool,
+) {
+    let declared: HashSet<String> = sig
+        .declarations
+        .iter()
+        .filter_map(|decl| match decl {
+            rbs_sys::Declaration::Class { name, .. }
+            | rbs_sys::Declaration::Module { name, .. } => Some(name.clone()),
+            rbs_sys::Declaration::ClassAlias { new_name, .. }
+            | rbs_sys::Declaration::ModuleAlias { new_name, .. } => Some(new_name.clone()),
+            _ => None,
+        })
+        .collect();
+    let known = |name: &str| declared.contains(name) || is_known(name);
+    for decl in &mut sig.declarations {
+        match decl {
+            rbs_sys::Declaration::Class {
+                name,
+                methods,
+                variables,
+                ..
+            }
+            | rbs_sys::Declaration::Module {
+                name,
+                methods,
+                variables,
+                ..
+            } => {
+                let scope = name.as_str();
+                for method in methods {
+                    for method_type in &mut method.method_types {
+                        qualify_method_type(method_type, scope, &known);
+                    }
+                }
+                for variable in variables {
+                    qualify_rbs_type(&mut variable.type_, scope, &known);
+                }
+            }
+            rbs_sys::Declaration::Constant { name, type_ } => {
+                let scope = name.rsplit_once("::").map_or("", |(owner, _)| owner);
+                qualify_rbs_type(type_, scope, &known);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn qualify_method_type(
+    method_type: &mut rbs_sys::MethodType,
+    scope: &str,
+    known: &dyn Fn(&str) -> bool,
+) {
+    qualify_function_type(&mut method_type.function_type, scope, known);
+    if let Some(block) = &mut method_type.block {
+        qualify_function_type(&mut block.function_type, scope, known);
+        if let Some(self_type) = &mut block.self_type {
+            qualify_rbs_type(self_type, scope, known);
+        }
+    }
+    if let Some(self_type) = &mut method_type.self_type {
+        qualify_rbs_type(self_type, scope, known);
+    }
+    for (_, bound) in method_type
+        .type_param_bounds
+        .iter_mut()
+        .chain(method_type.type_param_lower_bounds.iter_mut())
+    {
+        qualify_rbs_type(bound, scope, known);
+    }
+}
+
+fn qualify_function_type(
+    function_type: &mut rbs_sys::FunctionType,
+    scope: &str,
+    known: &dyn Fn(&str) -> bool,
+) {
+    let positionals = function_type
+        .required_positionals
+        .iter_mut()
+        .chain(function_type.optional_positionals.iter_mut())
+        .chain(function_type.rest_positionals.iter_mut())
+        .chain(function_type.trailing_positionals.iter_mut());
+    let keywords = function_type
+        .required_keywords
+        .iter_mut()
+        .chain(function_type.optional_keywords.iter_mut())
+        .map(|(_, param)| param)
+        .chain(function_type.rest_keywords.iter_mut());
+    for param in positionals.chain(keywords) {
+        qualify_rbs_type(&mut param.type_, scope, known);
+    }
+    qualify_rbs_type(&mut function_type.return_type, scope, known);
+}
+
+fn qualify_rbs_type(ty: &mut rbs_sys::RbsType, scope: &str, known: &dyn Fn(&str) -> bool) {
+    match ty {
+        rbs_sys::RbsType::Class(name, args) => {
+            qualify_class_name(name, scope, known);
+            for arg in args {
+                qualify_rbs_type(arg, scope, known);
+            }
+        }
+        rbs_sys::RbsType::Singleton(name) => qualify_class_name(name, scope, known),
+        rbs_sys::RbsType::Alias(_, args)
+        | rbs_sys::RbsType::Union(args)
+        | rbs_sys::RbsType::Intersection(args)
+        | rbs_sys::RbsType::Tuple(args) => {
+            for arg in args {
+                qualify_rbs_type(arg, scope, known);
+            }
+        }
+        rbs_sys::RbsType::Optional(inner) => qualify_rbs_type(inner, scope, known),
+        rbs_sys::RbsType::Record(fields) => {
+            for field in fields {
+                qualify_rbs_type(&mut field.type_, scope, known);
+            }
+        }
+        rbs_sys::RbsType::Proc(method_type) => qualify_method_type(method_type, scope, known),
+        _ => {}
+    }
+}
+
+/// RBS looks a relative name up from the innermost enclosing namespace outward.
+fn qualify_class_name(name: &mut String, scope: &str, known: &dyn Fn(&str) -> bool) {
+    if name.starts_with("::") || scope.is_empty() {
+        return;
+    }
+    let mut outer = scope;
+    while !outer.is_empty() {
+        let candidate = format!("{outer}::{name}");
+        if known(&candidate) {
+            *name = candidate;
+            return;
+        }
+        outer = outer.rsplit_once("::").map_or("", |(parent, _)| parent);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
