@@ -51581,9 +51581,24 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
-        // A call without a block never takes an overload that requires one.
+        // A call without a block never takes an overload that requires one. A fallback owner
+        // the receiver does not have (`Enumerable#find` for a model's `find`) does not decide.
         match unknown_arg_return {
-            Some((_, ret)) => Some(ret),
+            Some((owner, ret))
+                if !skipped_required_block_match
+                    || self
+                        .registry
+                        .resolve_method_call_owners(
+                            &receiver_class,
+                            method_name,
+                            matches!(receiver_type, Type::Singleton(_)),
+                        )
+                        .iter()
+                        .any(|(actual, _)| *actual == owner) =>
+            {
+                Some(ret)
+            }
+            Some(_) => Some(Type::Untyped),
             None => skipped_required_block_match.then_some(Type::Untyped),
         }
     }
