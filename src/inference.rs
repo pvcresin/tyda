@@ -21305,19 +21305,29 @@ impl<'a> InferenceEngine<'a> {
         }
         let end = end.min(source.len());
         let needle = name.as_bytes();
+        // A method name counts only as a call on `self`, not on another receiver or a symbol.
+        let is_method_name = needle
+            .first()
+            .is_some_and(|first| first.is_ascii_lowercase() || *first == b'_');
         source[start..end]
             .windows(needle.len())
             .enumerate()
             .any(|(idx, window)| {
                 let absolute = start + idx;
+                let prev = absolute.checked_sub(1).and_then(|prev| source.get(prev));
                 window == needle
-                    && absolute
-                        .checked_sub(1)
-                        .and_then(|prev| source.get(prev))
-                        .is_none_or(|prev| !Self::is_ruby_identifier_byte(*prev))
+                    && prev.is_none_or(|prev| !Self::is_ruby_identifier_byte(*prev))
                     && source
                         .get(absolute + needle.len())
                         .is_none_or(|next| !Self::is_ruby_identifier_byte(*next))
+                    && (!is_method_name
+                        || match prev {
+                            Some(b'.') => {
+                                absolute >= 5 && &source[absolute - 5..absolute] == b"self."
+                            }
+                            Some(b':') => false,
+                            _ => true,
+                        })
             })
     }
 
