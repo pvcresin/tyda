@@ -56148,11 +56148,16 @@ impl<'a> InferenceEngine<'a> {
         let forwarded_receiver = self.try_resolve_receiver_inline(class_name, &forwarded_receiver);
         let forwarded_receiver = self.resolve_receiver_method_refs(&forwarded_receiver);
         // A forwarded call takes this call's arguments without a block, so a method that no
-        // such call reaches (`items.filter { }`) is not a forward. An unknown receiver cannot
-        // show that.
-        let forwarded_class = self.type_to_class_name(&forwarded_receiver)?;
-        self.ensure_class_available(&forwarded_class);
-        {
+        // such call reaches (`items.filter { }`) is not a forward. A receiver still unknown
+        // cannot show that.
+        if matches!(
+            forwarded_receiver,
+            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) | Type::Untyped
+        ) {
+            return None;
+        }
+        if let Some(forwarded_class) = self.type_to_class_name(&forwarded_receiver) {
+            self.ensure_class_available(&forwarded_class);
             let arg_count = Self::call_node_positional_arg_count(call_node);
             let overloads = self.collect_owned_rbs_overloads(
                 &forwarded_class,
