@@ -17,6 +17,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   include IdentityCache
 
@@ -42,6 +45,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   include IdentityCache
 
@@ -71,6 +77,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class Order < ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   include IdentityCache
 
@@ -102,6 +114,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class Author < ActiveRecord::Base
+end
+
 class Post < ActiveRecord::Base
   include IdentityCache
 

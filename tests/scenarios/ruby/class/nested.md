@@ -15,6 +15,9 @@ end
 ### result
 
 ```rbs
+class Outer
+end
+
 class Outer::Inner
   def foo: -> 42
 end
@@ -35,6 +38,9 @@ end
 ### result
 
 ```rbs
+module Helpers
+end
+
 module Helpers::Inner
   def foo: -> 42
 end
@@ -85,6 +91,9 @@ end
 ### result
 
 ```rbs
+module Admin
+end
+
 class Admin::Action
   def role: -> Admin::Role
 end
@@ -117,6 +126,9 @@ class Logger
   def log: [M] (M msg) -> M
 end
 
+module Services
+end
+
 class Services::Worker
   def logger: -> Logger
 end
@@ -143,6 +155,12 @@ end
 ### result
 
 ```rbs
+module Platform
+end
+
+module Platform::Api
+end
+
 class Platform::Api::Client
   def config: -> Platform::Config
 end
@@ -169,11 +187,64 @@ def f = Foo::Bar::Baz::Qux.v
 ### result
 
 ```rbs
+class Foo::Bar
+end
+
 class Foo::Bar::Baz::Qux
   def self.v: -> 1
 end
 
 class Object < BasicObject
   def f: -> 1
+end
+```
+
+## Classes and namespaces without members are still declared
+
+### update
+
+```ruby
+module Fx
+  class Error < StandardError; end
+  class Env; end
+  class Builder
+    def build_env = Env.new
+  end
+  class ServerError < Error
+    def code = 500
+  end
+  module Logging
+    class Formatter
+      def x = 1
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+module Fx
+end
+
+class Fx::Builder
+  def build_env: -> Fx::Env
+end
+
+class Fx::Env
+end
+
+class Fx::Error < StandardError
+end
+
+module Fx::Logging
+end
+
+class Fx::Logging::Formatter
+  def x: -> 1
+end
+
+class Fx::ServerError < Fx::Error
+  def code: -> 500
 end
 ```

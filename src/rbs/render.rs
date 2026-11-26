@@ -271,7 +271,8 @@ fn write_class_header<W: Write>(
 }
 
 fn class_has_renderable_body(class: &ClassInfo, options: RenderOptions) -> bool {
-    !class.sorbet_modifier_comments.is_empty()
+    class.loc.is_some() && class.name != "Object"
+        || !class.sorbet_modifier_comments.is_empty()
         || !class.embedded_rbs.is_empty()
         || !class.mixins.is_empty()
         || !renderable_constants(class).is_empty()

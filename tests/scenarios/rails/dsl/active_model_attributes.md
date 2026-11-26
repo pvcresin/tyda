@@ -31,6 +31,21 @@ end
 ### result
 
 ```rbs
+module ActiveModel
+end
+
+module ActiveModel::Attributes
+end
+
+module ActiveModel::Attributes::ClassMethods
+end
+
+module ActiveModel::Validations
+end
+
+module ActiveModel::Validations::ClassMethods
+end
+
 class SignupForm
   include ActiveModel::Attributes
   include ActiveModel::Validations
@@ -69,6 +84,21 @@ end
 ### result
 
 ```rbs
+module ActiveModel
+end
+
+module ActiveModel::Attributes
+end
+
+module ActiveModel::Attributes::ClassMethods
+end
+
+module ActiveModel::Validations
+end
+
+module ActiveModel::Validations::ClassMethods
+end
+
 class SignupForm
   include ActiveModel::Attributes
 
@@ -99,6 +129,15 @@ end
 ### result
 
 ```rbs
+module ActiveModel
+end
+
+module ActiveModel::Attributes
+end
+
+module ActiveModel::Attributes::ClassMethods
+end
+
 class TagForm
   include ActiveModel::Attributes
 
@@ -129,6 +168,15 @@ end
 ### result
 
 ```rbs
+module ActiveModel
+end
+
+module ActiveModel::Attributes
+end
+
+module ActiveModel::Attributes::ClassMethods
+end
+
 class MetaForm
   include ActiveModel::Attributes
 

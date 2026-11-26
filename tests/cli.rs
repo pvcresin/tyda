@@ -6267,3 +6267,164 @@ fn known_issue_array_constant_from_another_file_is_a_class() {
         "known issue fixed; drop this check and assert the array return: {stdout}"
     );
 }
+
+#[test]
+fn known_issue_constant_of_a_superclass_in_a_later_file_keeps_its_short_name() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        concat!(
+            "module Ca\n",
+            "  class Mysql < Abstract\n",
+            "    def version = Version.new\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("b.rb"),
+        concat!(
+            "module Ca\n",
+            "  class Abstract\n",
+            "    class Version\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `Version` is `Ca::Abstract::Version`, found through the superclass. When
+    // the superclass is defined in a later file, the name stays short and RBS cannot resolve
+    // it from the compact `class Ca::Mysql` (seen with activerecord).
+    assert!(
+        stdout.contains("  def version: -> Version\n"),
+        "known issue fixed; drop this check and assert `version` returns `Ca::Abstract::Version`: {stdout}"
+    );
+}
+
+#[test]
+fn known_issue_constant_of_an_included_module_in_a_later_file_keeps_its_short_name() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        concat!(
+            "module Ad\n",
+            "  class Parser\n",
+            "    include Ad::Nodes\n",
+            "    def group = Group.new\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("b.rb"),
+        concat!(
+            "module Ad\n",
+            "  module Nodes\n",
+            "    class Group\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `Group` is `Ad::Nodes::Group`, found through the included module. When the
+    // module is defined in a later file, the name stays short (seen with actionpack).
+    assert!(
+        stdout.contains("  def group: -> Group\n"),
+        "known issue fixed; drop this check and assert `group` returns `Ad::Nodes::Group`: {stdout}"
+    );
+}
+
+#[test]
+fn known_issue_class_alias_constant_from_another_file_keeps_its_short_name() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        concat!(
+            "module Ar\n",
+            "  module Attrs\n",
+            "    class Attr\n",
+            "    end\n",
+            "  end\n",
+            "  Attr = Attrs::Attr\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("b.rb"),
+        concat!(
+            "module Ar\n",
+            "  module Nodes\n",
+            "    class Alias\n",
+            "      def build = Attr.new\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `Attr` is the alias `Ar::Attr` of `Ar::Attrs::Attr`. Read from another
+    // file, `Attr.new` returns the short name, which RBS cannot resolve (seen with arel).
+    assert!(
+        stdout.contains("  def build: -> Attr\n"),
+        "known issue fixed; drop this check and assert `build` returns `Ar::Attrs::Attr`: {stdout}"
+    );
+}
+
+#[test]
+fn known_issue_value_constant_from_a_later_file_is_a_class() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("a.rb"),
+        concat!(
+            "module Nr\n",
+            "  module Tracer\n",
+            "    UNKNOWN = Nr::UNKNOWN\n",
+            "    def self.metric(product = UNKNOWN) = product\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("b.rb"),
+        concat!("module Nr\n", "  UNKNOWN = \"Unknown\"\n", "end\n",),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `Nr::UNKNOWN` is a String. Defined in a later file, the alias is read as a
+    // class, so the default is `singleton(Nr::UNKNOWN)` (seen with newrelic_rpm).
+    assert!(
+        stdout.contains(
+            "  def self.metric: (?singleton(Nr::UNKNOWN) product) -> singleton(Nr::UNKNOWN)\n"
+        ),
+        "known issue fixed; drop this check and assert `metric` takes `?String`: {stdout}"
+    );
+}

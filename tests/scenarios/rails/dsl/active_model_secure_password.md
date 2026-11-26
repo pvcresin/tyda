@@ -80,6 +80,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class User < ApplicationRecord
   def password: -> String
   def password=: (String password) -> String
@@ -113,6 +119,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def recovery_password: -> String
   def recovery_password=: (String recovery_password) -> String

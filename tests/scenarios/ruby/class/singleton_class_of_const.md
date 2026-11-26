@@ -47,6 +47,9 @@ def f = A.deep
 ### result
 
 ```rbs
+class A
+end
+
 class Object < BasicObject
   def f: -> untyped
 end
@@ -70,6 +73,9 @@ def f = A::CONST
 ### result
 
 ```rbs
+class A
+end
+
 class Object < BasicObject
   def f: -> untyped
 end
@@ -280,6 +286,9 @@ end
 ### result
 
 ```rbs
+module Outer
+end
+
 class Outer::Foo
   def self.build: -> 1
 end

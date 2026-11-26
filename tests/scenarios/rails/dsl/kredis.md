@@ -21,6 +21,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def nickname: -> Kredis::Types::Scalar
   def visits: -> Kredis::Types::Scalar
@@ -48,6 +51,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def special: -> Kredis::Types::Flag
   def special?: -> bool

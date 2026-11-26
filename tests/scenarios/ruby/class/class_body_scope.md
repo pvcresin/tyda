@@ -200,6 +200,9 @@ class Object < BasicObject
   def read_constant_iterator_attribute: -> 0
 end
 
+module Optcarrot
+end
+
 class Optcarrot::Config
   DEFAULT_OPTIONS: Hash[:frames | :loglevel | :opt | :opt_ppu | :print_fps | :quiet | :sprite_limit | :stackprof | :stackprof_mode, untyped]
   OPTIONS: { optimization: { opt_ppu: { type: :opts, candidates: untyped, default: nil }, opt: { shortcut: ["--opt-ppu=all", "--opt-cpu=all"] } }, emulation: { sprite_limit: { type: :switch, default: false }, frames: { type: :int, default: 0, aliases: [:f, :frame] } }, profiling: { print_fps: { type: :switch, default: false }, stackprof_mode: { type: "MODE", default: nil }, stackprof: { shortcut: "--stackprof-mode=cpu" } }, misc: { loglevel: { type: :int, default: 1 }, quiet: { shortcut: "--loglevel=0", aliases: :q } } }
@@ -212,7 +215,6 @@ class Optcarrot::Config
   def loglevel: -> untyped
   def initialize: -> void
 end
-
 ```
 
 ## Skip iterator attributes after an unsupported side exit
@@ -233,6 +235,9 @@ def read_after_iterator_break = IteratorStopsOnBreak.new.never
 ### result
 
 ```rbs
+class IteratorStopsOnBreak
+end
+
 class Object < BasicObject
   def read_after_iterator_break: -> untyped
 end
@@ -331,9 +336,12 @@ end
 ### result
 
 ```rbs
-class Hash
+class Hash[unchecked out K, unchecked out V]
   def each: -> nil
   def each_value: -> nil
+end
+
+class IteratorWithOverriddenHashIterators
 end
 ```
 
@@ -358,6 +366,9 @@ def read_local_iterator_override = IteratorWithLocalEachOverride.new.declared
 ### result
 
 ```rbs
+class IteratorWithLocalEachOverride
+end
+
 class Object < BasicObject
   def read_local_iterator_override: -> untyped
 end
@@ -384,6 +395,9 @@ def read_iterator_visibility_in_case = IteratorVisibilityInCase.new.secret
 ### result
 
 ```rbs
+class IteratorVisibilityInCase
+end
+
 class Object < BasicObject
   def read_iterator_visibility_in_case: -> untyped
 end

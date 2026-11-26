@@ -23,86 +23,6 @@ module Worker
 end
 ```
 
-## Classes and namespaces without members are still declared
-
-### update
-
-```ruby
-module Fx
-  class Error < StandardError; end
-  class Env; end
-  class Builder
-    def build_env = Env.new
-  end
-  class ServerError < Error
-    def code = 500
-  end
-  module Logging
-    class Formatter
-      def x = 1
-    end
-  end
-end
-```
-
-### result
-
-```rbs
-module Fx
-end
-
-class Fx::Builder
-  def build_env: -> Fx::Env
-end
-
-class Fx::Env
-end
-
-class Fx::Error < StandardError
-end
-
-module Fx::Logging
-end
-
-class Fx::Logging::Formatter
-  def x: -> 1
-end
-
-class Fx::ServerError < Fx::Error
-  def code: -> 500
-end
-```
-
-## Superclass in a compact class declaration is fully qualified
-
-### update
-
-```ruby
-module Fx
-  class Error < StandardError
-    def a = 1
-  end
-  class ServerError < Error
-    def b = 1
-  end
-end
-```
-
-### result
-
-```rbs
-module Fx
-end
-
-class Fx::Error < StandardError
-  def a: -> 1
-end
-
-class Fx::ServerError < Fx::Error
-  def b: -> 1
-end
-```
-
 ## Core class name shadowed by a nested module
 
 ### update
@@ -442,61 +362,6 @@ class Px::Node
 end
 ```
 
-## Reopened generic core class keeps its type parameters
-
-### update
-
-```ruby
-class Struct
-  def pp_it = 1
-end
-class Hash
-  def pp_it = 2
-end
-```
-
-### result
-
-```rbs
-class Hash[unchecked out K, unchecked out V]
-  def pp_it: -> 2
-end
-
-class Struct[E]
-  def pp_it: -> 1
-end
-```
-
-## Nested module named like a core class is included by its full name
-
-### update
-
-```ruby
-module Xp
-  class Project
-    module Object
-      def uuid = 1
-    end
-    include Object
-  end
-end
-```
-
-### result
-
-```rbs
-module Xp
-end
-
-class Xp::Project
-  include Xp::Project::Object
-end
-
-module Xp::Project::Object
-  def uuid: -> 1
-end
-```
-
 ## Constant written through self in a block is not a top-level constant
 
 ### update
@@ -577,5 +442,196 @@ end
 class G
   def a: (untyped v) -> Set[untyped]?
   def c: (untyped v) -> Range[untyped]?
+end
+```
+
+## Class nested at the same indentation as its parent
+
+### update
+
+```ruby
+module Tw
+  class Account
+  class Call
+    class Ctx
+      def fetch = Inst.new
+    end
+    class Inst
+      def context = Ctx.new
+      def fetch = context.fetch
+    end
+  end
+  end
+end
+```
+
+### result
+
+```rbs
+module Tw
+end
+
+class Tw::Account
+end
+
+class Tw::Account::Call
+end
+
+class Tw::Account::Call::Ctx
+  def fetch: -> Tw::Account::Call::Inst
+end
+
+class Tw::Account::Call::Inst
+  def context: -> Tw::Account::Call::Ctx
+  def fetch: -> Tw::Account::Call::Inst
+end
+```
+
+## Class names from a stdlib signature are fully qualified
+
+### update
+
+```ruby
+class Fetcher
+  def uri(s) = URI.parse(s)
+end
+```
+
+### result
+
+```rbs
+class Fetcher
+  def uri: (untyped s) -> (URI::FTP | URI::File | URI::Generic | URI::HTTP | URI::HTTPS | URI::LDAP | URI::LDAPS | URI::MailTo | URI::WS | URI::WSS)
+end
+```
+
+## Short names in an inline signature are fully qualified
+
+### update
+
+```ruby
+module Pdf
+  class Reader
+    class Point
+    end
+    class Receiver
+      #: (Point) -> Point
+      def rotate(pt) = pt
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+module Pdf
+end
+
+class Pdf::Reader
+end
+
+class Pdf::Reader::Point
+end
+
+class Pdf::Reader::Receiver
+  def rotate: (Pdf::Reader::Point pt) -> Pdf::Reader::Point
+end
+```
+
+## Inline type alias is declared
+
+### update
+
+```ruby
+class Box
+  # @rbs type size = Integer | Float
+
+  #: () -> size
+  def s = 1
+end
+```
+
+### result
+
+```rbs
+class Box
+  type size = Integer | Float
+
+  def s: -> size
+end
+```
+
+## Struct new assigned with or-assign is a class
+
+### update
+
+```ruby
+module Mu
+  Operator ||= Struct.new(:separator, :prefix)
+  def self.op = Operator.new(",", false)
+end
+```
+
+### result
+
+```rbs
+module Mu
+  def self.op: -> Mu::Operator
+end
+
+class Mu::Operator < Struct[untyped]
+  def separator: -> String
+  def separator=: (String separator) -> String
+  def prefix: -> bool
+  def prefix=: (bool prefix) -> bool
+  def initialize: (String separator, bool prefix) -> void
+  def self.members: -> Array[:prefix | :separator]
+end
+```
+
+## Rescued generic exception gets type arguments
+
+### update
+
+```ruby
+class Rs
+  def r
+    yield
+  rescue NoMethodError => e
+    e
+  end
+end
+```
+
+### result
+
+```rbs
+class Rs
+  def r: [R] { () -> R } -> (NoMethodError[untyped] | R)
+end
+```
+
+## Constant path written under an untyped constant is not a top-level class
+
+### update
+
+```ruby
+module Gp
+  module Pb
+    FeatureSet = lookup("fs").msgclass
+    FeatureSet::Limits = lookup("fs.limits").msgclass
+  end
+end
+```
+
+### result
+
+```rbs
+module Gp
+end
+
+module Gp::Pb
+  FeatureSet: untyped
 end
 ```

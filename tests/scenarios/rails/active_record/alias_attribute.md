@@ -18,6 +18,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class ApplicationRecord < ActiveRecord::Base
   def name: -> String?
   def name=: (String? name) -> String?
@@ -65,6 +68,15 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
+class Namespace < ApplicationRecord
+end
+
 class Project < ApplicationRecord
   def namespace: -> Namespace
   def namespace=: (Namespace namespace) -> Namespace

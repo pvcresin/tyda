@@ -30,4 +30,7 @@ class Object < BasicObject
   def call_loud: (String value) -> String
   def read: -> String
 end
+
+module Words
+end
 ```

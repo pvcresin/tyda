@@ -23,6 +23,9 @@ end
 ### result
 
 ```rbs
+module Formats
+end
+
 module Formats::MyBridge
   HEADERS: ["a", "b"]
   COL_NUMBERS: { x: 0 }
@@ -56,6 +59,12 @@ end
 ### result
 
 ```rbs
+module Formats
+end
+
+module Formats::MyBridge
+end
+
 class Reader
   include Formats
 

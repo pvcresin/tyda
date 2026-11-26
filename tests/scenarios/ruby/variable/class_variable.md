@@ -131,6 +131,9 @@ class Child < Parent
   def self.value: -> :base
   def value: -> :base
 end
+
+class Parent
+end
 ```
 
 ## Static class variable reflection
@@ -157,6 +160,9 @@ end
 ### result
 
 ```rbs
+class Target
+end
+
 class Writer
   def value: -> 1
   def flag: -> true

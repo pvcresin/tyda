@@ -149,6 +149,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Profile < ApplicationRecord
   def nickname: -> String?
   def nickname=: (String? nickname) -> String?
@@ -206,8 +212,17 @@ def result = Profile.new.title
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Object < BasicObject
   def result: -> String?
+end
+
+class Profile < ApplicationRecord
 end
 ```
 
@@ -234,6 +249,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class User < ApplicationRecord
   def ssn: -> untyped
   def ssn=: (untyped ssn) -> untyped
@@ -264,6 +285,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Entry < ApplicationRecord
   def entryable: -> (Comment | Message)
   def entryable=: ((Comment | Message) entryable) -> (Comment | Message)
@@ -304,6 +331,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class User < ApplicationRecord
   def self.bulk_insert: (untyped rows) -> ActiveRecord::Result
   def self.bulk_upsert: (untyped rows) -> ActiveRecord::Result
@@ -331,6 +364,14 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
+class User < ApplicationRecord
+end
 ```
 
 ## Resolve Rails 7.1 normalize_value_for through self.class
@@ -355,6 +396,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class User < ApplicationRecord
   def self.normalize_value_for: (Symbol name, String value) -> String
   def normalized_literal: -> String
@@ -383,6 +430,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Tag < ApplicationRecord
   def self.matching_name: (untyped name) -> ActiveRecord::Relation[Tag]
 end
@@ -408,8 +461,17 @@ def persist(user) = user.update_attributes(name: "x")
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Object < BasicObject
   def persist: (User user) -> bool
+end
+
+class User < ApplicationRecord
 end
 ```
 
@@ -433,8 +495,17 @@ def persist(user) = user.update_attributes(name: "x")
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Object < BasicObject
   def persist: (User user) -> bool
+end
+
+class User < ApplicationRecord
 end
 ```
 
@@ -475,6 +546,9 @@ class A < ActiveRecord::Base
   def self.zap!: -> A
   def self.each1: -> Enumerator[A]
 end
+
+class ActiveRecord::Base
+end
 ```
 
 ## find returns the model type
@@ -505,6 +579,9 @@ end
 ### result
 
 ```rbs
+class Post < ApplicationRecord
+end
+
 class PostService
   def find_post: (untyped id) -> Post
   def find_and_title: (untyped id) -> String?
@@ -541,6 +618,9 @@ end
 ### result
 
 ```rbs
+class Post < ApplicationRecord
+end
+
 class PostService
   def find_array: -> Array[Post]
   def find_many: -> Array[Post]
@@ -576,6 +656,9 @@ end
 ### result
 
 ```rbs
+class Post < ApplicationRecord
+end
+
 class PostService
   def find_splat_many: -> Array[Post]
 end
@@ -767,6 +850,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Post < ApplicationRecord
   def self.strict_test: -> untyped
   def self.with_test: -> untyped
@@ -799,6 +888,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Post < ApplicationRecord
   def self.strict_test: -> ActiveRecord::Relation[Post]
   def self.with_test: -> untyped
@@ -830,6 +925,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Post < ApplicationRecord
   def self.with_test: -> untyped
   def self.in_order_test: -> ActiveRecord::Relation[Post]
@@ -862,6 +963,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Post < ApplicationRecord
   def self.with_test: -> ActiveRecord::Relation[Post]
   def self.with_recursive_test: -> untyped
@@ -889,6 +996,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Post < ApplicationRecord
   def self.with_recursive_test: -> ActiveRecord::Relation[Post]
 end
@@ -911,6 +1024,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Post < ApplicationRecord
   def self.grouped_counts: -> Hash[untyped, Integer]
   def self.grouped_count_keys: -> Array[untyped]
@@ -958,6 +1077,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Position
   def line: -> 1
 end
@@ -997,6 +1122,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Role < ApplicationRecord
   def perms: -> untyped
   def perms=: ([ ] perms) -> untyped
@@ -1041,6 +1172,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 module RbsSerializedAttribute
   extend ActiveSupport::Concern
 end
@@ -1084,6 +1221,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 module UnspecifiedSerializedAttribute
   extend ActiveSupport::Concern
 end
@@ -1156,6 +1299,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class DraftNote < ApplicationRecord
   include DiffPositionableNote
 
@@ -1445,6 +1594,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def self.only: -> untyped
   def self.only_by: (untyped name) -> untyped
@@ -1473,6 +1625,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def self.by_name: (untyped value) -> String?
   def self.raw: -> String?
@@ -1498,6 +1653,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def self.key: -> (String | Array[String])?
 end
@@ -1522,6 +1680,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def self.key: -> String?
 end
@@ -1550,6 +1711,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class ApplicationRecord < ActiveRecord::Base
   def self.setup: -> Array[ActiveRecord::ConnectionAdapters::ConnectionPool]
   def self.sharded: -> Array[ActiveRecord::ConnectionAdapters::ConnectionPool]

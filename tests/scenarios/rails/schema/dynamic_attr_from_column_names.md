@@ -32,10 +32,16 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Card
   ATTRS: untyped
 
   def a: -> Integer
   def b: -> Integer
+end
+
+class CardArchive < ApplicationRecord
 end
 ```

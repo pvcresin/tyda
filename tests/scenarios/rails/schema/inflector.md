@@ -31,6 +31,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Post < ApplicationRecord
   def foo: -> String
   def bar: -> Integer
@@ -107,6 +110,9 @@ end
 class Admin::User < ApplicationRecord
   def foo: -> String
 end
+
+class ApplicationRecord
+end
 ```
 
 ## Apply irregular and acronym inflections to schema resolution
@@ -169,6 +175,9 @@ class APIClient < ApplicationRecord
   def bar: -> String
 end
 
+class ApplicationRecord
+end
+
 class Person < ApplicationRecord
   def foo: -> String
 end
@@ -206,6 +215,9 @@ end
 ### result
 
 ```rbs
+class ApplicationRecord
+end
+
 class Post < ApplicationRecord
   def foo: -> Integer
   def bar: -> ActiveSupport::TimeWithZone

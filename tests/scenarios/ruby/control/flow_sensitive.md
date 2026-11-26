@@ -321,12 +321,21 @@ end
 ### result
 
 ```rbs
+module ScopedClassNarrowing
+end
+
+class ScopedClassNarrowing::Base
+end
+
 class ScopedClassNarrowing::Checker
   def value: (untyped flag) -> :value?
 end
 
-class ScopedClassNarrowing::LocalRead < Base
+class ScopedClassNarrowing::LocalRead < ScopedClassNarrowing::Base
   def value: -> :value
+end
+
+class ScopedClassNarrowing::Other < ScopedClassNarrowing::Base
 end
 ```
 
@@ -413,7 +422,10 @@ class ParentTypePredicate
   def class_case_child_value: (Base value) -> :child?
 end
 
-class ParentTypePredicate::Child < Base
+class ParentTypePredicate::Base
+end
+
+class ParentTypePredicate::Child < ParentTypePredicate::Base
   def child_only: -> :child
 end
 ```
@@ -450,6 +462,9 @@ hash_after_generic_type_guard({})
 ### result
 
 ```rbs
+class GenericTypeGuard
+end
+
 class Object < BasicObject
   def value_after_generic_type_guard: ((Hash[untyped, untyped] | GenericTypeGuard) value) -> (Hash[untyped, untyped] | Hash[GenericTypeGuard, true])
   def hash_after_generic_type_guard: (Hash[untyped, untyped] value) -> Hash[untyped, untyped]
@@ -1719,6 +1734,9 @@ end
 ### result
 
 ```rbs
+class Corporation
+end
+
 class IvarGuard
   def initialize: (untyped flag) -> void
   def fetch: -> Corporation
@@ -1749,6 +1767,9 @@ end
 ### result
 
 ```rbs
+class Corporation
+end
+
 class ReaderGuard
   def corporation: -> Corporation?
   def fetch: -> Corporation
@@ -1788,6 +1809,12 @@ class ChainedReaderGuard
   def corporation: -> Corporation?
   def owner: -> Owner?
   def fetch: -> (Corporation | Owner | [Corporation, Owner])
+end
+
+class Corporation
+end
+
+class Owner
 end
 ```
 
@@ -2065,6 +2092,9 @@ def read_memoized_user(enabled) = MemoizedReader.new(enabled).read
 ### result
 
 ```rbs
+module Gitlab
+end
+
 class MemoizedReader
   def initialize: (untyped enabled) -> void
   def current_user: -> MemoizedUser?
@@ -2119,6 +2149,9 @@ def read_memoized_target(project) = MemoizedTargetReader.new(project).read
 ### result
 
 ```rbs
+module Gitlab
+end
+
 class GroupNode
   def group_value: -> "group"
 end
@@ -2175,6 +2208,9 @@ class DynamicMemoizedReader
   def read: -> String?
 end
 
+module Gitlab
+end
+
 class Object < BasicObject
   def read_dynamic_memoized_value: (untyped enabled) -> String?
 end
@@ -2202,6 +2238,9 @@ end
 ```rbs
 class ClassEqualityGuard
   def read: (String value) -> String
+end
+
+class ClassEqualityTarget
 end
 ```
 
@@ -2241,10 +2280,19 @@ end
 ### result
 
 ```rbs
+class TypePredicateBase
+end
+
+class TypePredicateChild < TypePredicateBase
+end
+
 class TypePredicateGuard
   def read_with_is_a: (String value) -> String
   def read_with_instance_of: (String value) -> String
   def read_with_instance_of_parent: (TypePredicateChild value) -> nil
+end
+
+class TypePredicateTarget
 end
 ```
 
@@ -2333,9 +2381,15 @@ end
 ### result
 
 ```rbs
+class AncestryBase
+end
+
 class Object < BasicObject
   def read_unknown_is_a: (UnknownAncestryChild value) -> untyped
   def read_unknown_instance_of: (AncestryBase value) -> untyped
+end
+
+class UnknownAncestryChild
 end
 ```
 
@@ -2407,9 +2461,18 @@ end
 ### result
 
 ```rbs
+module AlwaysMatchClass
+end
+
+module AlwaysMatchString
+end
+
 class Object < BasicObject
   def read_refined_is_a: (String value) -> untyped
   def read_refined_case_equality: (String value) -> untyped
+end
+
+class RefinedTarget
 end
 ```
 
@@ -2488,6 +2551,9 @@ end
 ### result
 
 ```rbs
+module AlwaysMatchStringInstanceOf
+end
+
 class Object < BasicObject
   def inferred_instance_of_return: (?untyped value) -> untyped
 end
@@ -2718,6 +2784,9 @@ refined_array_empty(true)
 ### result
 
 ```rbs
+module AlwaysEmptyArray
+end
+
 class Object < BasicObject
   def refined_array_empty: (bool flag) -> :reachable
 end
@@ -2750,6 +2819,12 @@ refined_array_subclass_empty
 ### result
 
 ```rbs
+module AlwaysEmptyArray
+end
+
+class MyArray < Array[untyped]
+end
+
 class Object < BasicObject
   def refined_array_subclass_empty: -> :reachable
 end
@@ -2782,6 +2857,12 @@ refined_array_addition
 ### result
 
 ```rbs
+module ArrayAdditionRefinement
+end
+
+class MyArray < Array[untyped]
+end
+
 class Object < BasicObject
   def refined_addition: -> :object
   def refined_array_addition: -> :array
@@ -2817,6 +2898,9 @@ subclass_method_wins
 ### result
 
 ```rbs
+module AlwaysEmptyArray
+end
+
 class NeverEmptyArray < Array[untyped]
   def empty?: -> false
 end
@@ -2851,6 +2935,9 @@ refined_regexp
 ### result
 
 ```rbs
+module NeverMatchStringRegexp
+end
+
 class Object < BasicObject
   def refined_regexp: -> :unmatched
 end
@@ -2899,9 +2986,21 @@ end
 ### result
 
 ```rbs
+module TypeProf
+end
+
+module TypeProf::Core
+end
+
+module TypeProf::Core::AST
+end
+
 class TypeProf::Core::AST::LoopNode
   def initialize: (Node cond) -> void
   def value: -> String?
+end
+
+class TypeProf::Core::AST::Node
 end
 ```
 

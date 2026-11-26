@@ -28,6 +28,24 @@ end
 ### result
 
 ```rbs
+class Mutations::BaseMutation < GraphQL::Schema::RelayClassicMutation
+end
+
+class Mutations::CreateUser < Mutations::BaseMutation
+end
+
+class Resolvers::BaseResolver < GraphQL::Schema::Resolver
+end
+
+class Resolvers::Users < Resolvers::BaseResolver
+end
+
+module Types
+end
+
+class Types::BaseInputObject < GraphQL::Schema::InputObject
+end
+
 class Types::UserInput < Types::BaseInputObject
   def name: -> untyped
 end
@@ -52,6 +70,12 @@ end
 ### result
 
 ```rbs
+module Types
+end
+
+class Types::BaseObject < GraphQL::Schema::Object
+end
+
 class Types::UserType < Types::BaseObject
   def kind: -> :user
 end

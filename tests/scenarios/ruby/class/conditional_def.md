@@ -19,7 +19,7 @@ def test = App.shout("hi")
 
 ```rbs
 module App
-  extend Helpers
+  extend App::Helpers
 end
 
 module App::Helpers
@@ -54,7 +54,7 @@ class Object < BasicObject
 end
 
 module Rake
-  extend FileUtilsExt
+  extend Rake::FileUtilsExt
 end
 
 module Rake::FileUtilsExt
@@ -201,11 +201,14 @@ end
 ### result
 
 ```rbs
+module Rake
+end
+
 module Rake::DSL
   def task: [N] (N name) -> N
 end
 
-class Rake::PackageTask < TaskLib
+class Rake::PackageTask < Rake::TaskLib
   def define: -> Symbol
 end
 
@@ -232,11 +235,14 @@ end
 ### result
 
 ```rbs
+module App
+end
+
 class App::Base
   def name: -> "app"
 end
 
-class App::Child < Base
+class App::Child < App::Base
   def call: -> "app"
 end
 ```
@@ -261,11 +267,17 @@ end
 ### result
 
 ```rbs
+module Outer
+end
+
+module Outer::Inner
+end
+
 class Outer::Inner::Root
   def foo: -> 1
 end
 
-class Outer::Leaf < Inner::Root
+class Outer::Leaf < Outer::Inner::Root
   def bar: -> 1
 end
 ```

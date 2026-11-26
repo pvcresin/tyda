@@ -21,6 +21,12 @@ end
 ```rbs
 TOP: 1
 
+module Outer
+end
+
+module Outer::Inner
+end
+
 class Outer::Inner::A
   def f: -> 1
 end
@@ -185,6 +191,9 @@ end
 ### result
 
 ```rbs
+module Outer
+end
+
 class Outer::C
   def f: -> "inner"
 end
@@ -322,6 +331,9 @@ end
 ### result
 
 ```rbs
+module Outer
+end
+
 module Outer::Inner
   CONST: "x"
 
@@ -498,6 +510,9 @@ end
 ### result
 
 ```rbs
+module A
+end
+
 module A::B
   BCONST: "b"
 end
@@ -538,6 +553,9 @@ end
 
 module X::A
   AC: 2
+end
+
+module X::A::B
 end
 
 class X::A::B::C
@@ -661,6 +679,9 @@ end
 ### result
 
 ```rbs
+module Ns
+end
+
 class Ns::C < P
   def f: -> "p"
 end
@@ -697,6 +718,9 @@ end
 ```rbs
 module Inc
   V: "inc"
+end
+
+module Ns
 end
 
 class Ns::C < P
@@ -871,6 +895,9 @@ end
 class Container
   def build: -> Container::Item
 end
+
+class Container::Item
+end
 ```
 
 ## Resolve later outer namespace constant from nested method body
@@ -927,6 +954,9 @@ class Registry
   EMPTY: Registry::EmptyRegistry
 
   def self.empty: -> Registry::EmptyRegistry
+end
+
+class Registry::EmptyRegistry
 end
 ```
 
@@ -1199,6 +1229,9 @@ end
 ### result
 
 ```rbs
+module Container
+end
+
 class Container::Item
   def label: -> "item"
 end
@@ -1383,6 +1416,9 @@ module Container
   def self.interpolated_label: -> "detail"
 end
 
+class Container::Item
+end
+
 class Container::Item::Detail
   def label: -> "detail"
 end
@@ -1428,6 +1464,9 @@ module Container
   def self.has_local: -> true
   def self.has_absolute: -> true
   def self.has_send: -> true
+end
+
+class Container::Item
 end
 ```
 
@@ -1536,6 +1575,9 @@ end
 module Container
   def self.has_item: -> true
 end
+
+class Container::Item
+end
 ```
 
 ## const_get through send resolves static constant name
@@ -1559,6 +1601,9 @@ end
 ### result
 
 ```rbs
+module Container
+end
+
 class Container::Item
   def label: -> "item"
 end
@@ -1774,6 +1819,9 @@ class Foo
   include Mod
 end
 
+module Mod
+end
+
 class Mod::Inner
   def value: -> 1
 end
@@ -1809,6 +1857,9 @@ end
 ### result
 
 ```rbs
+module Core
+end
+
 class Core::User
   def make: -> String
 end
@@ -1898,6 +1949,9 @@ end
 ### result
 
 ```rbs
+module Codec
+end
+
 class Codec::Int32
   TYPE: String
 

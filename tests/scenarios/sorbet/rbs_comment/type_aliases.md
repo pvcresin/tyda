@@ -51,6 +51,9 @@ end
 ### result
 
 ```rbs
+class Box
+end
+
 class Box::Inner
   def id: ((Integer | String) x) -> (Integer | String)
 end

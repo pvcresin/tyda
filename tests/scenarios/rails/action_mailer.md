@@ -36,6 +36,9 @@ end
 ### result
 
 ```rbs
+class User
+end
+
 class UserMailer < ApplicationMailer
   def welcome: (User user) -> Mail::Message
   def self.welcome: (User user) -> ActionMailer::MessageDelivery
@@ -88,6 +91,9 @@ end
 ### result
 
 ```rbs
+module Admin
+end
+
 class Admin::Notifier
   def send_alert: (untyped user) -> (false | ActionMailer::MailDeliveryJob)
 end

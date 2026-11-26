@@ -17,6 +17,9 @@ end
 ### result
 
 ```rbs
+class Outer
+end
+
 class Outer::Inner
   def self.x: -> untyped
 end

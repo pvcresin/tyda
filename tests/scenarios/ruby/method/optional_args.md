@@ -225,6 +225,9 @@ end
 ### result
 
 ```rbs
+module Haml
+end
+
 module Haml::Helpers
   PRESERVE: ["a", "b"]
 

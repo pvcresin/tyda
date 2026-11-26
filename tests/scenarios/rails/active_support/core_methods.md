@@ -338,6 +338,9 @@ end
 ### result
 
 ```rbs
+class Corporation
+end
+
 class Probe
   def pick: (untyped flag) -> Corporation
 end
@@ -544,6 +547,9 @@ end
 ### result
 
 ```rbs
+module Group
+end
+
 class Group::Item
   def label: -> "item"
 end

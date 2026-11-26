@@ -344,6 +344,9 @@ end
 ### result
 
 ```rbs
+class Box
+end
+
 class GenericLetAssertion
   def box: -> Box[Integer]
 end

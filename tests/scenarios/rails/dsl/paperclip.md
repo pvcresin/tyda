@@ -16,6 +16,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class Backup < ActiveRecord::Base
   def file: -> untyped
 end
@@ -39,6 +42,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class Backup < ActiveRecord::Base
   def self.has_attached_file: [N] (N name, ?(Hash[untyped, untyped] | { styles: Integer }) options) -> N
   def file: -> untyped

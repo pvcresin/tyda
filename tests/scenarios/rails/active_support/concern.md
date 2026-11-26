@@ -209,6 +209,12 @@ def result = Item.active
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Item < ApplicationRecord
   include Searchable
 end
@@ -255,6 +261,12 @@ def user_result = User.active
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Item < ApplicationRecord
   include Searchable
 end
@@ -301,6 +313,12 @@ def result = Item.new.hits
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 module Countable
   extend ActiveSupport::Concern
 end
@@ -340,6 +358,12 @@ def result = Item.new.notes
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Item < ApplicationRecord
   include Notable
 end
@@ -389,6 +413,12 @@ def result = Item.new.notes
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Item < ApplicationRecord
   include Notable
 end
@@ -472,6 +502,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 module Colorable
   extend ActiveSupport::Concern
 
@@ -508,6 +544,12 @@ def result = Item.new.taggings
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Item < ApplicationRecord
   include Taggable
 end
@@ -523,6 +565,9 @@ module Taggable
   def tagging_ids: -> Array[Integer]
   def tagging_ids=: (Array[Integer] tagging_ids) -> Array[Integer]
   def taggings=: (Array[Tagging] taggings) -> ActiveRecord::Associations::CollectionProxy[Tagging]
+end
+
+class Tagging < ApplicationRecord
 end
 ```
 
@@ -561,6 +606,12 @@ def user_statuses = User.statuses
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Item < ApplicationRecord
   include Statused
 
@@ -622,6 +673,12 @@ def result = Item.new.theme
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Item < ApplicationRecord
   include Themeable
 end
@@ -665,6 +722,12 @@ def result = Item.active
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Item < ApplicationRecord
   include Searchable
 end

@@ -18,6 +18,9 @@ end
 ### result
 
 ```rbs
+class Config::Options
+end
+
 class Settings < Config::Options
   def timeout: -> Integer
   def timeout=: (Integer timeout) -> Integer

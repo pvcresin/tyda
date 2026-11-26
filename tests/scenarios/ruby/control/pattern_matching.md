@@ -210,6 +210,9 @@ check([1].to_a)
 ### result
 
 ```rbs
+class A
+end
+
 class Object < BasicObject
   def check: (Array[Integer] x) -> (:bar | :foo | :waldo | :zzz)
 end
@@ -244,6 +247,9 @@ check({ a: 42 })
 ### result
 
 ```rbs
+class A
+end
+
 class Object < BasicObject
   def check: ({ a: Integer } x) -> :foo
 end
@@ -958,9 +964,18 @@ class PatternOtherProbe; end
 ### result
 
 ```rbs
+class PatternChildProbe < PatternParentProbe
+end
+
 class PatternHashCaptureNarrowing
   def hash_capture_union: (untyped flag) -> 1?
   def hash_capture_subclass: (untyped flag) -> PatternChildProbe?
+end
+
+class PatternOtherProbe
+end
+
+class PatternParentProbe
 end
 ```
 
@@ -1518,6 +1533,9 @@ class PatternHashAlwaysMiss
   def self.===: (untyped _value) -> false
 end
 
+class PatternHashBase < Hash[untyped, untyped]
+end
+
 class PatternHashChild < PatternHashBase
   def deconstruct_keys: (untyped _keys) -> Hash[untyped, untyped]
 end
@@ -1530,6 +1548,9 @@ class PatternHashClassPatterns
   def self.class_equality_override: -> (:matched | :other)
   def self.unresolved_constant: -> (:matched | :other)
   def self.hash_subclass_deconstruction: -> (:matched | :other)
+end
+
+class PatternHashUnrelated
 end
 ```
 
@@ -1564,8 +1585,14 @@ end
 ### result
 
 ```rbs
+module AlwaysMatchModuleCase
+end
+
 class RefinedHashPatternProbe
   def self.classify: -> (:matched | :other)
+end
+
+class RefinedHashPatternTarget
 end
 ```
 

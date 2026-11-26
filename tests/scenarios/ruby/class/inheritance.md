@@ -107,8 +107,17 @@ end
 ### result
 
 ```rbs
+module A
+end
+
+module A::B
+end
+
 class A::B::C < B::C
   def foo: -> 1
+end
+
+module B
 end
 
 class B::C
@@ -174,6 +183,9 @@ class A
   def foo: -> 1
 end
 
+module B
+end
+
 class B::A < A
   def bar: -> 1
 end
@@ -200,6 +212,9 @@ end
 ### result
 
 ```rbs
+class CONST < Parent
+end
+
 class Parent
   def greet: -> "hi"
 end
@@ -232,6 +247,12 @@ end
 ### result
 
 ```rbs
+class Outer
+end
+
+class Outer::Nested < Parent
+end
+
 class Parent
   def greet: -> "hi"
 end
@@ -271,6 +292,9 @@ class Foo
   def from_runtime: -> String
   def from_custom: -> String
 end
+
+class Foo::MyErr < StandardError
+end
 ```
 
 ## Union class new inherits keyword init
@@ -294,6 +318,9 @@ end
 ```rbs
 class A
   def initialize: (k: Integer) -> void
+end
+
+class B < A
 end
 ```
 
@@ -377,5 +404,35 @@ class Pt < Struct[untyped]
   def initialize: (untyped a) -> void
   def self.members: -> Array[:a]
   def x: -> 1
+end
+```
+
+## Superclass in a compact class declaration is fully qualified
+
+### update
+
+```ruby
+module Fx
+  class Error < StandardError
+    def a = 1
+  end
+  class ServerError < Error
+    def b = 1
+  end
+end
+```
+
+### result
+
+```rbs
+module Fx
+end
+
+class Fx::Error < StandardError
+  def a: -> 1
+end
+
+class Fx::ServerError < Fx::Error
+  def b: -> 1
 end
 ```

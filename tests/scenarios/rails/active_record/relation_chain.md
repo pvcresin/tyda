@@ -66,6 +66,9 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
 class Post < ActiveRecord::Base
   def self.titles: -> Array[String?]
 end
@@ -106,6 +109,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class Post < ActiveRecord::Base
+end
+
 class User < ActiveRecord::Base
   def posts: -> ActiveRecord::Associations::CollectionProxy[Post]
   def post_ids: -> Array[Integer]
@@ -154,6 +163,12 @@ end
 ### result
 
 ```rbs
+class ActiveRecord::Base
+end
+
+class ApplicationRecord < ActiveRecord::Base
+end
+
 class Report < ApplicationRecord
   def status_relation: -> ActiveRecord::Relation[Status]
   def status_rows: -> Array[[Integer, Array[Integer]?]]
