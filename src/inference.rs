@@ -1895,6 +1895,8 @@ pub(crate) struct Scope {
     break_types: Vec<Type>,
     method_name: Option<String>,
     singleton_dispatch: bool,
+    /// The scope is a class body, where `self` is the class itself.
+    class_body_self: bool,
     method_context_singleton_dispatch: Option<bool>,
     yield_param_types: Vec<Vec<Type>>,
     current_block_param_name: Option<String>,
@@ -2038,6 +2040,7 @@ impl ClassBodyCollectionOptions {
     fn new(in_singleton_class: bool, mut class_body_scope: Scope) -> Self {
         // `self` in a class body is the class, and bare calls dispatch on it.
         class_body_scope.singleton_dispatch = true;
+        class_body_scope.class_body_self = true;
         Self {
             in_singleton_class,
             class_body_scope,
@@ -2183,6 +2186,7 @@ impl Scope {
             break_types: Vec::new(),
             method_name: self.method_name.clone(),
             singleton_dispatch: self.singleton_dispatch,
+            class_body_self: self.class_body_self,
             method_context_singleton_dispatch: self.method_context_singleton_dispatch,
             yield_param_types: self.yield_param_types.clone(),
             current_block_param_name: self.current_block_param_name.clone(),
@@ -2218,6 +2222,11 @@ impl Scope {
 
     fn fork_for_block(&self) -> Self {
         let mut scope = self.clone();
+        // A block in a class body is mostly a DSL block that runs on an instance later.
+        if scope.class_body_self {
+            scope.class_body_self = false;
+            scope.singleton_dispatch = false;
+        }
         scope.enter_jump_target();
         scope.clear_array_first_facts();
         scope.hash_key_facts = Arc::default();
@@ -5470,6 +5479,7 @@ impl<'a> InferenceEngine<'a> {
             ),
             method_name: base.method_name.clone(),
             singleton_dispatch: base.singleton_dispatch,
+            class_body_self: base.class_body_self,
             method_context_singleton_dispatch: base.method_context_singleton_dispatch,
             yield_param_types: base.yield_param_types.clone(),
             current_block_param_name: base.current_block_param_name.clone(),
@@ -5886,6 +5896,7 @@ impl<'a> InferenceEngine<'a> {
             break_types: base.break_types.clone(),
             method_name: base.method_name.clone(),
             singleton_dispatch: base.singleton_dispatch,
+            class_body_self: base.class_body_self,
             method_context_singleton_dispatch: base.method_context_singleton_dispatch,
             yield_param_types: base.yield_param_types.clone(),
             current_block_param_name: base.current_block_param_name.clone(),
@@ -58958,15 +58969,13 @@ impl<'a> InferenceEngine<'a> {
                 );
             }
         };
-        // A source method that returns `untyped` replaces the declared method of an ancestor.
-        if ret == Type::Untyped
-            && !self.registry.method_call_has_user_source_definition(
+        if ret == Type::Untyped {
+            // A source method that returns `untyped` replaces the declared method of an ancestor.
+            if !self.registry.method_call_has_user_source_definition(
                 class_name,
                 &method_name_for_lookup,
                 is_singleton,
-            )
-        {
-            if let Some(return_type) = self.resolve_rbs_no_arg_method_return_on_type(
+            ) && let Some(return_type) = self.resolve_rbs_no_arg_method_return_on_type(
                 receiver_type,
                 effective_method_name,
                 true,
