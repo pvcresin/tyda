@@ -456,11 +456,28 @@ impl<'a> InferenceEngine<'a> {
             });
         }
         // A Rails app loads stdlib features at boot, so a core method one of them adds
-        // (`to_yaml`) may exist without a require in this file.
-        if self.rails_feature_enabled()
+        // (`to_yaml`) may exist without a require in this file. Rails DSLs detected in other
+        // code do not make an app.
+        if self.rails_mode
             && let Some(loader) = self.lazy_loader
         {
-            calls.retain(|call| !loader.is_any_feature_extension(&call.method_name));
+            calls.retain(|call| {
+                let (receiver, singleton) = match call.unresolved_method.rsplit_once('#') {
+                    Some((receiver, _)) => (receiver, false),
+                    None => match call.unresolved_method.rsplit_once('.') {
+                        Some((receiver, _)) => (receiver, true),
+                        None => return true,
+                    },
+                };
+                // Every object has what a feature adds to `Object` or `Kernel`.
+                let owners = [receiver, "Object", "Kernel"];
+                !owners.iter().any(|owner| {
+                    loader.is_any_feature_extension(owner, &call.method_name, singleton)
+                        || (singleton
+                            && *owner != receiver
+                            && loader.is_any_feature_extension(owner, &call.method_name, false))
+                })
+            });
         }
         calls
     }

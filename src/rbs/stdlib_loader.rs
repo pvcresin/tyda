@@ -57,8 +57,8 @@ pub struct LazyRbsLoader {
     shared_shapes: Mutex<FxHashMap<String, SharedShapeSlot>>,
     shared_features: Mutex<FxHashMap<String, SharedShapeSlot>>,
     feature_extensions: Mutex<FxHashMap<String, Arc<[FeatureExtension]>>>,
-    /// Names of the methods any stdlib feature adds to a core class.
-    any_feature_extension_names: OnceLock<FxHashSet<String>>,
+    /// The methods any stdlib feature adds to a core class, as (owner, method, singleton).
+    any_feature_extension_names: OnceLock<FxHashSet<(String, String, bool)>>,
     stdlib_paths: FxHashSet<PathBuf>,
     alias_dependencies: Mutex<FxHashMap<PathBuf, Arc<AliasDependency>>>,
     prepared_classes: Mutex<crate::registry::PreparedClassPool>,
@@ -386,8 +386,14 @@ impl LazyRbsLoader {
         extensions
     }
 
-    /// Whether some stdlib feature adds `method_name` to a core class (`to_yaml` from `psych`).
-    pub fn is_any_feature_extension(&self, method_name: &str) -> bool {
+    /// Whether some stdlib feature adds `method_name` to the core class `owner`
+    /// (`Object#to_yaml` from `psych`).
+    pub fn is_any_feature_extension(
+        &self,
+        owner: &str,
+        method_name: &str,
+        singleton: bool,
+    ) -> bool {
         self.any_feature_extension_names
             .get_or_init(|| {
                 let features: Vec<String> = self.feature_to_files.keys().cloned().collect();
@@ -396,12 +402,18 @@ impl LazyRbsLoader {
                     .flat_map(|feature| {
                         self.feature_extensions(feature)
                             .iter()
-                            .map(|extension| extension.method.clone())
+                            .map(|extension| {
+                                (
+                                    extension.owner.clone(),
+                                    extension.method.clone(),
+                                    extension.is_singleton,
+                                )
+                            })
                             .collect::<Vec<_>>()
                     })
                     .collect()
             })
-            .contains(method_name)
+            .contains(&(owner.to_string(), method_name.to_string(), singleton))
     }
 
     fn collect_feature_extensions(&self, shape: &TypeRegistry) -> Vec<FeatureExtension> {
