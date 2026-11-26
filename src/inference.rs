@@ -22707,9 +22707,13 @@ impl<'a> InferenceEngine<'a> {
         positional_types: &mut Vec<Type>,
         open_splat: &mut Option<u16>,
     ) {
-        // A value known only later gives elements known only later; the call site spreads
-        // them once the value resolves.
+        // A method's return known only later gives elements known only later; the call site
+        // spreads them once the return resolves.
         if open_splat.is_none()
+            && matches!(
+                inner,
+                Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..)
+            )
             && Type::splat_elements(inner, &mut |ty| self.splat_to_a(ty)).is_none()
         {
             *open_splat = u16::try_from(positional_types.len()).ok();
@@ -32915,8 +32919,8 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         receiver_type
                     };
-                    // In a module, `self.name` reaches whatever the includer defines; a core
-                    // function such as `Kernel#open` is only one guess.
+                    // In a module, `self.name` reaches whatever the includer defines; a private
+                    // `Kernel` function such as `open` is only one guess.
                     if matches!(receiver, Node::SelfNode { .. })
                         && let Type::Class(name) = &receiver_type
                         && self
@@ -32932,9 +32936,8 @@ impl<'a> InferenceEngine<'a> {
                             .registry
                             .resolve_method_call_owners(name.as_str(), &method_name, false)
                             .first()
-                            .is_some_and(|(owner, _)| {
-                                matches!(owner.as_str(), "Kernel" | "Object" | "BasicObject")
-                            })
+                            .is_some_and(|(owner, _)| owner == "Kernel")
+                        && self.is_private_kernel_method(&method_name)
                     {
                         return Type::Untyped;
                     }
@@ -45457,8 +45460,12 @@ impl<'a> InferenceEngine<'a> {
         }
         let block_node_raw = call_node.block()?;
         let block = block_node_raw.as_block_node()?;
-        // A `nil` arm that has no such method raises, so the other arms decide the result.
+        // A `nil` arm that has no such method raises, so the other arms decide the result. An
+        // instance variable's `nil` may only be its type before assignment, so it stays.
         let receiver_type = &if matches!(receiver_type, Type::Union(parts) if parts.contains(&Type::Nil))
+            && !call_node
+                .receiver()
+                .is_some_and(|receiver| receiver.as_instance_variable_read_node().is_some())
             && self.type_responds_to_method(&Type::Nil, method_name) == Some(false)
         {
             Self::remove_nil(receiver_type)
