@@ -4141,6 +4141,21 @@ impl TypeRegistry {
             self.mixin_hook_mixins_applied = false;
         }
         let is_user = method.origin.is_user_source();
+        // A real definition replaces a method that a DSL call in the source generated.
+        if is_user
+            && self
+                .lookup_method_def(class_name, method.name.as_str(), method.is_singleton)
+                .is_some_and(|existing| existing.origin == MethodOrigin::SourceDsl)
+            && self.class_data.get(class_name).is_some_and(|data| {
+                !data
+                    .cold()
+                    .generated_module_methods
+                    .iter()
+                    .any(|(key, _)| *key == (method.name, method.is_singleton))
+            })
+        {
+            self.remove_method_variant(class_name, method.name.as_str(), method.is_singleton);
+        }
         if is_user {
             self.file_contribution_names.insert(class_name.to_string());
             self.file_contribution_method_names.insert(method.name);
@@ -5730,9 +5745,22 @@ impl TypeRegistry {
                 self.lookup_method_def(&owner, &method_name, owner_singleton)
             })
         else {
-            return false;
+            // A generic receiver's class that is not loaded yet may still have a method that
+            // takes its type arguments.
+            return matches!(receiver, Type::Generic { .. })
+                && self.class_data_for(&class_name).is_none();
         };
-        !method.extra_overloads.is_empty()
+        // Inference refines a generic receiver's type arguments from arguments that take
+        // them (`set + other`).
+        let refines_type_arguments = matches!(receiver, Type::Generic { .. })
+            && method.rbs_method_types.iter().any(|method_type| {
+                method_type
+                    .function_type
+                    .param_types()
+                    .any(rbs_ir::RbsType::mentions_variable)
+            });
+        refines_type_arguments
+            || !method.extra_overloads.is_empty()
             || method.rbs_method_types.len() > 1
             || method.rbs_method_types.iter().any(|method_type| {
                 !method_type.type_params.is_empty() || method_type.block.is_some()
@@ -8090,8 +8118,9 @@ impl TypeRegistry {
                     && let Some(default_type) = param_info.default_type.as_ref()
                 {
                     let resolved_default = self.resolve_deferred_refs(class_name, default_type);
+                    // A caller may pass another value, so the default widens as an argument does.
                     if resolved_default != Type::Untyped {
-                        return Some(resolved_default);
+                        return Some(resolved_default.widen_arg_for_param());
                     }
                 }
             }
@@ -8478,6 +8507,11 @@ impl TypeRegistry {
             ),
             _ => ty.clone(),
         }
+    }
+
+    /// Whether the RBS overloads of an argument-less call give different returns.
+    pub(crate) fn argless_return_is_ambiguous(&self, class_name: &str, method_name: &str) -> bool {
+        self.argless_overloads_disagree(class_name, method_name, false)
     }
 
     fn argless_overloads_disagree(
@@ -12107,9 +12141,14 @@ impl TypeRegistry {
                             if !visiting.insert(key.clone()) {
                                 return None;
                             }
+                            // `self` in the return is the receiver (`dup`, `to_sym`).
                             let resolved = self
                                 .lookup_argless_receiver_return(&receiver_class, method_name, false)
                                 .map(|return_type| {
+                                    let return_type = Self::substitute_self_type(
+                                        &return_type,
+                                        &resolved_receiver,
+                                    );
                                     self.resolve_call_site_type_from_caller_context(
                                         call_site,
                                         &return_type,
@@ -12684,10 +12723,23 @@ impl TypeRegistry {
                             )
                         })
                         .collect::<Vec<_>>();
+                let mut resolved_arg_types = resolved_arg_types;
+                let mut open_splat = call_site.open_splat;
+                // An open splat of a value known only later spreads once the value is a tuple.
+                if let Some(index) = open_splat.map(usize::from)
+                    && let Some(Type::SplatRef(parts)) = call_site.arg_types.get(index)
+                    && index < resolved_arg_types.len()
+                    && let Type::Tuple(resolved_parts) =
+                        self.resolve_call_site_type_from_caller_context(call_site, parts, visiting)
+                    && let [Type::Tuple(elems)] = resolved_parts.as_slice()
+                {
+                    resolved_arg_types.splice(index..=index, elems.iter().cloned());
+                    open_splat = None;
+                }
                 Self::merge_resolved_positional_arg_types(
                     &mut param_types,
                     &resolved_arg_types,
-                    call_site.open_splat,
+                    open_splat,
                     &method.param_infos,
                 );
             }

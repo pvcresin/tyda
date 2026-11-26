@@ -899,6 +899,43 @@ fn diagnostics_flag_outputs_json_lines() {
 }
 
 #[test]
+fn rails_app_has_the_stdlib_core_methods_rails_loads_at_boot() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::create_dir_all(dir.path().join("app/models")).expect("failed to create app/models");
+    fs::write(
+        dir.path().join("app/models/setting.rb"),
+        concat!(
+            "class Setting\n",
+            "  def dump(v) = v.to_yaml\n",
+            "end\n",
+            "Setting.new.dump(\"x\")\n",
+        ),
+    )
+    .expect("failed to write source");
+    let diagnostics = |with_rails: bool| {
+        let gemfile = dir.path().join("Gemfile");
+        if with_rails {
+            fs::write(&gemfile, "source \"https://rubygems.org\"\ngem \"rails\"\n")
+                .expect("failed to write Gemfile");
+        } else {
+            let _ = fs::remove_file(&gemfile);
+        }
+        let output = tyda_bin()
+            .arg("--diagnostics")
+            .arg(dir.path().to_str().unwrap())
+            .output()
+            .expect("failed to run");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    // Rails requires `yaml` while it boots, so `String#to_yaml` exists without a require.
+    let with_rails = diagnostics(true);
+    assert!(!with_rails.contains("to_yaml"), "{with_rails}");
+    let without_rails = diagnostics(false);
+    assert!(without_rails.contains("String#to_yaml"), "{without_rails}");
+}
+
+#[test]
 fn diagnostics_replay_truthiness_for_optional_parameters() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     let rb_file = dir.path().join("optional_truthiness.rb");
@@ -1087,6 +1124,84 @@ fn known_issue_constant_declared_in_project_rbs_is_rendered_again() {
         stdout.contains("  VERSION: String\n"),
         "known issue fixed; drop this check and assert VERSION is not rendered: {stdout}"
     );
+}
+
+#[test]
+fn known_issue_call_with_arguments_on_a_deferred_module_function_is_untyped() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("version.rb"),
+        concat!(
+            "module App\n",
+            "  module Version\n",
+            "    module_function\n",
+            "\n",
+            "    def major = 4\n",
+            "\n",
+            "    def to_s\n",
+            "      [major].join(\".\")\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("check.rb"),
+        concat!(
+            "class Check\n",
+            "  def parts = App::Version.to_s.split(\"+\")\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `App::Version.to_s` is a `module_function` in another file, so it stays a
+    // reference, and the `split` call on that reference loses its argument.
+    assert!(
+        stdout.contains("  def parts: -> untyped\n"),
+        "known issue fixed; drop this check and expect Array[String]: {stdout}"
+    );
+}
+
+#[test]
+fn filter_with_a_block_in_a_method_with_parameters_is_not_a_forward() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("repo.rb"),
+        concat!(
+            "class Repo\n",
+            "  def self.matching(key)\n",
+            "    items.filter { |item| item }\n",
+            "  end\n",
+            "  def self.items\n",
+            "    [new]\n",
+            "  end\n",
+            "end\n",
+            "class Probe\n",
+            "  def run(key)\n",
+            "    found = Repo.matching(key).first\n",
+            "    found.name\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg("--diagnostics")
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `matching(key)` does not pass `key` to `filter`, so `filter` is not `Kernel#select`
+    // with that argument: `found` is never a `String`.
+    assert!(!stdout.contains("String#name"), "{stdout}");
 }
 
 #[test]
@@ -6182,7 +6297,7 @@ fn constant_alias_of_an_array_from_another_file_is_its_value() {
 }
 
 #[test]
-fn known_issue_singleton_method_from_another_file_loses_to_a_module_method() {
+fn singleton_method_from_another_file_wins_over_a_module_method() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(
         dir.path().join("a.rb"),
@@ -6220,13 +6335,10 @@ fn known_issue_singleton_method_from_another_file_loses_to_a_module_method() {
         .expect("failed to run");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Known issue: `Javascript.constants` calls the singleton method defined in a.rb, so
-    // Livescript's `constants` is `Set["false" | "true" | "yes"]` (the scenario path and a
-    // single file get this right). The CLI uses `Module#constants` instead (seen with the
-    // rouge gem).
+    // `Javascript.constants` calls the singleton method a.rb defines, not `Module#constants`.
     assert!(
-        stdout.contains("  def self.constants: -> Array[Symbol | \"yes\"]\n"),
-        "known issue fixed; drop this check and assert the Set return: {stdout}"
+        stdout.contains("  def self.constants: -> Set[\"false\" | \"true\" | \"yes\"]\n"),
+        "Livescript.constants does not use Javascript.constants: {stdout}"
     );
 }
 

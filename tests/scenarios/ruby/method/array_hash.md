@@ -2619,3 +2619,59 @@ class Store
   def fill: -> Array[0 | 1 | 2]
 end
 ```
+
+## Plus-assign of an array literal keeps the array type
+
+### update
+
+```ruby
+class Args
+  def ints
+    r = [1]
+    r += [2]
+    r
+  end
+
+  def strings
+    r = ["a"]
+    r += ["b"]
+  end
+end
+```
+
+### result
+
+```rbs
+class Args
+  def ints: -> Array[1 | 2]
+  def strings: -> Array["a" | "b"]
+end
+```
+
+## Empty array concat with an untyped value is not an empty tuple
+
+### update
+
+```ruby
+class Collector
+  def collect(items)
+    result = []
+    result.concat(items)
+  end
+
+  def collect_later(items)
+    result = []
+    result.concat(items)
+    result
+  end
+end
+```
+
+### result
+
+```rbs
+class Collector
+  def collect: (untyped items) -> Array[untyped]
+  def collect_later: (untyped items) -> Array[untyped]
+end
+```

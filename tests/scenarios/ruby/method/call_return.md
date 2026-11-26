@@ -861,3 +861,131 @@ class User
   def value: -> [2]
 end
 ```
+
+## Own method named like a Kernel method is used by implicit self calls
+
+### update
+
+```ruby
+class Page
+  def limit(num) = spawn(num)
+  def spawn(num) = "x"
+end
+```
+
+### result
+
+```rbs
+class Page
+  def limit: (untyped num) -> "x"
+  def spawn: (untyped num) -> "x"
+end
+```
+
+## Own method named like an Enumerable method keeps its untyped return
+
+### update
+
+```ruby
+class Mapper
+  def map(key) = [1][key]
+  def select(key) = [1][key]
+  def from_map(key) = map(key)
+  def from_select(key) = select(key)
+end
+```
+
+### result
+
+```rbs
+class Mapper
+  def map: (untyped key) -> untyped
+  def select: (untyped key) -> untyped
+  def from_map: (untyped key) -> untyped
+  def from_select: (untyped key) -> untyped
+end
+```
+
+## Own method overrides the method of a core superclass
+
+### update
+
+```ruby
+class Server < Socket
+  def accept = accept_nonblock
+  def accept_nonblock = 1
+end
+```
+
+### result
+
+```rbs
+class Server < Socket
+  def accept: -> 1
+  def accept_nonblock: -> 1
+end
+```
+
+## An unknown argument skips overloads that need a block or only take nil
+
+### update
+
+```ruby
+class GoModule
+  def initialize(name)
+    @name = name
+  end
+
+  def major_match
+    /v(\d+)$/.match(@name)
+  end
+
+  def path_valid?(major)
+    m = /v(\d+)$/.match(@name)
+    !m.nil? && m[1].to_i == major
+  end
+end
+```
+
+### result
+
+```rbs
+class GoModule
+  def initialize: (untyped name) -> void
+  def major_match: -> MatchData?
+  def path_valid?: (untyped major) -> bool
+end
+```
+
+## A method that ends in a block call on a later method is not its block-less overload
+
+### update
+
+```ruby
+class Repo
+  def self.all_items
+    items.filter { |item| item }
+  end
+
+  def self.items
+    [:a, 2]
+  end
+end
+
+class Probe
+  def everything = Repo.all_items
+end
+```
+
+### result
+
+```rbs
+class Probe
+  def everything: -> Array[2 | :a]
+end
+
+class Repo
+  def self.all_items: -> Array[2 | :a]
+  def self.items: -> [:a, 2]
+end
+```

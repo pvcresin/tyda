@@ -1898,3 +1898,88 @@ class Spring::Server
   def ignore_signals: -> ["INT", "QUIT"]
 end
 ```
+
+## self in a class body passed as an argument is the class
+
+### update
+
+```ruby
+module Registry
+  def self.add(klass, name)
+    klass.name
+  end
+end
+
+class Plugin
+  Registry.add(self, :plugin)
+
+  def id = 1
+end
+```
+
+### result
+
+```rbs
+class Plugin
+  def id: -> 1
+end
+
+module Registry
+  def self.add: (singleton(Plugin) klass, Symbol name) -> String?
+end
+```
+
+## Top-level constant path is not resolved to a nested constant
+
+### update
+
+```ruby
+module Codec
+  module String
+    def to_codec = 1
+  end
+
+  class Int32
+    TYPE = ::String.new("a")
+    def type = ::String.new("b")
+  end
+end
+```
+
+### result
+
+```rbs
+module Codec
+end
+
+class Codec::Int32
+  TYPE: String
+
+  def type: -> String
+end
+
+module Codec::String
+  def to_codec: -> 1
+end
+```
+
+## Class constant named like a global constant hides the global
+
+### update
+
+```ruby
+class Table
+  DATA = { "a" => "b" }
+  def lookup(key) = DATA[key]
+end
+```
+
+### result
+
+```rbs
+class Table
+  DATA: { "a" => "b" }
+
+  def lookup: (untyped key) -> "b"?
+end
+```

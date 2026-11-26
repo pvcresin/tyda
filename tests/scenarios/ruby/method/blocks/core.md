@@ -744,3 +744,139 @@ class UnionBlockCall
   def then_arm: (untyped x) -> (1 | "a")
 end
 ```
+
+## Block that returns untyped keeps the block overload
+
+### update
+
+```ruby
+class Writer
+  def write(x)
+    File.open("x", "w") { |file| x }
+  end
+
+  def within(x)
+    Dir.chdir("x") { x }
+  end
+end
+```
+
+### result
+
+```rbs
+class Writer
+  def write: (untyped x) -> untyped
+  def within: (untyped x) -> untyped
+end
+```
+
+## Block call with an untyped instance variable argument uses the block overload
+
+### update
+
+```ruby
+class Repo
+  def initialize(path)
+    @path = path
+  end
+
+  def head
+    Dir.chdir(@path) do
+      "x".upcase
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Repo
+  def initialize: (untyped path) -> void
+  def head: -> String
+end
+```
+
+## Implicit self call with a block in a reopened Array uses the block overload
+
+### update
+
+```ruby
+class Array
+  def strings = map { |x| x.to_s }
+  def strings_by_symbol = map(&:to_s)
+end
+
+class Hash
+  def string_keys = transform_keys(&:to_s)
+end
+```
+
+### result
+
+```rbs
+class Array[unchecked out E]
+  def strings: -> Array[untyped]
+  def strings_by_symbol: -> Array[untyped]
+end
+
+class Hash[unchecked out K, unchecked out V]
+  def string_keys: -> Hash[untyped, untyped]
+end
+```
+
+## each with a block on a Hash.new default value is not an Enumerator
+
+### update
+
+```ruby
+class Hooks
+  def self.callbacks = @callbacks ||= Hash.new { |hash, key| hash[key] = [] }
+  def self.notify(key) = callbacks[key].each { |listener| listener.call }
+end
+```
+
+### result
+
+```rbs
+class Hooks
+  def self.callbacks: -> Hash[untyped, [ ]]
+  def self.notify: (untyped key) -> [ ]
+end
+```
+
+## each with a block on a local assigned in a block is not an Enumerator
+
+### update
+
+```ruby
+class Buffer
+  def initialize
+    @lock = Mutex.new
+    @entries = []
+  end
+
+  def push(entry) = @entries << entry
+
+  def flush
+    entries = nil
+    @lock.synchronize do
+      entries = @entries
+      @entries = []
+    end
+    entries.each do |entry|
+      entry.to_s
+    end
+  end
+end
+```
+
+### result
+
+```rbs
+class Buffer
+  def initialize: -> void
+  def push: (untyped entry) -> Array[untyped]
+  def flush: -> Array[untyped]
+end
+```

@@ -150,6 +150,25 @@ impl RbsType {
             _ => {}
         }
     }
+
+    /// Whether a type variable appears anywhere in this type.
+    pub fn mentions_variable(&self) -> bool {
+        match self {
+            RbsType::Variable(_) => true,
+            RbsType::Class(_, args)
+            | RbsType::Alias(_, args)
+            | RbsType::Union(args)
+            | RbsType::Intersection(args)
+            | RbsType::Tuple(args) => args.iter().any(RbsType::mentions_variable),
+            RbsType::Optional(inner) => inner.mentions_variable(),
+            RbsType::Record(fields) => fields.iter().any(|field| field.type_.mentions_variable()),
+            RbsType::Proc(method_type) => method_type
+                .function_type
+                .param_types()
+                .any(RbsType::mentions_variable),
+            _ => false,
+        }
+    }
 }
 
 // ── Conversion from rbs_sys (runs once, at the parse boundary) ──────────────────

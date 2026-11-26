@@ -1203,6 +1203,9 @@ pub struct InferenceEngine<'a> {
     /// Pending constant writes by start offset, with the scope seen at the write.
     pending_constant_writes: FxHashMap<usize, Scope>,
     pending_constant_names: FxHashSet<String>,
+    /// Instance variables a call read before any method wrote them, per class. Methods that
+    /// read them are inferred again after the class body.
+    late_ivar_reads: FxHashSet<(String, String)>,
     external_rbs: Option<&'a TypeRegistry>,
     merged_external_classes: FxHashSet<String>,
     /// Classes whose ancestor walk last changed nothing, valid while the registry's classes
@@ -1921,6 +1924,8 @@ pub(crate) struct Scope {
     break_types: Vec<Type>,
     method_name: Option<String>,
     singleton_dispatch: bool,
+    /// The scope is a class body, where `self` is the class itself.
+    class_body_self: bool,
     method_context_singleton_dispatch: Option<bool>,
     yield_param_types: Vec<Vec<Type>>,
     current_block_param_name: Option<String>,
@@ -2061,7 +2066,10 @@ struct YieldedBlockDefinitionContext {
 }
 
 impl ClassBodyCollectionOptions {
-    fn new(in_singleton_class: bool, class_body_scope: Scope) -> Self {
+    fn new(in_singleton_class: bool, mut class_body_scope: Scope) -> Self {
+        // `self` in a class body is the class, and bare calls dispatch on it.
+        class_body_scope.singleton_dispatch = true;
+        class_body_scope.class_body_self = true;
         Self {
             in_singleton_class,
             class_body_scope,
@@ -2207,6 +2215,7 @@ impl Scope {
             break_types: Vec::new(),
             method_name: self.method_name.clone(),
             singleton_dispatch: self.singleton_dispatch,
+            class_body_self: self.class_body_self,
             method_context_singleton_dispatch: self.method_context_singleton_dispatch,
             yield_param_types: self.yield_param_types.clone(),
             current_block_param_name: self.current_block_param_name.clone(),
@@ -2242,6 +2251,11 @@ impl Scope {
 
     fn fork_for_block(&self) -> Self {
         let mut scope = self.clone();
+        // A block in a class body is mostly a DSL block that runs on an instance later.
+        if scope.class_body_self {
+            scope.class_body_self = false;
+            scope.singleton_dispatch = false;
+        }
         scope.enter_jump_target();
         scope.clear_array_first_facts();
         scope.hash_key_facts = Arc::default();
@@ -2949,6 +2963,7 @@ impl<'a> InferenceEngine<'a> {
             unresolved_constant_reads: 0,
             pending_constant_writes: FxHashMap::default(),
             pending_constant_names: FxHashSet::default(),
+            late_ivar_reads: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             ancestor_walk_memo: FxHashSet::default(),
@@ -3067,6 +3082,7 @@ impl<'a> InferenceEngine<'a> {
             unresolved_constant_reads: 0,
             pending_constant_writes: FxHashMap::default(),
             pending_constant_names: FxHashSet::default(),
+            late_ivar_reads: FxHashSet::default(),
             external_rbs: None,
             merged_external_classes: FxHashSet::default(),
             ancestor_walk_memo: FxHashSet::default(),
@@ -4295,8 +4311,17 @@ impl<'a> InferenceEngine<'a> {
         // Computed once and reused below instead of re-scanning `bare` for "::" twice.
         let bare_has_double_colon = bare.contains("::");
         let has_root_prefix = bare.len() != path.len();
+        // A constant of the class or an enclosing namespace hides the global of the same name.
+        let lexically_defined = !has_root_prefix
+            && !bare_has_double_colon
+            && std::iter::successors(Some(class_context), |scope| {
+                scope.rsplit_once("::").map(|(outer, _)| outer)
+            })
+            .filter(|scope| *scope != "Object")
+            .any(|scope| self.registry.lookup_constant_type(scope, bare).is_some());
 
         match bare {
+            _ if lexically_defined => {}
             "ARGV" => return Type::Array(Some(Box::new(Type::String))),
             "ARGF" => return Type::Class(Sym::new("RBS::Unnamed::ARGFClass")),
             "DATA" => return Type::Class(Sym::new("IO")),
@@ -4894,6 +4919,47 @@ impl<'a> InferenceEngine<'a> {
         registry.class_data_for(class_name).is_some()
     }
 
+    /// Whether a call on `class_name`, which another file declares and this file does not,
+    /// reaches only a core method here.
+    fn other_file_class_method_waits(
+        &self,
+        class_name: &str,
+        method_name: &str,
+        is_singleton: bool,
+    ) -> bool {
+        // Only a class method in a method body waits, where a replay can type the calls on the
+        // reference: `new` builds an instance wherever `initialize` is, and identity methods
+        // answer with the receiver.
+        if !is_singleton
+            || self.active_method_body.is_none()
+            || matches!(
+                method_name,
+                "new" | "allocate" | "freeze" | "dup" | "clone" | "itself" | "tap" | "then"
+            )
+            || self
+                .registry
+                .class_data_for(class_name)
+                .is_some_and(|data| data.user_defined)
+            || !self.is_other_source_namespace(class_name)
+        {
+            return false;
+        }
+        self.registry
+            .resolve_method_call_owners(class_name, method_name, is_singleton)
+            .first()
+            .is_some_and(|(owner, owner_is_singleton)| {
+                // Only methods every class gets wait; an ancestor the class's own RBS
+                // declares (`extend Enumerable`) answers.
+                matches!(
+                    owner.as_str(),
+                    "Module" | "Class" | "Object" | "Kernel" | "BasicObject"
+                ) && self
+                    .registry
+                    .lookup_method_def(owner, method_name, *owner_is_singleton)
+                    .is_some_and(|method| method.origin.is_rbs_file_source())
+            })
+    }
+
     /// Another source declares this nested class or module. Its body is merged only later,
     /// so the name is all this file knows.
     fn is_other_source_namespace(&self, name: &str) -> bool {
@@ -5091,15 +5157,20 @@ impl<'a> InferenceEngine<'a> {
         let Type::Singleton(target) = value_type else {
             return ConstantAlias::None;
         };
-        if !matches!(
-            value_node,
-            Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
-        ) {
-            return ConstantAlias::None;
-        }
-        let raw = self.resolve_constant_path(value_node, parse_result);
-        if !self.constant_reference_names_namespace(&raw, class_context) {
-            return ConstantAlias::None;
+        // `self` in a class body names the class being defined.
+        let names_self =
+            matches!(value_node, Node::SelfNode { .. }) && target.as_str() == class_context;
+        if !names_self {
+            if !matches!(
+                value_node,
+                Node::ConstantReadNode { .. } | Node::ConstantPathNode { .. }
+            ) {
+                return ConstantAlias::None;
+            }
+            let raw = self.resolve_constant_path(value_node, parse_result);
+            if !self.constant_reference_names_namespace(&raw, class_context) {
+                return ConstantAlias::None;
+            }
         }
         self.ensure_class_available(target.as_str());
         match self.class_data_cross_registry(target.as_str()) {
@@ -5535,6 +5606,7 @@ impl<'a> InferenceEngine<'a> {
             ),
             method_name: base.method_name.clone(),
             singleton_dispatch: base.singleton_dispatch,
+            class_body_self: base.class_body_self,
             method_context_singleton_dispatch: base.method_context_singleton_dispatch,
             yield_param_types: base.yield_param_types.clone(),
             current_block_param_name: base.current_block_param_name.clone(),
@@ -5951,6 +6023,7 @@ impl<'a> InferenceEngine<'a> {
             break_types: base.break_types.clone(),
             method_name: base.method_name.clone(),
             singleton_dispatch: base.singleton_dispatch,
+            class_body_self: base.class_body_self,
             method_context_singleton_dispatch: base.method_context_singleton_dispatch,
             yield_param_types: base.yield_param_types.clone(),
             current_block_param_name: base.current_block_param_name.clone(),
@@ -9772,6 +9845,46 @@ impl<'a> InferenceEngine<'a> {
                 });
                 statements_require || rescue_requires || else_requires || ensure_requires
             }
+            // A yield in the block passed to `super` yields to this method's block.
+            Node::SuperNode { .. } | Node::ForwardingSuperNode { .. } => {
+                let (arguments, block) = match node {
+                    Node::SuperNode { .. } => {
+                        let super_node = node.as_super_node().expect("must be SuperNode");
+                        (super_node.arguments(), super_node.block())
+                    }
+                    _ => {
+                        let super_node = node
+                            .as_forwarding_super_node()
+                            .expect("must be ForwardingSuperNode");
+                        (None, super_node.block().map(|block| block.as_node()))
+                    }
+                };
+                let mut requires_block = false;
+                for argument in arguments.iter().flat_map(|args| args.arguments().iter()) {
+                    requires_block |= Self::node_yield_requires_block(
+                        &argument,
+                        block_param_name,
+                        guarded_by_block_given,
+                        trust_block_given_guard,
+                        trust_block_param_guard,
+                        found_yield,
+                    );
+                }
+                if let Some(body) = block
+                    .and_then(|block| block.as_block_node())
+                    .and_then(|block| block.body())
+                {
+                    requires_block |= Self::node_yield_requires_block(
+                        &body,
+                        block_param_name,
+                        guarded_by_block_given,
+                        trust_block_given_guard,
+                        trust_block_param_guard,
+                        found_yield,
+                    );
+                }
+                requires_block
+            }
             Node::WhileNode { .. } => {
                 let while_node = node.as_while_node().expect("must be WhileNode");
                 let predicate = while_node.predicate();
@@ -10681,6 +10794,12 @@ impl<'a> InferenceEngine<'a> {
                 Type::Array(Some(Box::new(Type::from_type_vec(args))))
             }
             (Type::Array(None), Type::Array(Some(inner))) => Type::Array(Some(inner)),
+            // An argument of unknown shape adds elements of unknown type.
+            (existing @ (Type::Tuple(_) | Type::Array(_)), arg_ty)
+                if !matches!(arg_ty, Type::Tuple(_) | Type::Array(_)) =>
+            {
+                Self::apply_array_concat_element(existing, Type::Untyped)
+            }
             (existing, _) => existing,
         }
     }
@@ -11406,10 +11525,12 @@ impl<'a> InferenceEngine<'a> {
                     parts.iter().map(Self::widen_literal_for_dispatch).collect();
                 Type::from_type_vec(widened)
             }
+            // A tuple dispatches as the array of its widened elements.
+            Type::Tuple(elems) if elems.is_empty() => Type::Array(None),
             Type::Tuple(elems) => {
                 let widened: Vec<Type> =
                     elems.iter().map(Self::widen_literal_for_dispatch).collect();
-                Type::from_type_vec(widened)
+                Type::Array(Some(Box::new(Type::from_type_vec(widened))))
             }
             _ => ty.clone(),
         }
@@ -13800,6 +13921,7 @@ impl<'a> InferenceEngine<'a> {
         let targets =
             self.super_call_targets(class_name, &method_name, scope.singleton_dispatch)?;
         let arguments = self.super_call_arguments(class_name, scope, super_node, parse_result);
+        let self_type = scope.current_self_type(class_name);
         let returns: Vec<Type> = targets
             .iter()
             .filter_map(|(owner, is_singleton)| {
@@ -13809,6 +13931,7 @@ impl<'a> InferenceEngine<'a> {
                     *is_singleton,
                     &arguments,
                     call_has_block,
+                    &self_type,
                 )
             })
             .collect();
@@ -13850,25 +13973,27 @@ impl<'a> InferenceEngine<'a> {
         is_singleton: bool,
         arguments: &SuperCallArguments,
         call_has_block: bool,
+        self_type: &Type,
     ) -> Option<Type> {
         let raw_return = call_has_block
-            .then(|| self.rbs_block_call_return(owner, method_name, is_singleton))
+            .then(|| self.rbs_block_call_return(owner, method_name, is_singleton, self_type))
             .flatten();
         self.super_target_return_with_raw(owner, method_name, is_singleton, arguments, raw_return)
     }
 
-    /// An RBS method that requires a block has no block-less return, so a call with a
-    /// block reads the first overload that takes one.
+    /// A call with a block reads the first RBS overload that takes one, since the block-less
+    /// overloads (such as an `Enumerator` return) do not apply.
     fn rbs_block_call_return(
         &self,
         owner: &str,
         method_name: &str,
         is_singleton: bool,
+        self_type: &Type,
     ) -> Option<Type> {
         let method = self
             .registry
             .lookup_method_def(owner, method_name, is_singleton)?;
-        if !method.origin.is_rbs_file_source() || method.raw_return_type != Type::Untyped {
+        if !method.origin.is_rbs_file_source() {
             return None;
         }
         let method_type = method
@@ -13883,6 +14008,7 @@ impl<'a> InferenceEngine<'a> {
             self.registry.type_aliases(),
             Some(owner),
         );
+        let ty = TypeRegistry::substitute_self_type_pub(&ty, self_type);
         Self::is_concrete(&ty).then_some(ty)
     }
 
@@ -17543,6 +17669,15 @@ impl<'a> InferenceEngine<'a> {
         let body_nodes: Vec<_> = statements.body().iter().collect();
         let mut late_constant_names = inherited_late_constant_names.to_vec();
         let mut late_constant_unknown = inherited_late_constant_unknown;
+        let late_ivars: Vec<String> = self
+            .late_ivar_reads
+            .iter()
+            .filter(|(owner, _)| owner == class_name)
+            .map(|(_, name)| name.clone())
+            .collect();
+        for name in late_ivars {
+            Self::push_unique_late_constant_name(&mut late_constant_names, name);
+        }
 
         for node in body_nodes.into_iter().rev() {
             match &node {
@@ -17556,6 +17691,12 @@ impl<'a> InferenceEngine<'a> {
                         &late_constant_names,
                         late_constant_unknown,
                     );
+                    // A call before this def resolved to the core method of the same name.
+                    if let Some(name) =
+                        self.def_shadowing_core_method(class_name, &def_node, in_singleton_class)
+                    {
+                        Self::push_unique_late_constant_name(&mut late_constant_names, name);
+                    }
                 }
                 Node::IfNode { .. }
                 | Node::UnlessNode { .. }
@@ -17579,6 +17720,11 @@ impl<'a> InferenceEngine<'a> {
             }
 
             for name in self.class_body_node_late_constant_names(&node, parse_result) {
+                Self::push_unique_late_constant_name(&mut late_constant_names, name);
+            }
+            for name in
+                self.attr_reader_names_shadowing_core_methods(class_name, &node, in_singleton_class)
+            {
                 Self::push_unique_late_constant_name(&mut late_constant_names, name);
             }
             if Self::class_body_node_may_change_unknown_constant_lookup(&node) {
@@ -17669,6 +17815,74 @@ impl<'a> InferenceEngine<'a> {
             method_context: None,
             method_context_singleton_dispatch: None,
         });
+    }
+
+    /// Readers from `attr_reader` / `attr_accessor` that replace a core method of the same name.
+    fn attr_reader_names_shadowing_core_methods(
+        &mut self,
+        class_name: &str,
+        node: &Node<'_>,
+        in_singleton_class: bool,
+    ) -> Vec<String> {
+        let Some(call) = node.as_call_node() else {
+            return Vec::new();
+        };
+        if call.receiver().is_some()
+            || !matches!(call.name().as_slice(), b"attr_reader" | b"attr_accessor")
+        {
+            return Vec::new();
+        }
+        let Some(arguments) = call.arguments() else {
+            return Vec::new();
+        };
+        let names: Vec<String> = arguments
+            .arguments()
+            .iter()
+            .filter_map(|argument| Self::extract_symbol_literal_name(&argument))
+            .collect();
+        names
+            .into_iter()
+            .filter(|name| self.core_method_is_shadowed(class_name, name, in_singleton_class))
+            .collect()
+    }
+
+    /// Whether a source method `name` on `class_name` replaces a method declared in RBS for an
+    /// ancestor (`Object` / `Kernel` for a plain class, `Class` for a singleton method).
+    fn core_method_is_shadowed(&self, class_name: &str, name: &str, is_singleton: bool) -> bool {
+        let ancestor = if is_singleton {
+            "Class"
+        } else {
+            self.registry.get_superclass(class_name).unwrap_or("Object")
+        };
+        // No call resolved to an ancestor method when the ancestor was never loaded.
+        if self.registry.class_data_for(ancestor).is_none() {
+            return false;
+        }
+        self.registry
+            .resolve_method_call_owners(ancestor, name, false)
+            .iter()
+            .any(|(owner, owner_is_singleton)| {
+                self.registry
+                    .lookup_method_def(owner, name, *owner_is_singleton)
+                    .is_some_and(|method| method.origin.is_rbs_file_source())
+            })
+    }
+
+    /// The name of a def that replaces a method every object has from `Object` or `Kernel`
+    /// (`Class` for a singleton def).
+    fn def_shadowing_core_method(
+        &mut self,
+        class_name: &str,
+        def_node: &ruby_prism::DefNode<'_>,
+        in_singleton_class: bool,
+    ) -> Option<String> {
+        let name = String::from_utf8_lossy(def_node.name().as_slice()).to_string();
+        let is_singleton = in_singleton_class
+            || def_node
+                .receiver()
+                .is_some_and(|receiver| matches!(receiver, Node::SelfNode { .. }));
+        self.core_method_is_shadowed(class_name, &name, is_singleton)
+            .then_some(name)
     }
 
     fn push_unique_late_constant_name(names: &mut Vec<String>, name: String) {
@@ -18585,13 +18799,25 @@ impl<'a> InferenceEngine<'a> {
             all_types.push(implicit_return);
             Self::merge_reachable_types(all_types)
         };
+        // A call to a later method that replaces a core method was answered by the core
+        // method, so the new return replaces the old one even when it is less precise.
+        let calls_shadowing_method = late_constant_names.iter().any(|name| {
+            name.starts_with(|first: char| first.is_ascii_lowercase() || first == '_')
+                && Self::source_slice_may_contain_constant_name(
+                    parse_result.source(),
+                    body.location().start_offset(),
+                    body.location().end_offset(),
+                    name,
+                )
+        });
         if method_name == "initialize"
-            || new_return_type == Type::Untyped
+            || (new_return_type == Type::Untyped && !calls_shadowing_method)
             || Self::type_contains_pattern_ref(&new_return_type)
         {
             return;
         }
-        if !Self::type_needs_backward_propagation(&method_info.raw_return_type)
+        if !calls_shadowing_method
+            && !Self::type_needs_backward_propagation(&method_info.raw_return_type)
             && !Self::is_concrete(&new_return_type)
         {
             return;
@@ -19936,7 +20162,13 @@ impl<'a> InferenceEngine<'a> {
             return_type = Type::Void;
         }
 
-        if is_singleton && Self::def_body_returns_only_bare_new(&def_node) {
+        // A bare `new` builds an instance unless the class defines its own `self.new`.
+        if is_singleton
+            && Self::def_body_returns_only_bare_new(&def_node)
+            && !self
+                .registry
+                .method_call_has_user_source_definition(class_name, "new", true)
+        {
             return_type = Type::InstanceType;
         }
 
@@ -21015,6 +21247,52 @@ impl<'a> InferenceEngine<'a> {
                     );
                 }
             }
+            // A yield in the block passed to `super` yields to this method's block.
+            Node::SuperNode { .. } | Node::ForwardingSuperNode { .. } => {
+                let (arguments, block) = match body {
+                    Node::SuperNode { .. } => {
+                        let super_node = body.as_super_node().expect("must be SuperNode");
+                        (super_node.arguments(), super_node.block())
+                    }
+                    _ => {
+                        let super_node = body
+                            .as_forwarding_super_node()
+                            .expect("must be ForwardingSuperNode");
+                        (None, super_node.block().map(|block| block.as_node()))
+                    }
+                };
+                for argument in arguments.iter().flat_map(|args| args.arguments().iter()) {
+                    self.scan_method_body_summary_node(
+                        class_name,
+                        &argument,
+                        parse_result,
+                        scope,
+                        summary,
+                    );
+                }
+                if let Some(block) = block.and_then(|block| block.as_block_node())
+                    && let Some(block_body) = block.body()
+                {
+                    let mut block_scope = scope.fork_for_block();
+                    for name in Self::locals_written_in(&block_body) {
+                        block_scope.set(&name, Type::Untyped);
+                    }
+                    if let Some(params) = block.parameters() {
+                        let mut names = HashSet::new();
+                        Self::collect_block_param_names(&params, &mut names);
+                        for name in names {
+                            block_scope.set(&name, Type::Untyped);
+                        }
+                    }
+                    self.scan_method_body_summary_node(
+                        class_name,
+                        &block_body,
+                        parse_result,
+                        &block_scope,
+                        summary,
+                    );
+                }
+            }
             Node::WhenNode { .. } => {
                 let when_node = body.as_when_node().expect("must be WhenNode");
                 for condition in when_node.conditions().iter() {
@@ -21146,19 +21424,30 @@ impl<'a> InferenceEngine<'a> {
         }
         let end = end.min(source.len());
         let needle = name.as_bytes();
+        // A method name counts only as a call on `self`, not on another receiver, a symbol or
+        // a variable (`@methods`).
+        let is_method_name = needle
+            .first()
+            .is_some_and(|first| first.is_ascii_lowercase() || *first == b'_');
         source[start..end]
             .windows(needle.len())
             .enumerate()
             .any(|(idx, window)| {
                 let absolute = start + idx;
+                let prev = absolute.checked_sub(1).and_then(|prev| source.get(prev));
                 window == needle
-                    && absolute
-                        .checked_sub(1)
-                        .and_then(|prev| source.get(prev))
-                        .is_none_or(|prev| !Self::is_ruby_identifier_byte(*prev))
+                    && prev.is_none_or(|prev| !Self::is_ruby_identifier_byte(*prev))
                     && source
                         .get(absolute + needle.len())
                         .is_none_or(|next| !Self::is_ruby_identifier_byte(*next))
+                    && (!is_method_name
+                        || match prev {
+                            Some(b'.') => {
+                                absolute >= 5 && &source[absolute - 5..absolute] == b"self."
+                            }
+                            Some(b':' | b'@' | b'$') => false,
+                            _ => true,
+                        })
             })
     }
 
@@ -22538,6 +22827,20 @@ impl<'a> InferenceEngine<'a> {
         positional_types: &mut Vec<Type>,
         open_splat: &mut Option<u16>,
     ) {
+        // A method's return known only later gives elements known only later; the call site
+        // spreads them once the return resolves.
+        if open_splat.is_none()
+            && matches!(
+                inner,
+                Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..)
+            )
+            && Type::splat_elements(inner, &mut |ty| self.splat_to_a(ty)).is_none()
+        {
+            *open_splat = u16::try_from(positional_types.len()).ok();
+            // A `SplatRef` holds the list of splatted parts, so the return is one part.
+            positional_types.push(Type::SplatRef(Box::new(Type::Tuple(vec![inner.clone()]))));
+            return;
+        }
         match self.splat_elements(inner) {
             SplatElements::Exact(elems) => positional_types.extend(elems),
             SplatElements::Open(elem) => {
@@ -31992,7 +32295,14 @@ impl<'a> InferenceEngine<'a> {
                             break 'no_recv loop_type;
                         }
 
-                        if !self_overridden && scope.singleton_dispatch && method_name == "new" {
+                        // A source `def self.new` answers the call instead of the constructor.
+                        if !self_overridden
+                            && scope.singleton_dispatch
+                            && method_name == "new"
+                            && !self
+                                .registry
+                                .method_call_has_user_source_definition(class_name, "new", true)
+                        {
                             let (arg_types, kw_types) = self.collect_call_arg_types_scoped(
                                 node,
                                 parse_result,
@@ -32442,20 +32752,62 @@ impl<'a> InferenceEngine<'a> {
                         if let Some(block_result) = user_defined_block_call_result {
                             break 'no_recv block_result;
                         }
-                        let generic_block_call_result =
-                            if self.record_hover_snapshots && call_node.block().is_some() {
-                                self.resolve_block_call_generic(
+                        // A block call that reaches a declared core method resolves through its
+                        // signature; a source method, or one defined later, has its own rules.
+                        if call_node.block().is_some() {
+                            self.ensure_class_available(class_name);
+                        }
+                        let reaches_declared_method = call_node.block().is_some()
+                            && self
+                                .registry
+                                .resolve_method_call_owners(
                                     class_name,
-                                    &call_node,
-                                    &implicit_self_type,
                                     &method_name,
-                                    parse_result,
-                                    scope,
+                                    scope.singleton_dispatch,
                                 )
-                            } else {
-                                None
-                            };
+                                .first()
+                                .is_some_and(|(owner, owner_is_singleton)| {
+                                    // `Kernel` functions are not methods of the receiver's
+                                    // own collection (`select` is `IO.select` there).
+                                    !matches!(owner.as_str(), "Kernel" | "Object" | "BasicObject")
+                                        && self
+                                            .registry
+                                            .lookup_method_def(
+                                                owner,
+                                                &method_name,
+                                                *owner_is_singleton,
+                                            )
+                                            .is_some_and(|method| {
+                                                method.origin.is_rbs_file_source()
+                                            })
+                                });
+                        let generic_block_call_result = if call_node.block().is_some()
+                            && (self.record_hover_snapshots || reaches_declared_method)
+                        {
+                            self.resolve_block_call_generic(
+                                class_name,
+                                &call_node,
+                                &implicit_self_type,
+                                &method_name,
+                                parse_result,
+                                scope,
+                            )
+                        } else {
+                            None
+                        };
                         if let Some(block_result) = generic_block_call_result {
+                            break 'no_recv block_result;
+                        }
+                        if reaches_declared_method
+                            && let Some(block_result) = self.resolve_symbol_to_proc(
+                                class_name,
+                                &call_node,
+                                &implicit_self_type,
+                                &method_name,
+                                parse_result,
+                                scope,
+                            )
+                        {
                             break 'no_recv block_result;
                         }
                         if let Some(enum_result) = user_defined_no_block_enumerator_result {
@@ -32708,6 +33060,28 @@ impl<'a> InferenceEngine<'a> {
                     } else {
                         receiver_type
                     };
+                    // In a module, `self.name` reaches whatever the includer defines; a private
+                    // `Kernel` function such as `open` is only one guess.
+                    if matches!(receiver, Node::SelfNode { .. })
+                        && let Type::Class(name) = &receiver_type
+                        && self
+                            .registry
+                            .class_data_for(name.as_str())
+                            .is_some_and(|data| data.is_module)
+                        && {
+                            self.ensure_class_available(name.as_str());
+                            self.ensure_class_available("Kernel");
+                            true
+                        }
+                        && self
+                            .registry
+                            .resolve_method_call_owners(name.as_str(), &method_name, false)
+                            .first()
+                            .is_some_and(|(owner, _)| owner == "Kernel")
+                        && self.is_private_kernel_method(&method_name)
+                    {
+                        return Type::Untyped;
+                    }
                     if let Some(result) = self.dispatch_receiver_union_with_unknown_arm(
                         class_name,
                         node,
@@ -32800,6 +33174,24 @@ impl<'a> InferenceEngine<'a> {
                     }
                     let mut block_break_type: Option<Type> = None;
                     let result = 'recv: {
+                        // A class another file declares may define the method there, so a
+                        // core method found here waits for the merged definitions.
+                        // A reference keeps no arguments or block, so only a plain call waits.
+                        if call_node.arguments().is_none()
+                            && call_node.block().is_none()
+                            && let Type::Singleton(name) | Type::Class(name) =
+                                &safe_nav_receiver_type
+                            && self.other_file_class_method_waits(
+                                name.as_str(),
+                                &method_name,
+                                matches!(safe_nav_receiver_type, Type::Singleton(_)),
+                            )
+                        {
+                            break 'recv wrap(Type::ReceiverMethodRef(
+                                Box::new(safe_nav_receiver_type.clone()),
+                                Sym::new(&method_name),
+                            ));
+                        }
                         if receiver_type == Type::Bot
                             && self.node_always_exits_in_method_scope(class_name, scope, &receiver)
                         {
@@ -33085,8 +33477,13 @@ impl<'a> InferenceEngine<'a> {
                                 Type::Singleton(name) => *name,
                                 _ => Sym::new(self.resolve_constant_path(&receiver, parse_result)),
                             };
+                            // `::Name` already names the top-level constant.
+                            let receiver_is_top_level_path = receiver
+                                .as_constant_path_node()
+                                .is_some_and(|path| path.parent().is_none());
                             let target_class = if !target_class_from_receiver.contains("::")
                                 && target_class_from_receiver != "Unknown"
+                                && !receiver_is_top_level_path
                             {
                                 match self.resolve_constant_type_in_scope(
                                     &target_class_from_receiver,
@@ -33720,7 +34117,13 @@ impl<'a> InferenceEngine<'a> {
                                         .with_callable_kind(CallableKind::Proc),
                                 );
                             }
-                            if method_name == "curry" {
+                            if method_name == "curry"
+                                || (matches!(
+                                    method_name.as_str(),
+                                    "freeze" | "dup" | "clone" | "itself"
+                                ) && call_node.arguments().is_none()
+                                    && call_node.block().is_none())
+                            {
                                 break 'recv wrap(safe_nav_receiver_type.clone());
                             }
                             if method_name == "arity" && call_node.arguments().is_none() {
@@ -35149,6 +35552,7 @@ impl<'a> InferenceEngine<'a> {
                         };
                         wrap(result)
                     };
+
                     let result = Self::include_optional_control_type(result, &block_break_type);
                     self.note_param_call_shape_drop(&call_node, &safe_nav_receiver_type, &result);
                     self.note_reference_call_shape_drop(
@@ -45197,6 +45601,18 @@ impl<'a> InferenceEngine<'a> {
         }
         let block_node_raw = call_node.block()?;
         let block = block_node_raw.as_block_node()?;
+        // A `nil` arm that has no such method raises, so the other arms decide the result. An
+        // instance variable's `nil` may only be its type before assignment, so it stays.
+        let receiver_type = &if matches!(receiver_type, Type::Union(parts) if parts.contains(&Type::Nil))
+            && !call_node
+                .receiver()
+                .is_some_and(|receiver| receiver.as_instance_variable_read_node().is_some())
+            && self.type_responds_to_method(&Type::Nil, method_name) == Some(false)
+        {
+            Self::remove_nil(receiver_type)
+        } else {
+            receiver_type.clone()
+        };
         let normalized = Self::normalize_union_receiver(receiver_type);
         // Block-iterating methods (`map`/`select`/...) need the receiver's concrete element type to thread through the block.
         // A deferred instance-variable or method-return receiver (e.g.
@@ -45278,6 +45694,16 @@ impl<'a> InferenceEngine<'a> {
 
         let (call_arg_types, call_kw_arg_types) =
             self.collect_call_arg_types_with_kw_skip(call_node, parse_result, class_name, scope, 0);
+        // An instance variable not known yet is an open argument: the block picks the overload.
+        let call_arg_types: Vec<Type> = call_arg_types
+            .iter()
+            .map(
+                |ty| match self.resolve_known_ivar_ref(ty, class_name, scope) {
+                    Type::IvarRef(_) => Type::Untyped,
+                    resolved => resolved,
+                },
+            )
+            .collect();
         let block_shape = if self.record_hover_snapshots {
             call_node
                 .block()
@@ -45939,7 +46365,11 @@ impl<'a> InferenceEngine<'a> {
         }
 
         // Without method type params the return only uses receiver types, which later resolve.
-        if Self::is_concrete(&method_return) || rbs_mt.method_type.type_params.is_empty() {
+        // A return bound from the block keeps its references, which resolve with the block.
+        if Self::is_concrete(&method_return)
+            || rbs_mt.method_type.type_params.is_empty()
+            || !Self::is_concrete(&block_return_type)
+        {
             Some(Self::include_optional_control_type(
                 method_return,
                 &block_break_type,
@@ -46036,6 +46466,14 @@ impl<'a> InferenceEngine<'a> {
         for fallback in fallbacks {
             self.ensure_class_available(fallback);
             for name in &names_to_try {
+                // A private `Kernel` function is not a method of another receiver (`select`
+                // through the `filter` alias is `IO.select` there).
+                if *fallback == "Kernel"
+                    && receiver_class != "Kernel"
+                    && self.is_private_kernel_method(name)
+                {
+                    continue;
+                }
                 if let Some(method) = self.registry.lookup_method_def(fallback, name, false)
                     && !method.rbs_method_types.is_empty()
                     && !self.stdlib_feature_owner_unloaded(fallback, name, false)
@@ -50996,12 +51434,54 @@ impl<'a> InferenceEngine<'a> {
         if arg_types.is_empty() && kw_arg_types.is_empty() {
             return None;
         }
+        // An instance variable whose type is known already picks the overload.
+        let mut arg_types: Vec<Type> = arg_types
+            .iter()
+            .map(|ty| self.resolve_known_ivar_ref(ty, class_name, scope))
+            .collect();
+        // An instance variable written only later can still select any overload, so the call
+        // is unknown for now and the method is inferred again after the class body.
+        for ty in &mut arg_types {
+            let Type::IvarRef(name) = ty else {
+                continue;
+            };
+            match self.current_ivar_type(class_name, scope, name.as_str()) {
+                // A parameter or `untyped` value can be anything, so the call is unknown.
+                Some(written) if Self::is_unresolved_call_arg_type(&written) => {
+                    *ty = Type::Untyped;
+                }
+                // Writes that resolve later decide the call then.
+                Some(_) => return None,
+                None => {
+                    self.late_ivar_reads
+                        .insert((class_name.to_string(), name.as_str().to_string()));
+                    *ty = Type::Untyped;
+                }
+            }
+        }
+
+        let mut relation_cache = HashMap::new();
+        // A `nil` arm that no overload accepts would raise, so the other arms pick the overload.
+        if arg_types
+            .iter()
+            .any(|ty| matches!(ty, Type::Union(parts) if parts.contains(&Type::Nil)))
+            && !overloads.iter().any(|overload| {
+                self.rbs_method_type_accepts_call(
+                    &overload.method_type,
+                    &arg_types,
+                    &kw_arg_types,
+                    receiver_type,
+                    &mut relation_cache,
+                )
+            })
+        {
+            arg_types = arg_types.iter().map(Self::remove_nil).collect();
+        }
 
         let receiver_type_args = Self::extract_type_args(receiver_type);
         let mut type_vars = self.class_type_vars_from_args(&receiver_class, &receiver_type_args);
         Self::seed_enumerable_elem_type_var(&receiver_class, &receiver_type_args, &mut type_vars);
 
-        let mut relation_cache = HashMap::new();
         let call_has_block = call_node.block().is_some();
         let mut skipped_required_block_match = false;
         let args_are_unknown = arg_types.iter().chain(kw_arg_types.values()).any(|ty| {
@@ -51082,6 +51562,10 @@ impl<'a> InferenceEngine<'a> {
                 // return covering the others is known. A nil-only difference keeps the earlier one.
                 match &mut unknown_arg_return {
                     None => unknown_arg_return = Some((overload.owner_class.clone(), ret)),
+                    // A `nil`-only overload differs from the others only by `nil`.
+                    Some((owner, seen)) if *owner == overload.owner_class && ret == Type::Nil => {
+                        *seen = seen.clone().union_with(Type::Nil);
+                    }
                     Some((owner, seen)) if *owner == overload.owner_class => {
                         let seen_value = Self::remove_nil(seen);
                         let ret_value = Self::remove_nil(&ret);
@@ -51097,10 +51581,25 @@ impl<'a> InferenceEngine<'a> {
             }
         }
 
-        if skipped_required_block_match {
-            Some(Type::Untyped)
-        } else {
-            unknown_arg_return.map(|(_, ret)| ret)
+        // A call without a block never takes an overload that requires one. A fallback owner
+        // the receiver does not have (`Enumerable#find` for a model's `find`) does not decide.
+        match unknown_arg_return {
+            Some((owner, ret))
+                if !skipped_required_block_match
+                    || self
+                        .registry
+                        .resolve_method_call_owners(
+                            &receiver_class,
+                            method_name,
+                            matches!(receiver_type, Type::Singleton(_)),
+                        )
+                        .iter()
+                        .any(|(actual, _)| *actual == owner) =>
+            {
+                Some(ret)
+            }
+            Some(_) => Some(Type::Untyped),
+            None => skipped_required_block_match.then_some(Type::Untyped),
         }
     }
 
@@ -52907,6 +53406,17 @@ impl<'a> InferenceEngine<'a> {
 
     fn rbs_method_type_callable_without_block(mt: &rbs_ir::MethodType) -> bool {
         mt.block.as_ref().is_none_or(|block| !block.required)
+    }
+
+    /// The type of an instance variable reference once it is known; otherwise the reference.
+    fn resolve_known_ivar_ref(&self, ty: &Type, class_name: &str, scope: &Scope) -> Type {
+        let Type::IvarRef(name) = ty else {
+            return ty.clone();
+        };
+        match self.current_ivar_type(class_name, scope, name.as_str()) {
+            Some(resolved) if resolved != Type::Untyped && Self::is_concrete(&resolved) => resolved,
+            _ => ty.clone(),
+        }
     }
 
     fn is_unresolved_call_arg_type(ty: &Type) -> bool {
@@ -55258,6 +55768,12 @@ impl<'a> InferenceEngine<'a> {
     ) -> Option<Type> {
         let receiver_class = self.type_to_class_name(receiver_type)?;
         self.ensure_class_available(&receiver_class);
+        // A generic argument binds method type params through its declared type params.
+        for arg_type in call_arg_types {
+            if let Type::Generic { base, .. } = arg_type {
+                self.ensure_class_available(base);
+            }
+        }
 
         if receiver_class == "Kernel"
             && method_name == "Array"
@@ -55489,6 +56005,25 @@ impl<'a> InferenceEngine<'a> {
             })
             .filter(|mt| call_matches(mt, &mut relation_cache))
             .collect();
+        // An argument that resolves later can still select a plain overload, so a generic one
+        // only answers when no plain overload accepts the call.
+        let args_are_deferred = call_arg_types
+            .iter()
+            .chain(call_kw_arg_types.values())
+            .any(Self::is_unresolved_call_arg_type);
+        let plain_overload_accepts = args_are_deferred
+            && overloads
+                .iter()
+                .filter(|mt| {
+                    Self::rbs_method_type_callable_without_block(&mt.method_type)
+                        && mt.method_type.type_params.is_empty()
+                })
+                .any(|mt| call_matches(&mt, &mut relation_cache));
+        let method_type_param_overloads = if plain_overload_accepts {
+            Vec::new()
+        } else {
+            method_type_param_overloads
+        };
 
         for overload in method_type_param_overloads.iter() {
             let rbs_mt = &overload.method_type;
@@ -55554,10 +56089,6 @@ impl<'a> InferenceEngine<'a> {
             .collect();
 
         // An argument that resolves later can still select any accepted overload.
-        let args_are_deferred = call_arg_types
-            .iter()
-            .chain(call_kw_arg_types.values())
-            .any(Self::is_unresolved_call_arg_type);
         if args_are_deferred
             && let Some((first, rest)) = no_block_overloads.split_first()
             && rest.iter().any(|overload| {
@@ -55631,6 +56162,49 @@ impl<'a> InferenceEngine<'a> {
             Self::extract_forwarded_receiver_method(&method.raw_return_type)?;
         let forwarded_receiver = self.try_resolve_receiver_inline(class_name, &forwarded_receiver);
         let forwarded_receiver = self.resolve_receiver_method_refs(&forwarded_receiver);
+        // A forwarded call takes this call's arguments without a block, so a method that no
+        // such call reaches (`items.filter { }`) is not a forward. A receiver still unknown
+        // cannot show that.
+        if matches!(
+            forwarded_receiver,
+            Type::MethodReturnRef(..) | Type::ReceiverMethodRef(..) | Type::Untyped
+        ) {
+            return None;
+        }
+        if let Some(forwarded_class) = self.type_to_class_name(&forwarded_receiver) {
+            self.ensure_class_available(&forwarded_class);
+            let arg_count = Self::call_node_positional_arg_count(call_node);
+            let overloads = self.collect_owned_rbs_overloads(
+                &forwarded_class,
+                &forwarded_name,
+                matches!(forwarded_receiver, Type::Singleton(_)),
+                false,
+            );
+            let blockless: Vec<_> = overloads
+                .iter()
+                .filter(|overload| {
+                    Self::rbs_method_type_callable_without_block(&overload.method_type)
+                        && Self::rbs_function_type_accepts_positional_arg_count(
+                            &overload.method_type.function_type,
+                            arg_count,
+                        )
+                })
+                .collect();
+            // An iterator's block-less `Enumerator` says nothing about a call that had a block.
+            let iterator_without_block = overloads
+                .iter()
+                .any(|overload| overload.method_type.block.is_some())
+                && blockless.iter().all(|overload| {
+                    matches!(
+                        &overload.method_type.function_type.return_type,
+                        rbs_ir::RbsType::Class(name, _)
+                            if name.trim_start_matches("::").starts_with("Enumerator")
+                    )
+                });
+            if !overloads.is_empty() && (blockless.is_empty() || iterator_without_block) {
+                return None;
+            }
+        }
 
         let mut result = if forwarded_name == "[]" {
             self.resolve_array_index(
@@ -55731,6 +56305,26 @@ impl<'a> InferenceEngine<'a> {
             && Self::array_receiver_type(&resolved_current)
         {
             return Type::Array(None);
+        }
+        // `list += other` joins the elements, as `list + other` does.
+        if method_name == "+"
+            && matches!(resolved_current, Type::Tuple(_) | Type::Array(Some(_)))
+            && matches!(value_type, Type::Tuple(_) | Type::Array(Some(_)))
+            && !self
+                .type_to_class_name(&resolved_current)
+                .is_some_and(|class_name| {
+                    self.instance_method_has_source_override(&class_name, method_name)
+                })
+        {
+            let mut elems = Self::static_array_elements(&resolved_current)
+                .unwrap_or_else(|| vec![Self::extract_element_type(&resolved_current)]);
+            elems.extend(
+                Self::static_array_elements(value_type)
+                    .unwrap_or_else(|| vec![Self::extract_element_type(value_type)]),
+            );
+            return Type::Array(Some(Box::new(Self::cap_collection_growth_type(
+                Type::from_type_vec(elems),
+            ))));
         }
         let has_source_override =
             self.type_to_class_name(&resolved_current)
@@ -58571,6 +59165,13 @@ impl<'a> InferenceEngine<'a> {
         if self.stdlib_feature_method_unloaded(class_name, &method_name_for_lookup, is_singleton) {
             return Type::Untyped;
         }
+        // A class another file declares may define this class method there, so a core method
+        // found here waits for the merged definitions.
+        if is_singleton
+            && self.other_file_class_method_waits(class_name, &method_name_for_lookup, true)
+        {
+            return Type::ReceiverMethodRef(Box::new(receiver_type.clone()), Sym::new(method_name));
+        }
         let lookup = self.registry.lookup_method_return_type_with_hint(
             class_name,
             &method_name_for_lookup,
@@ -58620,7 +59221,12 @@ impl<'a> InferenceEngine<'a> {
             }
         };
         if ret == Type::Untyped {
-            if let Some(return_type) = self.resolve_rbs_no_arg_method_return_on_type(
+            // A source method that returns `untyped` replaces the declared method of an ancestor.
+            if !self.registry.method_call_has_user_source_definition(
+                class_name,
+                &method_name_for_lookup,
+                is_singleton,
+            ) && let Some(return_type) = self.resolve_rbs_no_arg_method_return_on_type(
                 receiver_type,
                 effective_method_name,
                 true,
@@ -59089,6 +59695,15 @@ impl<'a> InferenceEngine<'a> {
                         })
                         .collect();
                     return Type::from_type_vec_preserve_untyped(arms);
+                }
+                if let Type::Singleton(name) | Type::Class(name) = &resolved_receiver
+                    && self.other_file_class_method_waits(
+                        name.as_str(),
+                        method_name.as_str(),
+                        matches!(resolved_receiver, Type::Singleton(_)),
+                    )
+                {
+                    return Type::ReceiverMethodRef(Box::new(resolved_receiver), *method_name);
                 }
                 if let Some(result) =
                     self.resolve_receiver_ref_overloaded_return(&resolved_receiver, method_name)
@@ -68378,6 +68993,24 @@ impl<'a> InferenceEngine<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn method_name_in_source_counts_only_as_a_self_call() {
+        let found = |source: &str| {
+            InferenceEngine::source_slice_may_contain_constant_name(
+                source.as_bytes(),
+                0,
+                source.len(),
+                "methods",
+            )
+        };
+        assert!(found("methods.size"));
+        assert!(found("self.methods"));
+        assert!(!found("@methods[name]"));
+        assert!(!found("$methods"));
+        assert!(!found("obj.methods"));
+        assert!(!found(":methods"));
+    }
 
     #[test]
     fn primitive_flow_overlap_preserves_ambiguous_values() {

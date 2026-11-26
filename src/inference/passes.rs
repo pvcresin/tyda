@@ -570,7 +570,11 @@ impl<'a> InferenceEngine<'a> {
                         .collect();
                     return Type::from_type_vec_preserve_untyped(arms);
                 }
-                if let Some(receiver_class) = Self::static_type_to_class_name(&resolved_receiver) {
+                // Overloads that disagree (a block call's `Array` or a block-less `Enumerator`)
+                // give no single return here.
+                if let Some(receiver_class) = Self::static_type_to_class_name(&resolved_receiver)
+                    && !registry.argless_return_is_ambiguous(&receiver_class, method_name)
+                {
                     let ret = registry
                         .lookup_method_return_type_direct(&receiver_class, method_name)
                         .or_else(|| {
@@ -1013,6 +1017,23 @@ impl<'a> InferenceEngine<'a> {
             .map(|context| context.class_name.as_ref())
             .unwrap_or(class_name);
         let mut resolved = call_site.clone();
+        // An open splat of a value known only later spreads once the value is a tuple.
+        if let Some(index) = call_site.open_splat.map(usize::from)
+            && let Some(Type::SplatRef(parts)) = call_site.arg_types.get(index)
+            && let Type::Tuple(splatted) = parts.as_ref()
+            && let [part] = splatted.as_slice()
+        {
+            let mut visiting = FxHashSet::default();
+            if let Type::Tuple(elems) = Self::resolve_general_method_refs(
+                &self.registry,
+                context_class,
+                part,
+                &mut visiting,
+            ) {
+                resolved.arg_types.splice(index..=index, elems);
+                resolved.open_splat = None;
+            }
+        }
         for arg_type in &mut resolved.arg_types {
             let mut visiting = FxHashSet::default();
             *arg_type = Self::resolve_general_method_refs(

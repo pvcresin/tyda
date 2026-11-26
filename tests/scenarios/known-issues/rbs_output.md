@@ -421,105 +421,23 @@ module EventMachine::Protocols
 end
 ```
 
-## Top-level constant path is not resolved to a nested constant
+## Empty inner hash of a nested hash ivar stays a separate union arm
 
 ### update
 
 ```ruby
-module Codec
-  module String
-    def to_codec = 1
+class Entry
+end
+
+class Registry
+  def initialize
+    @entries = { true => {}, false => {} }
   end
 
-  class Int32
-    TYPE = ::String.new("a")
-    def type = ::String.new("b")
-  end
-end
-```
+  attr_reader :entries
 
-### result
-
-```rbs
-class Codec::Int32
-  TYPE: ::String
-
-  def type: -> ::String
-end
-
-module Codec::String
-  def to_codec: -> 1
-end
-```
-
-## Constant set to new in a class body is an instance
-
-### update
-
-```ruby
-class Visitor
-  def visit = 1
-
-  INSTANCE = new
-end
-```
-
-### result
-
-```rbs
-class Visitor
-  INSTANCE: Visitor
-
-  def visit: -> 1
-end
-```
-
-## Frozen lambda constant is a Proc
-
-### update
-
-```ruby
-module Consts
-  IDENTITY = ->(x) { x }.freeze
-end
-```
-
-### result
-
-```rbs
-module Consts
-  IDENTITY: Proc
-end
-```
-
-## Constant set to self in a class body is the class
-
-### update
-
-```ruby
-class Timeout
-  RT = self
-end
-```
-
-### result
-
-```rbs
-class Timeout
-  RT: singleton(Timeout)
-end
-```
-
-## Instance variable from an optional parameter is not only its default
-
-### update
-
-```ruby
-class Link
-  attr_reader :href
-
-  def initialize(href = "")
-    @href = href
+  def get(singleton, name)
+    @entries[singleton][name] ||= Entry.new
   end
 end
 ```
@@ -527,8 +445,45 @@ end
 ### result
 
 ```rbs
-class Link
-  def href: -> String
-  def initialize: (?String href) -> void
+class Entry
+end
+
+class Registry
+  def initialize: -> void
+  def entries: -> Hash[bool, Hash[untyped, Entry]]
+  def get: (untyped singleton, untyped name) -> Entry
+end
+```
+
+## Block call on a later method in a method with parameters
+
+### update
+
+```ruby
+class Repo
+  def self.matching(key)
+    items.filter { |item| item }
+  end
+
+  def self.items
+    [:a, 2]
+  end
+end
+
+class Probe
+  def by_key(key) = Repo.matching(key)
+end
+```
+
+### result
+
+```rbs
+class Repo
+  def self.matching: (untyped key) -> Array[2 | :a]
+  def self.items: -> [:a, 2]
+end
+
+class Probe
+  def by_key: (untyped key) -> Array[2 | :a]
 end
 ```

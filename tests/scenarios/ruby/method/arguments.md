@@ -527,3 +527,25 @@ class Caller
   def run: -> Integer
 end
 ```
+
+## Splat of a tuple spreads into generic parameters
+
+### update
+
+```ruby
+class Pair
+  def first = take(*pair)
+  def pair = [1, "a"]
+  def take(a, b) = a
+end
+```
+
+### result
+
+```rbs
+class Pair
+  def first: -> Integer
+  def pair: -> [1, "a"]
+  def take: [A] (A a, String b) -> A
+end
+```

@@ -202,3 +202,36 @@ class A
   def process: -> "done"
 end
 ```
+
+## Method defined after def_delegators replaces the delegator
+
+### update
+
+```ruby
+class TaskSet
+  extend Forwardable
+
+  def_delegators :@tasks, :<<, :first
+
+  def initialize
+    @tasks = []
+  end
+
+  def <<(task)
+    @tasks.push(task)
+    self
+  end
+end
+```
+
+### result
+
+```rbs
+class TaskSet
+  extend Forwardable
+
+  def first: -> untyped
+  def initialize: -> void
+  def <<: (untyped task) -> TaskSet
+end
+```

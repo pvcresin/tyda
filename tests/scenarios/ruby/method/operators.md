@@ -549,3 +549,77 @@ class Pairs
   def first_op: (untyped item) -> untyped
 end
 ```
+
+## Float minus an untyped instance variable stays untyped
+
+### update
+
+```ruby
+class Timer
+  def initialize(start)
+    @start = start
+  end
+
+  def elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - @start
+  def offset = 1.5 - @start
+end
+```
+
+### result
+
+```rbs
+class Timer
+  def initialize: (untyped start) -> void
+  def elapsed: -> untyped
+  def offset: -> untyped
+end
+```
+
+## Arithmetic with a nilable argument uses the overload of the value
+
+### update
+
+```ruby
+class Limits
+  SMALL = Rational(1, 10**12)
+  MAX = 60 - Rational(1, 10**12)
+
+  def offset(flag) = 60 - (flag ? 1.5 : nil)
+  def ratio(value) = Rational(1, value)
+end
+```
+
+### result
+
+```rbs
+class Limits
+  SMALL: Rational?
+  MAX: Rational
+
+  def offset: (untyped flag) -> Float
+  def ratio: (untyped value) -> Rational
+end
+```
+
+## Comparable clamp with a range returns the receiver type
+
+### update
+
+```ruby
+class Jitter
+  LIMIT = 0.0..1.0
+  def literal = 0.5.clamp(0.0..1.0)
+  def constant = 0.5.clamp(LIMIT)
+end
+```
+
+### result
+
+```rbs
+class Jitter
+  LIMIT: Range[Float]
+
+  def literal: -> Float
+  def constant: -> Float
+end
+```
