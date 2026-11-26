@@ -1090,6 +1090,49 @@ fn known_issue_constant_declared_in_project_rbs_is_rendered_again() {
 }
 
 #[test]
+fn known_issue_call_with_arguments_on_a_deferred_module_function_is_untyped() {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::write(
+        dir.path().join("version.rb"),
+        concat!(
+            "module App\n",
+            "  module Version\n",
+            "    module_function\n",
+            "\n",
+            "    def major = 4\n",
+            "\n",
+            "    def to_s\n",
+            "      [major].join(\".\")\n",
+            "    end\n",
+            "  end\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    fs::write(
+        dir.path().join("check.rb"),
+        concat!(
+            "class Check\n",
+            "  def parts = App::Version.to_s.split(\"+\")\n",
+            "end\n",
+        ),
+    )
+    .expect("failed to write source");
+    let output = tyda_bin()
+        .arg(dir.path().to_str().unwrap())
+        .output()
+        .expect("failed to run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Known issue: `App::Version.to_s` is a `module_function` in another file, so it stays a
+    // reference, and the `split` call on that reference loses its argument.
+    assert!(
+        stdout.contains("  def parts: -> untyped\n"),
+        "known issue fixed; drop this check and expect Array[String]: {stdout}"
+    );
+}
+
+#[test]
 fn known_issue_filter_on_a_later_method_return_gives_string_elements() {
     let dir = tempfile::tempdir().expect("failed to create tempdir");
     fs::write(

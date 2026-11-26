@@ -635,3 +635,37 @@ module Gp::Pb
   FeatureSet: untyped
 end
 ```
+
+## Empty inner hash of a nested hash ivar stays a separate union arm
+
+### update
+
+```ruby
+class Entry
+end
+
+class Registry
+  def initialize
+    @entries = { true => {}, false => {} }
+  end
+
+  attr_reader :entries
+
+  def get(singleton, name)
+    @entries[singleton][name] ||= Entry.new
+  end
+end
+```
+
+### result
+
+```rbs
+class Entry
+end
+
+class Registry
+  def initialize: -> void
+  def entries: -> Hash[bool, Hash[untyped, Entry]]
+  def get: (untyped singleton, untyped name) -> Entry
+end
+```

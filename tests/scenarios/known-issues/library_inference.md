@@ -154,3 +154,41 @@ class Sp
   def d: (untyped c) -> Array[0 | 1 | "s"]
 end
 ```
+
+## Values of a hash with a default block keep elements pushed later
+
+### update
+
+```ruby
+class Rule
+end
+
+class Validator
+  def self.rules
+    @rules ||= Hash.new { |h, k| h[k] = [] }
+  end
+
+  def self.rule(keys)
+    keys.each { |k| rules[k] << Rule.new }
+  end
+
+  def self.validate!(key)
+    rules[key].each { |rule| rule }
+  end
+end
+
+Validator.rule(%w[a b])
+```
+
+### result
+
+```rbs
+class Rule
+end
+
+class Validator
+  def self.rules: -> Hash[untyped, Array[Rule]]
+  def self.rule: (Array[String] keys) -> Array[String]
+  def self.validate!: (untyped key) -> Array[Rule]
+end
+```
