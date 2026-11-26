@@ -28510,10 +28510,16 @@ impl<'a> InferenceEngine<'a> {
                 );
                 // `uri.query ||= ""` leaves the reader truthy until something changes it.
                 if !write_node.is_safe_navigation()
-                    && let Some(local) = write_node
-                        .receiver()
-                        .and_then(|receiver| receiver.as_local_variable_read_node())
+                    && let Some(receiver) = write_node.receiver()
+                    && let Some(local) = receiver.as_local_variable_read_node()
                     && let Some(truthy) = Self::truthy_only(&result_type)
+                    && self.is_attribute_reader_call(
+                        class_name,
+                        &receiver,
+                        &read_name,
+                        parse_result,
+                        scope,
+                    )
                 {
                     let key = format!(
                         "{}.{}",
@@ -61541,7 +61547,13 @@ impl<'a> InferenceEngine<'a> {
 
                 if let Some(key) = const_index_fact_key(predicate).or_else(|| {
                     local_reader_fact_key(predicate).filter(|_| {
-                        self.is_attribute_reader_call(class_name, &call, parse_result, scope)
+                        self.is_attribute_reader_call(
+                            class_name,
+                            &receiver,
+                            &method,
+                            parse_result,
+                            scope,
+                        )
                     })
                 }) {
                     let current = self.infer_node_type(class_name, predicate, parse_result, scope);
@@ -65626,15 +65638,13 @@ impl<'a> InferenceEngine<'a> {
     fn is_attribute_reader_call(
         &mut self,
         class_name: &str,
-        call: &ruby_prism::CallNode<'_>,
+        receiver: &Node<'_>,
+        method: &str,
         parse_result: &ParseResult<'_>,
         scope: &Scope,
     ) -> bool {
-        let Some(receiver) = call.receiver() else {
-            return false;
-        };
         let observations = self.suspend_source_observations();
-        let receiver_type = self.infer_node_type(class_name, &receiver, parse_result, scope);
+        let receiver_type = self.infer_node_type(class_name, receiver, parse_result, scope);
         self.resume_source_observations(observations);
         let members = match &receiver_type {
             Type::Union(parts) => parts.clone(),
@@ -65649,12 +65659,11 @@ impl<'a> InferenceEngine<'a> {
                 _ => return false,
             }
         }
-        let method = String::from_utf8_lossy(call.name().as_slice());
         !classes.is_empty()
             && classes.iter().all(|name| {
                 self.ensure_class_available(name);
                 self.registry
-                    .is_pure_ivar_reader_method(name, &method, false)
+                    .is_pure_ivar_reader_method(name, method, false)
             })
     }
 
